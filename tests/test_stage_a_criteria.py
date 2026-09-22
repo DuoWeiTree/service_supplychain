@@ -5,9 +5,9 @@
 """
 import psycopg2.errors
 import pytest
+from helpers import H, prepared
 
 from shared.pg_client import pg_conn
-from helpers import H, prepared
 
 
 def test_criterion_1_build_claim_fill_submit_mint(client, seed):
@@ -100,3 +100,14 @@ def test_criterion_5_the_back_edge_exists_and_terminal_states_are_sealed(client,
     r = client.post(f"/v1/plan-lines/{line}/transition", json={"to_state": "已完结"},
                     headers=H(seed.actor))
     assert r.status_code == 422 and r.json()["allowed"] == ["已确认", "已撤销"]
+
+    # ★ 判据⑤ 的后半句「终态密封」此前一条断言都没有：上面那次 422 是
+    #   illegal_transition（这条边不在白名单里），与「这条记录已经在终态、
+    #   哪条边都走不了」是两件事，而两者都长成一个 422。
+    cancelled = client.post(f"/v1/plan-lines/{line}/cancel", json={"reason": "封存它"},
+                            headers=H(seed.actor))
+    assert cancelled.status_code == 200 and cancelled.json()["state"] == "已撤销"
+    sealed = client.post(f"/v1/plan-lines/{line}/transition", json={"to_state": "已确认"},
+                         headers=H(seed.actor))
+    assert sealed.status_code == 422 and sealed.json()["error"] == "terminal_state"
+    assert sealed.json()["state"] == "已撤销" and sealed.json()["line_id"] == line

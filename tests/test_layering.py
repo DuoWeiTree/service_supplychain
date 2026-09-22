@@ -36,6 +36,31 @@ def imports(path: Path) -> set[str]:
     return out
 
 
+def full_imports(path: Path) -> set[str]:
+    """★ 收**完整**模块路径。只看顶层名（上面那个 imports()）看不见
+    `from shared.pg_client import pg_conn` —— 它的顶层名是 `shared`，
+    而 `shared` 在每条规则里都是允许的（配置要从那里读）。
+    真正要禁的是 `shared` 里的那两个连接工厂，粒度不够就永远抓不到。"""
+    out: set[str] = set()
+    for node in ast.walk(ast.parse(path.read_text("utf-8"))):
+        if isinstance(node, ast.Import):
+            out |= {a.name for a in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            out.add(node.module)
+    return out
+
+
+#: 纯层禁止触及的东西。★ `shared.ch_client` 现在还不存在 —— 这条是给阶段 B 的
+#: `ChSource` 备的，而那正是第一个会想要连接的模块（复核 I5 的原话）。
+NO_CONNECTIONS = ("shared.pg_client", "shared.ch_client", "psycopg2", "api")
+
+
+def _hits(module: str, forbidden: tuple[str, ...]) -> bool:
+    # ★ 前缀要按点边界比：startswith("api") 会把 "apitools" 也算进去，
+    #   而那种误报会让人去关掉这条规则。
+    return any(module == f or module.startswith(f + ".") for f in forbidden)
+
+
 def test_no_relative_imports():
     """相对 import 会从上面那个 imports() 里漏出去 —— 漏出去的那条不会报错。"""
     bad = []
@@ -84,6 +109,22 @@ def test_l6_psycopg2_only_where_transactions_live():
     bad = [str(p.relative_to(ROOT)) for p in sources(*PACKAGES)
            if "psycopg2" in imports(p) and not str(p.relative_to(ROOT)).startswith(allowed)]
     assert not bad, f"L6 违规：{bad}"
+
+
+def test_pure_layers_cannot_reach_a_connection():
+    """★ L1/L6 有个洞：L1 禁了 `psycopg2` 却没禁 `shared`，L6 认的是
+    「模块里出现 psycopg2 这个词」—— 于是 `from shared.pg_client import pg_conn`
+    写在 rules/ 或 dim/ 里，两条规则都不会红。
+
+    「模型层只喂 fixture 就跑得通」这件事只有这几条测试在守，
+    而一条扫对了文件却看不见真实违规形态的规则，与守住了长得一模一样。
+    """
+    bad = {}
+    for p in sources("forecast", "rules", "dim"):
+        hit = sorted(m for m in full_imports(p) if _hits(m, NO_CONNECTIONS))
+        if hit:
+            bad[str(p.relative_to(ROOT))] = hit
+    assert not bad, f"纯层碰了连接或接口层（离线可测就没了）：{bad}"
 
 
 def test_l7_no_writes_to_clickhouse():

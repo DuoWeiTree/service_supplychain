@@ -3,6 +3,8 @@
 ★ 阶段 A 的入库量只有「已确认」这一种（CH 的采购在途），
   本计划的计划采购量**不进**这条公式，而这件事必须在每一格上说出来。
 """
+import itertools
+
 import pytest
 
 from forecast.projection import InboundSource, PeriodMismatch, inventory_projection
@@ -26,7 +28,7 @@ def test_main_formula_holds_in_every_cell():
 def test_opening_is_last_months_closing():
     """★ 原型 test_forecast.js §4 第二条（恒等式④）。"""
     rows = inventory_projection(300, {}, dict(zip(P, [120, 100, 80])))
-    for prev, cur in zip(rows, rows[1:]):
+    for prev, cur in itertools.pairwise(rows):
         assert cur["opening"] == prev["closing"]
 
 

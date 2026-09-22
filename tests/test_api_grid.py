@@ -1,3 +1,5 @@
+import itertools
+
 from shared.pg_client import pg_conn
 
 
@@ -44,7 +46,7 @@ def test_inventory_is_onhand_minus_demand_and_in_transit_stays_out(client, seed)
     client.put(f"/v1/plans/{pid}/demand/MSKU-A/11072/2026-10",
                json={"expected_units": 100}, headers=H(seed.actor))
     g = client.get(f"/v1/plans/{pid}/grid", headers=H(seed.actor)).json()
-    oct_row = [r for r in g["inventory"] if r["period"] == "2026-10"][0]
+    oct_row = next(r for r in g["inventory"] if r["period"] == "2026-10")
     assert (oct_row["onhand"], oct_row["inbound"], oct_row["closing"]) == (300, None, 200)
     assert oct_row["basis"]["demand"] == 100
     assert oct_row["basis"]["reason"] == "no_seller_attribution"
@@ -77,7 +79,7 @@ def test_onhand_is_the_sum_of_that_stores_mskus(client, seed, monkeypatch):
     # ★ 在仓事实只在首月进一次，其后期初 = 上月期末（14 §0 的月度链）——
     #   不这样断言就漏掉「按 msku 去重」这件事：去重掉了会从 1050 起步
     #   （2 个 msku × 3 期各计一次：3×300 + 3×50）而不是从 350 起步。
-    for prev, cur in zip(rows, rows[1:]):
+    for prev, cur in itertools.pairwise(rows):
         assert cur["onhand"] == prev["closing"], \
             "★ 在仓只在首月进一次，其后期初 = 上月期末（14 §0）；去重掉了会从 1050 起步"
 
@@ -98,14 +100,14 @@ def test_in_transit_is_never_handed_to_a_store(client, seed):
     # ★ 两个店的在途都是 null，但期末仍算得出来 —— 别把「不知道是谁的」传染成「什么都不知道」
     assert all(r["closing"] is not None for r in oct_rows)
     # ★ 同一批货没有被数两遍：两行的 sku_level_in_transit 是同一个 80，不是各自一份
-    oct_pipe = [r for r in g["sku_pipeline"] if r["period"] == "2026-10"][0]
+    oct_pipe = next(r for r in g["sku_pipeline"] if r["period"] == "2026-10")
     assert oct_pipe["units"] == 80 and len(oct_pipe["sources"]) == 2
 
 
 def test_demand_cell_keeps_system_and_human_apart(client, seed):
     pid = setup_plan(client, seed)
     g = client.get(f"/v1/plans/{pid}/grid", headers=H(seed.actor)).json()
-    cell = [r for r in g["demand"] if r["period"] == "2026-10"][0]
+    cell = next(r for r in g["demand"] if r["period"] == "2026-10")
     assert cell == {"seller_sku": "MSKU-A", "sid": "11072", "sku": "DCC1800264G1",
                     "period": "2026-10", "system_units": 100, "expected_units": None,
                     "basis": "system", "system_extrapolated": False, "effective_units": 100}

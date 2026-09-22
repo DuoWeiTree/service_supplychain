@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import itertools
 from typing import NamedTuple
 
 
@@ -42,12 +43,12 @@ def monthly_estimate(history: list[tuple[dt.date, int]], months: int) -> list[Mo
 
     # ★ 同月两行会被下面**按位置**消费成两个月，把序列整体后移一格而毫无回声 ——
     #   与缺月同一类的静默丢失，所以同样硬失败，不许合并、不许取一个。
-    dupes = sorted({f"{d:%Y-%m}" for (d, _), (n, _) in zip(rows, rows[1:]) if d == n})
+    dupes = sorted({f"{d:%Y-%m}" for (d, _), (n, _) in itertools.pairwise(rows) if d == n})
     if dupes:
         raise ValueError(f"历史销量同月出现多行：{dupes}。按位置消费会整体错位。")
 
     missing = []
-    for prev, cur in zip(rows, rows[1:]):
+    for prev, cur in itertools.pairwise(rows):
         step = (cur[0].year - prev[0].year) * 12 + cur[0].month - prev[0].month
         for k in range(1, step):
             m = prev[0].month + k

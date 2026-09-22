@@ -13,10 +13,12 @@ from shared.pg_client import pg_conn
 
 
 def test_pg_conn_raises_if_block_swallows_an_error_and_exits_normally(business_db):
-    with pytest.raises(RuntimeError):
-        with pg_conn() as c, c.cursor() as cur:
-            with pytest.raises(psycopg2.errors.UndefinedTable):
-                cur.execute("SELECT * FROM no_such_table_zzz")
+    # ★ 这两层 with 不能按 SIM117 合并：内层的 pytest.raises 必须留在 pg_conn 块
+    #   **里面** —— 它就是「块内被吞掉的那次库层异常」本身。合进同一行的话它退化成
+    #   一个包住整块的 raises，测的就不再是收口守卫，而是「执行了一句坏 SQL」。
+    with pytest.raises(RuntimeError), pg_conn() as c, c.cursor() as cur:  # noqa: SIM117
+        with pytest.raises(psycopg2.errors.UndefinedTable):
+            cur.execute("SELECT * FROM no_such_table_zzz")
 
 
 def test_pg_conn_still_commits_normally_when_nothing_is_swallowed(wipe, seed):

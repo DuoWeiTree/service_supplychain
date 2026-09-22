@@ -25,3 +25,7 @@ packages = ["api", "api.ui", "dim", "erp", "forecast", "jobs",
 
 [tool.ruff]
 line-length = 100
+# ★ docs/prototype/ 是已冻结的老原型（CLAUDE.md：只作参考，不再修）。
+#   它贡献的 14 条 lint 谁都不许去改，留着只会让「ruff 默认是红的」变成常态，
+#   而一个默认红的门禁没有人会再去读。
+exclude = ["docs/prototype"]

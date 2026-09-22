@@ -113,12 +113,11 @@ def test_line_without_birth_event_is_refused_at_commit(wipe, seed):
       RaiseException，str(e) 把中文解码乱了（诊断字段走 PQresultErrorField，
       不受影响），与迁移本身无关，是 psycopg2 对 commit 期错误的已知解码差异。
     """
-    with pytest.raises(psycopg2.errors.RaiseException) as ei:
-        with pg_conn() as c, c.cursor() as cur:
-            _, line = mint(cur, seed.actor, seed.sku_a, birth=False)
-            # ★ 还没 commit：INSERT 本身没被拦，行已经在事务里可见了。
-            cur.execute("SELECT count(*) FROM plan_line WHERE line_id = %s", (line,))
-            assert cur.fetchone()[0] == 1, "INSERT 那一刻不该被拦——拦截应该在 commit"
+    with pytest.raises(psycopg2.errors.RaiseException) as ei, pg_conn() as c, c.cursor() as cur:
+        _, line = mint(cur, seed.actor, seed.sku_a, birth=False)
+        # ★ 还没 commit：INSERT 本身没被拦，行已经在事务里可见了。
+        cur.execute("SELECT count(*) FROM plan_line WHERE line_id = %s", (line,))
+        assert cur.fetchone()[0] == 1, "INSERT 那一刻不该被拦——拦截应该在 commit"
     assert "没有铸出事件" in ei.value.diag.message_primary
 
 
