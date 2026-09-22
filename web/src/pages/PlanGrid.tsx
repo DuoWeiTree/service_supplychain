@@ -2,66 +2,79 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { AppShell } from '../shell/AppShell';
 import { pushToast } from '../shell/toastStore';
+import { useActionError } from '../shell/useActionError';
+import { useInFlight } from '../shell/useInFlight';
 import { ErrorDetail } from '../components/ErrorDetail';
 import { Qty, type QtyValue } from '../components/Qty';
 import { api, ApiError } from '../api';
 import type { GridResponse, PlanSummary, Seller, SubmitResult } from '../api/types';
 import { buildGridModel, closingOfLast, demandAt, inventoryAt, outageCount, sumUnits } from './planGridModel';
-import { usePlanGridSaves } from './usePlanGridSaves';
+import { demandKey, mskuKey, purchaseKey, skuKey, usePlanGridSaves } from './usePlanGridSaves';
 import { SubmitPanel, type InFlightBlock } from './SubmitPanel';
+
+const SUBMIT_KEY = 'submit';
 
 export function PlanGrid() {
   const planId = Number(useParams().planId);
   const [plan, setPlan] = useState<PlanSummary | null>(null);
   const [grid, setGrid] = useState<GridResponse | null>(null);
-  const [sellers, setSellers] = useState<Seller[]>([]);
+  const [sellers, setSellers] = useState<Seller[] | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [err, setErr] = useState<ApiError | null>(null);
+  // ★ I6 裁定：三个读接口各记各的错 —— 一个挂了不许把整屏换成一个错误块。
+  //   合成一个 err 的写法会让「计划抬头取不到」把已经拿回来的网格一起吞掉。
+  const [planErr, setPlanErr] = useState<ApiError | null>(null);
+  const [gridErr, setGridErr] = useState<ApiError | null>(null);
+  const [sellersErr, setSellersErr] = useState<ApiError | null>(null);
+  // ★ T4 R2 裁定：写动作的错误不跟着 load() 走 —— 见 useActionError 的注释
+  const { err: actionErr, fail, succeed, dismiss } = useActionError();
   const [report, setReport] = useState<SubmitResult | null>(null);
   const [inFlight, setInFlight] = useState<InFlightBlock | null>(null);
-  // ★ Ruling C：提交按钮从一开始就带在飞护栏——disabled + 入口早退 + finally 复位，
-  //   与 F3（保存格子）、F4（删除货号）同一形状，防双击发出重复提交
-  const [submitting, setSubmitting] = useState(false);
+  // ★ Ruling C + I3：提交的在飞护栏与其余五处写动作共用 useInFlight
+  const { pending: submitting, run } = useInFlight();
 
-  const load = () => Promise.all([api.getPlan(planId), api.getGrid(planId), api.listSellers()])
-    .then(([p, g, s]) => { setPlan(p); setGrid(g); setSellers(s); setErr(null); })
-    .catch((e: ApiError) => setErr(e));
+  const load = async () => {
+    const [p, g, s] = await Promise.allSettled([
+      api.getPlan(planId), api.getGrid(planId), api.listSellers(),
+    ]);
+    if (p.status === 'fulfilled') { setPlan(p.value); setPlanErr(null); } else setPlanErr(p.reason as ApiError);
+    if (g.status === 'fulfilled') { setGrid(g.value); setGridErr(null); } else setGridErr(g.reason as ApiError);
+    if (s.status === 'fulfilled') { setSellers(s.value); setSellersErr(null); } else setSellersErr(s.reason as ApiError);
+  };
 
   useEffect(() => { void load(); }, [planId]);
 
-  const { pending, inputErr, saveDemand, savePurchase, removeSku, removeMsku } = usePlanGridSaves(planId, load, setErr);
+  const { pending, inputErr, saveDemand, savePurchase, removeSku, removeMsku } =
+    usePlanGridSaves(planId, load, fail, succeed);
 
-  const model = useMemo(() => (grid ? buildGridModel(grid, sellers) : null), [grid, sellers]);
-
-  if (err && grid === null) return <AppShell crumb="计划编辑"><ErrorDetail err={err} /></AppShell>;
-  if (!grid || !model || !plan) return <AppShell crumb="计划编辑"><div className="empty" /></AppShell>;
+  const model = useMemo(
+    () => (grid && sellers ? buildGridModel(grid, sellers) : null),
+    [grid, sellers],
+  );
 
   async function submit() {
-    if (submitting) return;
-    setSubmitting(true);
-    setReport(null);
-    setInFlight(null);
-    setErr(null);
-    try {
-      const r = await api.submit(planId);
-      setReport(r);
-      // ★ 不自动跳走：skipped[] 只在这一次响应里存在，成功后留在原地由人点「去版本」
-      pushToast({
-        kind: r.skipped.length === 0 ? 'ok' : 'warn',
-        text: `已提交 rev ${r.rev}，铸出 ${r.lines} 条，跳过 ${r.skipped.length} 条`,
-      });
-      await load();
-    } catch (e) {
-      const ae = e as ApiError;
-      // ★ 409 是「你没写错，但现在不行」—— 点名旧版号，下一步是去看那一版
-      if (ae.status === 409 && ae.error === 'rev_in_flight') {
-        setInFlight({ rev: Number(ae.fields['in_flight_rev']), err: ae });
-        return;
+    await run(SUBMIT_KEY, async () => {
+      setReport(null);
+      setInFlight(null);
+      try {
+        const r = await api.submit(planId);
+        setReport(r);
+        succeed(SUBMIT_KEY);
+        // ★ 不自动跳走：skipped[] 只在这一次响应里存在，成功后留在原地由人点「去版本」
+        pushToast({
+          kind: r.skipped.length === 0 ? 'ok' : 'warn',
+          text: `已提交 rev ${r.rev}，铸出 ${r.lines} 条，跳过 ${r.skipped.length} 条`,
+        });
+        await load();
+      } catch (e) {
+        const ae = e as ApiError;
+        // ★ 409 是「你没写错，但现在不行」—— 点名旧版号，下一步是去看那一版
+        if (ae.status === 409 && ae.error === 'rev_in_flight') {
+          setInFlight({ rev: Number(ae.fields['in_flight_rev']), err: ae });
+          return;
+        }
+        fail(SUBMIT_KEY, ae);
       }
-      setErr(ae);
-    } finally {
-      setSubmitting(false);
-    }
+    });
   }
 
   const toggle = (key: string) => setExpanded((s) => {
@@ -70,31 +83,44 @@ export function PlanGrid() {
 
   return (
     <AppShell crumb="计划编辑">
-      <div className="head">
-        <div className="head__main">
-          <h1>{plan.title}</h1>
-          {/* ★ F16 裁定：三段各自成句，不用 `·` 拼成一行元串 */}
-          <div className="head__meta" data-testid="head-meta">
-            <span>起始月 <b>{plan.period_start.slice(0, 7)}</b></span>
-            <span>跨 <b>{plan.months}</b> 月</span>
-            <span>负责人 <b>{plan.owner_actor}</b></span>
+      {plan && (
+        <div className="head">
+          <div className="head__main">
+            <h1>{plan.title}</h1>
+            {/* ★ F16 裁定：三段各自成句，不用 `·` 拼成一行元串 */}
+            <div className="head__meta" data-testid="head-meta">
+              <span>起始月 <b>{plan.period_start.slice(0, 7)}</b></span>
+              <span>跨 <b>{plan.months}</b> 月</span>
+              <span>负责人 <b>{plan.owner_actor}</b></span>
+            </div>
+          </div>
+          <div className="head__act">
+            {/* ★ F17 裁定：本页内部导航改用 Router 的 Link，避免整页刷新 */}
+            <Link className="btn" to={`/plans/${planId}/add`}>添加货品</Link>
+            <button type="button" className="btn btn--ghost" onClick={() => void load()}>重置</button>
+            {/* ★「提交」排在「重置」之后，与原理图一致；disabled 是双击护栏（Ruling C） */}
+            <button
+              type="button" className="btn btn--primary"
+              disabled={submitting.has(SUBMIT_KEY)} onClick={() => void submit()}
+            >
+              提交
+            </button>
+            <Link className="btn" to={`/plans/${planId}/revs`}>版本</Link>
           </div>
         </div>
-        <div className="head__act">
-          {/* ★ F17 裁定：本页内部导航改用 Router 的 Link，避免整页刷新 */}
-          <Link className="btn" to={`/plans/${planId}/add`}>添加货品</Link>
-          <button type="button" className="btn btn--ghost" onClick={() => void load()}>重置</button>
-          {/* ★「提交」排在「重置」之后，与原理图一致；disabled 是双击护栏（Ruling C） */}
-          <button type="button" className="btn btn--primary" disabled={submitting} onClick={() => void submit()}>
-            提交
-          </button>
-          <Link className="btn" to={`/plans/${planId}/revs`}>版本</Link>
-        </div>
-      </div>
+      )}
+      {planErr && <ErrorDetail err={planErr} />}
+      {!plan && !planErr && <div className="empty"><p className="empty__title">正在取计划抬头…</p></div>}
 
       <SubmitPanel planId={planId} report={report} inFlight={inFlight} />
 
-      {model.orphans.length > 0 && (
+      {gridErr && <ErrorDetail err={gridErr} />}
+      {sellersErr && <ErrorDetail err={sellersErr} />}
+      {!model && !gridErr && !sellersErr && (
+        <div className="empty"><p className="empty__title">正在取网格…</p></div>
+      )}
+
+      {model && model.orphans.length > 0 && (
         <div className="sec" data-testid="orphans">
           {model.orphans.map((o) => (
             <div className="dropline" key={`${o.kind}-${o.key}`}>
@@ -104,7 +130,7 @@ export function PlanGrid() {
         </div>
       )}
 
-      {model.blocks.map((block) => {
+      {model?.blocks.map((block) => {
         const key = `${block.sid}-${block.sku}`;
         const open = expanded.has(key);
         return (
@@ -127,7 +153,10 @@ export function PlanGrid() {
                     断货 {outageCount(block)} 个月
                   </span>
                 )}
-                <button type="button" className="btn btn--sm btn--danger" onClick={() => void removeSku(block)}>
+                <button
+                  type="button" className="btn btn--sm btn--danger"
+                  disabled={pending.has(skuKey(block))} onClick={() => void removeSku(block)}
+                >
                   删除货号
                 </button>
               </span>
@@ -198,13 +227,16 @@ export function PlanGrid() {
                         <div className="gr__code">{row.seller_sku}</div>
                         <div className="gr__sub">
                           sid {row.sid}{' '}
-                          <button type="button" className="btn btn--sm btn--ghost"
-                                  onClick={() => void removeMsku(row.seller_sku, row.sid)}>删除 msku</button>
+                          <button
+                            type="button" className="btn btn--sm btn--ghost"
+                            disabled={pending.has(mskuKey(row.seller_sku, row.sid))}
+                            onClick={() => void removeMsku(row.seller_sku, row.sid)}
+                          >删除 msku</button>
                         </div>
                       </td>
                       {model.periods.map((p) => {
                         const c = row.cells.find((x) => x.period === p);
-                        const dKey = `d:${row.seller_sku}:${row.sid}:${p}`;
+                        const dKey = demandKey(row.seller_sku, row.sid, p);
                         return (
                           <td className="cell" key={p} data-testid={`cell-${row.seller_sku}-${row.sid}-${p}`}>
                             <div className="cell__stack">
@@ -242,79 +274,85 @@ export function PlanGrid() {
         );
       })}
 
-      <div className="sheet" data-testid="purchase-block">
-        <div className="sheet__head"><span className="sheet__sku">计划采购量</span></div>
-        <div className="sheet__scroll">
-          <table className="grid">
-            <thead>
-              <tr>
-                <th className="gh--row">货号</th>
-                {model.periods.map((p) => <th key={p}>{p}</th>)}
-                <th className="gh--sum">合计</th>
-              </tr>
-            </thead>
-            <tbody>
-              {model.purchase.map((row) => (
-                <tr key={row.sku}>
-                  <td className="gr"><div className="gr__code">{row.sku}</div></td>
-                  {row.cells.map((c) => {
-                    const pKey = `p:${row.sku}:${c.period}`;
-                    return (
-                      <td className="cell" key={c.period}>
-                        <input
-                          className="g" type="text" inputMode="numeric" placeholder=""
-                          aria-label={`计划采购量 ${row.sku} ${c.period}`}
-                          defaultValue={c.planned_units === null ? '' : String(c.planned_units)}
-                          data-touched={c.planned_units === null ? undefined : '1'}
-                          disabled={pending.has(pKey)}
-                          onBlur={(e) => void savePurchase(row.sku, c.period, e.target.value)}
-                        />
-                        {inputErr[pKey] && (
-                          <div className="i-red" role="alert" data-testid={`err-purchase-${row.sku}-${c.period}`}>
-                            {inputErr[pKey]}
-                          </div>
-                        )}
-                      </td>
-                    );
-                  })}
-                  <td className="gsum"><Qty v={sumUnits(row.cells.map((c) => c.planned_units))} /></td>
+      {model && (
+        <div className="sheet" data-testid="purchase-block">
+          <div className="sheet__head"><span className="sheet__sku">计划采购量</span></div>
+          <div className="sheet__scroll">
+            <table className="grid">
+              <thead>
+                <tr>
+                  <th className="gh--row">货号</th>
+                  {model.periods.map((p) => <th key={p}>{p}</th>)}
+                  <th className="gh--sum">合计</th>
                 </tr>
-              ))}
-              {/* ★ F6/F8 裁定：货号级在途改按 model.transit（blocks ∪ purchase ∪ pipeline 的并集）铺，
-                  权威读数来自 inventory[].basis.sku_level_in_transit，只读、一件都不分摊到店铺 */}
-              {model.transit.map((row) => (
-                <tr key={`transit-${row.sku}`} data-testid={`transit-row-${row.sku}`}>
-                  <td className="gr">
-                    <div className="gr__code">{row.sku}</div>
-                    <div className="gr__sub i-pencil">货号级在途</div>
-                    <div className="gr__sub"><span className="chip chip--dim">未分摊到店铺</span></div>
-                  </td>
-                  {row.cells.map((c) => (
-                    <td className="cell" key={c.period}>
-                      <span className="i-pencil">
-                        <Qty v={c.units === null ? { kind: 'unknown' } : { kind: 'num', value: c.units }} />
-                      </span>
+              </thead>
+              <tbody>
+                {model.purchase.map((row) => (
+                  <tr key={row.sku}>
+                    <td className="gr"><div className="gr__code">{row.sku}</div></td>
+                    {row.cells.map((c) => {
+                      const pKey = purchaseKey(row.sku, c.period);
+                      return (
+                        <td className="cell" key={c.period}>
+                          <input
+                            className="g" type="text" inputMode="numeric" placeholder=""
+                            aria-label={`计划采购量 ${row.sku} ${c.period}`}
+                            defaultValue={c.planned_units === null ? '' : String(c.planned_units)}
+                            data-touched={c.planned_units === null ? undefined : '1'}
+                            disabled={pending.has(pKey)}
+                            onBlur={(e) => void savePurchase(row.sku, c.period, e.target.value)}
+                          />
+                          {inputErr[pKey] && (
+                            <div className="i-red" role="alert" data-testid={`err-purchase-${row.sku}-${c.period}`}>
+                              {inputErr[pKey]}
+                            </div>
+                          )}
+                        </td>
+                      );
+                    })}
+                    <td className="gsum"><Qty v={sumUnits(row.cells.map((c) => c.planned_units))} /></td>
+                  </tr>
+                ))}
+                {/* ★ F6/F8 裁定：货号级在途改按 model.transit（blocks ∪ purchase ∪ pipeline 的并集）铺，
+                    权威读数来自 inventory[].basis.sku_level_in_transit，只读、一件都不分摊到店铺 */}
+                {model.transit.map((row) => (
+                  <tr key={`transit-${row.sku}`} data-testid={`transit-row-${row.sku}`}>
+                    <td className="gr">
+                      <div className="gr__code">{row.sku}</div>
+                      <div className="gr__sub i-pencil">货号级在途</div>
+                      <div className="gr__sub"><span className="chip chip--dim">未分摊到店铺</span></div>
                     </td>
-                  ))}
-                  <td className="gsum">
-                    <Qty v={sumUnits(row.cells.map((c) => c.units))} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                    {row.cells.map((c) => (
+                      <td className="cell" key={c.period}>
+                        <span className="i-pencil">
+                          <Qty v={c.units === null ? { kind: 'unknown' } : { kind: 'num', value: c.units }} />
+                        </span>
+                      </td>
+                    ))}
+                    <td className="gsum">
+                      <Qty v={sumUnits(row.cells.map((c) => c.units))} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
-      </div>
+      )}
 
-      {err && <ErrorDetail err={err} />}
+      {actionErr && <ErrorDetail err={actionErr} onDismiss={dismiss} />}
     </AppShell>
   );
 }
+
+/** ★ 设计取值 · 未实测：低于这个件数就标成「快断了」的朱批。
+ *  没有任何一条口径指到这个 50 —— 它只改左边条的颜色，不参与任何一个数。 */
+const LOW_STOCK_UNITS = 50;
 
 /** ★ 状态用左边条不用徽章（10 §3.2 ③）。未知与不适用都不给 data-state —— 它们不是「没货」 */
 function stateOf(v: QtyValue): 'out' | 'low' | undefined {
   if (v.kind !== 'num') return undefined;
   if (v.value <= 0) return 'out';
-  if (v.value < 50) return 'low';
+  if (v.value < LOW_STOCK_UNITS) return 'low';
   return undefined;
 }

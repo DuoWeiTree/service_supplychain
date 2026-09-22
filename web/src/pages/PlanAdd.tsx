@@ -2,9 +2,12 @@ import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { AppShell } from '../shell/AppShell';
 import { pushToast } from '../shell/toastStore';
+import { useInFlight } from '../shell/useInFlight';
 import { ErrorDetail } from '../components/ErrorDetail';
 import { api, ApiError } from '../api';
 import type { CatalogMsku, CatalogResult, ClaimHolder } from '../api/types';
+
+const ADD_KEY = 'add';
 
 interface Outcome {
   seller_sku: string;
@@ -29,8 +32,10 @@ export function PlanAdd() {
   //   标记要留到本次会话结束，不是闪一下 toast 就没了
   const [noHistory, setNoHistory] = useState<Set<string>>(new Set());
   // ★ 与 PlanGrid.tsx 同一护栏模式（pending + disabled + 入口早退）：认领在飞时
-  //   按钮与勾选框一起置灰，防止双击对同一批 msku 发出重复请求
-  const [adding, setAdding] = useState(false);
+  //   按钮与勾选框一起置灰，防止双击对同一批 msku 发出重复请求。
+  //   I3 裁定：这一处与其余五处写动作共用 useInFlight，不再各写一份 boolean。
+  const { pending, run } = useInFlight();
+  const adding = pending.has(ADD_KEY);
 
   const key = (m: { seller_sku: string; sid: string }) => `${m.seller_sku}/${m.sid}`;
 
@@ -52,9 +57,7 @@ export function PlanAdd() {
 
   async function add() {
     // ★ 入口早退：与 PlanGrid.tsx 的 pending 早退同一形状，防双击并发发出重复认领请求
-    if (adding) return;
-    setAdding(true);
-    try {
+    await run(ADD_KEY, async () => {
       const targets = result.items.flatMap((s) => s.mskus).filter((m) => picked.has(key(m)));
       const out: Outcome[] = [];
       const freshNoHistory: string[] = [];
@@ -83,9 +86,7 @@ export function PlanAdd() {
       if (bad > 0) text += `；被拒 ${bad}`;
       if (freshNoHistory.length > 0) text += `；${freshNoHistory.length} 个没有销售历史，系统预估为空，需要人填`;
       pushToast({ kind: bad === 0 ? 'ok' : 'warn', text });
-    } finally {
-      setAdding(false);
-    }
+    });
   }
 
   const unbuildable = result.items.flatMap((s) => s.unbuildable_sellers.map((u) => ({ ...u, sku: s.sku })));

@@ -2,10 +2,14 @@ import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { AppShell } from '../shell/AppShell';
 import { pushToast } from '../shell/toastStore';
+import { useInFlight } from '../shell/useInFlight';
 import { ErrorDetail } from '../components/ErrorDetail';
 import { Modal } from '../components/Modal';
 import { api, ApiError } from '../api';
 import type { PlanDiff, RevList } from '../api/types';
+
+const CANCEL_KEY = 'cancel';
+const currentKey = (rev: number) => `current:${rev}`;
 
 interface CancelDone { cancelled: number; skippedTerminal: number; reason: string }
 
@@ -18,11 +22,9 @@ export function PlanRevs() {
   const [reason, setReason] = useState('');
   const [done, setDone] = useState<CancelDone | null>(null);
   const [err, setErr] = useState<ApiError | null>(null);
-  // ★ 与 PlanGrid.tsx/PlanAdd.tsx 同一护栏模式（pending + disabled + 入口早退）：
-  //   防双击对同一个 rev 发出重复的「设为当前使用」请求
-  const [settingCurrent, setSettingCurrent] = useState<Set<number>>(new Set());
-  // ★ 撤销弹窗同一时刻只有一个在开，用一个布尔就够，跟 PlanAdd.tsx 的 `adding` 同形
-  const [confirmingCancel, setConfirmingCancel] = useState(false);
+  // ★ 与 PlanGrid.tsx/PlanAdd.tsx 同一护栏（I3 裁定：全仓收编到 useInFlight）：
+  //   防双击对同一个 rev 发出重复的「设为当前使用」/「确认撤销」请求
+  const { pending, run } = useInFlight();
 
   const load = () => api.listRevs(planId)
     .then((r) => { setList(r); setErr(null); })
@@ -33,14 +35,13 @@ export function PlanRevs() {
 
   async function setCurrent(rev: number) {
     // ★ 入口早退：与 PlanGrid.tsx 的 pending 早退同一形状，防双击并发发出重复请求
-    if (settingCurrent.has(rev)) return;
-    setSettingCurrent((s) => new Set(s).add(rev));
-    try {
-      await api.setCurrentRev(planId, rev);
-      await load();
-      pushToast({ kind: 'ok', text: `rev ${rev} 已设为当前使用` });
-    } catch (e) { setErr(e as ApiError); }
-    finally { setSettingCurrent((s) => { const n = new Set(s); n.delete(rev); return n; }); }
+    await run(currentKey(rev), async () => {
+      try {
+        await api.setCurrentRev(planId, rev);
+        await load();
+        pushToast({ kind: 'ok', text: `rev ${rev} 已设为当前使用` });
+      } catch (e) { setErr(e as ApiError); }
+    });
   }
 
   async function compare() {
@@ -51,22 +52,23 @@ export function PlanRevs() {
 
   async function doCancel() {
     // ★ 入口早退：与 add()/saveDemand() 同一形状，防双击对同一版发出两次撤销请求
-    if (cancelling === null || confirmingCancel) return;
-    setConfirmingCancel(true);
-    try {
-      const r = await api.cancelRev(planId, cancelling, reason);
-      // ★ 先把列表刷新完，再报「done」—— done 是界面上最后落地的那个状态变化，
-      //   这样测试等到 cancel-report 出现时，重新加载已经完成，不留悬空的异步更新。
-      await load();
-      // ★ CancelRevResult 保证 skipped_terminal 与 reason 两个字段（api/ui/submit.py:213-214）——
-      //   直接读服务端回的这份，不是本地输入框此刻的值：这是「记在每条记录上」的那份理由。
-      setDone({ cancelled: r.cancelled.length, skippedTerminal: r.skipped_terminal, reason: r.reason });
-      pushToast({ kind: 'ok', text: `已撤销 ${r.cancelled.length} 条记录` });
-      setCancelling(null);
-      setReason('');
-      setErr(null);
-    } catch (e) { setErr(e as ApiError); }
-    finally { setConfirmingCancel(false); }
+    if (cancelling === null) return;
+    const rev = cancelling;
+    await run(CANCEL_KEY, async () => {
+      try {
+        const r = await api.cancelRev(planId, rev, reason);
+        // ★ 先把列表刷新完，再报「done」—— done 是界面上最后落地的那个状态变化，
+        //   这样测试等到 cancel-report 出现时，重新加载已经完成，不留悬空的异步更新。
+        await load();
+        // ★ CancelRevResult 保证 skipped_terminal 与 reason 两个字段（api/ui/submit.py:213-214）——
+        //   直接读服务端回的这份，不是本地输入框此刻的值：这是「记在每条记录上」的那份理由。
+        setDone({ cancelled: r.cancelled.length, skippedTerminal: r.skipped_terminal, reason: r.reason });
+        pushToast({ kind: 'ok', text: `已撤销 ${r.cancelled.length} 条记录` });
+        setCancelling(null);
+        setReason('');
+        setErr(null);
+      } catch (e) { setErr(e as ApiError); }
+    });
   }
 
   return (
@@ -101,7 +103,7 @@ export function PlanRevs() {
                 <td>
                   {r.rev !== list.current_rev && (
                     <button
-                      type="button" className="btn btn--sm" disabled={settingCurrent.has(r.rev)}
+                      type="button" className="btn btn--sm" disabled={pending.has(currentKey(r.rev))}
                       onClick={() => void setCurrent(r.rev)}
                     >设为当前使用</button>
                   )}{' '}
@@ -167,7 +169,7 @@ export function PlanRevs() {
           </label>
           <div className="btn-row">
             <button
-              type="button" className="btn btn--danger" disabled={confirmingCancel}
+              type="button" className="btn btn--danger" disabled={pending.has(CANCEL_KEY)}
               onClick={() => void doCancel()}
             >确认撤销</button>
             <button type="button" className="btn btn--ghost" onClick={() => setCancelling(null)}>取消</button>

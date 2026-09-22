@@ -356,6 +356,31 @@ describe('计划编辑网格', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('释放失败：服务器炸了');
   });
 
+  // ★ I3（终审）：removeSku / removeMsku 是分支里仅剩的两个无护栏写动作。
+  //   双击「删除货号」会并发跑两轮释放循环，第二轮拿 404 走进中断分支，
+  //   报出一条「移出中断」的**假失败**——第一轮其实全成功了。
+  //   与 PlanAdd/PlanRevs 同一手法：同步 fireEvent 连打两次，逼出竞态。
+  it('★ 双击「删除货号」只跑一轮释放循环（I3）', async () => {
+    const { mock } = await renderGrid();
+    const block = await screen.findByTestId('block-11072-SKU-1');
+    const btn = within(block).getByRole('button', { name: '删除货号' });
+    fireEvent.click(btn);
+    fireEvent.click(btn);
+    await screen.findByRole('status');
+    // 块里 2 个 msku：一轮 = 2 次；没有护栏时两轮 = 4 次
+    expect(mock.api.releaseClaim).toHaveBeenCalledTimes(2);
+  });
+
+  it('★ 双击「删除 msku」只发一次释放请求（I3）', async () => {
+    const { mock } = await renderGrid();
+    const block = await expand('block-11072-SKU-1');
+    const btn = within(block).getAllByRole('button', { name: '删除 msku' })[0]!;
+    fireEvent.click(btn);
+    fireEvent.click(btn);
+    await screen.findByRole('status');
+    expect(mock.api.releaseClaim).toHaveBeenCalledTimes(1);
+  });
+
   it('★ 搁浅的货号级采购格要点名，不许吞掉（F5）', async () => {
     const releaseClaim = vi.fn(async () => ({
       released: { seller_sku: 'MSKU-A', sid: '11072' },
@@ -374,8 +399,10 @@ describe('计划编辑网格', () => {
   it('计划采购量是货号级，行头不带店铺；在途单独一行只读', async () => {
     await renderGrid();
     const block = await screen.findByTestId('purchase-block');
-    // ★ 「SKU-1」现在在采购行与在途行的货号列都会出现（两行各自的 gr__code），至少要有一处
-    expect(within(block).getAllByText('SKU-1').length).toBeGreaterThanOrEqual(1);
+    // ★ T4 R4（终审）：`至少一处` 的断言连「在途行整行没画出来」都拦不住。
+    //   这一块里「SKU-1」恰好出现两次：采购行与在途行各自的 gr__code —— 钉死这个数，
+    //   少一行（在途没画）或多一行（同一货号铺了两遍）都会红
+    expect(within(block).getAllByText('SKU-1')).toHaveLength(2);
     expect(within(block).queryByText('A4Pet-US')).toBeNull();
     expect(within(block).getAllByRole('textbox')).toHaveLength(3);
 
@@ -402,6 +429,70 @@ describe('计划编辑网格', () => {
     await renderGrid();
     await screen.findByTestId('block-11072-SKU-1');
     expect(screen.queryByText('280')).toBeNull();   // 200 + 80
+  });
+
+  // ★ T4 R3（终审）：需求输入的在飞禁用此前只有采购输入那一份测试（F3），
+  //   两个输入共用 usePlanGridSaves 的同一套 key，但「共用」这件事本身要有证人
+  it('★ 期望销量输入在飞时也置灰，且第二次 blur 不再重复发请求（T4 R3）', async () => {
+    let resolvePut!: (v: DemandCell) => void;
+    const deferred = vi.fn(() => new Promise<DemandCell>((resolve) => { resolvePut = resolve; }));
+    const { mock } = await renderGrid(makeGrid(), (m) => { m.api.putDemand = deferred; });
+    const block = await expand('block-11072-SKU-1');
+    const input = within(within(block).getByTestId('cell-MSKU-A-11072-2026-10')).getByRole('textbox');
+
+    await userEvent.clear(input);
+    await userEvent.type(input, '77');
+    await userEvent.tab();
+    await waitFor(() => expect(input).toBeDisabled());
+    expect(mock.api.putDemand).toHaveBeenCalledTimes(1);
+
+    fireEvent.blur(input);
+    expect(mock.api.putDemand).toHaveBeenCalledTimes(1);
+
+    resolvePut(makeGrid().demand[0]!);
+    await waitFor(() => expect(input).not.toBeDisabled());
+  });
+
+  // ★ T4 R2（终审）：load() 成功时顺手清 err 会把用户还没看见的那条错误抹掉。
+  //   删货号失败 → 改一格 → 保存成功触发重载 → 「释放失败」无声无息地没了。
+  //   现在写动作的错误只由两件事收掉：同一个动作下次成功，或人点「关闭」。
+  it('★ 删除失败留下的错误不被随后一次成功保存抹掉（T4 R2）', async () => {
+    const releaseClaim = vi.fn(async () => { throw new ApiError(500, 'release_failed', '释放失败：服务器炸了'); });
+    await renderGrid(makeGrid(), (m) => { m.api.releaseClaim = releaseClaim; });
+    const block = await expand('block-11072-SKU-1');
+    await userEvent.click(within(block).getAllByRole('button', { name: '删除 msku' })[0]!);
+    expect(await screen.findByRole('alert')).toHaveTextContent('释放失败：服务器炸了');
+
+    // 另一个动作成功（保存一格）→ 会触发 load()，但那条释放错误必须还在
+    const input = within(within(block).getByTestId('cell-MSKU-A-11072-2026-11')).getByRole('textbox');
+    await userEvent.clear(input);
+    await userEvent.type(input, '12');
+    await userEvent.tab();
+    await waitFor(() => expect(within(block).getByTestId('cell-MSKU-A-11072-2026-11'))
+      .toBeInTheDocument());
+    expect(screen.getByRole('alert')).toHaveTextContent('释放失败：服务器炸了');
+
+    // 人明确关掉才收 —— 这是唯一另一条出路
+    await userEvent.click(screen.getByRole('button', { name: '关闭' }));
+    expect(screen.queryByText('释放失败：服务器炸了')).toBeNull();
+  });
+
+  // ★ I6（终审）：三个读接口各记各的错，一个挂了不许把整屏换成一个错误块
+  it('★ 取店铺挂了，计划抬头照常出数（I6）', async () => {
+    await renderGrid(makeGrid(), (m) => {
+      m.api.listSellers = async () => { throw new ApiError(503, 'sellers_unavailable', '店铺镜像取不到'); };
+    });
+    expect(await screen.findByRole('heading', { name: '2026 Q4 销售计划' })).toBeInTheDocument();
+    expect(await screen.findByText('503 sellers_unavailable')).toBeInTheDocument();
+  });
+
+  it('★ 取计划抬头挂了，网格照常出数（I6）', async () => {
+    await renderGrid(makeGrid(), (m) => {
+      m.api.getPlan = async () => { throw new ApiError(500, 'plan_head_failed', '抬头取不到'); };
+    });
+    expect(await screen.findByTestId('purchase-block')).toBeInTheDocument();
+    expect(screen.getByTestId('block-11072-SKU-1')).toBeInTheDocument();
+    expect(screen.getByText('500 plan_head_failed')).toBeInTheDocument();
   });
 
   it('★ 对不上的行要点名；数据干净时丢弃区不渲染（不是渲染一个空框）', async () => {

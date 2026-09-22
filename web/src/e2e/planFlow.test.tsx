@@ -43,7 +43,7 @@ describe('判据① · 建 → 加货品 → 填两种量 → 提交 → 铸出 
     await screen.findByTestId('plan-list');
     await userEvent.click(screen.getByRole('button', { name: '新建销售计划' }));
     await userEvent.type(screen.getByLabelText('标题'), '2027 Q1 销售计划');
-    await userEvent.click(screen.getByRole('button', { name: '创建' }));
+    await userEvent.click(screen.getByRole('button', { name: '新建' }));
     // ★ brief 一稿断言 `nav-to` testid：那是 OpsHome.test.tsx 里"裸 MemoryRouter、无 <Routes>"
     //   场景下才会停留可见的产物——这里接了真的 <Routes>，create() 里 `navigate()` 一响，
     //   OpsHome 本身就整个卸载，`nav-to` 从未来得及停留在 DOM 里（查证：跑出来是超时，

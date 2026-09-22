@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { AppShell } from '../shell/AppShell';
 import { pushToast } from '../shell/toastStore';
+import { useActionError } from '../shell/useActionError';
+import { useInFlight } from '../shell/useInFlight';
 import { ErrorDetail } from '../components/ErrorDetail';
 import { Qty } from '../components/Qty';
 import { api, ApiError } from '../api';
@@ -10,6 +12,8 @@ import type { DashboardPlans, PlanList, PlanSummary, UnsubmittedBoard } from '..
 /** ★ 阶段 A 只渲染够得着的三态（00e:45）。挡的地方只有这一处 —— 接口照样返回全集（S-20） */
 export const STAGE_A_VISIBLE = ['未提交', '已提交', '已撤销'] as const;
 
+const CREATE_KEY = 'create';
+
 type SortKey = 'period' | 'title' | 'state';
 
 export function OpsHome() {
@@ -17,8 +21,13 @@ export function OpsHome() {
   const [list, setList] = useState<PlanList | null>(null);
   const [board, setBoard] = useState<UnsubmittedBoard | null>(null);
   const [dash, setDash] = useState<DashboardPlans | null>(null);
-  const [err, setErr] = useState<ApiError | null>(null);
-  const [navTo, setNavTo] = useState<string | null>(null);
+  // ★ I6 裁定：三个端点各记各的错。合成一个 err 的写法会在 dashboardPlans 挂掉时
+  //   把已经成功返回的计划列表与两栏待办一起换成一个错误块
+  const [listErr, setListErr] = useState<ApiError | null>(null);
+  const [boardErr, setBoardErr] = useState<ApiError | null>(null);
+  const [dashErr, setDashErr] = useState<ApiError | null>(null);
+  const { err: createErr, fail, succeed, dismiss } = useActionError();
+  const { pending, run } = useInFlight();
 
   const [fPeriod, setFPeriod] = useState('');
   const [fTitle, setFTitle] = useState('');
@@ -28,10 +37,13 @@ export function OpsHome() {
   const [creating, setCreating] = useState(false);
 
   useEffect(() => {
-    // ★ 三个接口一起拉：计数与列表来自不同端点，分开拉会出现「计数说 3 张、列表 2 张」
-    Promise.all([api.listPlans({ archived: false }), api.dashboardUnsubmitted(), api.dashboardPlans()])
-      .then(([l, b, d]) => { setList(l); setBoard(b); setDash(d); })
-      .catch((e: ApiError) => setErr(e));
+    // ★ 三个接口一起拉，但逐个收：计数与列表来自不同端点，一个挂了另外两个照样出数
+    void Promise.allSettled([api.listPlans({ archived: false }), api.dashboardUnsubmitted(), api.dashboardPlans()])
+      .then(([l, b, d]) => {
+        if (l.status === 'fulfilled') setList(l.value); else setListErr(l.reason as ApiError);
+        if (b.status === 'fulfilled') setBoard(b.value); else setBoardErr(b.reason as ApiError);
+        if (d.status === 'fulfilled') setDash(d.value); else setDashErr(d.reason as ApiError);
+      });
   }, []);
 
   const finished = useMemo(() => (list?.plans ?? []).filter((p) => p.state === '已完结'), [list]);
@@ -48,29 +60,32 @@ export function OpsHome() {
       : stateLabel(a).localeCompare(stateLabel(b)));
   }, [list, fPeriod, fTitle, fRev, fState, sort]);
 
-  const counts: Record<(typeof STAGE_A_VISIBLE)[number], number> = {
-    未提交: board?.never_submitted.length ?? 0,
-    已提交: dash?.counts['已提交'] ?? 0,
-    已撤销: (list?.plans ?? []).filter((p) => p.state === '已撤销').length,
+  // ★ 三个数来自三个端点。取不到的那个给「未知」，不落回 0 ——
+  //   「一张都没有」与「这个数取不到」长得一模一样才是最坏的
+  const counts: Record<(typeof STAGE_A_VISIBLE)[number], number | null> = {
+    未提交: board === null ? null : board.never_submitted.length,
+    已提交: dash === null ? null : dash.counts['已提交'],
+    已撤销: list === null ? null : list.plans.filter((p) => p.state === '已撤销').length,
   };
 
   async function create(form: HTMLFormElement) {
     const data = new FormData(form);
-    try {
-      const { plan_id } = await api.createPlan({
-        title: String(data.get('title')),
-        period_start: `${String(data.get('period_start'))}-01`,  // ★ 建计划的入参是月初日期
-        months: Number(data.get('months')),
-      });
-      setNavTo(`/plans/${plan_id}`);
-      navigate(`/plans/${plan_id}`);
-    } catch (e) {
-      setErr(e as ApiError);
-      pushToast({ kind: 'fail', text: (e as ApiError).hint });
-    }
+    // ★ I3：双击建出两张同名计划，而阶段 A 没有删计划的界面入口（S-27）—— 只能去归档
+    await run(CREATE_KEY, async () => {
+      try {
+        const { plan_id } = await api.createPlan({
+          title: String(data.get('title')),
+          period_start: `${String(data.get('period_start'))}-01`,  // ★ 建计划的入参是月初日期
+          months: Number(data.get('months')),
+        });
+        succeed(CREATE_KEY);
+        navigate(`/plans/${plan_id}`);
+      } catch (e) {
+        fail(CREATE_KEY, e as ApiError);
+        pushToast({ kind: 'fail', text: (e as ApiError).hint });
+      }
+    });
   }
-
-  if (err && list === null) return <AppShell crumb="我的计划"><ErrorDetail err={err} /></AppShell>;
 
   return (
     <AppShell crumb="我的计划">
@@ -84,11 +99,14 @@ export function OpsHome() {
       <div className="sec counts" data-testid="counts">
         {STAGE_A_VISIBLE.map((k) => (
           <div className="kpi" key={k}>
-            <span className="kpi__n">{counts[k]}</span>
+            <span className="kpi__n">
+              {counts[k] === null ? <Qty v={{ kind: 'unknown' }} /> : counts[k]}
+            </span>
             <span className="kpi__d">{k}</span>
           </div>
         ))}
       </div>
+      {dashErr && <ErrorDetail err={dashErr} />}
       {/* ★ 接口自报哪些态阶段 A 够不着；测试拿它当靶子，前端不硬编码这份名单 */}
       <span data-testid="unreachable" hidden>
         {JSON.stringify(dash?.scope_note.unreachable_in_stage_a ?? [])}
@@ -102,18 +120,18 @@ export function OpsHome() {
             <input className="inp" name="period_start" type="month" defaultValue="2026-10" required /></label>
           <label className="field"><span className="lbl">跨 N 月</span>
             <input className="inp inp--tiny" name="months" type="number" min={1} max={24} defaultValue={3} required /></label>
-          <button type="submit" className="btn btn--primary">创建</button>
+          <button type="submit" className="btn btn--primary" disabled={pending.has(CREATE_KEY)}>新建</button>
           <button type="button" className="btn btn--ghost" onClick={() => setCreating(false)}>取消</button>
         </form>
       )}
-      {navTo && <span data-testid="nav-to" hidden>{navTo}</span>}
+      {createErr && <ErrorDetail err={createErr} onDismiss={dismiss} />}
 
       <div className="sec twocol">
         <div className="panel">
           <div className="panel__head">未提交</div>
           <div className="panel__body" data-testid="never-submitted">
             {(board?.never_submitted ?? []).map((p) => (
-              <div key={p.plan_id}><a href={`/plans/${p.plan_id}`}>{p.title}</a></div>
+              <div key={p.plan_id}><Link to={`/plans/${p.plan_id}`}>{p.title}</Link></div>
             ))}
             {board?.never_submitted.length === 0 && <div className="todos__empty">无</div>}
           </div>
@@ -123,7 +141,7 @@ export function OpsHome() {
           <div className="panel__body" data-testid="changed-since-submit">
             {(board?.changed_since_submit ?? []).map((p) => (
               <div key={p.plan_id}>
-                <a href={`/plans/${p.plan_id}`}>{p.title}</a>{' '}
+                <Link to={`/plans/${p.plan_id}`}>{p.title}</Link>{' '}
                 <span className="muted">rev {p.since_rev}</span>
               </div>
             ))}
@@ -131,6 +149,7 @@ export function OpsHome() {
           </div>
         </div>
       </div>
+      {boardErr && <ErrorDetail err={boardErr} />}
 
       <div className="bar">
         <label className="bar__grp"><span className="bar__lbl">周期</span>
@@ -150,27 +169,32 @@ export function OpsHome() {
           </select></label>
       </div>
 
-      <div className="table-scroll">
-        <table className="table table--dense" data-testid="plan-list">
-          <thead><tr><th>周期</th><th>计划名</th><th className="r">版本</th><th>状态</th><th>详情</th></tr></thead>
-          <tbody>
-            {visible.map((p) => (
-              <tr key={p.plan_id}>
-                <td>{p.period_start.slice(0, 7)} · {p.months} 月</td>
-                <td>{p.title}</td>
-                <td className="r">{p.state_rev === null ? <Qty v={{ kind: 'unknown' }} /> : p.state_rev}</td>
-                <td><span className="chip chip--dim">{stateLabel(p)}</span></td>
-                <td><a href={`/plans/${p.plan_id}`}>打开</a></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {/* ★ 挡掉的两侧都要有个数 —— 「没有」和「被我藏了」长得一样 */}
-      <div className="muted mt" data-testid="hidden-rows">
-        已完结 {finished.length} 张 · 已归档 {list?.excluded.archived ?? 0} 张 不在列表
-      </div>
-      {err && <ErrorDetail err={err} />}
+      {listErr ? <ErrorDetail err={listErr} /> : (
+        <>
+          <div className="table-scroll">
+            <table className="table table--dense" data-testid="plan-list">
+              <thead><tr><th>周期</th><th>计划名</th><th className="r">版本</th><th>状态</th><th>详情</th></tr></thead>
+              <tbody>
+                {visible.map((p) => (
+                  <tr key={p.plan_id}>
+                    {/* ★ I7 裁定：不用 `A · B` 拼元串 —— 表头已经说了这一列是周期 */}
+                    <td>{p.period_start.slice(0, 7)} <span className="muted">跨 {p.months} 月</span></td>
+                    <td>{p.title}</td>
+                    <td className="r">{p.state_rev === null ? <Qty v={{ kind: 'unknown' }} /> : p.state_rev}</td>
+                    <td><span className="chip chip--dim">{stateLabel(p)}</span></td>
+                    <td><Link to={`/plans/${p.plan_id}`}>打开</Link></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {/* ★ 挡掉的两侧都要有个数 —— 「没有」和「被我藏了」长得一样 */}
+          <div className="muted mt" data-testid="hidden-rows">
+            <span>已完结 {finished.length} 张不在列表</span>{' '}
+            <span>已归档 {list?.excluded.archived ?? 0} 张不在列表</span>
+          </div>
+        </>
+      )}
     </AppShell>
   );
 }

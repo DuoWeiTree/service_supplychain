@@ -1,10 +1,13 @@
-import { describe, expect, it } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { OpsHome } from './OpsHome';
+import type { CreatePlanInput } from '../api/types';
 
 const renderHome = () => render(<MemoryRouter><OpsHome /></MemoryRouter>);
+
+afterEach(() => { vi.resetModules(); vi.doUnmock('../api'); });
 
 describe('运营首页', () => {
   it('只渲染够得着的三态，其余★不渲染（不是 0）', async () => {
@@ -58,12 +61,88 @@ describe('运营首页', () => {
     expect(within(table).queryByText('2026 Q4 销售计划')).toBeNull();
   });
 
+  // ★ M14（终审）：原断言打在 `nav-to` 这个只为测试存在的隐藏 span 上 ——
+  //   接上真 `<Routes>` 后 OpsHome 整个卸载，它在生产里永远不会渲染，
+  //   于是那条断言证明的是「组件设过一个 state 变量」，不是「导航发生了」。
+  //   证人必须在现场：改成在 `<Routes>` 下断言真的走到了目标页。
   it('新建销售计划 → 走到网格', async () => {
-    renderHome();
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <Routes>
+          <Route path="/" element={<OpsHome />} />
+          <Route path="/plans/:planId" element={<h1>网格</h1>} />
+        </Routes>
+      </MemoryRouter>,
+    );
     await screen.findByTestId('plan-list');
     await userEvent.click(screen.getByRole('button', { name: '新建销售计划' }));
     await userEvent.type(screen.getByLabelText('标题'), '2027 Q1 销售计划');
-    await userEvent.click(screen.getByRole('button', { name: '创建' }));
-    expect(await screen.findByTestId('nav-to')).toHaveTextContent('/plans/5');
+    await userEvent.click(screen.getByRole('button', { name: '新建' }));
+    expect(await screen.findByRole('heading', { name: '网格' })).toBeInTheDocument();
+  });
+
+  // ★ I6（终审）：三个端点各记各的错。合成一个 err 的写法会在 dashboardPlans 挂掉时
+  //   把已经成功返回的计划列表与两栏待办一起换成一个错误块
+  it('★ 看板计数挂了，计划列表与两栏待办照常出数（I6）', async () => {
+    vi.resetModules();
+    const { ApiError } = await import('../api/client');
+    const { createMockApi } = await import('../api/mock');
+    const real = createMockApi();
+    vi.doMock('../api', () => ({
+      ApiError,
+      api: {
+        ...real,
+        dashboardPlans: async () => { throw new ApiError(503, 'dashboard_unavailable', '看板取不到'); },
+      },
+    }));
+    const { OpsHome: Fresh } = await import('./OpsHome');
+    render(<MemoryRouter><Fresh /></MemoryRouter>);
+
+    expect(await screen.findByTestId('plan-list')).toHaveTextContent('2026 Q4 销售计划');
+    expect(screen.getByTestId('never-submitted')).toHaveTextContent('2026 Q4 销售计划');
+    expect(screen.getByText('503 dashboard_unavailable')).toBeInTheDocument();
+    // ★ 取不到的那个计数给「未知」，不落回 0 —— 「一张都没有」与「取不到」不许同形
+    const submitted = within(screen.getByTestId('counts')).getByText('已提交').closest('.kpi')!;
+    expect(within(submitted as HTMLElement).getByText('—')).toBeInTheDocument();
+  });
+
+  // ★ I3（终审）：create 是分支里仅剩的第三个无护栏写动作。阶段 A 没有删计划的
+  //   界面入口（S-27），双击建出的第二张同名计划只能去归档 —— 所以护栏要在入口早退，
+  //   不是只置灰按钮。与 PlanAdd/PlanRevs 同一手法：同步 fireEvent 连打两次。
+  it('★ 双击「新建」只建一张计划（I3）', async () => {
+    vi.resetModules();
+    const { ApiError } = await import('../api/client');
+    const created: CreatePlanInput[] = [];
+    vi.doMock('../api', () => ({
+      ApiError,
+      api: {
+        listPlans: async () => ({ plans: [], excluded: { archived: 0 } }),
+        dashboardUnsubmitted: async () => ({ never_submitted: [], changed_since_submit: [] }),
+        dashboardPlans: async () => ({
+          counts: {}, scope_note: { unreachable_in_stage_a: [], never_submitted_excluded: 0 },
+        }),
+        createPlan: async (input: CreatePlanInput) => {
+          created.push(input);
+          return { plan_id: 9 };
+        },
+      },
+    }));
+    const { OpsHome: Fresh } = await import('./OpsHome');
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <Routes>
+          <Route path="/" element={<Fresh />} />
+          <Route path="/plans/:planId" element={<h1>网格</h1>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    await screen.findByTestId('plan-list');
+    await userEvent.click(screen.getByRole('button', { name: '新建销售计划' }));
+    await userEvent.type(screen.getByLabelText('标题'), '2027 Q1 销售计划');
+    const submit = screen.getByRole('button', { name: '新建' });
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+    expect(await screen.findByRole('heading', { name: '网格' })).toBeInTheDocument();
+    expect(created).toHaveLength(1);
   });
 });
