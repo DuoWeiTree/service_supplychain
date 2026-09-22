@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { AppShell } from '../shell/AppShell';
+import { pushToast } from '../shell/toastStore';
 import { ErrorDetail } from '../components/ErrorDetail';
 import { Qty, type QtyValue } from '../components/Qty';
 import { api, ApiError } from '../api';
-import type { GridResponse, PlanSummary, Seller } from '../api/types';
+import type { GridResponse, PlanSummary, Seller, SubmitResult } from '../api/types';
 import { buildGridModel, closingOfLast, demandAt, inventoryAt, outageCount, sumUnits } from './planGridModel';
 import { usePlanGridSaves } from './usePlanGridSaves';
+import { SubmitPanel, type InFlightBlock } from './SubmitPanel';
 
 export function PlanGrid() {
   const planId = Number(useParams().planId);
@@ -15,6 +17,11 @@ export function PlanGrid() {
   const [sellers, setSellers] = useState<Seller[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [err, setErr] = useState<ApiError | null>(null);
+  const [report, setReport] = useState<SubmitResult | null>(null);
+  const [inFlight, setInFlight] = useState<InFlightBlock | null>(null);
+  // ★ Ruling C：提交按钮从一开始就带在飞护栏——disabled + 入口早退 + finally 复位，
+  //   与 F3（保存格子）、F4（删除货号）同一形状，防双击发出重复提交
+  const [submitting, setSubmitting] = useState(false);
 
   const load = () => Promise.all([api.getPlan(planId), api.getGrid(planId), api.listSellers()])
     .then(([p, g, s]) => { setPlan(p); setGrid(g); setSellers(s); setErr(null); })
@@ -28,6 +35,34 @@ export function PlanGrid() {
 
   if (err && grid === null) return <AppShell crumb="计划编辑"><ErrorDetail err={err} /></AppShell>;
   if (!grid || !model || !plan) return <AppShell crumb="计划编辑"><div className="empty" /></AppShell>;
+
+  async function submit() {
+    if (submitting) return;
+    setSubmitting(true);
+    setReport(null);
+    setInFlight(null);
+    setErr(null);
+    try {
+      const r = await api.submit(planId);
+      setReport(r);
+      // ★ 不自动跳走：skipped[] 只在这一次响应里存在，成功后留在原地由人点「去版本」
+      pushToast({
+        kind: r.skipped.length === 0 ? 'ok' : 'warn',
+        text: `已提交 rev ${r.rev}，铸出 ${r.lines} 条，跳过 ${r.skipped.length} 条`,
+      });
+      await load();
+    } catch (e) {
+      const ae = e as ApiError;
+      // ★ 409 是「你没写错，但现在不行」—— 点名旧版号，下一步是去看那一版
+      if (ae.status === 409 && ae.error === 'rev_in_flight') {
+        setInFlight({ rev: Number(ae.fields['in_flight_rev']), err: ae });
+        return;
+      }
+      setErr(ae);
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   const toggle = (key: string) => setExpanded((s) => {
     const n = new Set(s); n.has(key) ? n.delete(key) : n.add(key); return n;
@@ -49,9 +84,15 @@ export function PlanGrid() {
           {/* ★ F17 裁定：本页内部导航改用 Router 的 Link，避免整页刷新 */}
           <Link className="btn" to={`/plans/${planId}/add`}>添加货品</Link>
           <button type="button" className="btn btn--ghost" onClick={() => void load()}>重置</button>
+          {/* ★「提交」排在「重置」之后，与原理图一致；disabled 是双击护栏（Ruling C） */}
+          <button type="button" className="btn btn--primary" disabled={submitting} onClick={() => void submit()}>
+            提交
+          </button>
           <Link className="btn" to={`/plans/${planId}/revs`}>版本</Link>
         </div>
       </div>
+
+      <SubmitPanel planId={planId} report={report} inFlight={inFlight} />
 
       {model.orphans.length > 0 && (
         <div className="sec" data-testid="orphans">
