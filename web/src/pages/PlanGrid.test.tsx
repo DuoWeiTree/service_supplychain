@@ -167,7 +167,7 @@ describe('计划编辑网格', () => {
     await renderGrid();
     const block = await expand('block-11072-SKU-1');
     expect(block).toHaveAttribute('data-open', 'true');
-    const cell = within(block).getByTestId('cell-MSKU-A-2026-10');
+    const cell = within(block).getByTestId('cell-MSKU-A-11072-2026-10');
     expect(within(cell).getByTestId('system')).toHaveClass('i-pencil');
     expect(within(cell).getByRole('textbox')).toHaveValue('180');
     expect(within(cell).queryByTestId('closing-sku')).toBeNull();
@@ -178,16 +178,16 @@ describe('计划编辑网格', () => {
   it('★ 外推的预估带朱批角标 —— 外推 ≠ 预估（F15：可及名称用 aria-label）', async () => {
     await renderGrid();
     const block = await expand('block-11072-SKU-1');
-    const marker = within(within(block).getByTestId('cell-MSKU-A-2026-12')).getByLabelText('系统外推');
+    const marker = within(within(block).getByTestId('cell-MSKU-A-11072-2026-12')).getByLabelText('系统外推');
     expect(marker).toHaveClass('ext');
     expect(marker).toHaveTextContent('外');
-    expect(within(within(block).getByTestId('cell-MSKU-A-2026-10')).queryByLabelText('系统外推')).toBeNull();
+    expect(within(within(block).getByTestId('cell-MSKU-A-11072-2026-10')).queryByLabelText('系统外推')).toBeNull();
   });
 
   it('★ 空 = 未知：输入框空着，不显示 0，placeholder 也不是 "0"', async () => {
     await renderGrid();
     const block = await expand('block-11072-SKU-1');
-    const input = within(within(block).getByTestId('cell-MSKU-A-2026-12')).getByRole('textbox');
+    const input = within(within(block).getByTestId('cell-MSKU-A-11072-2026-12')).getByRole('textbox');
     expect(input).toHaveValue('');
     expect(input).toHaveAttribute('placeholder', '');
     expect(within(within(block).getByTestId('sku-cell-2026-12')).getByTestId('closing-sku')).toHaveTextContent('—');
@@ -244,7 +244,7 @@ describe('计划编辑网格', () => {
   it('填期望销量 → 保存并当场刷新店铺·货号行的库存预估', async () => {
     await renderGrid();
     const block = await expand('block-11072-SKU-1');
-    const input = within(within(block).getByTestId('cell-MSKU-A-2026-10')).getByRole('textbox');
+    const input = within(within(block).getByTestId('cell-MSKU-A-11072-2026-10')).getByRole('textbox');
     await userEvent.clear(input);
     await userEvent.type(input, '300');
     await userEvent.tab();
@@ -256,7 +256,7 @@ describe('计划编辑网格', () => {
   it('★ 清空一个 msku 的输入 → 整格未知（不是把它当 0 再把别的 msku 加进来）', async () => {
     await renderGrid();
     const block = await expand('block-11072-SKU-1');
-    const input = within(within(block).getByTestId('cell-MSKU-B-2026-10')).getByRole('textbox');
+    const input = within(within(block).getByTestId('cell-MSKU-B-11072-2026-10')).getByRole('textbox');
     await userEvent.clear(input);
     await userEvent.tab();
     // ★ 断言必须钉在 closing 本身，不能只查整个 td 的文本 —— 同一格里的「预估」行也会因为
@@ -290,12 +290,12 @@ describe('计划编辑网格', () => {
   it('★ 期望销量输入走同一套校验（F1/F2 裁定：两个输入共用 parseUnits）', async () => {
     const { mock } = await renderGrid();
     const block = await expand('block-11072-SKU-1');
-    const input = within(within(block).getByTestId('cell-MSKU-A-2026-11')).getByRole('textbox');
+    const input = within(within(block).getByTestId('cell-MSKU-A-11072-2026-11')).getByRole('textbox');
     await userEvent.clear(input);
     await userEvent.type(input, '-3');
     fireEvent.blur(input);
     expect(mock.api.putDemand).not.toHaveBeenCalled();
-    expect(await within(block).findByTestId('err-MSKU-A-2026-11')).toHaveTextContent('-3');
+    expect(await within(block).findByTestId('err-MSKU-A-11072-2026-11')).toHaveTextContent('-3');
   });
 
   it('★ PUT 在飞时输入框置灰，且第二次 blur 不再重复发请求（F3）', async () => {
@@ -449,7 +449,7 @@ describe('计划编辑网格', () => {
       </MemoryRouter>,
     );
     const block = await expand('block-11094-DCC1800264G1');
-    const marker = within(within(block).getByTestId('cell-MSKU-C-2026-12')).getByLabelText('系统外推');
+    const marker = within(within(block).getByTestId('cell-MSKU-C-11094-2026-12')).getByLabelText('系统外推');
     expect(marker).toHaveTextContent('外');
   });
 });
