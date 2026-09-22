@@ -44,7 +44,60 @@
 | 状态码 | 400 = 你写错了 · 409 = 冲突与闸（你没写错，但现在不行）· 422 = 语义不合法（非法迁移）· 503 = 镜像陈旧 |
 | 未声明查询参数 | ★ 一律 400 `unknown_query_param` |
 
-★ **错误形状为什么不照邻居**：`service_social` 用的是 `{"error","hint"}`，而 `08` §0 是**本服务自己的**约定且更严（`detail` 必须点名哪几行），前端与 `jxd_ai_ops` 都按它写。机制照邻居（`HTTPException` 式的一次抛出），形状按 `08`。
+### ★★ 接口形状（team-lead 2026-09-22 裁定，前端计划已按它写）
+
+> 逐条落成 Pydantic 模型与契约测试。**字段名、类型、null 语义都不许自己改** ——
+> mock 与真 API 对不上，判据⑥ 直接挂，而前端是照这份形状先写完的。
+
+```jsonc
+// 1. GET /v1/plans/{id}/grid
+{
+  "demand":   [{"seller_sku": "", "sid": "", "period": "YYYY-MM",
+                "system_units": 0, "expected_units": null,
+                "basis": "human|system|unknown"}],                       // S-15
+  "purchase": [{"sku": "", "period": "YYYY-MM", "planned_units": null}],
+  // ★ 键是 (sku, sid)：可售库存的粒度是[店铺, 货号]（02 §3.1a）
+  "inventory":[{"sku": "", "sid": "", "period": "YYYY-MM",
+                "onhand": 0,                    // 该格期初：首月是在仓事实，其后是上月期末
+                "inbound": null,                // ★ 阶段 A 恒 null，见下方 a
+                "closing": 0,                   // ★ = onhand − demand
+                "basis": {"source": "ch", "as_of": "YYYY-MM-DD",
+                          "includes_plan_purchase": false,   // ★ 恒 false 且必须显式返回
+                          "demand": 0,
+                          "reason": "no_seller_attribution", // ★ 恒定：在途没有店铺归属
+                          "closing_reason": null,            // null | not_applicable | unknown_demand
+                          "sku_level_in_transit": 0,         // 该货号该月在途总量（只展示，不分摊）
+                          "sources": []}}],
+  // ★ 采购在途是货号级，不分摊到任何店铺 —— 单列在这一块，不进 inventory[].inbound
+  "sku_pipeline":[{"sku": "", "period": "YYYY-MM", "units": 0,
+                   "sources": [], "no_seller_attribution": true}]
+}
+// 2. POST /v1/plans/{id}/submit → {"rev": 1, "lines": 3, "skipped": [{"sku","period","reason"}]}
+//    旧版在流转 → 409 {"error": "rev_in_flight", "hint": "...", "in_flight_rev": 1}
+//    ★ code 一律 rev_in_flight，不用 another_rev_in_flight
+// 3. GET /v1/plans        每项含 "state": string|null —— ★ 从未提交返回 null，不是「已撤销」
+// 4. GET /v1/catalog/skus?q=
+//    不给 q      → 200 {"need_query": true, "items": []}
+//    命中超上限  → {"truncated": true, "limit": N, "items": [...]}
+//    每个 item 含 "unbuildable_sellers": [{"sid","reason":"no_channel_code"}]（06 §1.2 点名）
+//                 "claimed_by": {"plan_id","title"} | null（P11：被占用的行不过滤）
+// 5. GET /v1/sellers      每项 {"seller_id","name","market","has_fba","platform"}
+// 6. 写请求读 x-actor；不在 actor 表或 active=false → 400 {"error":"unknown_actor","hint":"..."}
+// 7. POST /v1/plans/{id}/archive 与 /v1/plan-lines* —— 阶段 A 无界面入口，后端照 08 实现
+```
+
+★ **错误形状为什么不按 `08` §0**：`08` §0 写 `{code,message,detail}`，而上面第 2/6 条裁定的是
+`{error, hint, …}`（与邻居 `service_social` 同形），前端已照它写。**两份形状只能有一份生效** ——
+本计划全部按裁定的 `{error, hint, …}`，点名字段**平铺在顶层**（`in_flight_rev` / `unknown` / `allowed`），
+`08` §0 的订正记在「要交回文档」表里。
+
+★ **三处必须说明的落地细节**（裁定的类型允许，但口径得定死，否则会长成两个真相）：
+
+| # | 细节 | 怎么落 |
+|---|---|---|
+| a | ★ **`inventory[].inbound` 阶段 A 恒 `null`**，`basis.reason` 恒 `"no_seller_attribution"` | 采购在途是**货号级**的，而「计划内只有一家店认领」**不等于**它是这批货的唯一消费者 —— 同一货号可能被本计划之外的店铺在卖。按单店给全额是**分摊假设**，与平摊一样是发明分配规则（C4 禁）。总量只展示不分摊：`basis.sku_level_in_transit` 与 `sku_pipeline[]` |
+| b | `closing` = `onhand − demand`；★ `no_seller_attribution` **只让 `inbound` 为 null，不让 `closing` 为 null** | 所以 `closing` 的 null 只有两种成因，记在**另一个字段** `basis.closing_reason ∈ {null, "not_applicable"（该店无 FBA，02 §3.1a）, "unknown_demand"（M-8 留空且向后传染）}`。★ 与 `basis.reason` 分开是刻意的：`reason` 现在恒定，两件事挤进一个字段，就会出现「这一格既未知又恒定」而只说得出一件 |
+| c | `unbuildable_sellers` 在阶段 A **恒为空** | 「店铺没挂渠道」的渠道码不在阶段 A 的 `seller` 镜像里。字段照裁定返回，**并由一条测试盯住 `seller` 表的列**：渠道码列一出现，测试转红，逼实现真正的判据（而不是让这个数组永远空着没人发现） |
 
 ### ★ 阶段 A 明确不做（每条带出处 —— 写下来是为了让「没做」和「做漏了」长得不一样）
 
@@ -80,7 +133,7 @@ service_supplychain/
 │   └── projection.py                   inventory_projection
 ├── rules/                              ★ 纯判据，只用标准库
 │   ├── effective.py                    effective_demand（human / system / unknown）
-│   ├── submit.py                       select_submittable（Minted / Skipped）
+│   ├── submit.py                       select_submittable（Line / Skipped）
 │   └── digest.py                       content_digest（S-13）
 ├── dim/
 │   ├── source.py                       Source 协议 + InTransit + 异常
@@ -91,7 +144,7 @@ service_supplychain/
 │   └── ui/
 │       ├── errors.py                   ApiError + handler + PG 约束名 → 错误码
 │       ├── deps.py                     actor · declared_params · fresh_mirrors
-│       ├── catalog.py                  GET /v1/catalog/skus
+│       ├── catalog.py                  GET /v1/catalog/skus · GET /v1/sellers
 │       ├── plans.py                    建 / 列 / 认领 / 网格 / 两种 PUT / archive
 │       ├── submit.py                   提交 / revs / current / diff / 整版撤销
 │       ├── lines.py                    GET /v1/plan-lines · 单条撤销
@@ -861,7 +914,9 @@ def seed(wipe):
         seller_a="11072", seller_b="11094", seller_nofba="90001",
         sku_a="DCC1800264G1", sku_b="A4P-TOY-002",
         msku_a=("MSKU-A", "11072"), msku_b=("MSKU-B", "11072"),
-        msku_c=("MSKU-C", "11094"), msku_nofba=("MSKU-W", "90001"),
+        msku_c=("MSKU-C", "11094"),          # ★ 与 msku_a 同货号、不同店 → 在途无归属那一形态
+        msku_d=("MSKU-D", "11072"),          # ★ sku_b 在有 FBA 的店 → closing 有真数那一形态
+        msku_nofba=("MSKU-W", "90001"),      # ★ 无 FBA → 不适用那一形态
     )
     with pg_conn() as c, c.cursor() as cur:
         cur.executemany("INSERT INTO actor (actor_id, name, active) VALUES (%s, %s, %s)",
@@ -876,7 +931,8 @@ def seed(wipe):
                         [(ns.sku_a, "猫爬架"), (ns.sku_b, "逗猫棒")])
         cur.executemany("INSERT INTO msku_bridge VALUES (%s, %s, %s, now())",
                         [(*ns.msku_a, ns.sku_a), (*ns.msku_b, ns.sku_a),
-                         (*ns.msku_c, ns.sku_a), (*ns.msku_nofba, ns.sku_b)])
+                         (*ns.msku_c, ns.sku_a), (*ns.msku_d, ns.sku_b),
+                         (*ns.msku_nofba, ns.sku_b)])
     return ns
 ```
 
@@ -2024,13 +2080,14 @@ git commit -m "feat(forecast): 移植系统预估（含外推标记）与库存�
 
 **Files:**
 - Create: `dim/source.py` · `dim/fixture_source.py` · `dim/ch_source.py`
-- Create: `tests/fixtures/sales_history.csv` · `tests/fixtures/fba_onhand.csv` · `tests/fixtures/purchase_in_transit.csv`
+- Create: `tests/fixtures/sales_history.csv` · `tests/fixtures/fba_onhand.csv` · `tests/fixtures/purchase_in_transit.csv` · `tests/fixtures/as_of.txt`
 - Create: `tests/test_dim_fixture.py`
 
 **Interfaces:**
-- Consumes: `forecast.projection.InboundSource`（转换时用）
+- Consumes: 无（dim 只产出事实，转换成推演入参的是 api 层）
 - Produces:
   - `dim.source`: `Source`（Protocol）· `InTransit(period: str, units: int, ref: str)`
+  - `Source.as_of() -> date`（★ 事实的采集日，进 grid 的 `basis.as_of`）
   - `Source.monthly_sales_history(seller_sku: str, sid: str, months: int) -> list[tuple[date, int]]`
   - `Source.onhand_available(seller_sku: str, sid: str) -> int | None`（★ `None` = 不适用）
   - `Source.purchase_in_transit(sku: str) -> list[InTransit]`
@@ -2050,6 +2107,9 @@ MSKU-B,11072,2026-08,12
 MSKU-B,11072,2026-09,9
 MSKU-C,11094,2026-08,40
 MSKU-C,11094,2026-09,44
+MSKU-D,11072,2026-07,7
+MSKU-D,11072,2026-08,8
+MSKU-D,11072,2026-09,6
 ```
 
 `tests/fixtures/fba_onhand.csv`（★ 末行的空 units 是「不适用」，不是 0）：
@@ -2059,6 +2119,7 @@ seller_sku,sid,units
 MSKU-A,11072,300
 MSKU-B,11072,0
 MSKU-C,11094,25
+MSKU-D,11072,40
 MSKU-W,90001,
 ```
 
@@ -2069,6 +2130,14 @@ sku,period,units,ref
 DCC1800264G1,2026-10,50,PO-2026-0912
 DCC1800264G1,2026-10,30,PO-2026-0915
 DCC1800264G1,2026-11,120,PO-2026-0920
+A4P-TOY-002,2026-10,60,PO-2026-0918
+```
+
+`tests/fixtures/as_of.txt` —— ★ 这批事实是哪一天的。CH 是采集副本不是实时领星，
+一个数不带 as_of 就回答不了「它是关于什么的」：
+
+```
+2026-09-21
 ```
 
 `tests/test_dim_fixture.py`：
@@ -2118,10 +2187,16 @@ def test_unknown_sku_has_no_in_transit_rows(s):
     assert s.purchase_in_transit("NO-SUCH") == []
 
 
+def test_as_of_travels_with_the_facts(s):
+    """★ CH 是采集副本不是实时领星 —— 不带 as_of 的数回答不了「它是关于什么的」。"""
+    assert s.as_of() == dt.date(2026, 9, 21)
+
+
 def test_ch_source_is_explicitly_not_implemented():
     """★ 空实现会让「该做没做」和「本来就不用做」长得一模一样（规则五）。"""
     ch = ChSource()
-    for call in (lambda: ch.monthly_sales_history("MSKU-A", "11072", 3),
+    for call in (lambda: ch.as_of(),
+                 lambda: ch.monthly_sales_history("MSKU-A", "11072", 3),
                  lambda: ch.onhand_available("MSKU-A", "11072"),
                  lambda: ch.purchase_in_transit("DCC1800264G1")):
         with pytest.raises(NotImplementedError) as ei:
@@ -2157,6 +2232,10 @@ class InTransit(NamedTuple):
 
 
 class Source(Protocol):
+    def as_of(self) -> dt.date:
+        """这批事实是哪一天的。★ 必须跟着数一起出去（grid 的 basis.as_of）——
+        一个数要能回答「它是关于什么的」，而 CH 是采集副本，不是实时领星。"""
+
     def monthly_sales_history(self, seller_sku: str, sid: str, months: int
                               ) -> list[tuple[dt.date, int]]:
         """最近若干个完整自然月的实际销量，按月升序。★ 没有行就返回空列表 —— 不补 0。"""
@@ -2197,6 +2276,9 @@ class FixtureSource:
     def _rows(self, name: str) -> list[dict]:
         with open(self.root / name, newline="", encoding="utf-8") as f:
             return list(csv.DictReader(f))
+
+    def as_of(self) -> dt.date:
+        return dt.date.fromisoformat((self.root / "as_of.txt").read_text("utf-8").strip())
 
     def monthly_sales_history(self, seller_sku: str, sid: str, months: int
                               ) -> list[tuple[dt.date, int]]:
@@ -2240,6 +2322,9 @@ _MSG = ("CH 取数属阶段 B：请按 08 §2.3 实现（商品目录 LEFT JOIN 
 
 
 class ChSource:
+    def as_of(self) -> dt.date:
+        raise NotImplementedError(_MSG)
+
     def monthly_sales_history(self, seller_sku: str, sid: str, months: int
                               ) -> list[tuple[dt.date, int]]:
         raise NotImplementedError(_MSG)
@@ -2254,7 +2339,7 @@ class ChSource:
 - [ ] **Step 4: 跑测试，确认它绿**
 
 Run: `python -m pytest tests/test_dim_fixture.py tests/test_layering.py -q`
-Expected: PASS（6 + 9 项）
+Expected: PASS（7 + 9 项）
 
 - [ ] **Step 5: 提交**
 
@@ -2275,7 +2360,7 @@ git commit -m "feat(dim): Source 协议 + FixtureSource（空串读成 None）+ 
 - Consumes: 无（纯判据，L1：只用标准库）
 - Produces:
   - `rules.effective`: `Effective(units: int | None, basis: str)`（`basis ∈ {"human","system","unknown"}`）· `effective_demand(system_units, expected_units) -> Effective`
-  - `rules.submit`: `PurchaseCell(sku, period, planned_units)` · `DemandCell(seller_sku, sid, sku, period, system_units, expected_units)` · `Minted(sku, period, total_units, demand_by_seller, demand_at_submit)` · `Skipped(sku, period, reason)` · `select_submittable(purchase_cells, demand_cells, claimed) -> tuple[list[Minted], list[Skipped]]`
+  - `rules.submit`: `PurchaseCell(sku, period, planned_units)` · `DemandCell(seller_sku, sid, sku, period, system_units, expected_units)` · `Line(sku, period, total_units, demand_by_seller, demand_at_submit)` · `Skipped(sku, period, reason)` · `select_submittable(purchase_cells, demand_cells, claimed) -> tuple[list[Line], list[Skipped]]`
   - `rules.digest`: `content_digest(purchase_cells, demand_cells) -> str`
 
 - [ ] **Step 1: 写失败的测试**
@@ -2312,13 +2397,13 @@ def test_effective_value_keeps_both_the_number_and_where_it_came_from():
 
 
 def test_mints_one_line_per_purchase_cell_with_units():
-    minted, skipped = select_submittable(
+    lines, skipped = select_submittable(
         [PurchaseCell(SKU, OCT, 500)],
         [dcell(A, OCT, 100, 120), dcell(B, OCT, 40, None)],
         claimed={A, B})
     assert skipped == []
-    assert len(minted) == 1
-    m = minted[0]
+    assert len(lines) == 1
+    m = lines[0]
     assert (m.sku, m.period, m.total_units) == (SKU, OCT, 500)
     assert m.demand_by_seller["11072"]["units"] == 120
     assert m.demand_by_seller["11072"]["basis"] == "human"
@@ -2329,19 +2414,19 @@ def test_mints_one_line_per_purchase_cell_with_units():
 
 def test_zero_or_empty_purchase_is_skipped_with_its_reason():
     """★ 坑①：总量 0 的记录 0 = 0 恒真，一诞生就会自动跳到「已确认」。"""
-    minted, skipped = select_submittable(
+    lines, skipped = select_submittable(
         [PurchaseCell(SKU, OCT, 0), PurchaseCell(SKU, NOV, None)],
         [dcell(A, OCT, 100, 120), dcell(A, NOV, 100, 120)], claimed={A})
-    assert minted == []
+    assert lines == []
     assert [(s.period, s.reason) for s in skipped] == [
         (OCT, "zero_purchase"), (NOV, "zero_purchase")]
 
 
 def test_purchase_cell_without_any_claimed_msku_is_skipped():
     """释放了认领之后，货号级的采购格子还在 —— 它铸不出记录，必须点名。"""
-    minted, skipped = select_submittable(
+    lines, skipped = select_submittable(
         [PurchaseCell(SKU, OCT, 500)], [], claimed=set())
-    assert minted == []
+    assert lines == []
     assert [(s.period, s.reason) for s in skipped] == [(OCT, "no_claimed_msku")]
 
 
@@ -2354,22 +2439,22 @@ def test_structural_reason_wins_over_zero():
 
 def test_all_unknown_demand_is_frozen_as_null_not_zero():
     """★ 空 ≠ 0：一个都没填时，冻结值必须是 null + unknown，而不是 0。"""
-    minted, _ = select_submittable(
+    lines, _ = select_submittable(
         [PurchaseCell(SKU, OCT, 500)], [dcell(A, OCT, None, None)], claimed={A})
-    entry = minted[0].demand_by_seller["11072"]
+    entry = lines[0].demand_by_seller["11072"]
     assert entry["units"] is None and entry["basis"] == "unknown"
-    assert minted[0].demand_at_submit == 0, "合计只加得起来的那部分"
+    assert lines[0].demand_at_submit == 0, "合计只加得起来的那部分"
     assert entry["mskus"] == [{"seller_sku": "MSKU-A", "units": None, "basis": "unknown"}]
 
 
 def test_a_sellers_basis_is_the_weakest_of_its_mskus():
     """同一店铺下一个 msku 人填、一个没填 —— basis 取最弱的那档。
     取最强的那档，会把「有一半是猜的」说成「人填的」。"""
-    minted, _ = select_submittable(
+    lines, _ = select_submittable(
         [PurchaseCell(SKU, OCT, 500)],
         [dcell(A, OCT, 10, 20), dcell(("MSKU-B", "11072"), OCT, None, None)],
         claimed={A, ("MSKU-B", "11072")})
-    entry = minted[0].demand_by_seller["11072"]
+    entry = lines[0].demand_by_seller["11072"]
     assert entry["basis"] == "unknown" and entry["units"] == 20
 
 
@@ -2461,7 +2546,7 @@ class DemandCell(NamedTuple):
     expected_units: int | None
 
 
-class Minted(NamedTuple):
+class Line(NamedTuple):
     sku: str
     period: str
     total_units: int
@@ -2479,7 +2564,7 @@ def select_submittable(
     purchase_cells: list[PurchaseCell],
     demand_cells: list[DemandCell],
     claimed: set[tuple[str, str]],
-) -> tuple[list[Minted], list[Skipped]]:
+) -> tuple[list[Line], list[Skipped]]:
     """`claimed` = 该计划当前仍有效的 (seller_sku, sid) 集合。"""
     stray = sorted({(c.seller_sku, c.sid) for c in demand_cells} - claimed)
     if stray:
@@ -2487,7 +2572,7 @@ def select_submittable(
         raise ValueError(f"期望销量格子指向未认领的 msku：{stray}")
 
     skus_with_claim = {c.sku for c in demand_cells}
-    minted: list[Minted] = []
+    lines: list[Line] = []
     skipped: list[Skipped] = []
 
     for pc in sorted(purchase_cells):
@@ -2515,9 +2600,9 @@ def select_submittable(
             if all(m["units"] is None for m in slot["mskus"]):
                 slot["units"] = None        # ★ 一个都没有 → null，不是 0
         total_demand = sum(s["units"] or 0 for s in by_sid.values())
-        minted.append(Minted(pc.sku, pc.period, pc.planned_units, by_sid, total_demand))
+        lines.append(Line(pc.sku, pc.period, pc.planned_units, by_sid, total_demand))
 
-    return minted, skipped
+    return lines, skipped
 ```
 
 `rules/digest.py`：
@@ -2578,8 +2663,8 @@ git commit -m "feat(rules): 生效值带 basis · 提交闸的两种跳过理由
 - Consumes: `shared.pg_client.pg_conn` / `timed` / `pg_error_fields`；`shared.config.freshness`
 - Produces:
   - `api.create_app() -> FastAPI`
-  - `api.ui.errors`: `ApiError(status, code, message, detail=None)` · `translate(e: psycopg2.Error) -> ApiError | None` · `CONSTRAINT_ERRORS: dict[str, tuple[str, int, str]]`
-  - `api.ui.deps`: `actor(request) -> str` · `declared(request, *names) -> None` · `require_fresh_mirrors() -> None`
+  - `api.ui.errors`: `ApiError(status, error, hint, **fields)` · `translate(e: psycopg2.Error) -> ApiError | None` · `CONSTRAINT_ERRORS: dict[str, tuple[str, int, str]]`
+  - `api.ui.deps`: `actor(request) -> str`（写请求必填）· `actor_optional(request) -> str | None`（读请求：给了就必须有效）· `declared(request, *names) -> None` · `require_fresh_mirrors() -> None`
   - 路由：`GET /health`（★ 不加前缀）· `GET /v1/readiness`
   - fixture `client`：`TestClient(create_app(), raise_server_exceptions=False)`
 
@@ -2600,34 +2685,41 @@ def test_health_has_no_prefix(client):
     assert client.get("/v1/health").status_code == 404
 
 
-def test_error_shape_is_code_message_detail(client, seed):
+def test_error_shape_is_error_hint_plus_named_fields(client, seed):
     r = client.get("/v1/plans", headers={"x-actor": seed.actor}, params={"stat": "x"})
     assert r.status_code == 400
     body = r.json()
-    assert set(body) == {"code", "message", "detail"}
-    assert body["code"] == "unknown_query_param"
-    # ★ detail 必须点名是哪几个 —— 只说「参数有问题」，前端只能猜
-    assert body["detail"]["unknown"] == ["stat"]
-    assert "state" in body["detail"]["declared"]
+    assert body["error"] == "unknown_query_param" and body["hint"]
+    # ★ 点名字段平铺在顶层：只说「参数有问题」，前端只能猜
+    assert body["unknown"] == ["stat"]
+    assert "state" in body["declared"]
 
 
-def test_missing_actor_header_is_400(client):
-    r = client.get("/v1/plans")
+def test_a_write_without_the_actor_header_is_400(client, seed):
+    """★ 裁定第 6 条：写请求读 x-actor。"""
+    r = client.post("/v1/plans", json={"title": "t", "period_start": "2026-10-01"})
     assert r.status_code == 400 and r.json()["error"] == "unknown_actor"
     assert r.json()["header"] == "x-actor"
 
 
-def test_unknown_actor_is_400_and_names_it(client, seed):
+def test_a_read_without_the_actor_header_is_allowed(client, seed):
+    """★ 读不强制 —— 但给了就必须有效，见下一条。
+    「给了个错名字却照常返回全量」比「不让读」更坏：人会以为自己看的是那个人的视角。"""
+    assert client.get("/v1/plans").status_code == 200
+
+
+def test_a_read_with_a_bogus_actor_is_400_and_names_it(client, seed):
     r = client.get("/v1/plans", headers={"x-actor": "ghost"})
     assert r.status_code == 400 and r.json()["actor"] == "ghost"
 
 
 def test_inactive_actor_is_400_and_says_it_is_inactive(client, seed):
-    """★ 「查无此人」与「这个人停用了」共用一个 code，但 detail 必须分得开 ——
+    """★ 「查无此人」与「这个人停用了」共用一个 error，但点名字段必须分得开 ——
     不分开，停用的人会以为自己打错了名字。"""
-    r = client.get("/v1/plans", headers={"x-actor": seed.actor_inactive})
+    r = client.post("/v1/plans", json={"title": "t", "period_start": "2026-10-01"},
+                    headers={"x-actor": seed.actor_inactive})
     assert r.status_code == 400
-    assert r.json()["detail"] == {"actor": seed.actor_inactive, "active": False}
+    assert (r.json()["actor"], r.json()["active"]) == (seed.actor_inactive, False)
 
 
 def test_stale_mirror_refuses_service_with_503(client, seed):
@@ -2640,7 +2732,7 @@ def test_stale_mirror_refuses_service_with_503(client, seed):
 
 def test_empty_mirror_is_stale_not_fresh(client, wipe):
     """★ 空表的 max(refreshed_at) 是 NULL —— 当成新鲜就是拿空表在服务。"""
-    r = client.get("/v1/plans", headers={"x-actor": "anyone"})
+    r = client.get("/v1/plans")
     assert r.status_code == 503
     assert {m["mirror"] for m in r.json()["stale"]} == {
         "sku_catalog", "msku_bridge", "seller", "warehouse"}
@@ -2677,7 +2769,7 @@ Expected: FAIL —— `ImportError: cannot import name 'create_app' from 'api'`
 ```python
 """错误形状与「库层拒绝 → 错误码」的翻译。
 
-★ 形状按 08 §0：{"code","message","detail"}，detail 必须点名是哪几行。
+★ 形状按 team-lead 2026-09-22 裁定：{"error", "hint", …点名字段平铺在顶层}。
 ★ 翻译靠 constraint_name 而不是 str(e)：两种冲突的 message 都长得像一句话，
   真凶只在 pgcode / constraint_name 里。
 """
@@ -2693,12 +2785,21 @@ log = logging.getLogger("scm.api")
 
 
 class ApiError(Exception):
-    def __init__(self, status: int, code: str, message: str, detail: dict | None = None):
-        self.status, self.code, self.message, self.detail = status, code, message, detail or {}
-        super().__init__(f"{status} {code}: {message}")
+    """响应体 = {"error": …, "hint": …, **fields}。
+
+    ★ 点名字段平铺在顶层而不是塞进 detail：前端按 `body.in_flight_rev` 取值，
+      多一层嵌套就是多一处会对不上的约定。
+    """
+
+    def __init__(self, status: int, error: str, hint: str, fields: dict | None = None):
+        self.status, self.error, self.hint, self.fields = status, error, hint, fields or {}
+        super().__init__(f"{status} {error}: {hint}")
+
+    def body(self) -> dict:
+        return {"error": self.error, "hint": self.hint, **self.fields}
 
 
-#: constraint / index 名 → (code, status, message)
+#: constraint / index 名 → (error, status, hint)
 CONSTRAINT_ERRORS: dict[str, tuple[str, int, str]] = {
     "msku_claim_one_active_idx": ("msku_already_claimed", 409,
                                   "该 msku 已被另一张尚未下单的计划占用"),
@@ -2725,8 +2826,8 @@ def translate(e: psycopg2.Error) -> ApiError | None:
     if hit is None:
         log.warning("untranslated pg error %s", f)
         return None
-    code, status, msg = hit
-    return ApiError(status, code, msg, {"constraint": f["constraint"], "pg_detail": f["detail"]})
+    error, status, hint = hit
+    return ApiError(status, error, hint, {"constraint": f["constraint"], "pg_detail": f["detail"]})
 ```
 
 `api/ui/deps.py`：
@@ -2770,8 +2871,20 @@ def require_fresh_mirrors() -> None:
                        {"stale": stale, "max_age_hours": max_age.total_seconds() / 3600})
 
 
+def _check_actor(who: str) -> str:
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT active FROM actor WHERE actor_id = %s", (who,))
+        row = cur.fetchone()
+    if row is None:
+        raise ApiError(400, "unknown_actor", "x-actor 不在 actor 表里", {"actor": who})
+    if not row[0]:
+        # ★ 与「查无此人」分得开：停用的人会以为自己打错了名字
+        raise ApiError(400, "unknown_actor", "该操作人已停用", {"actor": who, "active": False})
+    return who
+
+
 def actor(request: Request) -> str:
-    """操作人来自 x-actor，必须存在且在职。
+    """写请求的操作人（裁定第 6 条）。必须存在且在职。
 
     ★ 校验的是「这个人存不存在」，不是权限（权限在上层，08 §0）——
       不校验的话，plan.owner_actor 的外键会以 500 的形态在半路炸。
@@ -2779,14 +2892,16 @@ def actor(request: Request) -> str:
     who = (request.headers.get("x-actor") or "").strip()
     if not who:
         raise ApiError(400, "unknown_actor", "缺少 x-actor 头", {"header": "x-actor"})
-    with pg_conn() as c, c.cursor() as cur:
-        cur.execute("SELECT active FROM actor WHERE actor_id = %s", (who,))
-        row = cur.fetchone()
-    if row is None:
-        raise ApiError(400, "unknown_actor", "x-actor 不在 actor 表里", {"actor": who})
-    if not row[0]:
-        raise ApiError(400, "unknown_actor", "该操作人已停用", {"actor": who, "active": False})
-    return who
+    return _check_actor(who)
+
+
+def actor_optional(request: Request) -> str | None:
+    """读请求的操作人：不给可以，★ 给了就必须有效。
+
+    给了个错名字却照常返回全量，比不让读更坏 —— 人会以为自己看的是那个人的视角。
+    """
+    who = (request.headers.get("x-actor") or "").strip()
+    return _check_actor(who) if who else None
 ```
 
 `api/ui/system.py`：
@@ -2797,7 +2912,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
 
-from api.ui.deps import actor, declared
+from api.ui.deps import actor_optional, declared
 from shared.pg_client import business_schema, pg_conn
 
 health_router = APIRouter()
@@ -2810,7 +2925,7 @@ def health():
 
 
 @system_router.get("/readiness")
-def readiness(request: Request, who: str = Depends(actor)):
+def readiness(request: Request, who: str | None = Depends(actor_optional)):
     declared(request)
     with pg_conn() as c, c.cursor() as cur:
         cur.execute("SELECT mirror, refreshed_at FROM v_mirror_freshness ORDER BY mirror")
@@ -2863,18 +2978,14 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(ApiError)
     async def _api_error(request: Request, exc: ApiError):
-        return JSONResponse(status_code=exc.status,
-                            content={"code": exc.code, "message": exc.message,
-                                     "detail": exc.detail})
+        return JSONResponse(status_code=exc.status, content=exc.body())
 
     @app.exception_handler(psycopg2.Error)
     async def _pg_error(request: Request, exc: psycopg2.Error):
         translated = translate(exc)
         if translated is None:
             raise exc     # ★ 认不出的约束不许被兜成业务错误，让它以 500 冒出来
-        return JSONResponse(status_code=translated.status,
-                            content={"code": translated.code, "message": translated.message,
-                                     "detail": translated.detail})
+        return JSONResponse(status_code=translated.status, content=translated.body())
 
     app.include_router(system.health_router)
     app.include_router(system.system_router, prefix="/v1")
@@ -2986,7 +3097,7 @@ def test_bad_months_and_bad_start_are_400_with_their_own_codes(client, seed):
 def test_list_reports_derived_overall_state_not_a_column(client, seed):
     mk(client, seed)
     rows = client.get("/v1/plans", headers={"x-actor": seed.actor}).json()["plans"]
-    assert rows[0]["overall"] is None, "★ 从未提交 → 没有状态，不是 0、不是已撤销"
+    assert rows[0]["state"] is None, "★ 从未提交 → 没有状态，不是 0、不是已撤销"
 
 
 def test_filters_are_declared_and_typos_are_400(client, seed):
@@ -3072,7 +3183,7 @@ import datetime as dt
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
-from api.ui.deps import actor, declared, require_fresh_mirrors
+from api.ui.deps import actor, actor_optional, declared, require_fresh_mirrors
 from api.ui.errors import ApiError
 from shared.pg_client import pg_conn, timed
 
@@ -3103,7 +3214,7 @@ def create_plan(request: Request, body: dict, who: str = Depends(actor)):
 
 
 @router.get("/plans")
-def list_plans(request: Request, who: str = Depends(actor)):
+def list_plans(request: Request, who: str | None = Depends(actor_optional)):
     declared(request, "state", "owner", "archived")
     q = request.query_params
     want_archived = q.get("archived", "false").lower() == "true"
@@ -3120,10 +3231,12 @@ def list_plans(request: Request, who: str = Depends(actor)):
            f" WHERE {' AND '.join(where)} ORDER BY p.plan_id DESC")
     with pg_conn() as c, c.cursor() as cur:
         cur.execute(sql, args)
+        # ★ 对外的字段名是 state（裁定第 3 条）；库里的列叫 overall，
+        #   两边同名反而会让人以为它是张表上的字段 —— 它是派生的
         plans = [{"plan_id": r[0], "title": r[1], "period_start": r[2].isoformat(),
                   "months": r[3], "owner_actor": r[4],
                   "archived_at": r[5].isoformat() if r[5] else None,
-                  "overall": r[6], "state_rev": r[7]} for r in cur.fetchall()]
+                  "state": r[6], "state_rev": r[7]} for r in cur.fetchall()]
         # ★ 统计被丢掉的那一侧：不说「挡掉了几张」，人只会觉得计划凭空少了
         cur.execute("SELECT count(*) FROM plan WHERE archived_at IS NOT NULL")
         archived = 0 if want_archived else cur.fetchone()[0]
@@ -3165,7 +3278,8 @@ git commit -m "feat(api): 建计划与计划列表；整体状态由 rank 表 + 
 **Interfaces:**
 - Consumes: Task 10 的 `router`；`forecast.estimate.monthly_estimate`；`dim.fixture_source.FixtureSource`
 - Produces:
-  - `GET /v1/catalog/skus?q=&limit=` → `{"need_query":bool,"matched":int,"truncated":bool,"rows":[{sku,name,mskus:[{seller_sku,sid,seller_name,selectable,claimed_by:{plan_id,actor}|null}]}]}`
+  - `GET /v1/catalog/skus?q=&limit=` → `{"need_query":bool,"matched":int,"truncated":bool,"limit":int,"items":[{sku,name,unbuildable_sellers:[],claimed_by:{plan_id,title}|null,claimed_by_plans:[…],mskus:[{seller_sku,sid,seller_name,selectable,claimed_by:{plan_id,title,actor}|null}]}]}`（裁定第 4 条）
+  - `GET /v1/sellers` → `{"sellers":[{seller_id,name,market,has_fba,platform}]}`（裁定第 5 条）
   - `POST /v1/plans/{plan_id}/claims` body `{"seller_sku","sid"}` → `{"claimed":…,"seeded":{"demand_cells":n,"purchase_cells":m},"no_history":[…]}`；409 `msku_already_claimed` 点名占用方
   - `DELETE /v1/plans/{plan_id}/claims/{seller_sku}/{sid}` → `{"released":…,"dropped_cells":[…]}`
   - `api.ui.plans.SOURCE`：模块级 `Source` 实例（阶段 A = `FixtureSource(tests/fixtures)`），Task 12 复用
@@ -3195,9 +3309,9 @@ def mk(client, seed, title="10 月计划"):
 def test_catalog_without_a_query_deliberately_returns_nothing(client, seed):
     """★ P11：不给条件 → 故意不返回，且必须与「查不到」长得不一样。"""
     r = client.get("/v1/catalog/skus", headers=H(seed.actor)).json()
-    assert r["need_query"] is True and r["rows"] == [] and r["matched"] == 0
+    assert r["need_query"] is True and r["items"] == [] and r["matched"] == 0
     miss = client.get("/v1/catalog/skus", params={"q": "ZZZ"}, headers=H(seed.actor)).json()
-    assert miss["need_query"] is False and miss["rows"] == [] and miss["matched"] == 0
+    assert miss["need_query"] is False and miss["items"] == [] and miss["matched"] == 0
 
 
 def test_claimed_rows_stay_in_the_table_marked(client, seed):
@@ -3206,18 +3320,55 @@ def test_claimed_rows_stay_in_the_table_marked(client, seed):
     p1 = mk(client, seed)
     client.post(f"/v1/plans/{p1}/claims",
                 json={"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]}, headers=H(seed.actor))
-    rows = client.get("/v1/catalog/skus", params={"q": seed.sku_a},
-                      headers=H(seed.actor)).json()["rows"]
-    m = [x for x in rows[0]["mskus"] if x["seller_sku"] == seed.msku_a[0]][0]
+    items = client.get("/v1/catalog/skus", params={"q": seed.sku_a},
+                       headers=H(seed.actor)).json()["items"]
+    m = [x for x in items[0]["mskus"] if x["seller_sku"] == seed.msku_a[0]][0]
     assert m["selectable"] is False and m["claimed_by"]["plan_id"] == p1
+    assert items[0]["claimed_by"] == {"plan_id": p1, "title": "10 月计划"}
 
 
-def test_truncation_is_reported(client, seed):
-    r = client.get("/v1/catalog/skus", params={"q": "", "limit": 1}, headers=H(seed.actor))
-    assert r.status_code == 200
+def test_a_sku_held_by_two_plans_does_not_pick_one(client, seed):
+    """★ 两张计划各占该货号的一部分 msku 时，货号级 claimed_by 挑一个显示就是编。
+    留 null，名单放 claimed_by_plans —— 「一个答案说不清」要看得出来。"""
+    p1, p2 = mk(client, seed), mk(client, seed, title="另一张")
+    client.post(f"/v1/plans/{p1}/claims",
+                json={"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]}, headers=H(seed.actor))
+    client.post(f"/v1/plans/{p2}/claims",
+                json={"seller_sku": seed.msku_c[0], "sid": seed.msku_c[1]}, headers=H(seed.actor))
+    item = client.get("/v1/catalog/skus", params={"q": seed.sku_a},
+                      headers=H(seed.actor)).json()["items"][0]
+    assert item["claimed_by"] is None
+    assert [x["plan_id"] for x in item["claimed_by_plans"]] == [p1, p2]
+
+
+def test_unbuildable_sellers_is_empty_for_a_stated_reason(client, seed):
+    """★ 这个数组在阶段 A 恒空，成因是 seller 镜像里没有渠道码列。
+
+    盯住列本身：渠道码一进表，这条测试转红，逼 catalog 长出真的判据（06 §1.2）——
+    否则它会永远空着，而「没有建不出的店」和「我们根本没判」长得一模一样。
+    """
+    from shared.pg_client import pg_conn
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT column_name FROM information_schema.columns"
+                    " WHERE table_schema = current_schema() AND table_name = 'seller'")
+        cols = {r[0] for r in cur.fetchall()}
+    assert "channel_code" not in cols, "seller 有渠道码了 —— 去实现 unbuildable_sellers"
+    item = client.get("/v1/catalog/skus", params={"q": seed.sku_a},
+                      headers=H(seed.actor)).json()["items"][0]
+    assert item["unbuildable_sellers"] == []
+
+
+def test_truncation_is_reported_with_the_limit(client, seed):
     body = client.get("/v1/catalog/skus", params={"q": "MSKU", "limit": 1},
                       headers=H(seed.actor)).json()
-    assert body["truncated"] is True and len(body["rows"]) == 1
+    assert body["truncated"] is True and body["limit"] == 1 and len(body["items"]) == 1
+
+
+def test_sellers_dimension_carries_market_and_has_fba(client, seed):
+    rows = client.get("/v1/sellers", headers=H(seed.actor)).json()["sellers"]
+    wm = [r for r in rows if r["seller_id"] == seed.seller_nofba][0]
+    assert wm == {"seller_id": seed.seller_nofba, "name": "A4Pet-WM", "market": "US",
+                  "has_fba": False, "platform": "walmart"}
 
 
 def test_claim_seeds_both_grids_and_names_mskus_without_history(client, seed):
@@ -3322,7 +3473,7 @@ def test_reclaiming_in_the_same_plan_revives_the_row(client, seed):
 - [ ] **Step 2: 跑测试，确认它红**
 
 Run: `python -m pytest tests/test_api_claims.py -q`
-Expected: FAIL —— `/v1/catalog/skus` 404（10 项全红）
+Expected: FAIL —— `/v1/catalog/skus` 404（12 项全红）
 
 - [ ] **Step 3: 实现目录**
 
@@ -3338,7 +3489,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
 
-from api.ui.deps import actor, declared, require_fresh_mirrors
+from api.ui.deps import actor_optional, declared, require_fresh_mirrors
 from api.ui.errors import ApiError
 from shared.pg_client import pg_conn
 
@@ -3349,7 +3500,7 @@ DEFAULT_LIMIT, MAX_LIMIT = 200, 500
 
 
 @router.get("/catalog/skus")
-def catalog_skus(request: Request, who: str = Depends(actor)):
+def catalog_skus(request: Request, who: str | None = Depends(actor_optional)):
     declared(request, "q", "limit")
     q = (request.query_params.get("q") or "").strip()
     try:
@@ -3359,36 +3510,66 @@ def catalog_skus(request: Request, who: str = Depends(actor)):
                        {"got": request.query_params.get("limit")}) from None
     if not q:
         # ★ 与「查不到」分得开：need_query=true，前端据此提示输入条件
-        return {"need_query": False if q else True, "matched": 0, "truncated": False, "rows": []}
+        return {"need_query": True, "matched": 0, "truncated": False, "limit": limit,
+                "items": []}
 
     like = f"%{q}%"
     with pg_conn() as c, c.cursor() as cur:
         cur.execute(
             "SELECT b.sku, s.name, b.seller_sku, b.sid, se.name,"
-            "       cl.plan_id, cl.claimed_by"
+            "       cl.plan_id, cl.claimed_by, p.title"
             "  FROM msku_bridge b"
             "  JOIN sku_catalog s ON s.sku = b.sku"
             "  JOIN seller se ON se.seller_id = b.sid"
             "  LEFT JOIN msku_claim cl"
             "    ON cl.seller_sku = b.seller_sku AND cl.sid = b.sid"
             "   AND cl.released_at IS NULL AND NOT cl.plan_ordered"
+            "  LEFT JOIN plan p ON p.plan_id = cl.plan_id"
             " WHERE b.sku ILIKE %s OR s.name ILIKE %s OR b.seller_sku ILIKE %s"
             " ORDER BY b.sku, b.seller_sku, b.sid", (like, like, like))
         rows = cur.fetchall()
 
     by_sku: dict[str, dict] = {}
-    for sku, sku_name, seller_sku, sid, seller_name, plan_id, claimed_by in rows:
-        entry = by_sku.setdefault(sku, {"sku": sku, "name": sku_name, "mskus": []})
+    holders: dict[str, dict[int, str]] = {}
+    for sku, sku_name, seller_sku, sid, seller_name, plan_id, claimed_by, title in rows:
+        entry = by_sku.setdefault(sku, {
+            "sku": sku, "name": sku_name, "mskus": [],
+            # ★ 阶段 A 恒空：「店铺没挂渠道」的渠道码不在 seller 镜像里。
+            #   由 test_unbuildable_sellers_is_empty_for_a_stated_reason 盯着列，
+            #   渠道码一进表，那条测试转红，逼这里长出真的判据（06 §1.2 点名）。
+            "unbuildable_sellers": [],
+            "claimed_by": None, "claimed_by_plans": [],
+        })
         entry["mskus"].append({
             "seller_sku": seller_sku, "sid": sid, "seller_name": seller_name,
-            # ★ 被占用的行留在表里标出来，不过滤
+            # ★ 被占用的行留在表里标出来，不过滤（P11）
             "selectable": plan_id is None,
             "claimed_by": None if plan_id is None
-            else {"plan_id": plan_id, "actor": claimed_by},
+            else {"plan_id": plan_id, "title": title, "actor": claimed_by},
         })
+        if plan_id is not None:
+            holders.setdefault(sku, {})[plan_id] = title
+
+    for sku, entry in by_sku.items():
+        held = holders.get(sku, {})
+        entry["claimed_by_plans"] = [{"plan_id": pid, "title": t} for pid, t in sorted(held.items())]
+        # ★ 货号级只在「占用方唯一」时才给得出一个答案；两张计划各占一部分时
+        #   挑一个显示就是编 —— 那时 claimed_by 留 null，名单在 claimed_by_plans 里
+        entry["claimed_by"] = entry["claimed_by_plans"][0] if len(held) == 1 else None
+
     out = list(by_sku.values())
     return {"need_query": False, "matched": len(out), "truncated": len(out) > limit,
-            "rows": out[:limit]}
+            "limit": limit, "items": out[:limit]}
+
+
+@router.get("/sellers")
+def sellers(request: Request, who: str | None = Depends(actor_optional)):
+    declared(request)
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT seller_id, name, market, has_fba, platform FROM seller"
+                    " ORDER BY seller_id")
+        return {"sellers": [{"seller_id": r[0], "name": r[1], "market": r[2],
+                             "has_fba": r[3], "platform": r[4]} for r in cur.fetchall()]}
 ```
 
 - [ ] **Step 4: 实现认领与释放**（追加进 `api/ui/plans.py`）
@@ -3505,7 +3686,7 @@ def release(plan_id: int, seller_sku: str, sid: str, who: str = Depends(actor)):
 - [ ] **Step 5: 跑测试，确认它绿**
 
 Run: `python -m pytest tests/test_api_claims.py -q`
-Expected: 9 项 PASS，`test_release_keeps_the_row_and_names_the_cells_it_drops` 依赖 Task 12 的
+Expected: 11 项 PASS，`test_release_keeps_the_row_and_names_the_cells_it_drops` 依赖 Task 12 的
 `PUT /demand/...` → 仍红。★ Task 12 之后全绿。
 
 - [ ] **Step 6: 提交**
@@ -3523,31 +3704,40 @@ git commit -m "feat(api): 目录搜索（需条件/截断/占用标记）· 认�
 - Create: `tests/test_api_grid.py`
 
 **Interfaces:**
-- Consumes: `forecast.projection.inventory_projection` / `InboundSource`；`api.ui.plans.SOURCE`
+- Consumes: `forecast.projection.inventory_projection`；`api.ui.plans.SOURCE`（含 `SOURCE.as_of()`）
 - Produces:
   - `GET /v1/plans/{plan_id}/grid` → 见下方形状（Task 15 会把它原样固化成前端 mock 的 fixture）
   - `PUT /v1/plans/{plan_id}/demand/{seller_sku}/{sid}/{period}` body `{"expected_units": int|null}`
   - `PUT /v1/plans/{plan_id}/purchase/{sku}/{period}` body `{"planned_units": int|null}`
 
-### ★ 一处必须说清的层级问题（影响 `grid` 的形状）
+### ★ 形状按裁定，三处口径按头部的 a/b/c 落地
 
-`00e`:43 写「库存预估 = 在仓 + **采购在途** − 期望销量」，但两者**层级不同**：
-
+```jsonc
+{
+  "plan_id": 1, "periods": ["2026-10", …],
+  "demand":   [{"seller_sku","sid","period","system_units","expected_units","basis",
+                "system_extrapolated": false}],   // ★ 裁定六键 + 外推标记（M-13 / 14 §5）
+  "purchase": [{"sku","period","planned_units"}],
+  "inventory":[{"sku","sid","period","onhand","inbound":null,"closing",
+                "basis":{"source":"ch","as_of":"YYYY-MM-DD","includes_plan_purchase":false,
+                         "demand": 0, "reason":"no_seller_attribution", "closing_reason": null,
+                         "sku_level_in_transit": 0, "sources":[]}}],
+  "sku_pipeline":[{"sku","period","units","sources":[…],"no_seller_attribution":true}]
+}
 ```
-在仓（FBA）      msku × 月     ← 有店铺
-采购在途          货号 × 月     ← ★ 无店铺（14 §1：排货这条线以下没有店铺）
-```
 
-把货号级的在途加进每一个 msku 的期末，等于**每个店都以为这批货是自己的** ——
-三个 msku 就凭空多出两份货。所以 `grid` 分两块返回，并在每一格标出**没算进来的是什么**：
+★ `demand[]` 多带一个 `system_extrapolated`：**外推 ≠ 预估**，而这个标记必须随数一起走
+（`14` §5：让界面回头读原始格子，等于同一个数两个来源，迟早分叉）。裁定的六个键一个不少。
 
-| 块 | 粒度 | 内容 |
-|---|---|---|
-| `inventory[]` | msku × 月 | 期初 / 期望销量 / 期末 + `basis`（含 `excludes_plan_purchase` 与 `excludes_sku_level_in_transit`） |
-| `sku_pipeline[]` | 货号 × 月 | 采购在途逐笔，★ `no_seller_attribution: true` |
+★ `inventory[]` 的键是 `(sku, sid)`（`02` §3.1a：可售库存的粒度是[店铺, 货号]），
+而 `onhand` / `demand` 在库里是 msku 级 —— **按店铺把该货号的各 msku 求和**
+（`14` §1 ①：合计行不许独立算一遍，它就是各 msku 之和）。
 
-★ 阶段 A 的 msku 级入库恒为空（「货运中 / 已发未到」属阶段 C，没有数据源）——
-这件事写在 `basis.msku_inbound` 里说出来，而不是让它长成一个 0。
+★ **`inbound` 阶段 A 恒 `null`**（头部 a 条）：采购在途是货号级的，而「计划内只有一家店认领」
+**不等于**它是这批货的唯一消费者 —— 同一货号可能被本计划之外的店铺在卖。
+所以 `closing = onhand − demand`，货号级总量只展示不分摊（`basis.sku_level_in_transit` 与
+`sku_pipeline[]`）。★ `basis.reason` 恒 `"no_seller_attribution"`，`closing` 的 null 成因另记
+`basis.closing_reason` —— 两件事挤进一个字段，就会出现「这一格既未知又恒定」而只说得出一件。
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -3570,33 +3760,69 @@ def setup_plan(client, seed, mskus=(("MSKU-A", "11072"),)):
     return pid
 
 
-def test_grid_returns_three_blocks_with_their_own_granularity(client, seed):
+def test_grid_blocks_carry_exactly_the_ruled_keys(client, seed):
+    """★ 契约测试：键少一个前端就读到 undefined，多一个不致命但要是有意的。"""
     pid = setup_plan(client, seed)
     g = client.get(f"/v1/plans/{pid}/grid", headers=H(seed.actor)).json()
     assert g["periods"] == ["2026-10", "2026-11", "2026-12"]
-    assert {r["seller_sku"] for r in g["demand"]} == {"MSKU-A"}
-    assert {r["sku"] for r in g["purchase"]} == {seed.sku_a}
-    assert all("sid" in r for r in g["inventory"])
+    assert set(g["demand"][0]) == {"seller_sku", "sid", "period", "system_units",
+                                   "expected_units", "basis", "system_extrapolated"}
+    assert set(g["purchase"][0]) == {"sku", "period", "planned_units"}
+    assert set(g["inventory"][0]) == {"sku", "sid", "period", "onhand", "inbound",
+                                      "closing", "basis"}
+    assert set(g["inventory"][0]["basis"]) == {
+        "source", "as_of", "includes_plan_purchase", "demand", "reason",
+        "closing_reason", "sku_level_in_transit", "sources"}
+    assert g["inventory"][0]["basis"]["includes_plan_purchase"] is False
     assert all(r["no_seller_attribution"] is True for r in g["sku_pipeline"])
 
 
-def test_inventory_follows_the_main_formula_and_says_what_is_excluded(client, seed):
+def test_inventory_is_onhand_minus_demand_and_in_transit_stays_out(client, seed):
+    """★ closing = onhand − demand。采购在途是货号级的，不进任何店铺的加项 ——
+    「计划内只有一家店认领」不等于它是这批货的唯一消费者。"""
     pid = setup_plan(client, seed)
     client.put(f"/v1/plans/{pid}/demand/MSKU-A/11072/2026-10",
                json={"expected_units": 100}, headers=H(seed.actor))
     g = client.get(f"/v1/plans/{pid}/grid", headers=H(seed.actor)).json()
     oct_row = [r for r in g["inventory"] if r["period"] == "2026-10"][0]
-    assert oct_row["opening"] == 300 and oct_row["demand"] == 100 and oct_row["closing"] == 200
-    assert oct_row["basis"]["excludes_plan_purchase"] is True
-    assert oct_row["basis"]["excludes_sku_level_in_transit"] is True
-    assert oct_row["basis"]["msku_inbound"] == "阶段 C 才有数据源（货运中 / 已发未到）"
+    assert (oct_row["onhand"], oct_row["inbound"], oct_row["closing"]) == (300, None, 200)
+    assert oct_row["basis"]["demand"] == 100
+    assert oct_row["basis"]["reason"] == "no_seller_attribution"
+    assert oct_row["basis"]["closing_reason"] is None, "★ 在途没归属不该把期末也变成未知"
+    assert oct_row["basis"]["includes_plan_purchase"] is False
+    assert oct_row["basis"]["as_of"] == "2026-09-21"
+    # ★ 这一格的在途确实存在（80 = 50 + 30），只是没有店铺归属 ——
+    #   空的 sources 与非零的 sku_level_in_transit 必须同时出现，
+    #   否则「没有货」和「有货但不知道是谁的」长得一模一样
+    assert oct_row["basis"]["sources"] == [] and oct_row["basis"]["sku_level_in_transit"] == 80
 
 
-def test_in_transit_is_not_added_into_each_msku(client, seed):
-    """★ 货号级的在途加进每个 msku，三个 msku 就凭空多出两份货（14 §1）。"""
+def test_onhand_is_the_sum_of_that_stores_mskus(client, seed):
+    """★ inventory 的键是 (sku, sid)，而在仓在库里是 msku 级 ——
+    合计行就是各 msku 之和，不许另算一遍（14 §1 ①）。"""
+    pid = setup_plan(client, seed, mskus=(("MSKU-A", "11072"), ("MSKU-B", "11072")))
+    g = client.get(f"/v1/plans/{pid}/grid", headers=H(seed.actor)).json()
+    rows = [r for r in g["inventory"] if r["period"] == "2026-10"]
+    assert len(rows) == 1 and rows[0]["sid"] == "11072"
+    assert rows[0]["onhand"] == 300, "MSKU-A 300 + MSKU-B 0"
+
+
+def test_in_transit_is_never_handed_to_a_store(client, seed):
+    """★ 不分单店多店：两个店各自的 inbound 都是 null，总量只在 basis 与 sku_pipeline 里。
+
+    给单店发全额是分摊假设（同一货号可能被本计划之外的店铺在卖），
+    平摊是另一种分摊假设 —— 两种都是发明分配规则（C4 禁）。
+    """
     pid = setup_plan(client, seed, mskus=(("MSKU-A", "11072"), ("MSKU-C", "11094")))
     g = client.get(f"/v1/plans/{pid}/grid", headers=H(seed.actor)).json()
-    assert all(r["inbound"] == 0 for r in g["inventory"])
+    oct_rows = [r for r in g["inventory"] if r["period"] == "2026-10"]
+    assert {r["sid"] for r in oct_rows} == {"11072", "11094"}
+    assert all(r["inbound"] is None for r in oct_rows)
+    assert all(r["basis"]["reason"] == "no_seller_attribution" for r in oct_rows)
+    assert all(r["basis"]["sku_level_in_transit"] == 80 for r in oct_rows)
+    # ★ 两个店的在途都是 null，但期末仍算得出来 —— 别把「不知道是谁的」传染成「什么都不知道」
+    assert all(r["closing"] is not None for r in oct_rows)
+    # ★ 同一批货没有被数两遍：两行的 sku_level_in_transit 是同一个 80，不是各自一份
     oct_pipe = [r for r in g["sku_pipeline"] if r["period"] == "2026-10"][0]
     assert oct_pipe["units"] == 80 and len(oct_pipe["sources"]) == 2
 
@@ -3605,9 +3831,9 @@ def test_demand_cell_keeps_system_and_human_apart(client, seed):
     pid = setup_plan(client, seed)
     g = client.get(f"/v1/plans/{pid}/grid", headers=H(seed.actor)).json()
     cell = [r for r in g["demand"] if r["period"] == "2026-10"][0]
-    assert cell == {"seller_sku": "MSKU-A", "sid": "11072", "sku": seed.sku_a,
-                    "period": "2026-10", "system_units": 100, "system_extrapolated": False,
-                    "expected_units": None, "effective_units": 100, "basis": "system"}
+    assert cell == {"seller_sku": "MSKU-A", "sid": "11072", "period": "2026-10",
+                    "system_units": 100, "expected_units": None,
+                    "basis": "system", "system_extrapolated": False}
 
 
 def test_extrapolated_flag_travels_with_the_number(client, seed):
@@ -3623,15 +3849,17 @@ def test_extrapolated_flag_travels_with_the_number(client, seed):
 
 
 def test_no_fba_seller_is_not_applicable_not_zero(client, seed):
-    """★ 02 §3.1a：无 FBA 的平台显示「不适用」，不是 0。"""
+    """★ 02 §3.1a：无 FBA 的平台是「不适用」，不是 0 —— closing 为 null（裁定第 1 条）。"""
     pid = setup_plan(client, seed, mskus=(("MSKU-W", "90001"),))
     g = client.get(f"/v1/plans/{pid}/grid", headers=H(seed.actor)).json()
     row = g["inventory"][0]
-    assert row["not_applicable"] is True and row["closing"] is None
-    assert row["basis"]["reason"] == "not_applicable"
+    assert row["onhand"] is None and row["closing"] is None
+    assert row["basis"]["closing_reason"] == "not_applicable"
 
 
-def test_unknown_demand_propagates(client, seed):
+def test_the_two_reasons_behind_a_null_closing_are_distinguishable(client, seed):
+    """★ closing 的 null 只有两种成因，记在 closing_reason 上（头部口径 b）；
+    inbound 恒 null 那件事记在 reason 上，两者不许挤进同一个字段。"""
     pid = setup_plan(client, seed)
     client.put(f"/v1/plans/{pid}/demand/MSKU-A/11072/2026-10",
                json={"expected_units": None}, headers=H(seed.actor))
@@ -3639,15 +3867,17 @@ def test_unknown_demand_propagates(client, seed):
         cur.execute("UPDATE plan_demand_cell SET system_units = NULL"
                     " WHERE plan_id = %s AND period_start = '2026-10-01'", (pid,))
     g = client.get(f"/v1/plans/{pid}/grid", headers=H(seed.actor)).json()
-    closings = [r["closing"] for r in sorted(g["inventory"], key=lambda r: r["period"])]
-    assert closings == [None, None, None]
+    rows = sorted(g["inventory"], key=lambda r: r["period"])
+    assert [r["closing"] for r in rows] == [None, None, None]
+    assert rows[0]["basis"]["closing_reason"] == "unknown_demand"
+    assert rows[0]["basis"]["reason"] == "no_seller_attribution"
 
 
 def test_put_demand_and_purchase_are_one_cell_one_transaction(client, seed):
     pid = setup_plan(client, seed)
     r1 = client.put(f"/v1/plans/{pid}/demand/MSKU-A/11072/2026-11",
                     json={"expected_units": 130}, headers=H(seed.actor))
-    assert r1.status_code == 200 and r1.json()["cell"]["effective_units"] == 130
+    assert r1.status_code == 200 and r1.json()["cell"]["expected_units"] == 130
     assert r1.json()["cell"]["basis"] == "human"
     r2 = client.put(f"/v1/plans/{pid}/purchase/{seed.sku_a}/2026-11",
                     json={"planned_units": 500}, headers=H(seed.actor))
@@ -3672,12 +3902,12 @@ def test_negative_units_are_400(client, seed):
 - [ ] **Step 2: 跑测试，确认它红**
 
 Run: `python -m pytest tests/test_api_grid.py -q`
-Expected: FAIL —— `/v1/plans/{id}/grid` 404（10 项全红）
+Expected: FAIL —— `/v1/plans/{id}/grid` 404（11 项全红）
 
 - [ ] **Step 3: 实现**（追加进 `api/ui/plans.py`）
 
 ```python
-from forecast.projection import InboundSource, inventory_projection
+from forecast.projection import inventory_projection
 from rules.effective import effective_demand
 
 
@@ -3702,36 +3932,80 @@ def _load_grid(cur, plan_id: int):
 
 
 @router.get("/plans/{plan_id}/grid")
-def grid(plan_id: int, request: Request, who: str = Depends(actor)):
+def grid(plan_id: int, request: Request, who: str | None = Depends(actor_optional)):
     declared(request)
     with pg_conn() as c, c.cursor() as cur:
         periods, demand, purchase = _load_grid(cur, plan_id)
 
-    out_demand, expected_by_msku, has_fba, sku_of = [], {}, {}, {}
+    out_demand: list[dict] = []
+    #: (sku, sid) → {period: 该店该货号各 msku 的期望销量之和}
+    demand_by_store: dict[tuple[str, str], dict[str, int | None]] = {}
+    #: (sku, sid) → 在仓合计。★ 该店无 FBA / 各 msku 全无在仓数据 → None（不适用），不是 0
+    onhand_by_store: dict[tuple[str, str], int | None] = {}
+
     for seller_sku, sid, sku, period, sysu, extrap, expu, fba in demand:
         eff = effective_demand(sysu, expu)
-        out_demand.append({"seller_sku": seller_sku, "sid": sid, "sku": sku,
-                           "period": _ym(period), "system_units": sysu,
-                           "system_extrapolated": extrap, "expected_units": expu,
-                           "effective_units": eff.units, "basis": eff.basis})
-        expected_by_msku.setdefault((seller_sku, sid), {})[_ym(period)] = eff.units
-        has_fba[(seller_sku, sid)] = fba
-        sku_of[(seller_sku, sid)] = sku
+        out_demand.append({"seller_sku": seller_sku, "sid": sid, "period": _ym(period),
+                           "system_units": sysu, "expected_units": expu, "basis": eff.basis,
+                           # ★ 外推 ≠ 预估，标记必须随数走（14 §5）
+                           "system_extrapolated": extrap})
+        key, ym = (sku, sid), _ym(period)
+        slot = demand_by_store.setdefault(key, {})
+        # ★ 合计行 = 各 msku 之和（14 §1 ①）；只要有一个 msku 未知，这一格就是未知
+        if ym not in slot:
+            slot[ym] = eff.units
+        elif slot[ym] is not None and eff.units is not None:
+            slot[ym] += eff.units
+        else:
+            slot[ym] = None
+        if key not in onhand_by_store:
+            onhand_by_store[key] = None
+        if fba:
+            got = SOURCE.onhand_available(seller_sku, sid)
+            if got is not None:
+                onhand_by_store[key] = (onhand_by_store[key] or 0) + got
+
+    in_transit: dict[str, list] = {sku: SOURCE.purchase_in_transit(sku)
+                                   for sku in {r[0] for r in purchase}}
+    as_of = SOURCE.as_of().isoformat()
 
     inventory = []
-    for key, by_month in expected_by_msku.items():
-        seller_sku, sid = key
-        # ★ 该店铺没有 FBA → onhand 是「不适用」，不是 0（02 §3.1a）
-        onhand = SOURCE.onhand_available(seller_sku, sid) if has_fba[key] else None
-        for row in inventory_projection(onhand, {}, by_month):
-            row["basis"]["excludes_sku_level_in_transit"] = True
-            row["basis"]["msku_inbound"] = "阶段 C 才有数据源（货运中 / 已发未到）"
-            inventory.append({"seller_sku": seller_sku, "sid": sid,
-                              "sku": sku_of[key], **row})
+    for (sku, sid), by_month in sorted(demand_by_store.items()):
+        sku_total_by_period = {p: sum(t.units for t in in_transit.get(sku, ()) if t.period == p)
+                               for p in by_month}
+        # ★ 采购在途一律不进任何店铺的加项（阶段 A 恒 null）：它是货号级的，而
+        #   「计划内只有一家店认领」不等于它是这批货的唯一消费者 —— 同一货号可能被
+        #   本计划之外的店铺在卖。按单店给全额与平摊一样，都是发明分配规则（C4 禁）。
+        #   所以推演的入库项是空的，closing = onhand − demand。
+        rows = inventory_projection(onhand_by_store[(sku, sid)], {}, by_month)
+        for row in rows:
+            inventory.append({
+                "sku": sku, "sid": sid, "period": row["period"],
+                # onhand = 这一格的期初：第一个月是当前在仓事实，其后是上月期末
+                "onhand": row["opening"],
+                "inbound": None,
+                "closing": row["closing"],
+                "basis": {
+                    "source": "ch", "as_of": as_of,
+                    # ★ 裁定：恒 false 且必须显式返回 —— 「没算进来」不能长成「算了是 0」
+                    "includes_plan_purchase": False,
+                    "demand": row["demand"],
+                    # ★ 恒定：这一格的入库为什么是 null
+                    "reason": "no_seller_attribution",
+                    # ★ 与上面那条分开：这一格的期末为什么是 null（没有就是 None）。
+                    #   两件事挤进一个字段，「既未知又恒定」的那一格只说得出一件
+                    "closing_reason": row["basis"].get("reason"),
+                    # ★ 店铺级入库的逐笔依据。阶段 A 无数据源 ⇒ 恒空，而它必须与下面
+                    #   非零的 sku_level_in_transit 并排出现：否则「没有货」和
+                    #   「有货但不知道是谁的」长得一模一样
+                    "sources": [],
+                    "sku_level_in_transit": sku_total_by_period[row["period"]],
+                },
+            })
 
     pipeline: dict[tuple[str, str], dict] = {}
-    for sku in sorted({r[0] for r in purchase}):
-        for t in SOURCE.purchase_in_transit(sku):
+    for sku, rows in sorted(in_transit.items()):
+        for t in rows:
             slot = pipeline.setdefault((sku, t.period),
                                        {"sku": sku, "period": t.period, "units": 0,
                                         "sources": [], "no_seller_attribution": True})
@@ -3775,10 +4049,11 @@ def put_demand(plan_id: int, seller_sku: str, sid: str, period: str, body: dict,
                        {"plan_id": plan_id, "seller_sku": seller_sku, "sid": sid,
                         "period": period})
     eff = effective_demand(row[0], units)
+    # ★ 回的是 grid 里 demand[] 那一格同样的形状 —— 前端拿它原地替换那一行，
+    #   形状不同就要在前端再写一遍映射，而两份映射迟早分叉
     return {"cell": {"seller_sku": seller_sku, "sid": sid, "period": period,
-                     "system_units": row[0], "system_extrapolated": row[1],
-                     "expected_units": units,
-                     "effective_units": eff.units, "basis": eff.basis}}
+                     "system_units": row[0], "expected_units": units,
+                     "basis": eff.basis, "system_extrapolated": row[1]}}
 
 
 @router.put("/plans/{plan_id}/purchase/{sku}/{period}")
@@ -3799,7 +4074,7 @@ def put_purchase(plan_id: int, sku: str, period: str, body: dict, who: str = Dep
 - [ ] **Step 4: 跑测试，确认它绿**
 
 Run: `python -m pytest tests/test_api_grid.py tests/test_api_claims.py -q`
-Expected: PASS（10 + 10 项 —— Task 11 那条等 `PUT /demand` 的也转绿了）
+Expected: PASS（11 + 12 项 —— Task 11 那条等 `PUT /demand` 的也转绿了）
 
 - [ ] **Step 5: 提交**
 
@@ -3820,7 +4095,7 @@ git commit -m "feat(api): 网格三块（msku 级期望/库存 · 货号级采�
 **Interfaces:**
 - Consumes: `rules.submit.select_submittable` / `PurchaseCell` / `DemandCell`；`rules.digest.content_digest`
 - Produces:
-  - `POST /v1/plans/{plan_id}/submit` → `{"rev":int,"minted":int,"skipped":[{sku,period,reason}],"in_flight":bool,"content_digest":str}`；409 `rev_in_flight` 点名旧版
+  - `POST /v1/plans/{plan_id}/submit` → `{"rev":int,"lines":int,"skipped":[{sku,period,reason}],"in_flight":bool,"content_digest":str}`（裁定第 2 条的三键 + 两个额外字段）；409 `{"error":"rev_in_flight","hint":…,"in_flight_rev":…}`
   - `GET /v1/plans/{plan_id}/revs` → `{"revs":[…],"in_flight_rev":int|None,"current_rev":int|None}`
   - `POST /v1/plans/{plan_id}/revs/{rev}/current` → `{"current_rev":int}`
   - `GET /v1/plans/{plan_id}/diff?from=&to=` → `{"added":[],"removed":[],"changed":[]}`
@@ -3868,7 +4143,7 @@ def test_submit_mints_lines_and_lists_every_skipped_cell(client, seed):
     """★ 判据①②：铸出 rev，且被跳过的两个月逐条列出。"""
     pid = prepared(client, seed)
     r = client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor)).json()
-    assert r["rev"] == 1 and r["minted"] == 1
+    assert r["rev"] == 1 and r["lines"] == 1
     assert [(s["period"], s["reason"]) for s in r["skipped"]] == [
         ("2026-11", "zero_purchase"), ("2026-12", "zero_purchase")]
     with pg_conn() as c, c.cursor() as cur:
@@ -3880,7 +4155,7 @@ def test_submit_mints_lines_and_lists_every_skipped_cell(client, seed):
     assert by_seller["11072"]["basis"] == "human"
 
 
-def test_every_minted_line_has_its_birth_event(client, seed):
+def test_every_line_has_its_birth_event(client, seed):
     """★ S-2：事件链的第一行不许缺，否则事件表不是完整履历。"""
     pid = prepared(client, seed)
     client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
@@ -3906,9 +4181,9 @@ def test_an_empty_rev_does_not_hold_the_in_flight_slot(client, seed):
     人去找那一版，找到的是一张空的。"""
     pid = prepared(client, seed, purchase=None)
     r = client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor)).json()
-    assert r["minted"] == 0 and r["in_flight"] is False and len(r["skipped"]) == 3
+    assert r["lines"] == 0 and r["in_flight"] is False and len(r["skipped"]) == 3
     rows = client.get("/v1/plans", headers=H(seed.actor)).json()["plans"]
-    assert rows[0]["overall"] == "已撤销"
+    assert rows[0]["state"] == "已撤销"
     assert client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor)).status_code == 200
 
 
@@ -4020,7 +4295,7 @@ import json
 import psycopg2
 from fastapi import APIRouter, Depends, Request
 
-from api.ui.deps import actor, declared, require_fresh_mirrors
+from api.ui.deps import actor, actor_optional, declared, require_fresh_mirrors
 from api.ui.errors import ApiError
 from rules.digest import content_digest
 from rules.submit import DemandCell, PurchaseCell, select_submittable
@@ -4055,7 +4330,7 @@ def submit(plan_id: int, request: Request, who: str = Depends(actor)):
     declared(request)
     with timed("submit", actor=who, plan_id=plan_id), pg_conn() as c, c.cursor() as cur:
         purchase, demand, claimed = _cells(cur, plan_id)
-        minted, skipped = select_submittable(purchase, demand, claimed)
+        lines, skipped = select_submittable(purchase, demand, claimed)
         digest = content_digest(purchase, demand)
 
         cur.execute("SELECT coalesce(max(rev), 0) + 1 FROM plan_rev WHERE plan_id = %s",
@@ -4078,7 +4353,7 @@ def submit(plan_id: int, request: Request, who: str = Depends(actor)):
                             "submitted_by": old[1] if old else None,
                             "submitted_at": old[2].isoformat() if old else None}) from None
 
-        for m in minted:
+        for m in lines:
             period = dt.date.fromisoformat(m.period + "-01")
             cur.execute(
                 "INSERT INTO plan_line (plan_id, rev, sku, period_start, total_units,"
@@ -4103,14 +4378,14 @@ def submit(plan_id: int, request: Request, who: str = Depends(actor)):
                     (plan_id, rev))
         in_flight = cur.fetchone()[0]
 
-    return {"rev": rev, "minted": len(minted), "in_flight": in_flight,
+    return {"rev": rev, "lines": len(lines), "in_flight": in_flight,
             "content_digest": digest,
             "skipped": [{"sku": s.sku, "period": s.period, "reason": s.reason}
                         for s in sorted(skipped)]}
 
 
 @router.get("/plans/{plan_id}/revs")
-def revs(plan_id: int, request: Request, who: str = Depends(actor)):
+def revs(plan_id: int, request: Request, who: str | None = Depends(actor_optional)):
     declared(request)
     with pg_conn() as c, c.cursor() as cur:
         cur.execute(
@@ -4143,7 +4418,7 @@ def mark_current(plan_id: int, rev: int, who: str = Depends(actor)):
 
 
 @router.get("/plans/{plan_id}/diff")
-def diff(plan_id: int, request: Request, who: str = Depends(actor)):
+def diff(plan_id: int, request: Request, who: str | None = Depends(actor_optional)):
     declared(request, "from", "to")
     try:
         a, b = int(request.query_params["from"]), int(request.query_params["to"])
@@ -4373,7 +4648,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
 
-from api.ui.deps import actor, declared, require_fresh_mirrors
+from api.ui.deps import actor, actor_optional, declared, require_fresh_mirrors
 from api.ui.errors import ApiError
 from shared.pg_client import pg_conn, timed
 
@@ -4389,7 +4664,7 @@ def _allowed_next(cur, state: str) -> list[str]:
 
 
 @router.get("/plan-lines")
-def list_lines(request: Request, who: str = Depends(actor)):
+def list_lines(request: Request, who: str | None = Depends(actor_optional)):
     declared(request, "plan_ids", "state", "sku", "category", "period", "group_by")
     q = request.query_params
     if q.get("category") or q.get("group_by") == "category":
@@ -4503,7 +4778,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
 
-from api.ui.deps import actor, declared, require_fresh_mirrors
+from api.ui.deps import actor_optional, declared, require_fresh_mirrors
 from rules.digest import content_digest
 from rules.submit import DemandCell, PurchaseCell
 from shared.pg_client import pg_conn
@@ -4517,7 +4792,7 @@ UNREACHABLE_IN_STAGE_A = ["已下单", "准备排货", "已排货"]
 
 
 @router.get("/dashboard/plans")
-def dashboard_plans(request: Request, who: str = Depends(actor)):
+def dashboard_plans(request: Request, who: str | None = Depends(actor_optional)):
     declared(request)
     with pg_conn() as c, c.cursor() as cur:
         cur.execute("SELECT v.overall, count(*) FROM v_plan_overall_state v"
@@ -4538,7 +4813,7 @@ def dashboard_plans(request: Request, who: str = Depends(actor)):
 
 
 @router.get("/dashboard/unsubmitted")
-def dashboard_unsubmitted(request: Request, who: str = Depends(actor)):
+def dashboard_unsubmitted(request: Request, who: str | None = Depends(actor_optional)):
     declared(request)
     never, changed = [], []
     with pg_conn() as c, c.cursor() as cur:
@@ -4620,8 +4895,8 @@ def _build(client, seed):
     pid = client.post("/v1/plans", json={"title": "10 月计划", "period_start": "2026-10-01",
                                          "months": 3},
                       headers={"x-actor": seed.actor}).json()["plan_id"]
-    # ★ 刻意覆盖三种形态：人填 / 采用系统预估 / 该平台无 FBA
-    for ms in (seed.msku_a, seed.msku_c, seed.msku_nofba):
+    # ★ 刻意覆盖四种形态：人填 / 采用系统预估 / 该平台无 FBA / 在途无店铺归属
+    for ms in (seed.msku_a, seed.msku_c, seed.msku_d, seed.msku_nofba):
         client.post(f"/v1/plans/{pid}/claims", json={"seller_sku": ms[0], "sid": ms[1]},
                     headers={"x-actor": seed.actor})
     client.put(f"/v1/plans/{pid}/demand/{seed.msku_a[0]}/{seed.msku_a[1]}/2026-10",
@@ -4645,13 +4920,22 @@ def test_grid_fixture_matches_the_live_api(client, seed):
                            "并告诉前端这一版的差异。")
 
 
-def test_the_fixture_covers_the_three_shapes_that_look_alike(client, seed):
-    """★ fixture 若只有「正常」那一种形态，前端就永远不会画出另外两种。"""
+def test_the_fixture_covers_the_shapes_that_look_alike(client, seed):
+    """★ fixture 若只有「正常」那一种形态，前端就永远不会画出另外几种 ——
+    而那几种恰恰是「看起来像 0」的那些。"""
     saved = json.loads(FIXTURE.read_text("utf-8"))
-    bases = {r["basis"] for r in saved["demand"]}
-    assert {"human", "system"} <= bases
-    assert any(r["not_applicable"] for r in saved["inventory"]), "缺「不适用」那一种"
-    assert any(r["no_seller_attribution"] for r in saved["sku_pipeline"])
+    assert {"human", "system"} <= {r["basis"] for r in saved["demand"]}
+    inv = saved["inventory"]
+    assert "not_applicable" in {r["basis"]["closing_reason"] for r in inv}, "缺「该平台无 FBA」"
+    # ★ 在途恒无店铺归属：每一格都这么标，而总量只在 sku_level_in_transit / sku_pipeline 里
+    assert all(r["inbound"] is None for r in inv)
+    assert all(r["basis"]["reason"] == "no_seller_attribution" for r in inv)
+    assert any(r["basis"]["sku_level_in_transit"] for r in inv), \
+        "缺「有在途但没归属」那一种 —— 它与「没有在途」必须长得不一样"
+    assert any(r["closing"] is not None for r in inv), "期末不该因为在途没归属而全是 null"
+    assert all(r["basis"]["includes_plan_purchase"] is False for r in inv)
+    assert saved["sku_pipeline"] and all(r["no_seller_attribution"] is True
+                                         for r in saved["sku_pipeline"])
 ```
 
 - [ ] **Step 2: 跑测试，确认它红**
@@ -4717,7 +5001,7 @@ def test_criterion_1_build_claim_fill_submit_mint(client, seed):
     assert client.put(f"/v1/plans/{pid}/purchase/{seed.sku_a}/2026-10",
                       json={"planned_units": 400}, headers=H(seed.actor)).status_code == 200
     r = client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor)).json()
-    assert r["rev"] == 1 and r["minted"] == 1
+    assert r["rev"] == 1 and r["lines"] == 1
     lines = client.get("/v1/plan-lines", params={"plan_ids": pid},
                        headers=H(seed.actor)).json()["lines"]
     assert lines[0]["total_units"] == 400 and lines[0]["demand_at_submit"] == 120
@@ -4814,14 +5098,14 @@ def test_criterion_5_the_back_edge_exists_and_terminal_states_are_sealed(client,
 - [ ] **Step 2: 跑全量**
 
 Run: `python -m pytest -q`
-Expected: PASS —— 合计 **126 项**
-（9 分层 + 6 迁移 + 6 + 12 + 14 DDL + 3 整体状态 + 7 + 8 预测 + 6 dim + 11 rules
-+ 8 系统 + 6 计划 + 10 认领 + 10 网格 + 11 提交 + 8 记录 + 3 看板 + 2 fixture + 5 判据）
+Expected: PASS —— 合计 **150 项**
+（9 分层 + 6 迁移 + 6 + 12 + 14 DDL + 3 整体状态 + 7 + 8 预测 + 7 dim + 11 rules
++ 9 系统 + 6 计划 + 12 认领 + 11 网格 + 11 提交 + 8 记录 + 3 看板 + 2 fixture + 5 判据）
 
 - [ ] **Step 3: 确认纯层真的离线可跑**
 
 Run: `JXD_SCM_CONFIG=/nonexistent python -m pytest tests/test_layering.py tests/test_forecast_estimate.py tests/test_forecast_projection.py tests/test_rules_submit.py tests/test_dim_fixture.py -q`
-Expected: PASS（41 项）★ 配置文件都读不到还能全绿，才叫「判据离线可测」。
+Expected: PASS（42 项）★ 配置文件都读不到还能全绿，才叫「判据离线可测」。
 
 - [ ] **Step 4: 提交**
 
@@ -4832,7 +5116,7 @@ git commit -m "test(stage-a): 六条校验判据各一条端到端，判据⑤ �
 
 ---
 
-## 附：阶段 A 交付后要交回文档的三件事
+## 附：阶段 A 交付后要交回文档的五件事
 
 > 实现过程中发现的文档问题，按 CLAUDE.md「指不到出处的记进 00」处理，**不在代码里自己定**。
 
@@ -4841,6 +5125,8 @@ git commit -m "test(stage-a): 六条校验判据各一条端到端，判据⑤ �
 | 1 | `08` §3 错误码总表写 `another_rev_in_flight`，而 §1.1 与 S-4 写 `rev_in_flight` | 统一成 `rev_in_flight`（本计划按 §1.1 实现），改 `08` §3 |
 | 2 | `00e`:43「库存预估 = 在仓 + 采购在途 − 期望销量」两项层级不同（`14` §1：在途在「排货」那条横线以下、无店铺），合并会让每个 msku 都以为这批货是自己的 | `00e` §1 阶段 A 那一格补一句「两层分开渲染」；实现见 Task 12 |
 | 3 | `04` §1.4 写非法迁移 409，`08`:280 与 S-18 写 422 | 按 S-18 统一 422，改 `04` §1.4 |
+| 4 | ★ 错误形状：`08` §0 写 `{code,message,detail}`，而 team-lead 2026-09-22 裁定 `{error,hint,…}`（前端已照它写，本计划按裁定实现） | 改 `08` §0 的「错误形状」一行，并把「点名字段平铺在顶层」写进去 |
+| 5 | ★ `unbuildable_sellers`（`06` §1.2「建不出格子的店铺必须点名」）在阶段 A 恒空：判据要的渠道码不在 `seller` 镜像里 | 要么把渠道码补进镜像（走新迁移），要么在 `00e` 阶段 A 里写明这条点名推迟到哪个阶段 |
 
 ---
 
@@ -4853,7 +5139,8 @@ git commit -m "test(stage-a): 六条校验判据各一条端到端，判据⑤ �
 | `00e` 阶段 A 九张表 + 地基 | Task 3 / 4 / 5（`plan_cell` / `plan_cell_msku` 按 S-1 拆成 `plan_demand_cell` / `plan_purchase_cell`） |
 | 判据 ①②③④⑤ | Task 16 各一条；③ 的竞态在 Task 11、④ 的不可变在 Task 13 |
 | 判据⑥ | Task 15（后端一半：同源 fixture）；前端一半属 `web/` 的计划 |
-| `08` §1.1 阶段 A 端点 | catalog Task 11 · plans Task 10 · claims Task 11 · grid + 两 PUT Task 12 · submit/revs/current/diff/archive Task 13 · plan-lines/cancel/dashboard Task 14 · health/readiness Task 9 |
+| `08` §1.1 阶段 A 端点 | catalog + sellers Task 11 · plans Task 10 · claims Task 11 · grid + 两 PUT Task 12 · submit/revs/current/diff/archive Task 13 · plan-lines/cancel/dashboard Task 14 · health/readiness Task 9 |
+| ★ team-lead 2026-09-22 接口形状 7 条 | 1 grid → Task 12 的 `test_grid_blocks_carry_exactly_the_ruled_keys` · 2 submit/409 → Task 13 · 3 `state:null` → Task 10 · 4 catalog → Task 11（四条测试）· 5 sellers → Task 11 · 6 x-actor → Task 9（四条测试）· 7 archive/plan-lines 无界面入口 → Task 13/14 照 `08` 实现 |
 | `08` §1.1 未实现的一项 | `GET /plan-lines/{id}/trace` —— 已在「阶段 A 明确不做」表里列出并给出处 |
 | `03` §3 状态机四件套 | Task 5（含 S-2 哨兵与铸出事件、S-17 只追加触发器） |
 | `04` S1 / S2 | Task 5（S1）· Task 10（S2 派生视图，两个边界显式定义） |
@@ -4870,14 +5157,20 @@ Task 13 的 `plan_line` 插入一度写成 `psycopg2.extras.Json(...) if False e
 
 ### 3. 类型一致性
 
-逐个核对过跨 Task 引用的名字与类型，**修掉 3 处**：
+逐个核对过跨 Task 引用的名字与类型，**修掉 7 处**：
 
 1. `msku_claim` 与 `plan_demand_cell` 的建表顺序 —— 外键 `plan_demand_cell_claim_fk` 指向 `msku_claim`，而 `03` §2 的行文里格子在前。迁移 002 里改成 `plan → msku_claim → 两张格子`，否则第一条迁移就跑不过。
 2. `close_rev_if_settled(plan_id, rev)` 的**第二个调用者** —— 只挂触发器的话，铸出 0 条记录的空版本没有任何行能触发它，`plan_rev_one_in_flight_idx` 会把这张计划的后续提交永久挡住。Task 13 的提交路径显式调一次，Task 13 的 `test_an_empty_rev_does_not_hold_the_in_flight_slot` 是它的靶子。
-3. 错误码 `rev_in_flight`（`08` §1.1 / S-4）与 `another_rev_in_flight`（`08` §3）不一致 —— 全计划统一用 `rev_in_flight`，并记进上面「要交回文档的三件事」。
+3. 错误码 `rev_in_flight`（`08` §1.1 / S-4）与 `another_rev_in_flight`（`08` §3）不一致 —— 全计划统一用 `rev_in_flight`，并记进上面「要交回文档的五件事」。
 4. 四处测试原本写成 `from tests.test_xxx import …` —— `tests/` 没有 `__init__.py`，这条 import 在收集期就会炸，而报错指向的行与真正的原因隔着一层。共用造数改放 `tests/helpers.py`（Task 5 建、Task 13 追加），四处统一 `from helpers import …`。
+
+5. 按 team-lead 2026-09-22 的接口形状裁定回改了四处（见头部「接口形状」）：错误形状 `{code,message,detail}` → `{error,hint,…平铺}`；`GET /plans` 的 `overall` → `state`；catalog 的 `rows` → `items` 并补 `limit` / `unbuildable_sellers` / `claimed_by`；submit 的响应字段统一为 `lines`（连带把 rules 层原先的 `Minted` 类型改名 `Line`、局部变量 `minted` 改名 `lines` —— 一个名字贯穿 rules → api → 响应 → 断言，全文再无 `minted`）。**读接口的 `x-actor` 由必填改成「可不给，给了必须有效」**，写接口仍必填。
+6. `inventory[]` 的键从 msku 级改成裁定的 `(sku, sid)`：`onhand` / `demand` 按店铺对该货号的各 msku 求和（`14` §1 ①），并新增 `Source.as_of()` 与 `tests/fixtures/as_of.txt` —— 裁定的 `basis.as_of` 要有出处，而 CH 是采集副本不是实时领星。
+7. **最终裁定：`inbound` 恒 `null`**（删掉「单店 → 给全额」那条分摊假设）。连带改到三个 Task，全部核过：Task 12 的 `many` 分支与 `sellers_of_sku` 删除、`InboundSource` 不再被 api 层引用（import 一并删，否则 ruff 报 F401）· Task 7 的 `Consumes` 不再写 `InboundSource`（dim 只产出事实）· Task 15 的 fixture 断言改成「inbound 全 null + 至少一格 `sku_level_in_transit` 非零 + 至少一格 closing 非 null」。★ `basis.reason`（恒定，说 inbound）与 `basis.closing_reason`（说 closing 的 null）拆成两个字段 —— 挤在一个字段里，「既未知又恒定」的那一格只说得出一件。`sku_pipeline[]` 在 Task 12 的响应、契约测试与 Task 15 的 fixture 断言里都在。
 
 另两处刻意的偏离，一并记在这里：
 
 - `monthly_estimate` 的返回类型是 `list[MonthEstimate]` 而不是 `list[int]`：外推标记必须随数一起走（`14` §5 / M-13），返回裸 `int` 会把它丢在函数里。
 - `inventory_projection` 的 `inbound_by_month` 收的是**逐笔明细**而不是合计：合计在函数内部求和，恒等式⑥「推算入库 ≡ 其构成明细之和」才不依赖调用方自觉。
+- `demand[]` 在裁定的六个键之外多一个 `system_extrapolated`：**外推 ≠ 预估**（M-13 / `14` §5），标记不随数走，界面就得回头读原始格子 —— 同一个数两个来源。
+- `inventory[].inbound` **阶段 A 恒 `null`**（裁定的类型允许 null）：采购在途是货号级的，而「计划内只有一家店认领」不等于它是这批货的唯一消费者 —— 按单店给全额与平摊一样都是分摊假设（C4 禁）。总量只展示不分摊：`basis.sku_level_in_transit` 与 `sku_pipeline[]`；`closing = onhand − demand` 照常算得出来，不因为在途没归属就变 null。
