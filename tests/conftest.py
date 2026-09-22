@@ -131,3 +131,11 @@ def seed(wipe):
                          (*ns.msku_c, ns.sku_a), (*ns.msku_d, ns.sku_b),
                          (*ns.msku_nofba, ns.sku_b)])
     return ns
+
+
+@pytest.fixture
+def client(wipe):
+    from starlette.testclient import TestClient
+
+    from api import create_app
+    return TestClient(create_app(), raise_server_exceptions=False)
