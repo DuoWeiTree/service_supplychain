@@ -93,7 +93,7 @@
 //    "claimed_by": {"plan_id","title","actor"} | null}   ★ 与 catalog 的 claimed_by 同形（多 actor）
 //    成功 → {"claimed":{seller_sku,sid,sku}, "seeded":{demand_cells,purchase_cells}, "no_history":[…]}
 //    DELETE …/claims/... → {"released":{…}, "dropped_cells":[{period,expected_units}], "stranded_purchase_cells":[{sku,period}]}
-//    POST …/revs/{rev}/cancel → {"cancelled":[line_id…], "skipped_terminal": n}
+//    POST …/revs/{rev}/cancel → {"cancelled":[line_id…], "skipped_terminal": n, "reason": "…"}
 ```
 
 ★ **错误形状为什么不按 `08` §0**：`08` §0 写 `{code,message,detail}`，而上面第 2/6 条裁定的是
