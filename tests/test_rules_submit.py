@@ -111,3 +111,41 @@ def test_clearing_a_value_changes_the_digest():
     p = [PurchaseCell(SKU, OCT, 500)]
     assert content_digest(p, [dcell(A, OCT, 100, 120)]) != \
            content_digest(p, [dcell(A, OCT, 100, None)])
+
+
+def test_mixed_batch_partitions_purchase_cells_into_minted_and_skipped():
+    """★ 铸出 + 跳过 ≡ 采购格子：单独测每种 skip 理由不够 ——
+    还要证一批混着来时，没有格子被两边都算了，也没有格子两边都没算到。"""
+    SKU_A, SKU_B, SKU_C, SKU_D = "SKU-A", "SKU-B", "SKU-C", "SKU-D"
+    MA, MB, MC = ("MSKU-1", "11072"), ("MSKU-2", "11072"), ("MSKU-3", "11072")
+    purchase_cells = [
+        PurchaseCell(SKU_A, OCT, 500),   # 有认领、有数量 → 铸出
+        PurchaseCell(SKU_B, OCT, 300),   # 有认领、有数量 → 铸出
+        PurchaseCell(SKU_C, OCT, 0),     # 有认领、数量为 0 → zero_purchase
+        PurchaseCell(SKU_D, OCT, 200),   # 无认领 → no_claimed_msku
+    ]
+    demand_cells = [
+        DemandCell(MA[0], MA[1], SKU_A, OCT, 100, 120),
+        DemandCell(MB[0], MB[1], SKU_B, OCT, 50, None),
+        DemandCell(MC[0], MC[1], SKU_C, OCT, 10, 10),
+    ]
+    lines, skipped = select_submittable(purchase_cells, demand_cells, claimed={MA, MB, MC})
+
+    assert len(lines) + len(skipped) == len(purchase_cells) == 4
+    assert {(s.sku, s.period, s.reason) for s in skipped} == {
+        (SKU_C, OCT, "zero_purchase"),
+        (SKU_D, OCT, "no_claimed_msku"),
+    }
+    assert {(m.sku, m.period) for m in lines} == {(SKU_A, OCT), (SKU_B, OCT)}
+
+
+def test_digest_distinguishes_none_from_zero_not_just_from_a_different_number():
+    """★ None ≠ 0 在 digest 里要两处都证：期望销量格与采购格各自的
+    「没填」vs「填了 0」都必须挪动摘要，否则两者在留痕里长得一样。"""
+    p = [PurchaseCell(SKU, OCT, 500)]
+    assert content_digest(p, [dcell(A, OCT, 100, None)]) != \
+           content_digest(p, [dcell(A, OCT, 100, 0)])
+
+    d = [dcell(A, OCT, 100, 120)]
+    assert content_digest([PurchaseCell(SKU, OCT, None)], d) != \
+           content_digest([PurchaseCell(SKU, OCT, 0)], d)
