@@ -1,0 +1,1880 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>排货单详情 · 供应链服务原型</title>
+<link rel="stylesheet" href="assets/shell.css">
+<style>
+/* 本页只补 shell.css 里没有的：弹窗里的货源表要能横向滚，且比默认弹窗宽一点 */
+#dlgArrange { max-width: 780px; }
+#arTable input.inp { width: 84px; }
+.cell .btn-row { margin-top: calc(var(--u) * 2); justify-content: flex-end; gap: calc(var(--u) * 1.5); }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <div class="head">
+    <div class="head__main">
+      <h1 id="title">排货单 · 详情</h1>
+      <div class="head__meta" id="headMeta"></div>
+    </div>
+    <div class="head__act" id="headAct"></div>
+  </div>
+
+  <div id="flash"></div>
+
+  <details class="fold" id="whyManual">
+    <summary>手动排货还是自动排货？——「全手动」，系统只算该排多少，不替你决定发什么</summary>
+    <div class="fold__body">
+      <p><b>全手动。</b>系统只算「该排多少」：这一格的缺口、这条计划记录还能排多少、
+        本地仓现在还能安排多少。<b>发哪些、从哪个仓出、给哪个店</b> —— 全是人定的，
+        系统一件都不会替你摊。</p>
+      <p>这是裁定 C4「不自动分摊」的直接后果：同一个货号常常挂着好几个店铺，
+        谁先谁后、各拿多少，只有排货员知道。系统替人摊过一次，
+        就再也说不清那批货当初是为谁排的。</p>
+      <p><b>入口只有一个：上面那张排货网格。</b>在某一格上「安排发货」，
+        量先进待编排池；池子平时收着，要一次性编入排货单时才展开。
+        安排过的格子上会多出「改」和「撤回」—— 改数量是一步，不是撤回再重排。</p>
+    </div>
+  </details>
+
+  <details class="fold">
+    <summary>口径与判据</summary>
+    <div class="fold__body">
+      <p><b>这张网格和销售计划的网格是同一个东西</b>：店铺 · 货号 × 月。
+        每格里四个数分别是 <span class="i-pencil">销售预估</span>（机器估的）、
+        <span class="i-ink">期望销量</span>与<span class="i-ink">计划采购</span>（人填的）、
+        以及推演出来的<b>库存预估</b>（格子里那个大数）。
+        <span class="i-jade">已安排</span>是这一格已经落地的排货量。</p>
+      <p><b>哪些数能加，哪些不能</b>：一个店铺下可能挂着多个 msku，销售预估 / 期望销量 / 库存预估
+        按 msku 求和；<b>计划采购是货号级的，不带店铺也不分 msku</b>，所以不求和；
+        <b>已安排</b>按「计划记录 × 店铺」记，同一个店铺的几个 msku 共用一份，也不求和。
+        加错了会把同一批量数出两三倍。</p>
+      <p><b>合计列</b>里，销售预估 / 期望销量 / 计划采购 / 已安排是逐月求和；
+        库存不是流量而是水位，求和没有意义，所以那一栏给的是<b>期末库存</b>（最后一个月）。</p>
+      <p><b>格子左边条</b>：红＝库存预估见底，浅红＝当月备货接不住期望销量，绿＝这一格已经安排过发货。
+        三者同时成立时红压浅红、浅红压绿，因为断货比「已安排」更需要先被看见。</p>
+      <p><b>排货表与排货单</b>：一张<b>排货表</b>（<code>SHEET-xx</code>）是一次排货作业；
+        作业里一个目的地一张<b>排货单</b>。在网格上「安排发货」得到的量先进<b>待编排池</b>，
+        再编入某张排货单。池里的量<b>已经算进「已排未发」</b> —— 不算就会把同一批需求排两遍。</p>
+      <p><b>网格与池子是一条路的两步，不是两个入口</b>：所以池子默认收起，只在要
+        一次勾好几行、一起编入排货单时才展开。安排 / 改 / 撤回三件事走的是<b>同一条路</b> ——
+        一次操作整体决定这一格安排多少，改成 0 就等于撤回。三条路各有各的校验，迟早会对不上。</p>
+      <p><b>弹窗里给三个数</b>：仓里有多少（物理量）、其中多少已被别处安排还没发出、
+        现在还能安排多少。只给一个「可发 24」，两种完全不同的状态就长得一模一样了。</p>
+      <p><b>FBA 与海外仓的单据形状不同</b>：海外仓一张备货单从头走到尾（3 步）；
+        FBA 是多个对象接力（5 步），中间多一步「STA 建货件」，所以 FBA 的排货单上多出
+        「货件号」与「装箱」两栏，海外仓那张<b>根本没有这两栏</b>。</p>
+      <p><b>货件号不用填，也填不出来</b>：它是亚马逊在 <code>confirmPlacementOption</code>
+        之后才返回的（不轮询 <code>taskId</code> 就不知道），而人看到这张表是在<b>投送之前</b> ——
+        那一刻这个号还不存在。所以这一栏<b>只读</b>：投送前写「投送时由亚马逊分配」，
+        投送时那一步取回号再回填进来。<b>投送前没有号是正常状态，不是漏填。</b>
+        真正要人填的只有<b>装箱</b>（裁定 A-8）—— 运营说的「关联货件麻烦」不是流程绕，
+        是装箱数据量大。</p>
+      <p><b>提交排货</b>会一次跑完 6 项闸（G1 装箱 / G2 建货件的前置 / G3 可发量 / G4 账本水位 /
+        G5 未关联发货 / G6 目的地），过的也逐项列出来。不过闸时状态不变，仍是草稿。
+        G2 查的是<b>目的地齐不齐</b>（店铺 + FC）——「每行已归属货件」那条查不了，
+        跑闸的那一刻号还不存在；「发货前必须已归属货件」改在<b>投送链内部</b>、
+        发货那一步之前检查，那时号刚取回来。
+        G4 / G5 在原型里恒过，真实实现要比对账本水位与领星侧未关联发货单。</p>
+      <p><b>保存草稿</b>：每一次改动其实都已经立刻存进浏览器，这个按钮只是再存一次并给一个时间戳。
+        <b>投送</b>不可逆，中途失败时前几步产生的单据是真的存在于领星里 ——
+        所以结果逐步列出，停在哪一步、已经落了哪些单号都点名。</p>
+    </div>
+  </details>
+
+  <div id="body"></div>
+
+</div>
+
+<!-- 本地仓货品筛选器（网格上点「安排发货」弹出） -->
+<dialog class="modal" id="dlgArrange">
+  <div class="modal__head" id="arHead">本地仓货品筛选器</div>
+  <div class="modal__body">
+    <div class="bar">
+      <div class="bar__grp">
+        <span class="bar__lbl">分组筛选</span>
+        <select class="inp inp--text" id="arWid"><option value="">本地仓名（全部）</option></select>
+        <select class="inp inp--text" id="arSku" disabled></select>
+      </div>
+    </div>
+    <div id="arWhy"></div>
+    <div id="arTable"></div>
+    <div id="arErr"></div>
+  </div>
+  <div class="modal__foot">
+    <button class="btn" type="button" id="arCancel">取消</button>
+    <button class="btn btn--primary" type="button" id="arOk">确定</button>
+  </div>
+</dialog>
+
+<script src="assets/store.js"></script>
+<script src="assets/shell.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var TAG = '[sheet]';
+  function dbg(e, d) { try { console.debug(TAG, e, d || {}); } catch (x) { } }
+  function fail(e, d) { try { console.error(TAG, e, d || {}); } catch (x) { } }
+
+  var esc = Shell.esc, el = Shell.el, chip = Shell.chip, qty = Shell.qty;
+
+  var sheetId = Shell.param('sheet') || Shell.param('id');
+  var focusCid = Shell.param('cid');
+
+  Store.setRole('dispatcher');
+  /* ★ 顶栏一律走 Shell.mount() —— 角色条是用户判断「我现在是谁」的唯一依据，
+     它在某一页换个样子，比没样式更糟。 */
+  Shell.mount({
+    title: '排货单详情',
+    crumb: [{ text: '首页', href: 'index.html' },
+            { text: '排货台', href: 'dispatcher.html' },
+            { text: sheetId || '（未指定）' }]
+  });
+
+  var lastConfirm = null;     // 上一次「提交排货」的 6 项闸结论
+  var dispatchOut = {};       // cid → Store.dispatch 的原始返回
+  var arrangeCtx = null;      // 当前打开的「安排发货」上下文
+
+  /* ---------- dialog ---------- */
+
+  function openDlg(id) {
+    var d = document.getElementById(id);
+    if (!d) { fail('dialog.missing', { id: id }); return null; }
+    if (typeof d.showModal === 'function') {
+      try { d.showModal(); return d; }
+      catch (e) { fail('dialog.showModal-threw', { id: id, message: e && e.message, code: e && e.name }); }
+    }
+    d.setAttribute('open', 'open');
+    return d;
+  }
+  function closeDlg(id) {
+    var d = document.getElementById(id);
+    if (!d) { fail('dialog.missing', { id: id }); return; }
+    if (typeof d.close === 'function') { try { d.close(); return; } catch (e) { fail('dialog.close-threw', { id: id, message: e && e.message }); } }
+    d.removeAttribute('open');
+  }
+
+  /* ---------- 当场发生的结果 ---------- */
+
+  function flash(kind, text, lines, link) {
+    var box = document.getElementById('flash');
+    box.innerHTML = '';
+    var f = el('div', 'flash' + (kind ? ' flash--' + kind : ''));
+    var body = el('div');
+    body.appendChild(el('span', null, text));
+    if (lines && lines.length) {
+      var ul = el('ul');
+      lines.forEach(function (t) {
+        var li = el('li');
+        li.textContent = t;
+        ul.appendChild(li);
+      });
+      body.appendChild(ul);
+    }
+    if (link) {
+      var p = el('div');
+      var a = el('a', null, link.text);
+      a.href = link.href;
+      if (link.onClick) a.addEventListener('click', function (ev) { ev.preventDefault(); link.onClick(); });
+      p.appendChild(a);
+      body.appendChild(p);
+    }
+    f.appendChild(body);
+    box.appendChild(f);
+  }
+
+  /* ---------- 小工具 ---------- */
+
+  function dayDiff(a, b) {
+    function p(x) { var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(x || '')); return m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) : null; }
+    var pa = p(a), pb = p(b);
+    if (pa === null || pb === null) {
+      fail('day.unparsable', { a: a, b: b, hint: '停留天数按 0 显示，但这条回退是有声的' });
+      return 0;
+    }
+    return Math.round((pb - pa) / 86400000);
+  }
+  function chanName(ch) { return ch === 'fba' ? 'FBA' : '海外仓'; }
+  function destText(c) {
+    var d = c.dest || {};
+    if (c.channel === 'oversea') return d.wid ? Store.warehouseName(d.wid) : '（缺目的仓 wid）';
+    return (d.sid ? d.sid + ' ' + Store.sellerName(d.sid) : '（缺店铺 sid）') + ' · ' + (d.fc || '（缺 FC）');
+  }
+  function boxComplete(b) {
+    if (!b) return false;
+    return ['count', 'l', 'w', 'h', 'weight', 'per'].every(function (k) {
+      return b[k] !== null && b[k] !== undefined && b[k] !== '' && Number(b[k]) > 0;
+    });
+  }
+  function rowId(cid, idx) { return 'row-' + cid + '-' + idx; }
+  function consId(cid) { return 'cons-' + cid; }
+  function jumpTo(id) {
+    var n = document.getElementById(id);
+    if (!n) { fail('anchor.missing', { id: id, hint: '闸的 detail 指到了一个页面上不存在的行' }); return; }
+    if (n.scrollIntoView) n.scrollIntoView({ block: 'center' });
+    var inp = n.querySelector('.inp');
+    if (inp) inp.focus();
+  }
+
+  // 从闸的 detail 里把「哪张单 / 哪一行」挖出来，做成页内锚点
+  function jumpsFor(text) {
+    var out = [], seen = {}, m;
+    var reRow = /#(\d+)\s*·\s*(?:FBA|海外仓)）\s*第\s*(\d+)\s*行/g;
+    while ((m = reRow.exec(text)) !== null) {
+      var k = 'r' + m[1] + '-' + m[2];
+      if (seen[k]) continue; seen[k] = 1;
+      out.push({ label: '跳到 #' + m[1] + ' 第 ' + m[2] + ' 行', id: rowId(m[1], Number(m[2]) - 1) });
+    }
+    if (out.length) return out;
+    var reCons = /#(\d+)\s*·\s*(?:FBA|海外仓)）/g;
+    while ((m = reCons.exec(text)) !== null) {
+      var k2 = 'c' + m[1];
+      if (seen[k2]) continue; seen[k2] = 1;
+      out.push({ label: '跳到排货单 #' + m[1], id: consId(m[1]) });
+    }
+    return out;
+  }
+
+  /* ★ 不可求和的维度：几个 msku 共用同一份值，取一个。
+       不一致说明上游算错了 —— 要硬报出来，不许挑一个混过去。 */
+  function pickOne(list, what, where) {
+    var seen = [], out = null;
+    list.forEach(function (v) {
+      if (v === null || v === undefined) return;
+      if (seen.indexOf(String(v)) < 0) { seen.push(String(v)); if (out === null) out = v; }
+    });
+    if (seen.length > 1) fail('agg.not-uniform', { field: what, where: where, values: seen });
+    return out;
+  }
+  function sumOf(list) {
+    var any = false, t = 0;
+    list.forEach(function (v) { if (v !== null && v !== undefined) { any = true; t += Number(v); } });
+    return any ? t : null;
+  }
+  function numTxt(v) { return (v === null || v === undefined) ? '—' : Number(v).toLocaleString('en-US'); }
+
+  /* ============================================================
+     没给排货表编号 / 找不到 —— 给出路，不是一句「错了」
+     ============================================================ */
+
+  function renderPicker(reason) {
+    var box = document.getElementById('body');
+    box.innerHTML = '';
+    document.getElementById('headMeta').textContent = reason;
+    var sheets = Store.get().sheets;
+
+    if (!sheets.length) {
+      var e = el('div', 'empty');
+      e.appendChild(el('div', 'empty__title', '还没有排货表'));
+      e.appendChild(el('div', 'empty__body', '排货表是一次排货作业。开一张，再在网格上安排发货。'));
+      var act = el('div', 'empty__act');
+      var b = el('button', 'btn btn--primary', '新建排货表');
+      b.type = 'button';
+      b.id = 'btnNewSheet';
+      b.addEventListener('click', function () {
+        var r = Store.createSheet();
+        if (!r.ok) { fail('sheet.create-failed', { result: r }); flash('bad', '建排货表失败：' + (r.error || '未知')); return; }
+        window.location.href = 'sheet.html?sheet=' + encodeURIComponent(r.sheet_id);
+      });
+      act.appendChild(b);
+      e.appendChild(act);
+      box.appendChild(e);
+      return;
+    }
+
+    var sec = el('div', 'sec');
+    var t = el('div', 'sec__title');
+    t.appendChild(el('span', null, '挑一张排货表'));
+    sec.appendChild(t);
+    var wrap = el('div', 'table-scroll');
+    var tbl = el('table', 'table');
+    tbl.innerHTML = '<thead><tr><th>排货表</th><th>状态</th><th class="r">排货单</th><th class="r">待编排池</th><th>创建日</th><th>操作</th></tr></thead>';
+    var tb = el('tbody');
+    sheets.forEach(function (sh) {
+      var poolUnits = (sh.pool || []).reduce(function (a, p) { return a + p.units; }, 0);
+      var tr = el('tr');
+      tr.innerHTML = '<td>' + esc(sh.sheet_id) + '</td>'
+        + '<td>' + chip(sh.state, sh.state === '已确认' ? 'good' : 'dim') + '</td>'
+        + '<td class="r">' + qty(sh.consignments.length) + '</td>'
+        + '<td class="r">' + qty(sh.pool.length) + ' 行 / ' + qty(poolUnits) + ' 件</td>'
+        + '<td>' + esc(sh.day) + '</td>'
+        + '<td><a href="sheet.html?sheet=' + esc(sh.sheet_id) + '">详情</a></td>';
+      tb.appendChild(tr);
+    });
+    tbl.appendChild(tb);
+    wrap.appendChild(tbl);
+    sec.appendChild(wrap);
+    box.appendChild(sec);
+  }
+
+  /* ============================================================
+     ① 核心网格 —— 与计划网格同构：店铺 · 货号 × 月
+     ============================================================ */
+
+  function buildRows() {
+    var raw = Store.dispatchGrid(sheetId);
+    var bySku = {};
+    raw.forEach(function (r) { (bySku[r.sku] = bySku[r.sku] || []).push(r); });
+
+    return Object.keys(bySku).sort().map(function (sku) {
+      var list = bySku[sku];
+      var bySeller = {};
+      list.forEach(function (r) { (bySeller[r.seller_id] = bySeller[r.seller_id] || []).push(r); });
+      var periods = list[0].periods;
+
+      var rows = Object.keys(bySeller).sort().map(function (sid) {
+        var g = bySeller[sid];
+        var where = sku + ' · ' + sid;
+        var cells = periods.map(function (period, i) {
+          var cs = g.map(function (r) { return r.cells[i]; });
+          return {
+            period: period,
+            // 可求和：msku 各自的销量与库存
+            system: sumOf(cs.map(function (c) { return c.system; })),
+            system_extrapolated: cs.some(function (c) { return c.system_extrapolated; }),
+            demand: sumOf(cs.map(function (c) { return c.demand; })),
+            closing: sumOf(cs.map(function (c) { return c.closing; })),
+            unknown: cs.some(function (c) { return c.unknown; }),
+            // 不可求和：货号级 / 记录级 / 店铺级，几个 msku 共用一份
+            purchase: pickOne(cs.map(function (c) { return c.purchase; }), 'purchase', where + ' · ' + period),
+            line_id: pickOne(cs.map(function (c) { return c.line_id; }), 'line_id', where + ' · ' + period),
+            /* ★ 安排量拆成三个状态，不是一个数：
+                 pooled     在待编排池里 —— 可改可撤
+                 consigned  已编入排货单、尚未投送 —— 要去排货单那边动
+                 dispatched 已投送 —— 只读，但必须看得见
+               合成一个的话，同一个外观对应几种**完全相反**的处置。
+               ★ arranged 是 pooled + consigned，**不含 dispatched** —— 别拿它当「动过没有」。 */
+            pooled: pickOne(cs.map(function (c) { return c.pooled; }), 'pooled', where + ' · ' + period) || 0,
+            consigned: pickOne(cs.map(function (c) { return c.consigned; }), 'consigned', where + ' · ' + period) || 0,
+            dispatched: pickOne(cs.map(function (c) { return c.dispatched; }), 'dispatched', where + ' · ' + period) || 0,
+            arranged: pickOne(cs.map(function (c) { return c.arranged; }), 'arranged', where + ' · ' + period) || 0
+          };
+        });
+        return {
+          sku: sku, seller_id: sid, seller_name: g[0].seller_name,
+          market: g[0].market, has_fba: g[0].has_fba, plan_id: g[0].plan_id,
+          mskus: g.map(function (r) { return r.seller_sku; }),
+          stockout_month: g.map(function (r) { return r.stockout_month; }).filter(Boolean).sort()[0] || null,
+          periods: periods, cells: cells
+        };
+      });
+      return { sku: sku, plan_id: list[0].plan_id, periods: periods, rows: rows };
+    });
+  }
+
+  function renderGrid(host) {
+    var blocks = buildRows();
+    var sh = Store.sheet(sheetId);
+
+    var sec = el('div', 'sec');
+    var title = el('div', 'sec__title');
+    title.appendChild(el('span', null, '排货网格'));
+    title.appendChild(el('span', 'muted', '安排发货的唯一入口 · ' + blocks.length + ' 个货号 · '
+      + blocks.reduce(function (t, b) { return t + b.rows.length; }, 0) + ' 个店铺行'));
+    sec.appendChild(title);
+
+    if (!blocks.length) {
+      var e = el('div', 'empty');
+      e.appendChild(el('div', 'empty__title', '网格是空的'));
+      e.appendChild(el('div', 'empty__body',
+        '网格只画已提交的销售计划。运营那边提交一张带货号和期望销量的计划，这里才会出现行。'));
+      sec.appendChild(e);
+      host.appendChild(sec);
+      dbg('grid.render', { blocks: 0 });
+      return;
+    }
+
+    blocks.forEach(function (b) {
+      var sheetBox = el('div', 'sheet');
+
+      var head = el('div', 'sheet__head');
+      head.appendChild(el('div', 'sheet__sku', b.sku));
+      head.appendChild(el('div', 'sheet__name', b.plan_id));
+      var stat = el('div', 'sheet__stat');
+      var arranged = 0, shipped = 0;
+      b.rows.forEach(function (r) {
+        r.cells.forEach(function (c) { arranged += c.arranged; shipped += c.dispatched; });
+      });
+      stat.appendChild(el('span', null, b.rows.length + ' 个店铺'));
+      var ar = el('span', arranged ? 'i-jade' : 'muted', '已安排 ' + arranged + ' 件');
+      stat.appendChild(ar);
+      // ★ 投送过的也要在块头上看得见，否则整块看起来像「这个货号没动过」
+      if (shipped > 0) stat.appendChild(el('span', 'i-jade', '已投送 ' + shipped + ' 件'));
+      head.appendChild(stat);
+      sheetBox.appendChild(head);
+
+      var scroll = el('div', 'sheet__scroll');
+      var tbl = el('table', 'grid');
+      var thead = '<thead><tr><th class="gh--row">店铺 · 货号</th>'
+        + b.periods.map(function (p) { return '<th>' + esc(p) + '</th>'; }).join('')
+        + '<th class="gh--sum">合计</th></tr></thead>';
+      tbl.innerHTML = thead;
+      var tb = el('tbody');
+
+      b.rows.forEach(function (r) {
+        var tr = el('tr');
+
+        var gr = el('td', 'gr');
+        gr.appendChild(el('div', 'gr__who', r.seller_name));
+        gr.appendChild(el('div', 'gr__code', r.sku));
+        var sub = el('div', 'gr__sub');
+        sub.innerHTML = r.mskus.length + ' msku · ' + esc(r.market)
+          + (r.has_fba ? '' : ' ' + chip('该平台无 FBA', 'dim'))
+          + (r.stockout_month ? ' ' + chip('断货 ' + r.stockout_month, 'bad') : '');
+        gr.appendChild(sub);
+        tr.appendChild(gr);
+
+        r.cells.forEach(function (c) { tr.appendChild(cellNode(r, c, sh)); });
+        tr.appendChild(sumNode(r));
+
+        tb.appendChild(tr);
+      });
+
+      tbl.appendChild(tb);
+      scroll.appendChild(tbl);
+      sheetBox.appendChild(scroll);
+      sec.appendChild(sheetBox);
+    });
+
+    host.appendChild(sec);
+    dbg('grid.render', {
+      blocks: blocks.length,
+      rows: blocks.reduce(function (t, b) { return t + b.rows.length; }, 0),
+      periods: blocks[0].periods.length, sheet_state: sh.state
+    });
+  }
+
+  function miniRow(k, v, ink, extra) {
+    var row = el('div', 'cell__row');
+    row.appendChild(el('span', 'k', k));
+    var val = el('span', 'v' + (ink ? ' ' + ink : ''));
+    val.innerHTML = esc(numTxt(v)) + (extra || '');
+    row.appendChild(val);
+    return row;
+  }
+
+  /* 这一格的量编进了哪几张排货单。★ 只算未投送的 ——
+     投送过的货已经不在我们手上了，指过去也改不动。 */
+  function consignedIn(lineId, sellerId) {
+    var sh = Store.sheet(sheetId), out = [];
+    (sh.consignments || []).forEach(function (cn) {
+      if (cn.our_stage === '已投送' || cn.our_stage === '已归档') return;
+      var units = (cn.lines || []).reduce(function (t, l) {
+        return t + ((l.line_id === lineId && String(l.seller_id) === String(sellerId)) ? l.units : 0);
+      }, 0);
+      if (units > 0) out.push({ cid: cn.cid, units: units });
+    });
+    return out;
+  }
+
+  /* 「已编入排货单 #N」那一句 + 跳过去的锚点。
+     ★ kind='only'    池里没有了，这一格的下一步在排货单上
+       kind='partial' 池里还有，按钮动的只是池里那部分 —— 不说的话，
+                      「改成 3」会被理解成总数变 3，而实际上单里那几件一动不动。 */
+  function consignedNote(r, c, key, kind) {
+    var where = consignedIn(c.line_id, r.seller_id);
+    var box = el('span', 'muted');
+    box.setAttribute('data-consigned-note', key);
+
+    if (!where.length) {
+      /* ★ 有声的回退：格子说「已编入 M 件」，却找不到是哪一张单 —— 两处对不上。
+         悄悄什么都不显示的话，这一格就变回「看起来没排过」，正是要修的那个形态。 */
+      fail('cell.consigned-without-consignment', {
+        sheet_id: sheetId, sku: r.sku, seller_id: r.seller_id, period: c.period,
+        line_id: c.line_id, consigned: c.consigned,
+        hint: '格子上有 consigned，排货单里却找不到对应的行'
+      });
+      box.className = 'i-red';
+      box.textContent = '已编入排货单 ' + c.consigned + ' 件，但找不到是哪一张 —— 两处数据对不上';
+      return box;
+    }
+
+    box.textContent = (kind === 'partial'
+      ? '另有 ' + c.consigned + ' 件已编入排货单 ' + where.map(function (x) { return '#' + x.cid; }).join('、')
+        + '，上面两个按钮只动待编排的那 ' + c.pooled + ' 件'
+      : '已编入排货单 ' + where.map(function (x) { return '#' + x.cid; }).join('、')
+        + '，要改请去那张单上动') + '　';
+    where.forEach(function (x) {
+      var a = el('a', null, '跳到 #' + x.cid);
+      a.href = '#' + consId(x.cid);
+      a.setAttribute('data-consigned-jump', key);
+      a.addEventListener('click', function (ev) { ev.preventDefault(); jumpTo(consId(x.cid)); });
+      box.appendChild(a);
+    });
+    return box;
+  }
+
+  /* 这一格的量投送在哪几张排货单上。★ 只算已投送/已归档的那几张。 */
+  function dispatchedIn(lineId, sellerId) {
+    var sh = Store.sheet(sheetId), out = [];
+    (sh.consignments || []).forEach(function (cn) {
+      if (cn.our_stage !== '已投送' && cn.our_stage !== '已归档') return;
+      var units = (cn.lines || []).reduce(function (t, l) {
+        return t + ((l.line_id === lineId && String(l.seller_id) === String(sellerId)) ? l.units : 0);
+      }, 0);
+      if (units > 0) out.push({ cid: cn.cid, units: units });
+    });
+    return out;
+  }
+
+  /* 「已投送 N 件」那一句 + 锚点。★ 只读 —— 但**必须看得见**：
+     不显示的话，投送之后这一格又回到「看起来没排过」，
+     而「已经发出去了」和「从没排过」的下一步完全相反。
+     ★ 措辞只有一种：它和格子处在哪一档正交，写成随档变就会多出一个走不到的分支。 */
+  function dispatchedNote(r, c, key) {
+    var where = dispatchedIn(c.line_id, r.seller_id);
+    var box = el('span', 'muted');
+    box.setAttribute('data-dispatched-note', key);
+
+    if (!where.length) {
+      // ★ 有声的回退：同 consignedNote —— 悄悄不显示就等于退回「看起来没排过」
+      fail('cell.dispatched-without-consignment', {
+        sheet_id: sheetId, sku: r.sku, seller_id: r.seller_id, period: c.period,
+        line_id: c.line_id, dispatched: c.dispatched,
+        hint: '格子上有 dispatched，已投送的排货单里却找不到对应的行'
+      });
+      box.className = 'i-red';
+      box.textContent = '已投送 ' + c.dispatched + ' 件，但找不到是哪一张单 —— 两处数据对不上';
+      return box;
+    }
+
+    var who = where.map(function (x) { return '#' + x.cid; }).join('、');
+    box.textContent = '已投送 ' + c.dispatched + ' 件，货已出手 —— 排货单 ' + who
+      + '，这部分只能看不能改　';
+    where.forEach(function (x) {
+      var a = el('a', null, '跳到 #' + x.cid);
+      a.href = '#' + consId(x.cid);
+      a.setAttribute('data-dispatched-jump', key);
+      a.addEventListener('click', function (ev) { ev.preventDefault(); jumpTo(consId(x.cid)); });
+      box.appendChild(a);
+    });
+    return box;
+  }
+
+  function cellNode(r, c, sh) {
+    var td = el('td', 'cell');
+
+    /* ★ 「这一格动过没有」＝ 四个数里任意一个不为零。
+       ★★ 不能用 c.arranged —— 它是 pooled + consigned，**不含 dispatched**。
+          拿它当「动过没有」，投送之后这一格就又变回「看起来没排过」，
+          而那正是这一路修过来的那个 bug 的形状。 */
+    var touched = (c.pooled || 0) + (c.consigned || 0) + (c.dispatched || 0);
+
+    // 左边条：断货 > 接不住 > 动过。断货比「动过」更需要先被看见
+    var state = '';
+    if (!c.unknown && c.closing !== null && c.closing <= 0) state = 'out';
+    else if (!c.unknown && c.closing !== null && c.demand !== null && c.closing < c.demand) state = 'low';
+    else if (touched > 0) state = 'done';
+    if (state) td.setAttribute('data-state', state);
+
+    if (c.unknown || c.closing === null) {
+      td.appendChild(el('div', 'cell__unknown', '库存预估未知'));
+    } else {
+      td.appendChild(el('div', 'cell__close', numTxt(c.closing)));
+    }
+
+    var rows = el('div', 'cell__rows');
+    rows.appendChild(miniRow('销售预估', c.system, 'i-pencil',
+      c.system_extrapolated ? '<sup class="ext">外推</sup>' : ''));
+    rows.appendChild(miniRow('期望销量', c.demand, 'i-ink'));
+    rows.appendChild(miniRow('计划采购', c.purchase, 'i-ink'));
+    /* 四个状态的数分开写 —— 它们的处置两两不同：
+         已安排（还在我们手上）＝ 池里 + 已编入单
+         其中已编入单：要去那张单上动
+         已投送：只能看 */
+    if (c.arranged > 0) {
+      rows.appendChild(miniRow('已安排', c.arranged, 'i-jade'));
+      if (c.consigned > 0) rows.appendChild(miniRow('其中已编入单', c.consigned, 'i-jade'));
+    }
+    if (c.dispatched > 0) rows.appendChild(miniRow('已投送', c.dispatched, 'i-jade'));
+    td.appendChild(rows);
+
+    /* ★ 一格**一个主动作**，按状态切换，不并列 —— 而状态有**四个**：
+
+         touched === 0                → ［安排发货］
+         pooled   >  0                → ［改］［撤回］（只动待编排的那部分）
+         pooled === 0 && consigned>0  → 不给按钮，指到那张排货单上去
+         只剩 dispatched              → ★ 只读：「已投送，货已出手」+ 指向那张单
+
+       ★★ 后两种**绝不许退回［安排发货］**。这一路修过来的都是同一个形状：
+         「还没排过」和「已经动过」长成一个样，而两者的下一步完全相反。
+         已投送这一档严重程度低一档（货真出手了、pending 那边有账），
+         但**形状完全相同** —— 形状相同的 bug 会以同样的方式再咬一次。
+
+       三个动作走同一条路（Store.setArrangement）：
+         安排 = 从空替换成 N ·  改 = 从 N 替换成 M ·  撤回 = 替换成空。
+       ★ 不让「安排发货」和「改」并存：它们行为确实不一样（一个从空、一个预填），
+         但用户看到的是两个按钮做同一件事、还得读一段说明才知道差别。 */
+    var key = r.sku + '|' + r.seller_id + '|' + c.period;
+    var act = el('div', 'btn-row');
+    if (c.pooled > 0) {
+      var ed = el('button', 'btn btn--sm', '改');
+      ed.type = 'button';
+      ed.setAttribute('data-edit', key);
+      ed.addEventListener('click', function () { openArrange(r, c, 'edit'); });
+      act.appendChild(ed);
+
+      var un = el('button', 'btn btn--sm btn--ghost', '撤回');
+      un.type = 'button';
+      un.setAttribute('data-unarrange', key);
+      un.addEventListener('click', function () { askUnarrange(r, c); });
+      act.appendChild(un);
+    } else if (c.consigned > 0 || c.dispatched > 0) {
+      /* 池里没有了，但这一格动过。★ 除了指路，还得留一条**往下走**的路：
+         这条计划记录多半还有「还能排」的量（投送 5 件不等于 300 件都排完了），
+         只给一句说明就把这一格做成了死路 —— 那比它看起来像「没排过」更糟。
+         ★ 所以按钮标成「再安排一批」而不是「安排发货」，标记也换一个：
+           「从没排过」和「已经排过、再排一批」必须一眼分得开，这正是这一路在修的东西。 */
+      var more = el('button', 'btn btn--sm', '再安排一批');
+      more.type = 'button';
+      more.setAttribute('data-arrange-more', key);
+      more.addEventListener('click', function () { openArrange(r, c, 'new'); });
+      act.appendChild(more);
+    } else {
+      var btn = el('button', 'btn btn--sm', '安排发货');
+      btn.type = 'button';
+      btn.setAttribute('data-arrange', key);
+      btn.addEventListener('click', function () { openArrange(r, c, 'new'); });
+      act.appendChild(btn);
+    }
+    // 按钮之外的量要说清按钮动不到它们
+    if (c.consigned > 0) act.appendChild(consignedNote(r, c, key, c.pooled > 0 ? 'partial' : 'only'));
+    /* ★ 「已投送」这句和上面三档**正交**：有就说，说的内容也不随档变。
+       写成随档变的话，其中一档（池里有量 + 已投送）在当前模型下走不到 ——
+       投送之后整张排货表就是「已确认」，再也安排不进新的量 ——
+       那半边永远没有证伪路径，而**死的那半才是问题**。 */
+    if (c.dispatched > 0) act.appendChild(dispatchedNote(r, c, key));
+    td.appendChild(act);
+    return td;
+  }
+
+  function sumNode(r) {
+    var td = el('td', 'gsum');
+    var demand = sumOf(r.cells.map(function (c) { return c.demand; }));
+    td.appendChild(el('div', 'cell__close', numTxt(demand)));
+    var rows = el('div', 'cell__rows');
+    rows.appendChild(miniRow('销售预估', sumOf(r.cells.map(function (c) { return c.system; })), 'i-pencil'));
+    rows.appendChild(miniRow('计划采购', sumOf(r.cells.map(function (c) { return c.purchase; })), 'i-ink'));
+    // ★ 库存是水位不是流量，逐月求和没有意义 —— 给期末那一个月
+    var last = r.cells[r.cells.length - 1];
+    rows.appendChild(miniRow('期末库存', last && !last.unknown ? last.closing : null, 'i-pencil'));
+    var arranged = r.cells.reduce(function (t, c) { return t + c.arranged; }, 0);
+    rows.appendChild(miniRow('已安排', arranged, arranged ? 'i-jade' : 'i-pencil'));
+    var consigned = r.cells.reduce(function (t, c) { return t + c.consigned; }, 0);
+    if (consigned > 0) rows.appendChild(miniRow('其中已编入单', consigned, 'i-jade'));
+    // ★ 合计列同理：已投送不并进「已安排」，但必须自己占一行
+    var dispatched = r.cells.reduce(function (t, c) { return t + c.dispatched; }, 0);
+    if (dispatched > 0) rows.appendChild(miniRow('已投送', dispatched, 'i-jade'));
+    td.appendChild(rows);
+    return td;
+  }
+
+  /* ---------- 安排 / 改 / 撤回：本地仓货品筛选器 ---------- */
+
+  /* 这一格现在在各仓分别安排了多少 —— 「改」预填的就是它。
+     ★ 预填不是锦上添花：Store.setArrangement 是**整体替换**，
+       弹窗打开时是空的就等于「确定＝清零」，改个数量会变成一次误删。 */
+  function currentPicks(lineId, sellerId) {
+    var sh = Store.sheet(sheetId);
+    var by = {};
+    (sh.pool || []).forEach(function (p) {
+      if (p.line_id !== lineId || String(p.seller_id) !== String(sellerId)) return;
+      by[String(p.from_wid)] = (by[String(p.from_wid)] || 0) + p.units;
+    });
+    return by;
+  }
+  function totalOf(map) {
+    return Object.keys(map).reduce(function (t, k) { return t + map[k]; }, 0);
+  }
+
+  function openArrange(r, c, mode) {
+    mode = mode === 'edit' ? 'edit' : 'new';
+    var sh = Store.sheet(sheetId);
+    if (sh.state !== '草稿') {
+      flash('bad', '排货表已是「' + sh.state + '」，不能再安排发货。要改就新开一张排货表。');
+      return;
+    }
+    if (!c.line_id) {
+      flash('bad', r.sku + ' · ' + c.period + ' 这一格没有计划记录 —— 该月这个货号还没提交过计划采购量，'
+        + '没有可排的量。要排货请先回销售计划补上并提交。');
+      return;
+    }
+
+    var src = Store.localSources(r.sku);      // ★ 已按货号过滤
+    var pre = currentPicks(c.line_id, r.seller_id);
+    var was = totalOf(pre);
+
+    /* ★ 「安排发货」只会出现在没安排过的格子上 —— 走到这里而 was > 0，
+       说明格子的状态和池子对不上。**不许静默按「从空开始」走**：
+       那就是整体替换把已有的量清掉，而屏幕上只会安静地少一截数字。
+       按「改」来处理（预填），并把这次矛盾喊出来。 */
+    if (mode === 'new' && was > 0) {
+      fail('arrange.new-on-arranged-cell', {
+        sheet_id: sheetId, sku: r.sku, seller_id: r.seller_id, period: c.period,
+        line_id: c.line_id, was: was, cell_pooled: c.pooled, cell_consigned: c.consigned,
+        hint: '格子上应该只有［改］［撤回］才对；按「改」处理，已预填当前值'
+      });
+      mode = 'edit';
+    }
+
+    /* ★ 已经安排在某个仓、而那个仓这次没出现在货源表里 —— 不许静默丢掉。
+       整体替换的语义下，「没渲染出来」＝「确定时被清零」，
+       而那一格的数字只会安静地少一截，没有任何地方说过话。
+       所以把它当一行照样画出来，可编辑、可看见。 */
+    var known = {};
+    src.forEach(function (x) { known[String(x.wid)] = 1; });
+    var orphan = Object.keys(pre).filter(function (w) { return !known[w]; });
+    var rows = src.slice();
+    orphan.forEach(function (w) {
+      rows.push({
+        wid: Number(w), warehouse: Store.warehouseName(w), sku: r.sku,
+        valid: null, locked: null, committed: null, free: null, off_list: true
+      });
+    });
+
+    // 「改」预填当前各仓的安排量；「安排发货」只出现在空格子上，从空开始
+    var vals = {};
+    if (mode === 'edit') Object.keys(pre).forEach(function (w) { vals[w] = String(pre[w]); });
+
+    arrangeCtx = {
+      row: r, cell: c, mode: mode, src: src, rows: rows,
+      pre: pre, was: was, consigned: c.consigned || 0, dispatched: c.dispatched || 0,
+      orphan: orphan, vals: vals, inputs: []
+    };
+
+    document.getElementById('arHead').textContent =
+      (mode === 'edit' ? '改这一格的安排' : '本地仓货品筛选器')
+      + ' · ' + r.sku + ' · ' + r.seller_name + ' · ' + c.period;
+
+    var skuSel = document.getElementById('arSku');
+    skuSel.innerHTML = '';
+    var o = el('option', null, '货号 ' + r.sku);
+    o.value = r.sku;
+    skuSel.appendChild(o);
+    skuSel.value = r.sku;
+
+    var widSel = document.getElementById('arWid');
+    widSel.innerHTML = '';
+    var oAll = el('option', null, '本地仓名（全部）');
+    oAll.value = '';
+    widSel.appendChild(oAll);
+    rows.forEach(function (x) {
+      var ow = el('option', null, x.warehouse);
+      ow.value = String(x.wid);
+      widSel.appendChild(ow);
+    });
+    widSel.value = '';
+
+    document.getElementById('arErr').innerHTML = '';
+    renderArrangeWhy();
+    renderArrangeTable();
+    openDlg('dlgArrange');
+    dbg('arrange.open', {
+      sheet_id: sheetId, sku: r.sku, seller_id: r.seller_id, period: c.period,
+      line_id: c.line_id, mode: mode, sources: src.length,
+      // ★ 四个状态都记进日志：光看 was 分不出「这一格没动过」和「动过但量都不在池里」
+      was: totalOf(pre), consigned: c.consigned || 0, dispatched: c.dispatched || 0,
+      prefilled: Object.keys(vals).length, off_list: orphan.length
+    });
+  }
+
+  /* 弹窗顶上那句：这一格现在是什么状态、这次「确定」会做什么。
+     ★ 整体替换必须说出来 —— 不说的话，「安排发货」在一个已安排过的格子上
+       看起来像追加，实际是替换。 */
+  function renderArrangeWhy() {
+    var ctx = arrangeCtx;
+    var box = document.getElementById('arWhy');
+    box.innerHTML = '';
+    if (!ctx) { fail('arrange.no-ctx', { where: 'renderArrangeWhy' }); return; }
+
+    if (ctx.mode === 'edit') {
+      var f = el('div', 'flash');
+      f.appendChild(el('div', null, '这一格现在安排了 ' + ctx.was + ' 件，各仓的量已经预填在下面。'
+        + '确定后按你填的量整体替换，不是往上加。'));
+      box.appendChild(f);
+      /* ★ 已编入排货单 / 已投送的量**不在这里** —— 不说的话，「改成 3」会被理解成
+         这一格总共 3 件，而那些件一动不动。 */
+      if (ctx.consigned > 0) {
+        var fc = el('div', 'flash flash--bad');
+        fc.appendChild(el('div', null, '这一格另有 ' + ctx.consigned + ' 件**已经编入排货单**，'
+          + '不在这个窗口里、也不会被这次替换动到。要改那部分，去排货单上动。'));
+        box.appendChild(fc);
+      }
+      /* ★ 这里不写「另有 N 件已投送」：投送之后整张排货表就是「已确认」，
+         openArrange 一进门就被挡住了 —— 那段话永远显示不出来，
+         也就永远没有证伪路径。想说这件事，得先让那个状态走得到。 */
+    } else {
+      box.appendChild(el('div', 'muted', '这一格还没安排过。填几个仓的分拨数量，确定后进待编排池。'));
+    }
+
+    if (ctx.orphan.length) {
+      var f3 = el('div', 'flash flash--bad');
+      f3.appendChild(el('div', null, ctx.orphan.length + ' 个仓已经不在这个货号的货源表里，'
+        + '但它们上面还挂着已安排的量（' + ctx.orphan.map(function (w) {
+          return Store.warehouseName(w) + ' ' + ctx.pre[w] + ' 件';
+        }).join('、') + '）。下面照样列出来 —— 不列就会在「确定」时被清掉，而没有任何地方说过话。'));
+      box.appendChild(f3);
+    }
+  }
+
+  /* 把当前画出来的那几个输入框的值收回 ctx.vals。
+     ★ 换一次筛选就重画一次表：值只活在 input 上的话，被筛掉的那几行填过的量
+       会在「整体替换」时被悄悄清零。收回来一份，才敢重画。 */
+  function syncArrangeVals() {
+    var ctx = arrangeCtx;
+    if (!ctx) return;
+    ctx.inputs.forEach(function (x) { ctx.vals[String(x.wid)] = String(x.inp.value || ''); });
+  }
+
+  function renderArrangeTable() {
+    var ctx = arrangeCtx;
+    if (!ctx) { fail('arrange.no-ctx', { where: 'renderArrangeTable' }); return; }
+    syncArrangeVals();
+    var want = document.getElementById('arWid').value;
+    var kept = ctx.rows.filter(function (x) { return !want || String(x.wid) === want; });
+    var hiddenRows = ctx.rows.filter(function (x) { return want && String(x.wid) !== want; });
+    var hidden = hiddenRows.length;
+    var hiddenFilled = hiddenRows.filter(function (x) {
+      return String(ctx.vals[String(x.wid)] || '').trim() !== '';
+    });
+
+    var box = document.getElementById('arTable');
+    box.innerHTML = '';
+    ctx.inputs = [];
+
+    if (!kept.length) {
+      var e = el('div', 'empty');
+      e.appendChild(el('div', 'empty__title', ctx.rows.length ? '这个仓里没有这个货号' : '本地仓还没有这个货号'));
+      e.appendChild(el('div', 'empty__body', ctx.rows.length
+        ? '把「本地仓名」换回「全部」，另外 ' + hidden + ' 个仓就回来了。'
+        : '货要先下采购单、到货才进本地仓。用顶栏的「推进一天」推到到货日再来。'));
+      box.appendChild(e);
+      return;
+    }
+
+    var wrap = el('div', 'table-scroll');
+    var tbl = el('table', 'table table--dense');
+    tbl.style.minWidth = '640px';
+    /* ★ 三个数一起给：仓里 / 已被别处占 / 现在能安排。
+       只给一个「可发 24」，「仓里就 24」和「仓里 60、44 件已被别处安排」
+       在屏幕上长得一模一样 —— 上一个 bug 就是这么来的。 */
+    tbl.innerHTML = '<thead><tr><th>本地仓名</th><th>货号</th>'
+      + '<th class="r">仓里</th><th class="r">已被别处占</th><th class="r">现在能安排</th>'
+      + '<th class="r">分拨数量</th></tr></thead>';
+    var tb = el('tbody');
+    kept.forEach(function (x) {
+      var tr = el('tr');
+
+      var tdW = el('td');
+      tdW.appendChild(el('div', null, x.warehouse));
+      if (x.off_list) tdW.appendChild(el('div', 'i-red', '已不在本货号的货源表里'));
+      tr.appendChild(tdW);
+
+      var tdSku = el('td', null, x.sku);
+      tdSku.setAttribute('data-src-sku', x.sku);
+      tr.appendChild(tdSku);
+
+      var tdValid = el('td', 'r');
+      tdValid.setAttribute('data-src-valid', String(x.valid === null ? '' : x.valid));
+      tdValid.innerHTML = x.valid === null ? '<span class="muted">—</span>'
+        : qty(x.valid) + (x.locked ? '<br><span class="muted">已锁 ' + x.locked + '</span>' : '');
+      tr.appendChild(tdValid);
+
+      var tdCom = el('td', 'r');
+      tdCom.setAttribute('data-src-committed', String(x.committed === null ? '' : x.committed));
+      tdCom.innerHTML = x.committed === null ? '<span class="muted">—</span>' : qty(x.committed);
+      tr.appendChild(tdCom);
+
+      var tdFree = el('td', 'r');
+      tdFree.setAttribute('data-src-free', String(x.free === null ? '' : x.free));
+      tdFree.innerHTML = x.free === null ? '<span class="muted">—</span>' : qty(x.free);
+      tr.appendChild(tdFree);
+
+      var tdIn = el('td', 'r');
+      var inp = el('input', 'inp');
+      inp.type = 'number'; inp.min = '0'; inp.placeholder = '0';
+      inp.value = String(ctx.vals[String(x.wid)] || '');
+      inp.setAttribute('data-src-wid', String(x.wid));
+      inp.setAttribute('aria-label', x.warehouse + ' 分拨数量');
+      /* ★ 值存在 ctx.vals 里，不是存在 DOM 里：换一次筛选就重画一次表，
+         值只活在 input 上的话，被筛掉的那几行填过的量会**整体替换时被悄悄清零**。 */
+      function keep() { ctx.vals[String(x.wid)] = String(inp.value || ''); }
+      inp.addEventListener('input', keep);
+      inp.addEventListener('change', keep);
+      tdIn.appendChild(inp);
+      tr.appendChild(tdIn);
+
+      ctx.inputs.push({ wid: x.wid, inp: inp });
+      tb.appendChild(tr);
+    });
+    tbl.appendChild(tb);
+    wrap.appendChild(tbl);
+    box.appendChild(wrap);
+    if (hidden) {
+      box.appendChild(el('div', hiddenFilled.length ? 'i-red' : 'muted',
+        '按本地仓名过滤，隐藏 ' + hidden + ' 行'
+        + (hiddenFilled.length
+            ? '；其中 ' + hiddenFilled.length + ' 行已经填了量（'
+              + hiddenFilled.map(function (x) {
+                  return x.warehouse + ' ' + String(ctx.vals[String(x.wid)]).trim();
+                }).join('、') + '），确定时照样算进这次安排'
+            : '')));
+    }
+  }
+
+  function doArrange() {
+    var ctx = arrangeCtx;
+    var errBox = document.getElementById('arErr');
+    errBox.innerHTML = '';
+    if (!ctx) { fail('arrange.no-ctx', { where: 'doArrange' }); return; }
+
+    /* ★ 先把可见的那几行收回来，再从 ctx.vals 整份取 ——
+       只读可见的 input，被筛掉的行就在「整体替换」时被清零了。 */
+    syncArrangeVals();
+    var picks = [], bad = [];
+    ctx.rows.forEach(function (x) {
+      var raw = String(ctx.vals[String(x.wid)] == null ? '' : ctx.vals[String(x.wid)]).trim();
+      if (raw === '') return;
+      var v = Number(raw);
+      if (!isFinite(v) || v < 0) { bad.push(x.warehouse + '：「' + raw + '」不是一个有效的数量'); return; }
+      if (v === 0) return;
+      picks.push({ wid: x.wid, units: v });
+    });
+    if (bad.length) {
+      fail('arrange.bad-input', { sheet_id: sheetId, line_id: ctx.cell.line_id, bad: bad });
+      var fb = el('div', 'flash flash--bad');
+      var bb = el('div');
+      bb.appendChild(el('span', null, '有 ' + bad.length + ' 行填的不是数量，这次一件都没排进去'));
+      var bul = el('ul');
+      bad.forEach(function (t) { var li = el('li'); li.textContent = t; bul.appendChild(li); });
+      bb.appendChild(bul);
+      fb.appendChild(bb);
+      errBox.appendChild(fb);
+      return;
+    }
+    if (!picks.length) {
+      /* ★ 空着点「确定」不当成撤回：整体替换的语义下那是一次误删，
+         而误删和「本来就想清空」在这里长得一模一样。清空走格子上的「撤回」，那条路有二次确认。 */
+      errBox.innerHTML = '<div class="flash flash--bad">一个仓都没填分拨数量。'
+        + '要把这一格清空，请关掉这里、用格子上的「撤回」—— 那条路会再问一次。</div>';
+      dbg('arrange.empty', { sku: ctx.row.sku, period: ctx.cell.period, mode: ctx.mode, was: ctx.was });
+      return;
+    }
+
+    var t0 = Date.now();
+    /* ★ 安排 / 改 / 撤回统一走 setArrangement：一次操作整体决定这一格的安排。
+       三条路各有各的校验，迟早会对不上 —— 而「改」恰恰是最容易被漏掉的那条。 */
+    var r = Store.setArrangement(sheetId, {
+      line_id: ctx.cell.line_id, seller_id: ctx.row.seller_id, picks: picks
+    });
+    dbg('arrange.done', {
+      sheet_id: sheetId, sku: ctx.row.sku, seller_id: ctx.row.seller_id, period: ctx.cell.period,
+      line_id: ctx.cell.line_id, mode: ctx.mode, picks: picks, ok: r.ok,
+      was: r.was === undefined ? ctx.was : r.was, units: r.units || 0,
+      error: r.error || null, rejected: r.rejected || null, ms: Date.now() - t0
+    });
+
+    if (!r.ok) {
+      /* ★ rejected 可能有多条（待排量不够 + 某个仓不够）—— 逐条列出。
+         只报第一条会让人玩打地鼠：改完这个又撞那个。 */
+      fail('arrange.rejected', {
+        sheet_id: sheetId, line_id: ctx.cell.line_id, mode: ctx.mode, error: r.error,
+        rejected: r.rejected || [r.detail]
+      });
+      var f = el('div', 'flash flash--bad');
+      var body = el('div');
+      body.appendChild(el('span', null, '这次分拨一件都没排进去（' + r.error + '）'));
+      var ul = el('ul');
+      (r.rejected && r.rejected.length ? r.rejected : [r.detail || r.error]).forEach(function (t) {
+        var li = el('li');
+        li.textContent = t;
+        ul.appendChild(li);
+      });
+      body.appendChild(ul);
+      f.appendChild(body);
+      errBox.appendChild(f);
+      return;
+    }
+
+    var where = ctx.row.sku + ' · ' + ctx.row.seller_name + ' · ' + ctx.cell.period;
+    var was = r.was || 0;
+    closeDlg('dlgArrange');
+    render();
+    if (was > 0) {
+      flash('good', '已改：' + was + ' → ' + r.units + ' 件，' + where
+        + '，待编排池现在 ' + r.pool + ' 行');
+    } else {
+      flash('good', '已安排 ' + r.units + ' 件：' + where + '，进了待编排池（' + r.pool + ' 行）');
+    }
+  }
+
+  /* 撤回＝把这一格整体替换成空。★ 它会让下游的量退回待排，所以要再问一次。 */
+  function askUnarrange(r, c) {
+    Shell.confirmDanger({
+      /* ★ 撤回动的只是**待编排池里那部分**（pooled）。已编入排货单的量不在这里，
+         按 arranged 报数会承诺一个它做不到的数字。 */
+      title: '撤回 ' + r.sku + ' · ' + r.seller_name + ' · ' + c.period + ' 待编排的 ' + c.pooled + ' 件',
+      warn: (c.consigned > 0 || c.dispatched > 0)
+        ? '只撤回待编排池里那 ' + c.pooled + ' 件'
+          + (c.consigned > 0 ? '；另有 ' + c.consigned + ' 件已编入排货单，要动得去那张单上' : '')
+          + (c.dispatched > 0 ? '；另有 ' + c.dispatched + ' 件已投送，货已出手，谁也撤不回' : '')
+        : '撤回后这批量退回「还能排」，这一格重新变成没安排过',
+      steps: ['把这一格在待编排池里的行整体清掉',
+              '这条计划记录的「还能排」加回 ' + c.pooled + ' 件',
+              '本地仓的可安排量同步放开'],
+      confirmText: '我确认，撤回',
+      onConfirm: function () { doUnarrange(r, c); }
+    });
+  }
+
+  function doUnarrange(r, c) {
+    var t0 = Date.now();
+    // ★ 走的是和「安排 / 改」同一个原语：撤回 = picks 传空
+    var res = Store.setArrangement(sheetId, {
+      line_id: c.line_id, seller_id: r.seller_id, picks: []
+    });
+    dbg('unarrange.done', {
+      sheet_id: sheetId, line_id: c.line_id, seller_id: r.seller_id,
+      ok: res.ok, was: res.was || 0, error: res.error || null, ms: Date.now() - t0
+    });
+    if (!res.ok) {
+      fail('unarrange.rejected', {
+        sheet_id: sheetId, line_id: c.line_id, seller_id: r.seller_id,
+        error: res.error, detail: res.detail, rejected: res.rejected || null
+      });
+      flash('bad', '撤回失败：' + res.error + ' ' + (res.detail || ''));
+      return;
+    }
+    render();
+    if (!res.was) {
+      /* ★ 有声的回退：格子上写着「已安排 N」、撤回却发现池子里一行都没有，
+         说明两处数据已经对不上了。悄悄当成成功，下次还会撞上同一件事。 */
+      fail('unarrange.nothing-released', {
+        sheet_id: sheetId, line_id: c.line_id, seller_id: r.seller_id,
+        cell_pooled: c.pooled, cell_consigned: c.consigned,
+        hint: '格子上显示待编排有量，池子里却没有对应的行'
+      });
+      flash('bad', '撤回没有退回任何量 —— 格子上写着待编排 ' + c.pooled
+        + ' 件，待编排池里却找不到对应的行。刷新一次再看，还这样就是数据对不上了。');
+      return;
+    }
+    flash('good', '已撤回 ' + res.was + ' 件，量退回待排：' + r.sku + ' · ' + r.seller_name + ' · ' + c.period);
+  }
+
+  /* ============================================================
+     ② 待编排池
+     ============================================================ */
+
+  /* 待编排池收成一行：网格和池子是**一条路的两步**，不是两个入口。
+     ★ 但 0 件时也要说话 —— 整块消失的话，「还没安排过」和「这一版没画出来」
+       在屏幕上长得一模一样，而后者才是要命的那个。 */
+  function renderPool(host) {
+    var sh = Store.sheet(sheetId);
+    var poolUnits = sh.pool.reduce(function (t, p) { return t + p.units; }, 0);
+
+    var fold = el('details', 'fold');
+    fold.id = 'poolFold';                 // ★ 默认不加 open：平时只看到网格
+    var sum = el('summary');
+    if (sh.pool.length) {
+      sum.appendChild(el('span', null, '已安排待编排 ' + poolUnits + ' 件 / ' + sh.pool.length + ' 行'));
+      sum.appendChild(el('span', 'muted', '　点开批量编入排货单'));
+    } else {
+      sum.appendChild(el('span', null, '待编排池是空的'));
+      sum.appendChild(el('span', 'muted', '　还没有安排任何发货 —— 在上面的网格里安排'));
+    }
+    fold.appendChild(sum);
+
+    var body = el('div', 'fold__body');
+    fold.appendChild(body);
+    host.appendChild(fold);
+
+    if (!sh.pool.length) {
+      var e = el('div', 'empty');
+      e.appendChild(el('div', 'empty__title', '池子是空的'));
+      e.appendChild(el('div', 'empty__body', sh.state === '草稿'
+        ? '在上面的网格里点某一格的「安排发货」，分拨出来的量会先落在这里，再编入排货单。'
+        : '排货表已是「' + sh.state + '」，不能再安排发货。'));
+      body.appendChild(e);
+      return;
+    }
+
+    body.appendChild(el('div', 'muted',
+      '池里的量已经算进「已排未发」—— 不算就会把同一批需求排两遍。'));
+
+    /* 批量编入：勾几行，一起编进同一张排货单。
+       ★ 单行的「编入」没有去掉 —— 它能改数量（只编入一部分），批量那条按池里的全量走。 */
+    var canEdit = (sh.state === '草稿' && sh.consignments.length > 0);
+    var batchSel = null, saySpan = null;
+    var checks = [];
+
+    function saySelected() {
+      var picked = checks.filter(function (x) { return x.box.checked; });
+      var units = picked.reduce(function (t, x) { return t + x.p.units; }, 0);
+      if (saySpan) saySpan.textContent = '勾中 ' + picked.length + ' 行 / ' + units + ' 件';
+      return picked;
+    }
+
+    if (canEdit) {
+      var bar = el('div', 'bar');
+      var grp = el('div', 'bar__grp');
+      grp.appendChild(el('span', 'bar__lbl', '编入哪张排货单'));
+      batchSel = el('select', 'inp inp--text');
+      batchSel.id = 'poolBatchTarget';
+      sh.consignments.forEach(function (c) {
+        var o = el('option', null, '#' + c.cid + ' · ' + chanName(c.channel) + ' · ' + destText(c)
+          + (c.our_stage === '草稿' ? '' : '（' + c.our_stage + '，不能再改行）'));
+        o.value = c.cid;
+        batchSel.appendChild(o);
+      });
+      grp.appendChild(batchSel);
+      var bbtn = el('button', 'btn', '把勾中的编入排货单');
+      bbtn.type = 'button';
+      bbtn.id = 'btnPoolBatch';
+      bbtn.addEventListener('click', function () { doBatchMove(saySelected(), batchSel.value); });
+      grp.appendChild(bbtn);
+      bar.appendChild(grp);
+      saySpan = el('span', 'bar__say', '勾中 0 行 / 0 件');
+      saySpan.id = 'poolBatchSay';
+      bar.appendChild(saySpan);
+      body.appendChild(bar);
+    }
+
+    var wrap = el('div', 'table-scroll');
+    var tbl = el('table', 'table table--dense');
+    tbl.style.minWidth = '820px';
+    var head = el('thead');
+    var htr = el('tr');
+    var thPick = el('th');
+    if (canEdit) {
+      var all = el('input');
+      all.type = 'checkbox';
+      all.id = 'poolCheckAll';
+      all.setAttribute('aria-label', '全选待编排池');
+      all.addEventListener('change', function () {
+        checks.forEach(function (x) { x.box.checked = all.checked; });
+        saySelected();
+      });
+      thPick.appendChild(all);
+    } else {
+      thPick.appendChild(el('span', 'muted', '选'));
+    }
+    htr.appendChild(thPick);
+    ['货号', '店铺', '期间', '源仓'].forEach(function (t) { htr.appendChild(el('th', null, t)); });
+    htr.appendChild(el('th', 'r', '数量'));
+    htr.appendChild(el('th', null, '编入排货单'));
+    head.appendChild(htr);
+    tbl.appendChild(head);
+
+    var tb = el('tbody');
+
+    sh.pool.forEach(function (p, pi) {
+      var line = Store.line(p.line_id);
+      var tr = el('tr');
+
+      var tdPick = el('td');
+      if (canEdit) {
+        var box = el('input');
+        box.type = 'checkbox';
+        box.setAttribute('data-pool-pick', String(pi));
+        box.setAttribute('aria-label', p.sku + ' 勾选编入');
+        box.addEventListener('change', saySelected);
+        tdPick.appendChild(box);
+        checks.push({ box: box, p: p });
+      } else {
+        tdPick.appendChild(el('span', 'muted', '—'));
+      }
+      tr.appendChild(tdPick);
+
+      tr.appendChild(el('td', null, p.sku));
+      tr.appendChild(el('td', null, p.seller_id ? p.seller_id + ' ' + Store.sellerName(p.seller_id) : '—'));
+      tr.appendChild(el('td', null, p.period || (line ? line.period : '—')));
+      tr.appendChild(el('td', null, Store.warehouseName(p.from_wid)));
+      var tdQ = el('td', 'r'); tdQ.innerHTML = qty(p.units); tr.appendChild(tdQ);
+
+      var tdAct = el('td');
+      if (!sh.consignments.length) {
+        tdAct.innerHTML = '<span class="muted">先建一张排货单，才有地方编入</span>';
+      } else if (sh.state !== '草稿') {
+        tdAct.innerHTML = '<span class="muted">排货表已「' + esc(sh.state) + '」</span>';
+      } else {
+        var row = el('div', 'btn-row');
+        var sel = el('select', 'inp inp--text');
+        sel.setAttribute('data-pool-target', String(pi));
+        sh.consignments.forEach(function (c) {
+          var o = el('option', null, '#' + c.cid + ' · ' + chanName(c.channel) + ' · ' + destText(c)
+            + (c.our_stage === '草稿' ? '' : '（' + c.our_stage + '，不能再改行）'));
+          o.value = c.cid;
+          sel.appendChild(o);
+        });
+        var inp = el('input', 'inp');
+        inp.type = 'number'; inp.min = '1'; inp.value = String(p.units);
+        inp.setAttribute('aria-label', p.sku + ' 编入多少件');
+        var btn = el('button', 'btn btn--sm', '编入');
+        btn.type = 'button';
+        btn.addEventListener('click', function () { doMove(p, sel.value, inp.value); });
+        row.appendChild(sel); row.appendChild(inp); row.appendChild(btn);
+        tdAct.appendChild(row);
+      }
+      tr.appendChild(tdAct);
+      tb.appendChild(tr);
+    });
+
+    tbl.appendChild(tb);
+    wrap.appendChild(tbl);
+    body.appendChild(wrap);
+  }
+
+  /* 批量编入。★ 逐行调同一个 Store 接口，不另开一条「批量」的路 ——
+     另开一条就会有另一套校验，迟早和单行那条对不上。
+     ★ 半成功要点名：挪进去了几行、哪几行没挪成、为什么。
+       只说一句「部分失败」，下一步只能从头再查一遍。 */
+  function doBatchMove(picked, cid) {
+    if (!picked || !picked.length) {
+      flash('bad', '一行都没勾 —— 在左边的方框里勾几行，再点「把勾中的编入排货单」。');
+      dbg('batch.empty', { sheet_id: sheetId, cid: cid });
+      return;
+    }
+    var t0 = Date.now();
+    var done = [], failed = [];
+    picked.forEach(function (x) {
+      var p = x.p;
+      /* ★ seller_id 必须传：池里的一行是 (计划记录 × 店铺 × 来源仓)。
+         不传的话，同一条记录下两个店铺从同一个仓各安排一笔就是两行同键，
+         Store 会（正确地）判成歧义拒绝 —— 而排货**就是**「给货指定店铺」那一步。 */
+      var r = Store.moveToConsignment(sheetId, cid, {
+        line_id: p.line_id, sku: p.sku, from_wid: p.from_wid,
+        seller_id: p.seller_id, units: p.units
+      });
+      if (r.ok) done.push({ p: p, idx: r.idx });
+      else failed.push({ p: p, error: r.error, detail: r.detail });
+    });
+    dbg('batch.done', {
+      sheet_id: sheetId, cid: cid, picked: picked.length,
+      moved: done.length, failed: failed.length, ms: Date.now() - t0,
+      moved_units: done.reduce(function (t, d) { return t + d.p.units; }, 0)
+    });
+    render();
+
+    var movedUnits = done.reduce(function (t, d) { return t + d.p.units; }, 0);
+    if (!failed.length) {
+      flash('good', done.length + ' 行 / ' + movedUnits + ' 件编入排货单 #' + cid, null,
+        { text: '跳到这张排货单', href: '#' + consId(cid), onClick: function () { jumpTo(consId(cid)); } });
+      return;
+    }
+    fail('batch.partial', {
+      sheet_id: sheetId, cid: cid, moved: done.length, failed: failed.length,
+      reasons: failed.map(function (f) { return f.p.sku + '@' + f.p.from_wid + ':' + f.error; })
+    });
+    flash('bad', done.length + ' 行编入了（' + movedUnits + ' 件），'
+      + failed.length + ' 行没编进去 —— 没编进去的还留在池里：',
+      failed.map(function (f) {
+        return f.p.sku + ' · ' + Store.warehouseName(f.p.from_wid) + ' ' + f.p.units + ' 件：'
+          + f.error + ' ' + (f.detail || '');
+      }));
+  }
+
+  function doMove(p, cid, rawUnits) {
+    var t0 = Date.now();
+    // ★ seller_id 必须传 —— 理由同 doBatchMove
+    var r = Store.moveToConsignment(sheetId, cid, {
+      line_id: p.line_id, sku: p.sku, from_wid: p.from_wid,
+      seller_id: p.seller_id, units: Number(rawUnits)
+    });
+    dbg('move.done', {
+      sheet_id: sheetId, cid: cid, line_id: p.line_id, from_wid: p.from_wid,
+      seller_id: p.seller_id, units: rawUnits, ok: r.ok,
+      error: r.error || null, detail: r.detail || null, ms: Date.now() - t0
+    });
+    if (!r.ok) {
+      fail('move.rejected', { sheet_id: sheetId, cid: cid, pick: p, units: rawUnits, error: r.error, detail: r.detail });
+      flash('bad', '编入失败：' + r.error + ' ' + (r.detail || ''));
+      return;
+    }
+    render();
+    flash('good', p.sku + ' × ' + rawUnits + ' 件编入排货单 #' + cid + '（第 ' + (r.idx + 1) + ' 行）', null,
+      { text: '跳到那一行', href: '#' + rowId(cid, r.idx), onClick: function () { jumpTo(rowId(cid, r.idx)); } });
+  }
+
+  /* ============================================================
+     ③ 排货单
+     ============================================================ */
+
+  function renderCons(host) {
+    var sh = Store.sheet(sheetId);
+    var sec = el('div', 'sec');
+
+    var title = el('div', 'sec__title');
+    title.appendChild(el('span', null, '排货单'));
+    title.appendChild(el('span', 'muted', sh.consignments.length + ' 张，一个目的地一张'));
+    if (sh.state === '草稿') {
+      var act = el('span', 'sec__act');
+      var b = el('button', 'btn', '新建排货单');
+      b.type = 'button';
+      b.id = 'btnNewCons';
+      b.addEventListener('click', function () { window.location.href = 'dispatcher.html'; });
+      act.appendChild(b);
+      title.appendChild(act);
+    }
+    sec.appendChild(title);
+
+    if (!sh.consignments.length) {
+      var e = el('div', 'empty');
+      e.appendChild(el('div', 'empty__title', '这张排货表还没有排货单'));
+      e.appendChild(el('div', 'empty__body', '同一批货发两个目的地就是两张。在排货台点「新建排货单」。'));
+      sec.appendChild(e);
+      host.appendChild(sec);
+      return;
+    }
+
+    sh.consignments.forEach(function (c) {
+      sec.appendChild(consPanel(sh, c));
+    });
+    host.appendChild(sec);
+  }
+
+  function consPanel(sh, c) {
+    var panel = el('div', 'panel');
+    panel.id = consId(c.cid);
+
+    var head = el('div', 'panel__head');
+    head.innerHTML = '#' + esc(c.cid) + ' · ' + esc(chanName(c.channel)) + ' · ' + esc(destText(c))
+      + '　' + chip(c.our_stage, c.our_stage === '已投送' || c.our_stage === '已归档' ? 'good' : 'dim')
+      + (c.lingxing_stage ? '　' + chip('领星 ' + c.lingxing_stage, 'dim') : '')
+      + (c.ext_refs.length ? '　' + chip('已产生 ' + c.ext_refs.length + ' 张单据', 'dim') : '');
+    panel.appendChild(head);
+
+    var body = el('div', 'panel__body');
+
+    if (!c.lines.length) {
+      var e = el('div', 'empty');
+      e.appendChild(el('div', 'empty__title', '这张排货单一行都没有'));
+      e.appendChild(el('div', 'empty__body', '从上面的待编排池编一行进来。'));
+      body.appendChild(e);
+    } else if (c.channel === 'fba') {
+      body.appendChild(fbaTable(sh, c));
+    } else {
+      body.appendChild(overseaTable(sh, c));
+    }
+
+    body.appendChild(dispatchArea(sh, c));
+    panel.appendChild(body);
+    return panel;
+  }
+
+  function overseaTable(sh, c) {
+    // ★ 没有「货件归属」和「装箱」两栏 —— 不是禁用、不是留空，是不存在
+    var wrap = el('div', 'table-scroll');
+    var tbl = el('table', 'table table--dense');
+    tbl.style.minWidth = '420px';
+    tbl.innerHTML = '<thead><tr><th class="r">#</th><th>货号</th><th>源仓</th><th class="r">数量</th></tr></thead>';
+    var tb = el('tbody');
+    c.lines.forEach(function (l, i) {
+      var tr = el('tr');
+      tr.id = rowId(c.cid, i);
+      tr.innerHTML = '<td class="r">' + (i + 1) + '</td>'
+        + '<td>' + esc(l.sku) + '<br><span class="muted">' + esc(l.line_id) + '</span></td>'
+        + '<td>' + esc(Store.warehouseName(l.from_wid)) + '</td>'
+        + '<td class="r">' + qty(l.units) + '</td>';
+      tb.appendChild(tr);
+    });
+    tbl.appendChild(tb);
+    wrap.appendChild(tbl);
+    return wrap;
+  }
+
+  function fbaTable(sh, c) {
+    var wrap = el('div', 'table-scroll');
+    var tbl = el('table', 'table table--dense');
+    tbl.style.minWidth = '860px';
+    tbl.innerHTML = '<thead><tr><th class="r">#</th><th>货号</th><th>源仓</th><th class="r">数量</th>'
+      + '<th>货件号（系统回填）</th>'
+      + '<th>装箱（箱数 / 长 / 宽 / 高 / 单箱重量 / 单箱数量）</th></tr></thead>';
+    var tb = el('tbody');
+    c.lines.forEach(function (l, i) { tb.appendChild(fbaRow(sh, c, l, i)); });
+    tbl.appendChild(tb);
+    wrap.appendChild(tbl);
+    return wrap;
+  }
+
+  function fbaRow(sh, c, l, i) {
+    // 过了闸就不许再改行：改了，闸的结论就成了对旧数据的结论
+    var editable = (sh.state === '草稿' && c.our_stage === '草稿');
+    var tr = el('tr');
+    tr.id = rowId(c.cid, i);
+
+    tr.appendChild(el('td', 'r', String(i + 1)));
+    var tdSku = el('td');
+    tdSku.innerHTML = esc(l.sku) + '<br><span class="muted">' + esc(l.line_id) + '</span>';
+    tr.appendChild(tdSku);
+    tr.appendChild(el('td', null, Store.warehouseName(l.from_wid)));
+    var tdQ = el('td', 'r'); tdQ.innerHTML = qty(l.units); tr.appendChild(tdQ);
+
+    /* 货件号 —— ★★ 只读，没有输入框。
+
+       ★ 这里原来是个让人填 `FBA16XXXXXX` 的输入框，**流程是反的**：
+         货件号是亚马逊在 confirmPlacementOption 之后才返回的
+         （docs/02 §488、docs/07 §337，不轮询 taskId 就不知道），
+         而人看到这张表是在**投送之前** —— 那一刻这个号根本不存在，谁也填不出来。
+       ★ 更糟的是旁边那个红标「未归属货件」：它把一个**完全正常的状态**报成了错误。
+         投送前没有号是对的，不是漏填。 */
+    var tdShip = el('td');
+    tdShip.setAttribute('data-shipment-cell', rowId(c.cid, i));
+    if (l.shipment_no) {
+      // 已落地的事实：石绿
+      var got = el('div', 'i-jade');
+      got.setAttribute('data-shipment-no', rowId(c.cid, i));
+      got.textContent = l.shipment_no;
+      tdShip.appendChild(got);
+      tdShip.appendChild(el('div', 'muted', '投送时由亚马逊返回'));
+    } else {
+      var wait = el('div', 'muted');
+      wait.setAttribute('data-shipment-wait', rowId(c.cid, i));
+      wait.textContent = '投送时由亚马逊分配';
+      tdShip.appendChild(wait);
+    }
+    tr.appendChild(tdShip);
+
+    /* 装箱：六个小 input */
+    var tdBox = el('td');
+    var fields = [['count', '箱数'], ['l', '长'], ['w', '宽'], ['h', '高'], ['weight', '单箱重量'], ['per', '单箱数量']];
+    var inputs = {};
+    var brow = el('div', 'btn-row');
+    fields.forEach(function (f) {
+      var holder = el('span', 'field');
+      holder.appendChild(el('label', 'lbl', f[1]));
+      var ip = el('input', 'inp');
+      ip.type = 'number'; ip.min = '0'; ip.style.width = '72px';
+      ip.setAttribute('aria-label', '第 ' + (i + 1) + ' 行 ' + f[1]);
+      var v = l.box ? l.box[f[0]] : null;
+      ip.value = (v === null || v === undefined) ? '' : String(v);
+      if (!editable) ip.disabled = true;
+      inputs[f[0]] = ip;
+      holder.appendChild(ip);
+      brow.appendChild(holder);
+    });
+    var boxChip = el('div');
+    function syncBoxChip(b) { boxChip.innerHTML = boxComplete(b) ? chip('装箱齐全', 'good') : chip('装箱不齐', 'bad'); }
+    syncBoxChip(l.box);
+    fields.forEach(function (f) {
+      inputs[f[0]].addEventListener('change', function () {
+        var payload = {}, anyFilled = false;
+        fields.forEach(function (g) {
+          var raw = String(inputs[g[0]].value || '').trim();
+          payload[g[0]] = raw === '' ? null : Number(raw);
+          if (raw !== '') anyFilled = true;
+        });
+        var r = Store.setLineBox(sheetId, c.cid, i, anyFilled ? payload : null);
+        dbg('line.box', { sheet_id: sheetId, cid: c.cid, idx: i, box: payload, ok: r.ok, error: r.error || null });
+        if (!r.ok) {
+          fail('line.box-rejected', { sheet_id: sheetId, cid: c.cid, idx: i, error: r.error, detail: r.detail });
+          flash('bad', '写装箱数据失败：' + r.error + ' ' + (r.detail || ''));
+          return;
+        }
+        syncBoxChip(anyFilled ? payload : null);
+      });
+    });
+    tdBox.appendChild(brow);
+    tdBox.appendChild(boxChip);
+    tr.appendChild(tdBox);
+
+    return tr;
+  }
+
+  /* ---------- 投送 ---------- */
+
+  function stepsFor(channel) {
+    return channel === 'oversea'
+      ? ['建备货单（inbound_order → OWS…）',
+         '锁库存（locked +，valid 不动）',
+         '发货扣减（valid −、locked −）']
+      : ['建发货计划（shipment_plan → RP…）',
+         '锁库存（locked +，valid 不动）',
+         'STA 建货件（shipment → FBA…）',
+         '建发货单（ship_order → SP…）',
+         '发货扣减（valid −、locked −）'];
+  }
+
+  function dispatchArea(sh, c) {
+    var area = el('div', 'mt');
+
+    if (sh.state !== '已确认') {
+      area.appendChild(el('div', 'muted', '先提交排货过 6 项闸，这张单上才会出现「投送」。'));
+    } else if (c.our_stage === '已投送' || c.our_stage === '已归档') {
+      var done = el('div', 'muted');
+      done.innerHTML = '已投送。领星进度 ' + chip(c.lingxing_stage || '尚未回执', 'dim')
+        + '　用顶栏的「推进一天」看它前进。';
+      area.appendChild(done);
+    } else {
+      var row = el('div', 'btn-row');
+      var btn = el('button', 'btn btn--danger', '投送 ' + (c.channel === 'fba' ? 'FBA 5 步' : '海外仓 3 步'));
+      btn.type = 'button';
+      btn.addEventListener('click', function () {
+        Shell.confirmDanger({
+          title: '投送排货单 #' + c.cid + '（' + chanName(c.channel) + ' · ' + destText(c) + '）',
+          warn: c.channel === 'fba'
+            ? '本次将产生真实亚马逊货件，无法撤销 —— 货件号一旦生成，重投就是重复建单'
+            : '本次将在领星生成真实备货单并扣减库存，无法撤销',
+          steps: stepsFor(c.channel),
+          confirmText: '我确认，投送',
+          onConfirm: function () { doDispatch(c.cid); }
+        });
+      });
+      row.appendChild(btn);
+      if (c.ext_refs.length) {
+        row.appendChild(el('span', 'i-red',
+          '上次投送已产生 ' + c.ext_refs.map(function (x) { return x.doc_no; }).join('、') + '，重投会重复建单'));
+      }
+      area.appendChild(row);
+    }
+
+    if (dispatchOut[c.cid]) area.appendChild(dispatchResult(c.cid, dispatchOut[c.cid]));
+    return area;
+  }
+
+  function doDispatch(cid) {
+    var t0 = Date.now();
+    var r = Store.dispatch(cid);
+    dispatchOut[cid] = r;
+    var manual = (r.steps || []).filter(function (x) { return x.status === 'manual'; });
+    dbg('dispatch.done', {
+      sheet_id: sheetId, cid: cid, ok: r.ok, ms: Date.now() - t0,
+      our_stage: r.our_stage || null, error: r.error || null, detail: r.detail || null,
+      steps: (r.steps || []).map(function (x) { return x.stage + ':' + x.status + (x.doc_no ? '(' + x.doc_no + ')' : ''); })
+    });
+    render();
+    if (r.ok) {
+      flash('good', '排货单 #' + cid + ' 投送成功，领星进度＝待配货。用顶栏的「推进一天」看它前进。');
+    } else if (manual.length) {
+      fail('dispatch.partial', { cid: cid, stopped_at: manual[0].stage, reason: manual[0].reason });
+      flash('bad', '排货单 #' + cid + ' 部分成功，停在「' + manual[0].stage + '」：'
+        + (manual[0].reason || '需人工核实') + '。前几步的单据是真的落下了，先按单号去领星核实，别重投。');
+    } else {
+      fail('dispatch.rejected', { cid: cid, error: r.error, detail: r.detail });
+      flash('bad', '投送失败：' + r.error + ' ' + (r.detail || ''));
+    }
+    jumpTo(consId(cid));
+  }
+
+  function dispatchResult(cid, r) {
+    var node = el('div', 'mt');
+
+    if (!(r.steps || []).length) {
+      var f = el('div', 'flash flash--bad', '投送没有开始：' + (r.error || '未知') + ' ' + (r.detail || ''));
+      node.appendChild(f);
+      return node;
+    }
+
+    /* ★ 逐步结果走 Shell.steps() —— 「投送走到哪一步」在哪一页都得是同一种东西 */
+    Shell.steps(r.steps, node);
+
+    var manual = r.steps.filter(function (x) { return x.status === 'manual'; });
+    if (!manual.length) return node;
+
+    var hit = Store.consignment(cid);
+    var refs = hit ? hit.cons.ext_refs : [];
+    var f2 = el('div', 'flash flash--bad');
+    var body = el('div');
+    body.appendChild(el('span', null, '我方进度停在「' + (hit ? hit.cons.our_stage : '已确认')
+      + '」，库存已锁未扣。下面这些单号此刻真实存在于领星里：'));
+    var ul = el('ul');
+    if (!refs.length) {
+      var li0 = el('li');
+      li0.textContent = '这次一张单据都没落下';
+      ul.appendChild(li0);
+    } else {
+      refs.forEach(function (x) {
+        var li = el('li');
+        li.textContent = x.kind + ' ' + x.doc_no + '（' + x.day + '）';
+        ul.appendChild(li);
+      });
+    }
+    body.appendChild(ul);
+    f2.appendChild(body);
+    node.appendChild(f2);
+    return node;
+  }
+
+  /* ============================================================
+     ④ 确认闸（提交排货的结论）
+     ============================================================ */
+
+  function doConfirm() {
+    var t0 = Date.now();
+    var r = Store.confirmSheet(sheetId);
+    lastConfirm = r;
+    dbg('confirm.done', {
+      sheet_id: sheetId, ok: r.ok, ms: Date.now() - t0,
+      error: r.error || null, detail: r.detail || null,
+      gates: (r.gates || []).map(function (g) { return g.code + (g.pass ? ':pass' : ':FAIL'); })
+    });
+    render();
+    if (!r.ok && !(r.gates || []).length) {
+      fail('confirm.rejected-before-gates', { sheet_id: sheetId, error: r.error, detail: r.detail });
+      flash('bad', '提交没能开始：' + r.error + ' ' + (r.detail || ''));
+    } else if (!r.ok) {
+      var failed = r.gates.filter(function (g) { return !g.pass; });
+      flash('bad', '提交排货未通过：' + failed.length + ' 项没过，排货表仍是草稿',
+        failed.map(function (g) { return g.code + ' ' + g.name + '：' + String(g.detail || '').replace(/\n/g, '；'); }));
+    } else {
+      flash('good', '6 项闸全过，排货表转「已确认」。每张排货单上出现「投送」。');
+    }
+  }
+
+  function renderGates(host) {
+    var sh = Store.sheet(sheetId);
+    var sec = el('div', 'sec');
+    var title = el('div', 'sec__title');
+    title.appendChild(el('span', null, '确认闸'));
+    if (lastConfirm && (lastConfirm.gates || []).length) {
+      var passed = lastConfirm.gates.filter(function (g) { return g.pass; }).length;
+      title.appendChild(el('span', 'muted', passed + ' / ' + lastConfirm.gates.length + ' 项通过'));
+    }
+    sec.appendChild(title);
+
+    if (!lastConfirm || !(lastConfirm.gates || []).length) {
+      var e = el('div', 'empty');
+      e.appendChild(el('div', 'empty__title', sh.state === '草稿' ? '本次会话还没跑过闸' : '这张表已是「' + sh.state + '」'));
+      e.appendChild(el('div', 'empty__body', sh.state === '草稿'
+        ? '点右上角「提交排货」，6 项会一次跑完，过的也逐项列出来。'
+        : '说明此前那次 6 项全过了。逐项结论只活在那一次点击里，刷新后就没了 —— 这里显示的是「本次会话没跑过闸」，不是「没检查过」。'));
+      sec.appendChild(e);
+      host.appendChild(sec);
+      return;
+    }
+
+    /* ★ 6 项全列（过的也列）走 Shell.gates() —— 别自己再渲染一套 */
+    var box = el('div');
+    Shell.gates(lastConfirm.gates, box);
+    sec.appendChild(box);
+
+    var failedGates = lastConfirm.gates.filter(function (g) { return !g.pass; });
+    if (failedGates.length) {
+      /* 没过的那几项，detail 里点到了具体哪一行 —— 做成页内锚点，
+         省掉「它说第 3 行，那是哪一行？」这一趟来回 */
+      var f = el('div', 'flash flash--bad mt');
+      var body = el('div');
+      body.appendChild(el('span', null, failedGates.length + ' 项没过，排货表状态没变，仍是草稿'));
+      var ul = el('ul');
+      failedGates.forEach(function (g) {
+        String(g.detail || g.name).split('\n').forEach(function (line) {
+          if (!line.trim()) return;
+          var li = el('li');
+          li.appendChild(el('span', null, g.code + ' ' + line));
+          jumpsFor(line).forEach(function (j) {
+            var a = el('a', null, '　' + j.label);
+            a.href = '#' + j.id;
+            a.addEventListener('click', function (ev) { ev.preventDefault(); jumpTo(j.id); });
+            li.appendChild(a);
+          });
+          ul.appendChild(li);
+        });
+      });
+      body.appendChild(ul);
+      f.appendChild(body);
+      sec.appendChild(f);
+    }
+
+    host.appendChild(sec);
+  }
+
+  /* ============================================================
+     ⑤ 已排未发台账
+     ============================================================ */
+
+  function renderLedger(host) {
+    var sh = Store.sheet(sheetId);
+    var rows = [];
+    sh.consignments.forEach(function (c) {
+      c.lines.forEach(function (l, i) {
+        var lastRef = c.ext_refs.length ? c.ext_refs[c.ext_refs.length - 1].day : null;
+        rows.push({
+          who: '#' + c.cid + ' · ' + chanName(c.channel) + ' · ' + destText(c),
+          sku: l.sku, line_id: l.line_id, units: l.units,
+          ours: c.our_stage, ext: c.lingxing_stage, refs: c.ext_refs.length,
+          since: lastRef || sh.day, anchor: rowId(c.cid, i)
+        });
+      });
+    });
+    sh.pool.forEach(function (p) {
+      rows.push({
+        who: '待编排池', sku: p.sku, line_id: p.line_id, units: p.units,
+        ours: '待编排', ext: '', refs: 0, since: sh.day, anchor: null
+      });
+    });
+
+    var units = rows.reduce(function (t, r) { return t + r.units; }, 0);
+    var sec = el('div', 'sec');
+    var title = el('div', 'sec__title');
+    title.appendChild(el('span', null, '已排未发台账'));
+    title.appendChild(el('span', 'muted', rows.length + ' 行 / ' + units + ' 件（含待编排池）'));
+    sec.appendChild(title);
+
+    if (!rows.length) {
+      var e = el('div', 'empty');
+      e.appendChild(el('div', 'empty__title', '这张排货表上还没有任何行'));
+      e.appendChild(el('div', 'empty__body', '在网格上安排一格发货就会出现第一行。'));
+      sec.appendChild(e);
+      host.appendChild(sec);
+      return;
+    }
+
+    var wrap = el('div', 'table-scroll');
+    var tbl = el('table', 'table');
+    tbl.style.minWidth = '820px';
+    tbl.innerHTML = '<thead><tr><th>去处</th><th>货号</th><th class="r">数量</th><th>我方进度</th><th>领星进度</th><th class="r">停留天数</th></tr></thead>';
+    var tb = el('tbody');
+
+    rows.forEach(function (r) {
+      var dispatched = (r.ours === '已投送' || r.ours === '已归档');
+      var conflict = (dispatched && !r.ext) || (r.ours === '已确认' && r.refs > 0);
+      var tr = el('tr');
+
+      var tdWho = el('td');
+      if (r.anchor) {
+        var a = el('a', null, r.who);
+        a.href = '#' + r.anchor;
+        a.addEventListener('click', function (ev) { ev.preventDefault(); jumpTo(r.anchor); });
+        tdWho.appendChild(a);
+      } else {
+        tdWho.appendChild(el('span', 'muted', r.who));
+      }
+      tr.appendChild(tdWho);
+
+      var tdSku = el('td');
+      tdSku.innerHTML = esc(r.sku) + '<br><span class="muted">' + esc(r.line_id) + '</span>';
+      tr.appendChild(tdSku);
+
+      var tdQ = el('td', 'r'); tdQ.innerHTML = qty(r.units); tr.appendChild(tdQ);
+
+      var tdA = el('td');
+      tdA.innerHTML = chip(r.ours, dispatched ? 'good' : 'dim');
+      tr.appendChild(tdA);
+
+      /* ★ 两轴并置：不一致时标出来。合成一个进度就再也看不出那次静默失败 */
+      var tdB = el('td');
+      tdB.innerHTML = r.ext ? chip('领星 ' + r.ext, 'dim') : '<span class="muted">尚未产生单据</span>';
+      if (conflict) tdB.appendChild(el('div', 'i-red', '两轴不一致：单据已经落了，我方进度却没推过去'));
+      tr.appendChild(tdB);
+
+      var tdD = el('td', 'r');
+      tdD.innerHTML = qty(dayDiff(r.since, Store.day())) + ' 天<br><span class="muted">自 ' + esc(r.since) + '</span>';
+      tr.appendChild(tdD);
+
+      tb.appendChild(tr);
+    });
+
+    tbl.appendChild(tb);
+    wrap.appendChild(tbl);
+    sec.appendChild(wrap);
+    host.appendChild(sec);
+  }
+
+  /* ============================================================
+     头部动作 + 总渲染
+     ============================================================ */
+
+  function renderHead() {
+    var sh = Store.sheet(sheetId);
+    document.getElementById('title').textContent = '排货单 · 详情';
+
+    var consUnits = 0, consRows = 0;
+    sh.consignments.forEach(function (c) {
+      consRows += c.lines.length;
+      c.lines.forEach(function (l) { consUnits += l.units; });
+    });
+    var poolUnits = sh.pool.reduce(function (t, p) { return t + p.units; }, 0);
+
+    document.getElementById('headMeta').innerHTML =
+      '<b>' + esc(sh.sheet_id) + '</b>' + chip(sh.state, sh.state === '已确认' ? 'good' : 'dim')
+      + '<span>排货单 <b>' + sh.consignments.length + '</b> 张</span>'
+      + '<span>已编排 <b>' + consRows + '</b> 行 / <b>' + consUnits + '</b> 件</span>'
+      + '<span>待编排池 <b>' + sh.pool.length + '</b> 行 / <b>' + poolUnits + '</b> 件</span>'
+      + '<span>创建于 ' + esc(sh.day) + '</span>';
+
+    var act = document.getElementById('headAct');
+    act.innerHTML = '';
+
+    var planId = (Store.dispatchGrid(sheetId)[0] || {}).plan_id;
+    if (planId) {
+      var a = el('a', 'btn', '打开供应链采购计划表');
+      a.href = 'plan.html?plan=' + encodeURIComponent(planId);
+      a.id = 'btnPlan';
+      act.appendChild(a);
+    } else {
+      var ad = el('button', 'btn', '打开供应链采购计划表');
+      ad.type = 'button'; ad.id = 'btnPlan'; ad.disabled = true;
+      ad.title = '还没有已提交的销售计划，没有可打开的计划表';
+      act.appendChild(ad);
+    }
+
+    var save = el('button', 'btn', '保存草稿');
+    save.type = 'button'; save.id = 'btnSave';
+    save.disabled = sh.state !== '草稿';
+    save.addEventListener('click', function () {
+      Store.log('保存排货表 ' + sheetId + ' 草稿（' + sh.pool.length + ' 行待编排 / ' + sh.consignments.length + ' 张排货单）');
+      dbg('draft.save', { sheet_id: sheetId, pool: sh.pool.length, consignments: sh.consignments.length });
+      flash('good', '草稿已保存　' + Store.day() + ' ' + new Date().toTimeString().slice(0, 8));
+    });
+    act.appendChild(save);
+
+    var submit = el('button', 'btn btn--primary', '提交排货');
+    submit.type = 'button'; submit.id = 'btnSubmit';
+    submit.disabled = sh.state !== '草稿';
+    submit.addEventListener('click', doConfirm);
+    act.appendChild(submit);
+  }
+
+  function render() {
+    renderHead();
+    var host = document.getElementById('body');
+    host.innerHTML = '';
+    renderGrid(host);
+    renderPool(host);
+    // 网格到投送之间的顺序，一行说清 —— 三块单独看都像入口，连起来才看得出是一条路
+    var order = el('div', 'muted');
+    order.id = 'flowLine';
+    order.textContent = '顺序：网格上安排 → 量进待编排池 → 编入排货单 → 提交排货过 6 项闸 → 逐张投送。';
+    host.appendChild(order);
+    renderCons(host);
+    renderGates(host);
+    renderLedger(host);
+  }
+
+  /* ---------- 弹窗绑定 ---------- */
+
+  document.getElementById('arWid').addEventListener('change', renderArrangeTable);
+  document.getElementById('arCancel').addEventListener('click', function () { closeDlg('dlgArrange'); });
+  document.getElementById('arOk').addEventListener('click', doArrange);
+
+  /* ---------- 启动 ---------- */
+
+  if (!sheetId) {
+    fail('param.missing', { want: 'sheet 或 id', search: window.location.search });
+    renderPicker('URL 里没有排货表编号');
+  } else if (!Store.sheet(sheetId)) {
+    fail('sheet.not-found', { sheet_id: sheetId, known: Store.get().sheets.map(function (x) { return x.sheet_id; }) });
+    renderPicker('找不到排货表 ' + sheetId);
+  } else {
+    render();
+    if (focusCid) {
+      var target = document.getElementById(consId(focusCid));
+      if (target) { if (target.scrollIntoView) target.scrollIntoView({ block: 'start' }); }
+      else fail('focus.cid-missing', { cid: focusCid, sheet_id: sheetId, hint: 'URL 里的 cid 不在这张排货表上' });
+    }
+    dbg('ready', {
+      sheet_id: sheetId, state: Store.sheet(sheetId).state,
+      pool: Store.sheet(sheetId).pool.length,
+      consignments: Store.sheet(sheetId).consignments.length,
+      grid_rows: Store.dispatchGrid(sheetId).length, day: Store.day()
+    });
+  }
+})();
+</script>
+
+</body>
+</html>

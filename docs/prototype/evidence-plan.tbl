@@ -1,0 +1,76 @@
+# plan.html 的全部变异证据 —— 整表重跑入口
+#
+# ★ 为什么要有这张表，而不是让每条散在各自的测试文件头里：
+#   证据表锚在「源码字面」上，这是最容易烂的锚 —— 一次**零行为变更**的改版
+#   （换 token、加个 class、把说明收进 fold）就能废掉一整批 from 串，
+#   而断言可能一条都没失效。buyer-home 2026-09-18 实测：18 行废了 7 行。
+#   ★ 逐条回放的话，过期是**逐条、静默**的，只有撞上的人才知道。
+#     整表跑一次，过期一次性可见。
+#
+#   跑法：  export NODE_PATH=...     ← 没有它测试会「明说跳过」，闸 3 会拦住
+#           ./replay.sh --table evidence-plan.tbl
+#
+#   ★ 改了 plan.html 之后请重跑这张表，别只跑测试 ——
+#     测试绿不代表证据还回放得动。
+
+page: plan.html
+test: test_shift.js
+
+=== A refreshBlock 末尾不调 drawShifts
+    drawShifts(sku);
+--
+
+=== B resize 重画被掐掉
+shiftTimer = window.setTimeout
+--
+shiftTimer = (function(f){return 0;})
+
+=== C 终点一律画到右边缘（不看到货格）
+        x2 = r2.left - base.left + scroll.scrollLeft + r2.width * 0.5;
+--
+        x2 = right - 2;
+
+=== D inside 恒真（桩永不朱红）
+      var inside = periods.indexOf(m.arrives_at) >= 0;
+--
+      var inside = true;
+
+=== E inside 恒假（桩恒朱红）
+      var inside = periods.indexOf(m.arrives_at) >= 0;
+--
+      var inside = false;
+
+=== F 填了数不留印子
+test: test_page.js
+      t.setAttribute('data-touched', '1');
+      refreshBlock(sku);
+--
+      refreshBlock(sku);
+
+=== G 印子恒为 1（发给所有格子）
+test: test_page.js
+ data-din="1" data-seller=
+--
+ data-din="1" data-touched="1" data-seller=
+
+=== H 故意留一个 .note
+test: test_page.js
+  <div id="banner"></div>
+--
+  <div id="banner"></div>
+  <div class="note"><p>故意留下的说明块</p></div>
+
+=== I 把 whyGrid 改名
+test: test_page.js
+<details class="fold mt" id="whyGrid">
+--
+<details class="fold mt" id="whyGridX">
+
+=== J 留 whyGrid 外壳、把 fold__body 掏空
+test: test_page.js
+    <div class="fold__body">
+      <p><strong>这张网格里有两个数，粒度不一样，不能合成一个。</strong>
+--
+    <div class="fold__body"></div>
+    <div hidden>
+      <p><strong>这张网格里有两个数，粒度不一样，不能合成一个。</strong>

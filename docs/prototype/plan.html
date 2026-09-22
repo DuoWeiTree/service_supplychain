@@ -1,0 +1,1609 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>计划编辑 · 供应链服务原型</title>
+<link rel="stylesheet" href="assets/shell.css">
+<style>
+/* ============================================================
+   本页独有的四件事。★ shell.js 那批旧类名的映射**不在这里** ——
+   它们已经由 assets/shell.css 收编（2026-09-18）。
+   ★ 同一个类不许在两个地方有定义：改一处忘一处，屏幕上不会报错，
+     只会慢慢变得不一致。缺样式请补进 shell.css，不要补回这里。
+   ============================================================ */
+
+/* 网格层次：货号层能填采购量、派生行是算出来的、msku 头是分隔。
+   ★ 两个数粒度不同（采购是货号级、期望销量是 msku 级），层次看不出来就会被当成一排同级的数 */
+tr[data-lvl="buy"]   > td{background:var(--paper);}
+tr[data-lvl="drv"]   > td{background:var(--paper-hi);}
+tr[data-lvl="mhead"] > td{background:var(--paper-lo);border-top:1px solid var(--rule-hard);}
+tr[data-lvl="msku"]  > td.gr{padding-left:20px;}
+
+/* 草稿闪存：存没存住必须看得见，否则「存了」和「没存」长得一模一样 */
+#draftBar[data-flash="1"]{animation:flash-save 1.1s ease-out;}
+@keyframes flash-save{from{background:var(--jade-w);}to{background:transparent;}}
+
+/* 时间位移线的图层祖先。CSS 文件里 .sheet__scroll 没有 position —— 在这里补，不改 CSS 文件 */
+.sheet__scroll{position:relative;}
+
+@media (max-width:719px){
+  tr[data-lvl="msku"] > td.gr{padding-left:10px;}
+}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <div class="head">
+    <div class="head__main">
+      <h1 id="planTitle">计划编辑</h1>
+      <div class="head__meta" id="planSub"></div>
+    </div>
+    <div class="head__act">
+      <a class="btn" id="revLink" href="plan-rev.html">版本编辑</a>
+    </div>
+  </div>
+
+  <!-- ★ 参数条：常驻一行。提前期是用户自己的变量（换供应商、换航线、旺季全不一样），
+       而下面每一个期末库存都是按它算出来的 —— 看结论的人必须同时看见它的依据。 -->
+  <div class="bar" id="leadSec">
+    <div class="bar__grp">
+      <label class="bar__lbl" for="mkDays">生产</label>
+      <input class="inp" type="number" min="0" max="720" step="1" inputmode="numeric" id="mkDays" style="width:72px">
+      <span class="bar__lbl">天</span>
+    </div>
+    <div class="bar__grp">
+      <label class="bar__lbl" for="spDays">货运</label>
+      <input class="inp" type="number" min="0" max="720" step="1" inputmode="numeric" id="spDays" style="width:72px">
+      <span class="bar__lbl">天</span>
+    </div>
+    <div class="bar__grp" id="leadPresets"></div>
+    <div class="bar__grp">
+      <label class="bar__lbl" for="planMonths">计划周期</label>
+      <input class="inp" type="number" min="1" max="24" step="1" inputmode="numeric" id="planMonths" style="width:64px">
+      <span class="bar__lbl">月</span>
+    </div>
+    <div class="bar__grp" id="draftBar" style="margin-left:auto;border-radius:var(--r);padding:2px 6px">
+      <span class="bar__lbl" id="draftText"></span><span class="bar__lbl" id="draftHint"></span>
+    </div>
+  </div>
+
+  <div class="mt" style="display:flex;flex-wrap:wrap;gap:4px 20px;font-size:var(--t-sm)">
+    <div id="leadSay" style="flex:1 1 380px;min-width:0"></div>
+    <div id="planMonthsSay" style="flex:1 1 240px;min-width:0"></div>
+  </div>
+
+  <div id="leadErr"></div>
+  <!-- ★ 缩短周期切掉的格子列在这里，并且留着不走 ——
+       「少了几个数」在界面上是看不出来的，toast 一闪而过等于没说 -->
+  <div id="leadDropped"></div>
+
+  <div id="banner"></div>
+  <div id="result"></div>
+
+  <!-- ★ 说明一个字都没删，只是收起来了。屏幕给数据，论证给这里。 -->
+  <details class="fold mt" id="whyGrid">
+    <summary>说明 · 两种粒度、推演口径、提前期怎么落到月份上</summary>
+    <div class="fold__body">
+      <p><strong>这张网格里有两个数，粒度不一样，不能合成一个。</strong>
+        <strong>期望销量</strong>　msku × 月　—— 减<strong>当月</strong>该 listing 的
+        <strong>FBA 可售库存</strong>，所以它挂在 msku 行上；
+        <strong>计划采购量</strong>　<strong>货号 × 月，不带店铺</strong>　—— 下的单要先走完
+        <code>生产 + 货运 = <span id="leadTxt">…</span></code>，才会变成某个月的<strong>入库量</strong>。</p>
+      <p>库存扣的是 <strong>FBA + 海外仓（目的仓）</strong>，<strong>不是本地仓</strong> ——
+        本地仓是生产后的临时仓，国内仓的货几十天到不了目的地。
+        采购量<strong>不会当月变成库存</strong>：它在<strong>管道</strong>里走
+        <strong>生产中 → 本地仓（完工即发，结余恒为 0）→ 货运中</strong>，到货那个月才进期末公式。
+        <strong>网格里那条细线画的就是这一段位移</strong>：从填了计划采购量的那一格，
+        走到它真正到货的那一格；线尾的桩写着到货月，冲出右边缘、桩变朱红的，
+        就是落在本计划周期之外的那些单。</p>
+      <p>到货落到哪个店，是推演<strong>按缺口比例模拟排货</strong>算出来的 ——
+        <strong>那是假设，不是排货单</strong>，所以它在 msku 行里单列成「推算」，
+        绝不和「确认」（已发运、有预计到货日）并成一个数。</p>
+      <p><strong>整期列只给能求和的数</strong>：<strong>采购合计</strong>、<strong>期望合计</strong>是流量，
+        横向可求和；<strong>库存是存量，求和没有意义</strong> —— 所以库存那一行的整期给的是<strong>缺口</strong>，
+        <strong>没有「库存合计」这一格</strong>。三个月的期末库存加起来会得出一个谁都没持有过的数。</p>
+      <p>推演口径：msku 层 <code>期末 = 期初 − 期望销量 + 已确认入库 + 按计划推算入库</code>；
+        货号层 <code>管道 = 生产中 + 本地仓 + 货运中</code>，按天推进（生产 make_days、货运 ship_days）。
+        <strong>期末为负 = 这个月会断货</strong>，当场标红，负多少就是缺口。</p>
+      <p>三个框都是改完按回车、或点到别处才生效。
+        <strong>提前期</strong>（天）是<strong>全局配置</strong>，改了所有计划都跟着算；
+        <strong>计划周期</strong>（月）只改<strong>这一张计划</strong>，会重建它的格子。
+        天数任意填（0~720），<strong>不必是预设那三档中的一档</strong> —— 预设是起点，不是选项清单；
+        周期 1~24 个月。</p>
+      <p><strong>海外仓共享池</strong>不并入任何单店合计 —— <strong>同一批货不能在两个店铺各算一遍</strong>，
+        它归哪个店要等排货时才定向。<strong>本地仓</strong>现有的货当月<strong>不算可售</strong>，
+        但它已完工只差运，所以只走货运天数，不走生产天数。</p>
+    </div>
+  </details>
+
+  <div class="sec">
+    <div class="sec__title">计划网格　<span class="muted" id="gridMode"></span></div>
+    <div id="blocks"></div>
+    <div id="emptyState"></div>
+  </div>
+
+  <div class="sec" id="submitSec">
+    <div class="sec__title">提交</div>
+    <details class="fold">
+      <summary>说明 · 提交会发生什么</summary>
+      <div class="fold__body">
+        <p><strong>提交 = 铸出一个 rev。</strong>计划单记录按「<strong>货号 × 月</strong>」铸出 ——
+          冻结的是<strong>计划采购量</strong>（采购不关心店铺），当时各店铺的期望销量一并冻结供回溯。</p>
+        <p>空格子不会变成 0，而是<strong>被跳过</strong>。跳过的每一条都会点名到「货号 / 月 / 为什么」。</p>
+      </div>
+    </details>
+    <div class="btn-row mt" style="justify-content:space-between">
+      <div class="btn-row" id="addRow"></div>
+      <div class="btn-row" id="actions"></div>
+    </div>
+  </div>
+
+</div>
+
+<script src="assets/store.js"></script>
+<script src="assets/shell.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var TAG = '[plan]';
+  function dbg(e, d) { try { console.debug(TAG, e, d || {}); } catch (x) { } }
+  function fail(e, d) { try { console.error(TAG, e, d || {}); } catch (x) { } }
+
+  var esc = Shell.esc, chip = Shell.chip;
+
+  /* ★ 不再用 Shell.qty()：新设计里 .qty 是「结论数」的字号，过程量用它会满屏大字。
+     数字格式化本身不变 —— 变的只是它穿哪件衣服（墨色由调用处给）。 */
+  function num(v) {
+    if (v === null || v === undefined || v === '') return '—';
+    var n = Number(v);
+    return isFinite(n) ? n.toLocaleString('en-US') : String(v);
+  }
+
+  var wantPlan = Shell.param('plan');
+  var plan = Store.plan(wantPlan);
+
+  Shell.mount({ crumb: [
+    { text: '首页', href: 'index.html' },
+    { text: '运营首页', href: 'ops.html' },
+    { text: '计划编辑' }
+  ] });
+
+  if (!plan) {
+    // ★ 失败要点名：要的是哪个、有的是哪些
+    fail('plan.not-found', { want: wantPlan, known: Store.get().plans.map(function (p) { return p.plan_id; }) });
+    document.getElementById('banner').innerHTML =
+      '<div class="flash flash--bad mt"><span>找不到计划 <code>plan=' + esc(wantPlan) + '</code></span>' +
+      '<span class="i-pencil">已知：' +
+      esc(Store.get().plans.map(function (p) { return p.plan_id; }).join('、') || '（一张都没有）') +
+      '</span><span style="margin-left:auto"><a href="ops.html">回运营首页</a></span></div>';
+    document.getElementById('blocks').style.display = 'none';
+    document.getElementById('submitSec').style.display = 'none';
+    document.getElementById('draftBar').style.display = 'none';
+    // ★ 参数条也一并收掉，但要说清为什么：它的人话回显要拿 periods[0] 起算，
+    //   没有计划就没有 periods —— 留着会显示一条算不出来的空话
+    document.getElementById('leadSec').style.display = 'none';
+    dbg('leadBar.hidden', { why: 'plan-not-found', hint: '没有 periods，「几月下单几月可售」无从算起' });
+    return;
+  }
+
+  var periods = plan.periods;
+  var addUrl = 'plan-add.html?plan=' + encodeURIComponent(plan.plan_id);
+  document.getElementById('revLink').href = 'plan-rev.html?plan=' + encodeURIComponent(plan.plan_id);
+
+  var blockEls = {};        // sku → 该货号那一块的 DOM
+  var lastForecast = {};    // sku → 最近一次推演结果（时间位移线要按它重画坐标）
+  var touchedOnce = false;  // 这一页有没有成功写过一次
+
+  function locked() { return (plan.revs || []).length > 0; }
+  function currentRev() {
+    var rs = plan.revs || [];
+    return rs.filter(function (x) { return x.is_current; })[0] || rs[rs.length - 1] || null;
+  }
+  function lockedMsg() {
+    var cur = currentRev();
+    return '已提交 rev ' + (cur ? cur.rev : '?') + '，全表只读 —— 要改请建新版本';
+  }
+
+  /* ============================================================
+     取数：本计划涉及哪些货号
+     ============================================================ */
+
+  function skuList() {
+    var out = [], seen = {};
+    (plan.claims || []).forEach(function (c) { if (!seen[c.sku]) { seen[c.sku] = 1; out.push(c.sku); } });
+    return out;
+  }
+  function skuMeta(sku) {
+    var row = (Store.get().catalog || []).filter(function (r) { return r.sku === sku; })[0];
+    if (!row) {
+      // ★ 认不出的形态必须可见：目录里查不到就说查不到，不许悄悄画成空
+      fail('catalog.sku-missing', { sku: sku, hint: '计划里认领了这个货号，目录里却找不到它 —— 剧本对不上？' });
+      return { name: null, cat: null };
+    }
+    return { name: row.name, cat: row.cat };
+  }
+  function demandCell(sellerId, sellerSku, period) {
+    return (plan.cells_demand || {})[sellerId + '|' + sellerSku + '|' + period] || null;
+  }
+  function purchaseCell(sku, period) {
+    return (plan.cells_purchase || {})[sku + '|' + period] || null;
+  }
+  function vStr(v) { return (v === null || v === undefined) ? '' : String(v); }
+
+  /* ============================================================
+     顶部
+     ============================================================ */
+
+  function renderHeader() {
+    document.getElementById('planTitle').textContent = plan.title;
+    var nMsku = (plan.claims || []).length;
+    var nSku = skuList().length;
+    document.getElementById('planSub').innerHTML =
+      '<span><code>' + esc(plan.plan_id) + '</code></span>' +
+      '<span>' + esc(periods[0]) + ' ~ ' + esc(periods[periods.length - 1]) +
+        ' <b>' + esc(plan.months) + ' 个月</b></span>' +
+      '<span>负责人 <b>' + esc(plan.owner) + '</b></span>' +
+      '<span><b>' + nSku + '</b> 货号 · <b>' + nMsku + '</b> msku</span>' +
+      '<span>格子 <b>' + Object.keys(plan.cells_demand || {}).length + '</b> 期望 · <b>' +
+        Object.keys(plan.cells_purchase || {}).length + '</b> 采购</span>';
+
+    var b = document.getElementById('banner');
+    if (!locked()) { b.innerHTML = ''; return; }
+    var cur = currentRev();
+    var q = encodeURIComponent(plan.plan_id);
+    b.innerHTML = '<div class="flash mt">' + chip('rev ' + (cur ? cur.rev : '?'), 'ours') +
+      '<span>已提交，全表只读。填数、增删、提交都已禁用。</span>' +
+      '<span style="margin-left:auto"><a href="ops.html?plan=' + q + '">记录进度</a>' +
+      '　<a href="plan-rev.html?plan=' + q + '">版本编辑</a></span></div>';
+  }
+
+  function renderMode() {
+    var n = skuList().length;
+    document.getElementById('gridMode').textContent = locked()
+      ? lockedMsg()
+      : (n ? n + ' 个货号 · 货号为主行，msku 为子行' : '');
+  }
+
+  /* ---------- ★ 草稿保存提示 ---------- */
+
+  function two(n) { return (n < 10 ? '0' : '') + n; }
+  function clockNow() {
+    var d = new Date();
+    return two(d.getHours()) + ':' + two(d.getMinutes()) + ':' + two(d.getSeconds());
+  }
+  function markSaved(what) {
+    touchedOnce = true;
+    var bar = document.getElementById('draftBar');
+    document.getElementById('draftText').innerHTML =
+      '<span class="i-jade">已存 ' + esc(clockNow()) + '</span>';
+    document.getElementById('draftHint').innerHTML = what ? '　' + esc(what) : '';
+    // 重置动画：先摘掉再装上，否则连续两次编辑第二次不会闪
+    bar.removeAttribute('data-flash');
+    void bar.offsetWidth;
+    bar.setAttribute('data-flash', '1');
+    dbg('draft.saved', { what: what || null, at: clockNow() });
+  }
+  function renderDraftBar() {
+    if (locked()) {
+      document.getElementById('draftText').innerHTML =
+        chip('rev ' + (currentRev() ? currentRev().rev : '?'), 'ours');
+      // 只读之后再挂着「每填一个数就立刻存」是句假话 —— 摘掉
+      document.getElementById('draftHint').textContent = '';
+      return;
+    }
+    if (touchedOnce) return;      // 已经保存过就别把时间戳冲掉
+    document.getElementById('draftText').textContent = '草稿自动存';
+    document.getElementById('draftHint').textContent = '';
+  }
+
+  /* ============================================================
+     ★ 提前期：按**天**配，改完当场重算
+
+     下面每一格期末库存都是按这组天数推出来的。依据看不见，结论就没法判断对错 ——
+     「12 月断货」在 90 天和在 33 天下是两回事。
+     ============================================================ */
+
+  function leadInputs() {
+    return { make: document.getElementById('mkDays'), ship: document.getElementById('spDays') };
+  }
+
+  /** 把两个框拉回 Store 里**真正生效**的值。★ 界面上绝不许留一个没生效的数 */
+  function syncLeadInputs(why) {
+    var pa = Store.params(), el = leadInputs(), lock = locked();
+    el.make.value = String(pa.make_days);
+    el.ship.value = String(pa.ship_days);
+
+    /* ★ 提交后置灰 —— 但**只在前端**，不加硬锁（负责人 2026-09-18 裁定）：
+       提交之后采购员那边可能发现问题，运营还要能调回来。
+       在页面里拦 Store.setParams、或让 store.js 拒掉，会把这条正当的回头路堵死。
+       置灰表达的是「这一版已经定了，先别动」，不是「你不准动」。 */
+    el.make.disabled = lock;
+    el.ship.disabled = lock;
+    var tip = lock
+      ? '这一版已提交，提前期先不动。它是全局配置、不属于这张计划 —— 采购员那边发现问题，运营可以改版后再调'
+      : '0~720 天。改完回车生效，下面所有货号块会立刻重算';
+    el.make.title = tip;
+    el.ship.title = tip;
+    /* ★ 预设按钮也要一起灰掉：框灰了按钮还能点，等于嘴上说「先不动」，
+       手里却留着三个一点就改的入口 —— 那不是「前端不可编辑」 */
+    var btns = document.getElementById('leadPresets').querySelectorAll('button[data-preset]');
+    Array.prototype.forEach.call(btns, function (b) { b.disabled = lock; b.title = tip; });
+
+    dbg('lead.inputs-synced', { why: why, make_days: pa.make_days, ship_days: pa.ship_days,
+      total_days: pa.total_days, locked: lock, presets_disabled: btns.length });
+    return pa;
+  }
+
+  function showLeadErr(html) {
+    document.getElementById('leadErr').innerHTML =
+      '<div class="flash flash--bad mt"><span>提前期没有生效</span><span>' + html + '</span></div>';
+  }
+  function clearLeadErr() { document.getElementById('leadErr').innerHTML = ''; }
+
+  /** 一句人话：这组天数落到月上到底意味着什么 */
+  function renderLeadSay() {
+    var pa = Store.params();
+    var first = periods[0];
+    if (!first) {
+      // ★ 没有 periods 就算不出「几月下单几月可售」。
+      //   这一句要是直接 throw，会把整个 renderAll 一起带走 —— 整页白屏，
+      //   而真正的毛病只是「这张计划没有月份」。所以在这儿点名，不往下走
+      fail('lead.no-periods', { plan_id: plan.plan_id, periods: periods,
+        hint: 'plan.periods 是空的 —— 计划没有月份，提前期落到哪个月无从算起' });
+      document.getElementById('leadTxt').textContent = pa.total_days + ' 天';
+      document.getElementById('leadSay').innerHTML =
+        '<span class="i-red">算不出「几月可售」</span>' +
+        '<span class="i-pencil">　全程 ' + esc(pa.total_days) + ' 天是生效的，但这张计划没有月份（' +
+        '<code>plan.periods</code> 是空的），落到哪个月无从算起（详情见控制台）。</span>';
+      return;
+    }
+    var made = Store.monthAfterDays(first, pa.make_days);
+    var arr = Store.monthAfterDays(first, pa.total_days);
+    // ★ 当前这组数不等于任何一档预设是**正常的** —— 预设是起点，不是选项清单
+    var hit = (Store.LEAD_PRESETS || []).filter(function (x) {
+      return x.make_days === pa.make_days && x.ship_days === pa.ship_days;
+    })[0];
+    var outside = periods.indexOf(arr) < 0;
+    var want = monthsBetween(first, arr) + 1;
+
+    document.getElementById('leadTxt').textContent = pa.total_days + ' 天';
+    document.getElementById('leadSay').innerHTML =
+      '<span class="i-ink">全程 ' + esc(pa.total_days) + ' 天</span>' +
+      '<span class="i-pencil">　' + esc(first) + ' 下单 · ' + esc(made) + ' 完工 · ' +
+        esc(arr) + ' 可售</span>' +
+      // ★ 「第一个月下的单都到不了最后一个月」是个致命结论，必须当场说破，
+      //   否则下面每一块都只会显示一堆「周期外」，看的人得自己反推原因。
+      //   ★★ 而且要给**出路**并把数算出来：只说「把周期拉长」，人还得自己去数要填几 ——
+      //      能算的数不许留给人算，那正是这个框存在的理由
+      (outside
+        ? '<div class="i-red">本计划期内下的单，<strong>一件都到不了</strong>' +
+          '　—— 把计划周期填成 <strong>' + esc(want) + '</strong> 个月（现在是 ' +
+          esc(periods.length) + '）</div>'
+        : '') +
+      /* ★ 论证收进 fold：一个字都没删，只是不占版面。
+         其中「提前期只是前端置灰、不是锁死」这一句必须和「计划周期」那句**区分开** ——
+         计划周期是结构性冻结（setPlanMonths 里 guardEditable 真的会拒），
+         提前期只是置灰（store 并没有拒，因为提交后采购员可能发现问题，运营还要能调回来）。
+         两句写成一样，人就会以为提前期也被冻死了。 */
+      '<details class="fold" style="margin:4px 0 0"><summary>这组天数是怎么回事</summary>' +
+      '<div class="fold__body">' +
+      '<p>生产 ' + esc(pa.make_days) + ' 天 + 货运 ' + esc(pa.ship_days) + ' 天 = 全程 ' +
+        esc(pa.total_days) + ' 天：<code>' + esc(first) + '</code> 下的单，<code>' + esc(made) +
+        '</code> 完工，<code>' + esc(arr) + '</code> 才可售。</p>' +
+      (outside
+        ? '<p>连第一个月 ' + esc(first) + ' 下的单都要等到 ' + esc(arr) + '，而本计划只到 ' +
+          esc(periods[periods.length - 1]) + '。补货得靠<strong>已在途</strong>的货，' +
+          '或者把计划周期填成 <strong>' + esc(want) + '</strong> 个月 —— 那样第一个月下的单才落得进周期内。' +
+          // ★ 不能写成「越靠后的单，周期再长一点就行」—— 那是假话：
+          //   最后一个月下的单**无论周期拉多长都落在周期外**（它总还要再走一个提前期）。
+          //   不说清，人会以为「拉长就全好了」，然后对着末尾几列的空在途发懵
+          '但<strong>最后一个月下的单永远落在周期外</strong>，周期拉多长都一样 —— ' +
+          '计划末尾下的单本来就不该在本计划里见效。</p>'
+        : '') +
+      '<p>' + (hit ? '当前正好是「' + esc(hit.label) + '」这一档。'
+                   : '当前是自定义天数，不等于任何一档预设 —— 这很正常。') +
+      (locked()
+        ? '　<strong>这一版已提交，提前期先不动。</strong>' +
+          '它是<strong>全局配置、不属于这张计划</strong> —— 采购员那边发现问题，' +
+          '运营可以<strong>改版后再调</strong>（不是锁死，只是这一版定了）。' +
+          'rev 里冻结的格子不会因为改它而变。'
+        : '') + '</p></div></details>';
+  }
+
+  function renderLeadPresets() {
+    var box = document.getElementById('leadPresets');
+    var list = Store.LEAD_PRESETS;
+    if (!list || !list.length) {
+      // ★ 静默兜底是最坏的一种：拿不到预设就说拿不到，不许画成一排空白
+      fail('lead.presets-missing', { got: list,
+        hint: 'Store.LEAD_PRESETS 不存在或是空的 —— store.js 换过了？' });
+      box.innerHTML = '<span class="i-red">Store.LEAD_PRESETS 拿不到，这一排预设是空的（详情见控制台）</span>';
+      return;
+    }
+    box.innerHTML = list.map(function (x) {
+      return '<button type="button" class="btn btn--sm" data-preset="' + esc(x.key) + '"' +
+        ' title="把生产 ' + esc(x.make_days) + ' 天 / 货运 ' + esc(x.ship_days) +
+        ' 天填进左边两个框，填完还能改">' + esc(x.label) +
+        '<span class="i-pencil">　' + esc(x.make_days) + '+' + esc(x.ship_days) + '</span></button>';
+    }).join('');
+    dbg('lead.presets-rendered', { keys: list.map(function (x) { return x.key; }) });
+  }
+
+  /** 重算并重绘所有货号块。返回重算了几块 —— 0 块也要留痕，否则「没变化」和「没重算」长得一样 */
+  function refreshAllBlocks(why) {
+    var skus = Object.keys(blockEls);
+    if (!skus.length) {
+      dbg('refreshAll.no-blocks', { why: why, hint: '这张计划还没添加任何货号，没有块可重算 —— 不是错' });
+      return 0;
+    }
+    skus.forEach(function (s) { refreshBlock(s); });
+    dbg('refreshAll.done', { why: why, blocks: skus.length });
+    return skus.length;
+  }
+
+  function applyLead(makeRaw, shipRaw, how) {
+    var t0 = Date.now();
+
+    // ★ 空不等于 0 天。Number('') === 0，直接送进 setParams 会被判成合法值，
+    //   于是一个清空的格子会悄悄变成「0 天到货」—— 这正是最坏的那种静默兜底
+    if (String(makeRaw).trim() === '' || String(shipRaw).trim() === '') {
+      var which = String(makeRaw).trim() === '' ? '生产周期' : '货运周期';
+      fail('lead.blank', { how: how, make_raw: makeRaw, ship_raw: shipRaw, which: which,
+        hint: 'Number("") === 0，空格子会被当成 0 天 —— 拦在调用之前' });
+      showLeadErr(esc(which) + '是空的 —— <strong>空不等于 0 天</strong>，这次没有生效；两个框已恢复成真值。');
+      syncLeadInputs('blank-restore');
+      return false;
+    }
+
+    var r;
+    try { r = Store.setParams({ make_days: Number(makeRaw), ship_days: Number(shipRaw) }); }
+    catch (e) {
+      fail('setParams.threw', { how: how, make_raw: makeRaw, ship_raw: shipRaw,
+        name: e && e.name, message: e && e.message, cause: e && e.cause && e.cause.code, stack: e && e.stack });
+      showLeadErr('<code>Store.setParams</code> 抛异常：' + esc((e && e.message) || '未知错误') +
+        '（原文见控制台）；两个框已恢复成真值。');
+      Shell.toast('改提前期出错：' + ((e && e.message) || '未知错误') + '（详情见控制台）', 'fail', 12000);
+      syncLeadInputs('threw-restore');
+      return false;
+    }
+
+    if (!r || !r.ok) {
+      // ★ error / detail 原样给用户看 —— 只说「改失败」等于没说
+      fail('setParams.failed', { how: how, make_raw: makeRaw, ship_raw: shipRaw,
+        error: r && r.error, detail: r && r.detail });
+      var d = (r && r.detail) || '没有给出 detail —— 这本身就是缺陷，详情见控制台';
+      showLeadErr('<code>' + esc((r && r.error) || '未知错误') + '</code>　' + esc(d) +
+        '　两个框已恢复成真值。');
+      Shell.toast('提前期没改成（' + ((r && r.error) || '未知错误') + '）：' + d, 'fail', 12000);
+      syncLeadInputs('rejected-restore');
+      return false;
+    }
+
+    clearLeadErr();
+    syncLeadInputs('accepted');      // setParams 会取整，界面要显示取整后的真值而不是人输入的原文
+    renderLeadSay();
+    var n = refreshAllBlocks('setParams:' + how);
+    Shell.toast('提前期已生效：生产 ' + r.params.make_days + ' 天 + 货运 ' + r.params.ship_days +
+      ' 天 = 全程 ' + r.params.total_days + ' 天；' +
+      (n ? n + ' 个货号块已重算' : '本计划还没有货号，没有块要重算'), 'ok', 7000);
+    dbg('setParams.ok', { how: how, params: r.params, blocks: n, ms: Date.now() - t0 });
+    return true;
+  }
+
+  /* ------------------------------------------------------------
+     ★ 计划周期（月）：和提前期**不是一类东西**
+
+     提前期是全局配置（改了所有计划都跟着算）；
+     计划周期是**这张计划自己的属性** —— 每张计划的起点和长度本来就可以不一样。
+     所以它走 Store.setPlanMonths(planId, n)，而且改完要**重建网格**：
+     变的是列数，不是格子里的数。
+     ------------------------------------------------------------ */
+
+  /** a → b 差几个月。用来把「够用的最小周期」算出来给人，而不是让人自己数 */
+  function monthsBetween(a, b) {
+    return (Number(b.slice(0, 4)) - Number(a.slice(0, 4))) * 12 +
+           (Number(b.slice(5, 7)) - Number(a.slice(5, 7)));
+  }
+
+  /** 把框拉回**这张计划真实的**月数；已提交就置灰 */
+  function syncPlanMonthsInput(why) {
+    var el = document.getElementById('planMonths');
+    var lock = locked();
+    el.value = String(periods.length);
+    // ★ 提交后必须置灰，不能让它可点然后弹错：setPlanMonths 里的 guardEditable 会直接拒，
+    //   让人填完回车再挨一句「已提交」，是白跑一趟。提前期不置灰是因为它压根不属于这张计划
+    el.disabled = lock;
+    el.title = lock ? lockedMsg() + ' —— 计划周期是这张计划自己的属性，改不了'
+                    : '1~24 个月。改完回车生效，网格会按新月份重建';
+    dbg('planMonths.input-synced', { why: why, months: periods.length, locked: lock });
+  }
+
+  function renderPlanMonthsSay() {
+    var box = document.getElementById('planMonthsSay');
+    if (!periods.length) {
+      fail('planMonths.no-periods', { plan_id: plan.plan_id, hint: 'plan.periods 是空的' });
+      box.innerHTML = '<span class="i-red">这张计划没有月份（<code>plan.periods</code> 是空的，详情见控制台）</span>';
+      return;
+    }
+    box.innerHTML =
+      '<span class="i-pencil"><code>' + esc(periods[0]) + '</code> ~ <code>' +
+      esc(periods[periods.length - 1]) + '</code>　' + esc(periods.length) + ' 个月</span>' +
+      (locked() ? '　<span class="chip chip--dim">已提交就改不了</span>' : '') +
+      '<details class="fold" style="margin:4px 0 0"><summary>计划周期改的是什么</summary>' +
+      '<div class="fold__body"><p>' +
+      (locked()
+        ? esc(lockedMsg()) + ' —— <strong>计划周期是这张计划自己的属性</strong>，' +
+          '已提交就改不了（框已置灰）。要改请建新版本。'
+        : '只改<strong>这一张</strong>计划。拉长会长出新月份的格子；' +
+          '<strong>缩短会切掉周期外的格子</strong> —— 填过的数会被逐条列出来，不会悄悄没。') +
+      '　全局默认是 ' + esc(Store.params().plan_months) + ' 个月（新建计划用它）。</p></div></details>';
+  }
+
+  /** ★ 被切掉的格子：留在页面上，由**用户**收起，不自动消失 */
+  function renderDropped(dropped, from, to) {
+    var box = document.getElementById('leadDropped');
+    if (!dropped || !dropped.length) { box.innerHTML = ''; return; }
+    box.innerHTML =
+      '<div class="flash flash--bad mt" style="flex-direction:column;align-items:stretch">' +
+      '<div>周期从 <strong>' + esc(from) + '</strong> 缩到 <strong>' + esc(to) +
+      '</strong> 个月，切掉了 <strong>' + dropped.length + '</strong> 个填过的数，' +
+      '<strong>这些数已经不在了</strong>：</div>' +
+      '<div>' + dropped.map(function (d) {
+        // ★ 原样列出，不改写、不摘要 —— 「切掉了 5 个」这种说法等于没说
+        return '<span class="dropline"><span>' + esc(d) + '</span></span>';
+      }).join('') + '</div>' +
+      '<div class="btn-row" style="margin-top:6px">' +
+      '<span class="i-pencil">把周期改回去不会把它们找回来（格子会重新长出来，但里面是空的）</span>' +
+      '<button type="button" class="btn btn--sm btn--ghost" id="dropClose">我看过了，收起来</button></div></div>';
+    document.getElementById('dropClose').addEventListener('click', function () {
+      box.innerHTML = '';
+      dbg('planMonths.dropped-dismissed', { count: dropped.length });
+    });
+    dbg('planMonths.dropped-shown', { from: from, to: to, count: dropped.length, dropped: dropped });
+  }
+
+  function applyPlanMonths(raw, how) {
+    var t0 = Date.now(), before = periods.length;
+    clearLeadErr();
+
+    // ★ 空不等于 0 个月，更不等于「不改」。Number('') === 0 会被 setPlanMonths 判成 bad_months，
+    //   但错的话术会变成「收到的是 0」—— 人明明是清空了框。拦在这里才说得清
+    if (String(raw).trim() === '') {
+      fail('planMonths.blank', { how: how, raw: raw, current: before,
+        hint: 'Number("") === 0，送进去会被说成「收到的是 0」，而人其实是把框清空了' });
+      showLeadErr('计划周期是空的 —— <strong>空不等于 0 个月</strong>，这次没有生效；' +
+        '框已恢复成 ' + esc(before) + ' 个月。');
+      syncPlanMonthsInput('blank-restore');
+      return false;
+    }
+
+    var r;
+    try { r = Store.setPlanMonths(plan.plan_id, Number(raw)); }
+    catch (e) {
+      fail('setPlanMonths.threw', { how: how, plan_id: plan.plan_id, raw: raw,
+        name: e && e.name, message: e && e.message, cause: e && e.cause && e.cause.code, stack: e && e.stack });
+      showLeadErr('<code>Store.setPlanMonths</code> 抛异常：' + esc((e && e.message) || '未知错误') +
+        '（原文见控制台）；框已恢复成 ' + esc(before) + ' 个月。');
+      Shell.toast('改计划周期出错：' + ((e && e.message) || '未知错误') + '（详情见控制台）', 'fail', 12000);
+      syncPlanMonthsInput('threw-restore');
+      return false;
+    }
+
+    if (!r || !r.ok) {
+      // ★ error / detail 原样点名。这里最可能撞上的是 not_editable（已提交）——
+      //   框本该是置灰的，能走到这儿本身就说明哪里不对，所以要留痕
+      fail('setPlanMonths.failed', { how: how, plan_id: plan.plan_id, raw: raw,
+        error: r && r.error, detail: r && r.detail, locked: locked() });
+      var d = (r && r.detail) || '没有给出 detail —— 这本身就是缺陷，详情见控制台';
+      showLeadErr('<code>' + esc((r && r.error) || '未知错误') + '</code>　' + esc(d) +
+        '　框已恢复成 ' + esc(before) + ' 个月。');
+      Shell.toast('计划周期没改成（' + ((r && r.error) || '未知错误') + '）：' + d, 'fail', 12000);
+      syncPlanMonthsInput('rejected-restore');
+      return false;
+    }
+
+    if (!reloadPlan('setPlanMonths')) return false;   // ★ 这一步同时把 periods 重新指过来
+    renderDropped(r.dropped, before, r.months);
+    // ★ 走 renderAll（里面是 renderGrid）而不是 refreshAllBlocks：变的是**列数**，
+    //   只重算不重建的话，表头还是旧月份，新月份的格子压根不存在
+    renderAll();
+    Shell.toast('计划周期已改成 ' + r.months + ' 个月（' + r.periods[0] + ' ~ ' +
+      r.periods[r.periods.length - 1] + '）' +
+      (r.dropped.length ? '；★ 切掉了 ' + r.dropped.length + ' 个填过的数，已逐条列在参数条下面' : ''),
+      r.dropped.length ? 'warn' : 'ok', r.dropped.length ? 14000 : 7000);
+    dbg('setPlanMonths.ok', { how: how, from: before, to: r.months, periods: r.periods,
+      dropped: r.dropped.length, blocks: Object.keys(blockEls).length, ms: Date.now() - t0 });
+    return true;
+  }
+
+  function mountLeadBar() {
+    renderLeadPresets();
+    syncLeadInputs('mount');
+
+    document.getElementById('planMonths').addEventListener('change', function (e) {
+      applyPlanMonths(e.target.value, 'typed:planMonths');
+    });
+
+    var el = leadInputs();
+    // ★ 用 change 不用 input：input 会在「8」「80」「800」中途逐字触发，
+    //   而 800 超上限要把框恢复回去 —— 那等于在人还没打完时把手里的数抢走
+    ['mkDays', 'spDays'].forEach(function (id) {
+      document.getElementById(id).addEventListener('change', function () {
+        applyLead(el.make.value, el.ship.value, 'typed:' + id);
+      });
+    });
+
+    document.getElementById('leadPresets').addEventListener('click', function (e) {
+      var b = e.target && e.target.closest ? e.target.closest('button[data-preset]') : null;
+      if (!b) return;
+      var key = b.getAttribute('data-preset');
+      var x = (Store.LEAD_PRESETS || []).filter(function (t) { return t.key === key; })[0];
+      if (!x) {
+        fail('lead.preset-unknown', { key: key,
+          known: (Store.LEAD_PRESETS || []).map(function (t) { return t.key; }) });
+        Shell.toast('这一档预设在 Store.LEAD_PRESETS 里找不到：' + key + '（详情见控制台）', 'fail', 12000);
+        return;
+      }
+      // ★ 预设只是把数字填进框里，之后走的是和手填**完全相同**的那条路 ——
+      //   不另开一条「选中了某个预设」的状态，否则用户改了天数之后界面还说他选着某一档
+      el.make.value = String(x.make_days);
+      el.ship.value = String(x.ship_days);
+      applyLead(el.make.value, el.ship.value, 'preset:' + key);
+    });
+
+    dbg('lead.mounted', { params: Store.params(), presets: (Store.LEAD_PRESETS || []).length });
+  }
+
+  /* ============================================================
+     网格：★ 三层 —— 货号行 / 派生行 / msku 子行
+     ============================================================ */
+
+  function colCount() { return 2 + periods.length; }   // 项目 + N 个月 + 整期
+
+  function buildBlock(sku) {
+    var meta = skuMeta(sku);
+    var wrap = document.createElement('div');
+    wrap.className = 'sheet';
+    wrap.setAttribute('data-block', sku);
+
+    var mskuRows = (plan.claims || []).filter(function (c) { return c.sku === sku; });
+    var lock = locked();
+    var h = '';
+
+    /* ---- 块头：货号 + 整块合计 + 删除货号 ---- */
+    h += '<div class="sheet__head">' +
+      '<span class="sheet__sku"><code>' + esc(sku) + '</code></span>' +
+      '<span class="sheet__name">' + esc(meta.name || '（目录里查不到品名）') +
+      '　' + esc(meta.cat || '—') + '</span>' +
+      '<span class="sheet__stat" data-bsum></span>' +
+      '<span>' + (lock
+        ? '<span class="chip chip--dim">只读</span>'
+        : '<button type="button" class="btn btn--sm btn--ghost" data-act="del-sku" data-sku="' + esc(sku) +
+          '" title="从计划里删掉这个货号">删除货号</button>') +
+      '</span></div>';
+
+    h += '<div data-blockerr></div>';
+    h += '<div class="sheet__scroll" data-scroll><table class="grid"><thead><tr>' +
+      '<th class="gh--row">货号层 / msku 明细</th>' +
+      periods.map(function (p) { return '<th>' + esc(p) + '</th>'; }).join('') +
+      '<th class="gh--sum">整期</th></tr></thead><tbody>';
+
+    /* ---- ① 货号层：唯一能填的采购量 ---- */
+    h += '<tr data-lvl="buy"><td class="gr"><div class="gr__who">计划采购量</div>' +
+      '<div class="gr__sub">货号 × 月 · 不带店铺</div></td>' +
+      periods.map(function (p) {
+        var c = purchaseCell(sku, p);
+        if (!c) {
+          fail('cell.purchase-missing', { sku: sku, period: p, hint: '该货号在本计划里没有采购格子 —— rebuildCells 没跑？' });
+          return '<td class="cell"><span class="i-red">格子不存在</span></td>';
+        }
+        return '<td class="cell" data-pcell="' + esc(p) + '">' +
+          '<input class="g" type="number" min="0" step="1" inputmode="numeric"' +
+          ' data-pin="1" data-sku="' + esc(sku) + '" data-period="' + esc(p) + '"' +
+          ' value="' + esc(vStr(c.purchase)) + '" placeholder="—"' +
+          (lock ? ' disabled title="' + esc(lockedMsg()) + '"' : '') + '></td>';
+      }).join('') +
+      '<td class="gsum" data-ptotal></td></tr>';
+
+    // ★ 提前期的天数写在 data-leadnote 里由 refreshBlock 填 —— 它来自 f.params，
+    //   也就是**这一块真正用来推演的那组参数**。写死在表头就会出现「改了参数、表头还是旧数」
+    h += '<tr data-lvl="drv"><td class="gr"><div class="gr__sub">到货月<span data-leadnote></span></div></td>' +
+      periods.map(function (p) { return '<td class="cell" data-arrive="' + esc(p) + '"></td>'; }).join('') +
+      '<td class="gsum"></td></tr>';
+
+    h += '<tr data-lvl="drv"><td class="gr"><div class="gr__sub">管道存量</div></td>' +
+      periods.map(function (p) { return '<td class="cell" data-pipe="' + esc(p) + '"></td>'; }).join('') +
+      '<td class="gsum"><span class="i-pencil" style="font-size:var(--t-xs)">存量不可求和</span></td></tr>';
+
+    /* ---- ② msku 层：每个 msku 四行 ---- */
+    mskuRows.forEach(function (c, i) {
+      var key = c.seller_id + '|' + c.seller_sku;
+      h += '<tr data-lvl="mhead"><td class="gr" colspan="' + colCount() + '">' +
+        '<div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">' +
+        '<span class="gr__who">' + esc(Store.sellerName(c.seller_id)) + '</span>' +
+        '<span class="gr__code">' + esc(c.seller_id) + ' · ' + esc(c.seller_sku) + '</span>' +
+        '<span data-mhead="' + esc(key) + '"></span>' +
+        (lock ? '' :
+          '<button type="button" class="btn btn--sm btn--ghost" style="margin-left:auto"' +
+          ' data-act="del-msku" data-seller="' + esc(c.seller_id) + '" data-sku="' + esc(sku) + '"' +
+          ' data-msku="' + esc(c.seller_sku) + '" title="从计划里移除这个 msku">删除</button>') +
+        '</div></td></tr>';
+
+      h += '<tr data-lvl="msku"><td class="gr"><div class="gr__sub">销量预估</div></td>' +
+        periods.map(function (p) { return '<td class="cell" data-sys="' + esc(key + '|' + p) + '"></td>'; }).join('') +
+        '<td class="gsum" data-systotal="' + esc(key) + '"></td></tr>';
+
+      h += '<tr data-lvl="msku"><td class="gr"><div class="gr__who">期望销量</div>' +
+        '<div class="gr__sub">msku × 月 · 减当月该 listing 的可售</div></td>' +
+        periods.map(function (p) {
+          var dc = demandCell(c.seller_id, c.seller_sku, p);
+          if (!dc) {
+            fail('cell.demand-missing', { seller_id: c.seller_id, seller_sku: c.seller_sku, period: p, sku: sku });
+            return '<td class="cell"><span class="i-red">格子不存在</span></td>';
+          }
+          return '<td class="cell">' +
+            '<input class="g" type="number" min="0" step="1" inputmode="numeric"' +
+            ' data-din="1" data-seller="' + esc(c.seller_id) + '" data-msku="' + esc(c.seller_sku) + '"' +
+            ' data-sku="' + esc(sku) + '" data-period="' + esc(p) + '"' +
+            ' value="' + esc(vStr(dc.demand)) + '" placeholder="—"' +
+            (lock ? ' disabled title="' + esc(lockedMsg()) + '"' : '') + '></td>';
+        }).join('') +
+        '<td class="gsum" data-dtotal="' + esc(key) + '"></td></tr>';
+
+      // ★ 入库量单独一行，且**两个数分开列** —— 一个数不能既是事实又是假设：
+      //   「确认」是已发运、有预计到货日的货（石绿）；「推算」是由计划采购量顺着管道推出来的假设（铅笔灰）。
+      //   并成一个数，运营就分不清「货真在路上」和「我假设它会到」
+      h += '<tr data-lvl="msku"><td class="gr"><div class="gr__sub">入库量</div></td>' +
+        periods.map(function (p) { return '<td class="cell" data-inb="' + esc(key + '|' + p) + '"></td>'; }).join('') +
+        '<td class="gsum" data-inbtotal="' + esc(key) + '"></td></tr>';
+
+      h += '<tr data-lvl="msku"><td class="gr"><div class="gr__who">库存预估</div>' +
+        '<div class="gr__sub">期末 · 存量</div></td>' +
+        periods.map(function (p) { return '<td class="cell" data-close="' + esc(key + '|' + p) + '"></td>'; }).join('') +
+        '<td class="gsum" data-gap="' + esc(key) + '"></td></tr>';
+    });
+
+    h += '</tbody></table></div>';
+
+    /* ---- ③ 共享池 / 周期外到货：★ 单独成块，不进表格，免得被顺手加进合计 ---- */
+    h += '<div data-shared style="padding:8px 12px;border-top:1px solid var(--rule);font-size:var(--t-sm)"></div>';
+    h += '<div data-beyond></div>';
+
+    wrap.innerHTML = h;
+    return wrap;
+  }
+
+  /* ---------- 重算一整块（★ 只改派生格，不碰 input，光标不会被顶掉） ---------- */
+
+  function refreshBlock(sku) {
+    var box = blockEls[sku];
+    if (!box) { fail('refresh.block-missing', { sku: sku, known: Object.keys(blockEls) }); return; }
+
+    var f = null;
+    try { f = Store.forecastSku(plan.plan_id, sku); }
+    catch (e) {
+      fail('forecastSku.threw', { plan_id: plan.plan_id, sku: sku, message: e && e.message,
+        cause: e && e.cause && e.cause.code, stack: e && e.stack });
+      box.querySelector('[data-blockerr]').innerHTML =
+        '<div class="flash flash--bad"><span>推演出错</span><span><code>' + esc(sku) + '</code>：' +
+        esc((e && e.message) || '未知错误') + '（详情见控制台）</span></div>';
+      return;
+    }
+    if (!f) {
+      fail('forecastSku.null', { plan_id: plan.plan_id, sku: sku, hint: 'forecastSku 返回 null —— 计划不见了？' });
+      box.querySelector('[data-blockerr]').innerHTML =
+        '<div class="flash flash--bad"><span>推演拿不到结果</span><span><code>' + esc(sku) +
+        '</code>：Store.forecastSku 返回 null（详情见控制台）</span></div>';
+      return;
+    }
+    box.querySelector('[data-blockerr]').innerHTML = '';
+    lastForecast[sku] = f;
+
+    /* ① 货号层 ★ 结论回显它用的参数：这一块是按 f.params 这组天数推出来的 */
+    var PA = f.params;
+    Array.prototype.forEach.call(box.querySelectorAll('[data-leadnote]'), function (n) {
+      n.textContent = '　生产 ' + PA.make_days + ' + 货运 ' + PA.ship_days + ' = ' + PA.total_days + ' 天';
+    });
+
+    f.pipeline.forEach(function (m) {
+      var a = box.querySelector('[data-arrive="' + m.period + '"]');
+      if (a) {
+        // ★ 到货落在计划周期之外时当场说破 —— 否则「2027-01 到」看起来和「到了」一样
+        var outside = m.arrives_at && periods.indexOf(m.arrives_at) < 0;
+        a.setAttribute('data-state', outside ? 'out' : '');
+        a.innerHTML = m.arrives_at
+          ? '<div class="cell__rows">' +
+            '<div class="cell__row"><span class="k">完工</span><span class="v i-pencil">' +
+              esc(m.made_at) + '</span></div>' +
+            '<div class="cell__row"><span class="k">到货</span><span class="v ' +
+              (outside ? 'i-red' : 'i-ink') + '">' + esc(m.arrives_at) + '</span></div>' +
+            (outside ? '<div class="cell__row"><span class="v i-red">周期外</span></div>' : '') +
+            '</div>'
+          : '<span class="cell__unknown">—</span>';
+        a.title = m.arrives_at
+          ? m.period + ' 下单 ' + m.purchase + ' 件 → 生产 ' + PA.make_days + ' 天 → ' + m.made_at +
+            ' 完工 → 货运 ' + PA.ship_days + ' 天 → ' + m.arrives_at + ' 可售'
+          : '这个月没填计划采购量 —— 空格子不会变成 0，是没有单可下';
+      }
+      // ★ 原来这一格叫「本地仓池子」。本地仓完工即发、结余恒为 0，
+      //   一格永远是 0 的数等于没有信息；真正在动的是管道的两段：生产中 / 货运中
+      var p = box.querySelector('[data-pipe="' + m.period + '"]');
+      if (p) {
+        p.setAttribute('data-state', m.arrive ? 'done' : '');
+        p.innerHTML = '<div class="cell__rows">' +
+          '<div class="cell__row"><span class="k">生产中</span><span class="v i-pencil">' + num(m.making) + '</span></div>' +
+          '<div class="cell__row"><span class="k">货运中</span><span class="v i-pencil">' + num(m.shipping) + '</span></div>' +
+          (m.arrive ? '<div class="cell__row"><span class="k">到货</span><span class="v i-jade">+' +
+            num(m.arrive) + '</span></div>' : '') +
+          '</div>';
+        p.title = '管道存量 ' + m.in_pipeline + ' 件＝生产中 ' + m.making + ' + 本地仓 ' + m.local +
+          '（完工即发，进 ' + m.local_in + ' 出 ' + m.local_out + '，结余恒为 0）+ 货运中 ' + m.shipping +
+          '　★ 左边两段无店铺归属，货运中已定向 —— 分界线是「排货」这个动作' +
+          (m.arrive ? '；本月到货 ' + m.arrive + ' 件' : '');
+      }
+    });
+    box.querySelector('[data-ptotal]').innerHTML =
+      '<div class="cell__rows"><div class="cell__row"><span class="k">采购合计</span>' +
+      '<span class="v i-ink">' + num(f.purchase_total) + '</span></div></div>';
+
+    /* ② msku 层 */
+    f.mskus.forEach(function (m) {
+      var key = m.seller_id + '|' + m.seller_sku;
+
+      var head = box.querySelector('[data-mhead="' + key + '"]');
+      if (head) {
+        head.innerHTML = '<span class="gr__code">市场 ' + esc(m.market || '未知') + '</span>　' +
+          // ★ fba_onhand === null 是「该平台无 FBA」，不是 0 —— 这两件事绝不能长得一样
+          (m.fba_onhand === null
+            ? '<span class="chip chip--dim" title="没有 FBA 可售，推演按期初 0 起算">该平台无 FBA</span>'
+            : '<span class="gr__code">FBA 在仓 </span><span class="i-ink">' + num(m.fba_onhand) + '</span>') +
+          // ★ 已在途是**事实**（已发运、有预计到货日），和下面「推算」的入库不是一回事，
+          //   摆在这里是为了让人看得出第一个月那笔「确认」入库是从哪来的
+          '　<span class="gr__code">已在途 </span><span class="i-jade" title="' +
+          (m.in_transit ? esc(periods[0]) + ' 到，事实' : '没有已发运的货') + '">' + num(m.in_transit) + '</span>' +
+          (m.stockout_month
+            ? '　<span class="chip chip--bad">断货 ' + esc(m.stockout_month) + '</span>'
+            : '');
+      }
+
+      var sysSum = 0, sysAny = false, firstUnknown = true;
+      var confSum = 0, planSum = 0, extSum = 0;
+      m.months.forEach(function (mm) {
+        var sc = box.querySelector('[data-sys="' + key + '|' + mm.period + '"]');
+        /* ★ 外推标记：剧本里系统销量预估只有 3 个月。周期拉到 6/9 个月后，
+           后面的月份是**沿用最后一个值**算出来的 —— 那是外推，不是预估。
+           不标出来，它长得和真预估一模一样，会被当成「系统说的」拿去当依据。
+           ★ 出处跟着数走：和 mm.system 从**同一个** months[] 行上取，
+             不回头去读 cells_demand —— 那等于同一个数有两个来源，
+             哪天两边不一致，界面会说一个数是外推、另一个数说不是 */
+        var ext = !!mm.system_extrapolated;
+        if (ext) extSum++;
+        if (sc) {
+          sc.innerHTML = (mm.system === null || mm.system === undefined)
+            ? '<span class="cell__unknown">（空）</span>'
+            : '<div class="cell__rows"><div class="cell__row"><span class="v i-pencil">' +
+              num(mm.system) + (ext ? '<sup class="ext" data-ext="1">外推</sup>' : '') + '</span></div></div>';
+          sc.title = (mm.system === null || mm.system === undefined)
+            ? '这个月没有系统预估'
+            : (ext
+              ? '★ 这不是预估，是**外推**：系统的销量预估没有覆盖到这个月，' +
+                '这里沿用的是最后一个有预估的月份的值（' + mm.system + '）。' +
+                '计划周期拉长之后才会出现 —— 把它当成「系统说的」拿去做依据会出事'
+              : '系统给的销量预估（这个月有真预估）');
+        }
+        if (mm.system !== null && mm.system !== undefined) { sysSum += mm.system; sysAny = true; }
+
+        /* ★ 入库：两个数并排，绝不相加成一个
+           确认 = 已发运、有预计到货日 —— 事实（石绿）
+           推算 = 由计划采购量顺着管道推出来，到货那月按缺口比例模拟排货 —— 假设（铅笔灰）
+           两者形状一模一样（都是「某月进来多少件」），差别只在**可信度**，
+           所以只能靠墨色与摆位分开，一旦合成一格就再也分不回来了 */
+        confSum += mm.inbound_confirmed;
+        planSum += mm.inbound_planned;
+        var ib = box.querySelector('[data-inb="' + key + '|' + mm.period + '"]');
+        if (ib) {
+          ib.setAttribute('data-state', mm.inbound_confirmed ? 'done' : '');
+          if (!mm.inbound_confirmed && !mm.inbound_planned) {
+            ib.innerHTML = '<span class="cell__unknown">—</span>';
+            ib.title = '这个月没有任何货到 —— 既没有已发运的，也没有计划采购推算得出的';
+          } else {
+            ib.innerHTML = '<div class="cell__rows">' +
+              (mm.inbound_confirmed
+                ? '<div class="cell__row"><span class="k">确认</span><span class="v i-jade">' +
+                  num(mm.inbound_confirmed) + '</span></div>' : '') +
+              (mm.inbound_planned
+                ? '<div class="cell__row"><span class="k">推算</span><span class="v i-pencil">' +
+                  num(mm.inbound_planned) + '</span></div>' : '') +
+              '</div>';
+            ib.title =
+              '已确认 ' + mm.inbound_confirmed + ' 件（已发运、有预计到货日 —— 事实）＋ ' +
+              '按计划推算 ' + mm.inbound_planned + ' 件（由计划采购量推出来，到货那月按缺口比例模拟排货 —— 假设）' +
+              '＝ 本月入库 ' + mm.inbound + ' 件。★ 推算的那部分**没有排货单**，它只是这张计划的假设。';
+          }
+        }
+
+        var cc = box.querySelector('[data-close="' + key + '|' + mm.period + '"]');
+        if (!cc) return;
+        if (mm.unknown) {
+          // ★ 「算不出来」不是 0，也不是空 —— 要说清为什么算不出来
+          cc.setAttribute('data-state', '');
+          cc.innerHTML = '<span class="cell__unknown">—' +
+            (firstUnknown ? '　期望销量未填，推不出来' : '') + '</span>';
+          cc.title = '本月（或更早的某个月）期望销量为空 —— 期末推不出来，不会当成 0';
+          firstUnknown = false;
+          return;
+        }
+        /* ★ 左边条三档：断货 = out（朱红满条）；不断货但「完全不补货就会欠」= low（淡朱）——
+           那说明这个月是靠上面那笔**推算**入库撑住的，而推算是假设。 */
+        cc.setAttribute('data-state',
+          mm.shortage ? 'out' : ((mm.baseline_gap !== null && mm.baseline_gap > 0) ? 'low' : ''));
+        cc.innerHTML = '<div class="cell__close' + (mm.shortage ? ' i-red' : '') + '">' +
+          num(mm.closing) + '</div>' +
+          (mm.shortage ? '<div class="cell__rows"><div class="cell__row"><span class="k">缺口</span>' +
+            '<span class="v i-red">' + num(mm.gap) + '</span></div></div>' : '');
+        // ★ 公式里的加项要拆开写：把两笔入库合起来写成「+入库 N」，
+        //   就等于把「事实」和「假设」在解释里又粘回去了
+        cc.title = '期初 ' + mm.opening + ' − 期望销量 ' + mm.demand +
+          ' + 已确认入库 ' + mm.inbound_confirmed + ' + 推算入库 ' + mm.inbound_planned +
+          ' = 期末 ' + mm.closing +
+          (mm.shortage ? '（缺口 ' + mm.gap + '）' : '') +
+          // ★ 基线：完全不补货会欠多少。它回答的是「这个期末是靠什么撑住的」——
+          //   期末 ≥ 0 而基线 > 0，说明它全靠上面那笔「推算」撑着，而推算是假设
+          (mm.baseline_gap === null
+            ? '　·　基线（完全不补货会欠多少）：期望销量没填全，算不出来'
+            : '　·　基线：完全不补货的话这个月会欠 ' + mm.baseline_gap + ' 件' +
+              (mm.baseline_gap > 0 && !mm.shortage
+                ? '　★ 这个月不断货，靠的是上面那笔入库 —— 其中「推算」的部分是假设，不是排货单'
+                : ''));
+      });
+
+      var st = box.querySelector('[data-systotal="' + key + '"]');
+      if (st) {
+        // ★ 合计里混了几个外推值，必须在合计这一格就说出来 ——
+        //   逐格的角标要盯着看才发现，而合计是最容易被直接抄走的那个数
+        st.innerHTML = sysAny
+          ? '<div class="cell__rows"><div class="cell__row"><span class="k">合计</span>' +
+            '<span class="v i-pencil">' + num(sysSum) +
+            (extSum ? '<sup class="ext" data-ext="1">含 ' + extSum + ' 月外推</sup>' : '') +
+            '</span></div></div>'
+          : '<span class="cell__unknown">（空）</span>';
+        st.title = extSum
+          ? '★ 这个合计里有 ' + extSum + ' 个月（共 ' + m.months.length +
+            ' 个月）不是真预估，是沿用最后一个有预估的月份外推出来的 —— 别把它当成系统的判断'
+          : '系统预估合计（' + m.months.length + ' 个月都有真预估）';
+      }
+
+      var dt = box.querySelector('[data-dtotal="' + key + '"]');
+      if (dt) dt.innerHTML = '<div class="cell__rows"><div class="cell__row"><span class="k">期望合计</span>' +
+        '<span class="v i-ink">' + num(m.demand_total) + '</span></div></div>';
+
+      // ★ 入库是**流量**，横向可以求和；但两个口径仍然各报各的，不给一个合计数
+      var it = box.querySelector('[data-inbtotal="' + key + '"]');
+      if (it) {
+        it.innerHTML = '<div class="cell__rows">' +
+          '<div class="cell__row"><span class="k">确认</span><span class="v i-jade">' + num(confSum) + '</span></div>' +
+          '<div class="cell__row"><span class="k">推算</span><span class="v i-pencil">' + num(planSum) + '</span></div>' +
+          '</div>';
+        it.title = '整期已确认入库 ' + confSum + ' 件（事实）、按计划推算 ' + planSum + ' 件（假设）。' +
+          '★ 这两个数不给合计 —— 把事实和假设加成一个数，等于把可信度抹掉。' +
+          (confSum + planSum !== m.inbound_total
+            ? '　⚠ 逐月相加得 ' + (confSum + planSum) + '，与 Store 给的 inbound_total ' +
+              m.inbound_total + ' 对不上（详情见控制台）'
+            : '');
+        // ★ 对不上就要有声：这是「被丢弃的那一侧」的统计，不许静默
+        if (confSum + planSum !== m.inbound_total) {
+          fail('inbound.total-mismatch', { sku: sku, seller_id: m.seller_id, seller_sku: m.seller_sku,
+            summed_confirmed: confSum, summed_planned: planSum,
+            store_inbound_total: m.inbound_total,
+            hint: '逐月 inbound_confirmed + inbound_planned 应当等于 inbound_total' });
+        }
+      }
+
+      var gp = box.querySelector('[data-gap="' + key + '"]');
+      if (gp) {
+        gp.innerHTML = '<div class="cell__rows"><div class="cell__row"><span class="k">缺口</span>' +
+          '<span class="v ' + (m.gap_total > 0 ? 'i-red' : 'i-pencil') + '">' + num(m.gap_total) +
+          '</span></div></div>';
+        gp.title = '★ 这里不给「库存合计」—— 库存是存量，三个月相加会得出一个谁都没持有过的数';
+      }
+    });
+
+    /* ③ ★ 海外仓共享池：单列一块，不并入任何单店合计 */
+    var sh = box.querySelector('[data-shared]');
+    sh.innerHTML = '<span class="i-pencil">海外仓共享池</span>　' +
+      (f.shared.length
+        ? f.shared.map(function (s) {
+            return '<span title="服务 ' +
+              esc(s.served_sellers.map(function (x) { return Store.sellerName(x); }).join('、')) +
+              '（' + esc(s.served_sellers.join('、')) + '）—— 不并入任何单店合计">' +
+              esc(s.market) + ' <span class="i-ink">' + num(s.oversea_onhand) + '</span></span>';
+          }).join('　·　')
+        : '<span class="i-pencil">本货号在这些市场没有海外仓库存</span>') +
+      // ★ 本地仓现有的货**已经生产完了，只差运** —— 所以它只走 ship_days，不走 make_days。
+      //   写成「不进可售」是错的：它会到，只是要等运完；到货那月同样进上面的「推算」入库
+      '　<span class="i-pencil">｜ 本地仓 </span><span class="i-ink" title="当月不算可售：生产后的临时仓，' +
+      '还在国内。它已完工只差运，所以只走货运 ' + esc(PA.ship_days) + ' 天">' + num(f.local_now) +
+      '</span><span class="i-pencil"> → ' + esc(Store.monthAfterDays(periods[0], PA.ship_days)) +
+      ' 到目的仓</span>';
+
+    /* ④ ★ 周期外到货：必须显式列出，不许静默丢掉 */
+    var by = box.querySelector('[data-beyond]');
+    by.innerHTML = f.beyond.length
+      ? '<div style="padding:0 12px 10px"><div class="i-red" style="font-size:var(--t-sm)">' +
+        '这些采购到不了本计划周期内<span class="i-pencil">　全程 ' + esc(PA.total_days) +
+        ' 天，下单月加上它就超出了 ' + esc(periods[periods.length - 1]) + '</span></div>' +
+        f.beyond.map(function (b) {
+          // ★ 把生产和运输分开写：只说「X 下单 Y 才到」，看的人没法判断是该换空运还是该催工厂
+          return '<span class="dropline"><span>' + esc(b.order_month) + ' 下单 ' + esc(b.units) + ' 件 → ' +
+            esc(b.made_month) + ' 完工（生产 ' + esc(PA.make_days) + ' 天）→ ' +
+            esc(b.arrive_month) + ' 才可售（再运 ' + esc(PA.ship_days) + ' 天）</span>' +
+            '<span class="k">不进管道存量，也不进任何 msku 的入库；这些单本身是真的会发生，' +
+            '只是到货落在本计划之后</span></span>';
+        }).join('') + '</div>'
+      : '';
+
+    /* ⑤ 块头合计 */
+    box.querySelector('[data-bsum]').innerHTML =
+      '<span>期望 <span class="i-ink">' + num(f.demand_total) + '</span></span>' +
+      '<span>缺口 <span class="' + (f.gap_total > 0 ? 'i-red' : 'i-pencil') + '">' +
+        num(f.gap_total) + '</span></span>' +
+      '<span>采购 <span class="i-ink">' + num(f.purchase_total) + '</span></span>' +
+      (f.any_shortage ? '<span class="chip chip--bad">有断货</span>' : '');
+
+    drawShifts(sku);
+
+    dbg('block.refresh', { sku: sku, mskus: f.mskus.length, demand_total: f.demand_total,
+      gap_total: f.gap_total, purchase_total: f.purchase_total, beyond: f.beyond.length,
+      // ★ 结论要连着它的依据一起留痕：同一个 sku 两次 refresh 给不同的数，
+      //   第一个要看的就是这中间提前期改了没有
+      params: PA, inbound_confirmed_total: f.inbound_confirmed_total,
+      inbound_planned_total: f.inbound_planned_total });
+  }
+
+  /* ============================================================
+     ★ 时间位移线
+
+     填一个计划采购量 → 从这一格划一条细线到「到货那一格」，线尾一个写着到货月的桩。
+     落在计划周期之外 → 线冲出网格右边缘，桩变朱红。
+
+     ★ 这一个动作替掉了三段关于提前期的解释（它们收进了页面顶部的 .fold）：
+       「采购量不会当月变成库存」「它在管道里走多久」「周期外的单到不了」——
+       这三件事画出来只要一条线，写出来要三段。
+     ============================================================ */
+
+  function drawShifts(sku) {
+    var box = blockEls[sku], f = lastForecast[sku];
+    if (!box || !f) {
+      fail('shift.no-forecast', { sku: sku, has_box: !!box,
+        hint: 'drawShifts 必须在 refreshBlock 算出 forecast 之后调用' });
+      return 0;
+    }
+    var scroll = box.querySelector('[data-scroll]');
+    if (!scroll) { fail('shift.no-scroll', { sku: sku, hint: '块里没有 [data-scroll] —— 位移线没有可定位的祖先' }); return 0; }
+
+    // 先清掉上一轮的线：留着会和新线叠在一起，看起来像「画了两次」
+    Array.prototype.forEach.call(scroll.querySelectorAll('.shift'), function (n) { n.parentNode.removeChild(n); });
+
+    var lines = f.pipeline.filter(function (m) { return m.purchase && m.arrives_at; });
+    if (!lines.length) { dbg('shift.none', { sku: sku, hint: '这个货号一个月都没填计划采购量 —— 没有位移可画' }); return 0; }
+
+    var base = scroll.getBoundingClientRect();
+    var anchor = box.querySelector('[data-arrive]');
+    var ar = anchor ? anchor.getBoundingClientRect() : null;
+    /* ★ 没有布局就算不出坐标（页面隐藏、或无头环境里根本不排版）。
+       这不是错，但也不能静默 —— 不留痕的话，「线没画」和「没有单要画」长得一模一样。 */
+    if (!base.width || !ar || !ar.height) {
+      dbg('shift.no-geometry', { sku: sku, want: lines.length,
+        base_width: base.width, row_height: ar ? ar.height : null,
+        hint: 'getBoundingClientRect 全是 0 —— 没有布局，线这一轮不画' });
+      return 0;
+    }
+
+    var mid = ar.top - base.top + scroll.scrollTop + ar.height / 2;
+    var right = Math.max(scroll.scrollWidth, base.width);
+    var drawn = 0;
+    lines.forEach(function (m, i) {
+      var from = box.querySelector('[data-pcell="' + m.period + '"]');
+      if (!from) { fail('shift.from-missing', { sku: sku, period: m.period }); return; }
+      var inside = periods.indexOf(m.arrives_at) >= 0;
+      var to = inside ? box.querySelector('[data-arrive="' + m.arrives_at + '"]') : null;
+      if (inside && !to) { fail('shift.to-missing', { sku: sku, period: m.period, arrives_at: m.arrives_at }); return; }
+
+      var r1 = from.getBoundingClientRect();
+      var x1 = r1.left - base.left + scroll.scrollLeft + r1.width * 0.72;
+      var x2, capX;
+      if (to) {
+        var r2 = to.getBoundingClientRect();
+        x2 = r2.left - base.left + scroll.scrollLeft + r2.width * 0.5;
+        capX = x2;
+      } else {
+        x2 = right - 2;              // ★ 周期外：线一直冲到右边缘
+        capX = Math.max(x1 + 24, x2 - 36);   // 桩往回收一点，免得被 overflow 裁掉
+      }
+      if (x2 <= x1) {
+        dbg('shift.not-forward', { sku: sku, period: m.period, arrives_at: m.arrives_at, x1: x1, x2: x2,
+          hint: '到货格子在下单格子左边或重合 —— 画不出向右的位移' });
+        return;
+      }
+      // 多条线错开一点，否则尾段会叠成一条
+      var y = mid + (i * 5) - ((lines.length - 1) * 2.5);
+
+      var w = document.createElement('div');
+      w.className = 'shift';
+      w.style.top = y + 'px';
+      w.innerHTML =
+        '<div class="shift__line" style="left:' + x1 + 'px;width:' + (x2 - x1) + 'px"></div>' +
+        '<div class="shift__cap' + (inside ? '' : ' shift__cap--out') + '" style="left:' + capX + 'px" ' +
+        'title="' + esc(m.period + ' 下单 ' + m.purchase + ' 件 → ' + m.arrives_at + ' 可售' +
+          (inside ? '' : '（落在本计划周期之外）')) + '">' + esc(m.arrives_at) + '</div>';
+      scroll.appendChild(w);
+      drawn++;
+    });
+
+    dbg('shift.drawn', { sku: sku, drawn: drawn, want: lines.length });
+    return drawn;
+  }
+
+  // 改了窗口宽度，格子的位置就变了 —— 线要跟着重画，否则它指向的是上一次的列
+  var shiftTimer = null;
+  window.addEventListener('resize', function () {
+    if (shiftTimer) window.clearTimeout(shiftTimer);
+    shiftTimer = window.setTimeout(function () {
+      shiftTimer = null;
+      var n = 0, skus = Object.keys(blockEls);
+      skus.forEach(function (s) { if (lastForecast[s]) n += drawShifts(s); });
+      dbg('shift.redrawn-on-resize', { blocks: skus.length, lines: n });
+    }, 150);
+  });
+
+  /* ---------- 整页网格 ---------- */
+
+  function renderGrid() {
+    var host = document.getElementById('blocks');
+    var emptyBox = document.getElementById('emptyState');
+    host.innerHTML = '';
+    blockEls = {};
+    lastForecast = {};
+
+    var skus = skuList();
+    if (!skus.length) {
+      emptyBox.innerHTML = '<div class="empty">' +
+        '<p class="empty__title">这张计划里还没有任何货品</p>' +
+        '<p class="empty__body">计划默认就是空的 —— 货号与 msku 要从目录里添加进来，添加之后才会长出格子。' +
+        '这不是加载失败，也不是没有数据。</p>' +
+        '<div class="empty__act">' +
+        (locked() ? '<span class="chip chip--dim">' + esc(lockedMsg()) + '</span>'
+          : '<a class="btn btn--primary" href="' + esc(addUrl) + '">添加货品</a>') +
+        '</div></div>';
+      dbg('grid.empty', { plan_id: plan.plan_id });
+      return;
+    }
+    emptyBox.innerHTML = '';
+    skus.forEach(function (sku) {
+      var el = buildBlock(sku);
+      blockEls[sku] = el;
+      host.appendChild(el);
+    });
+    skus.forEach(refreshBlock);
+    dbg('grid.render', { skus: skus.length, mskus: (plan.claims || []).length, locked: locked() });
+  }
+
+  /* ============================================================
+     填数：★ 改一个 input → 调对应 API → 当场只重算这一块
+     ============================================================ */
+
+  function reloadPlan(why) {
+    var p = Store.plan(plan.plan_id);
+    if (!p) {
+      fail('plan.gone', { plan_id: plan.plan_id, why: why });
+      Shell.toast('刷新失败：计划 ' + plan.plan_id + ' 不见了（详情见控制台）', 'fail', 12000);
+      return false;
+    }
+    plan = p;
+    // ★ periods 是当初从 plan 上取下来的**快照**。setPlanMonths 之后 plan.periods 是**另一个数组**，
+    //   不在这里重新指过来，整页还会按旧月份画格子：列数对不上、purchaseCell 一律查不到，
+    //   于是满屏「格子不存在」—— 而真正的毛病只是这一行没写
+    periods = plan.periods;
+    return true;
+  }
+
+  function writeFailed(where, ctx, r, e) {
+    // ★ error / detail 原样点名，不许只说「保存失败」
+    fail(where, { ctx: ctx, error: r && r.error, detail: r && r.detail,
+      message: e && e.message, cause: e && e.cause && e.cause.code, stack: e && e.stack });
+    var msg = e
+      ? where + ' 出错：' + ((e && e.message) || '未知错误') + '（详情见控制台）'
+      : '保存失败（' + ((r && r.error) || '未知错误') + '）：' +
+        ((r && r.detail) || '没有给出 detail —— 这本身就是缺陷，详情见控制台');
+    Shell.toast(msg, 'fail', 12000);
+    document.getElementById('draftText').innerHTML = '<span class="i-red">没有保存</span>';
+    document.getElementById('draftHint').innerHTML = '　<span class="i-red">' + esc(msg) + '</span>';
+    var bar = document.getElementById('draftBar');
+    bar.removeAttribute('data-flash');
+    return msg;
+  }
+
+  function onGridInput(e) {
+    var t = e.target;
+    if (!t || t.tagName !== 'INPUT') return;
+    var t0 = Date.now();
+
+    if (t.getAttribute('data-din')) {
+      var sellerId = t.getAttribute('data-seller');
+      var mskuId = t.getAttribute('data-msku');
+      var sku = t.getAttribute('data-sku');
+      var period = t.getAttribute('data-period');
+      var r;
+      try { r = Store.setDemand(plan.plan_id, sellerId, mskuId, period, t.value); }
+      catch (ex) { writeFailed('setDemand', { sellerId: sellerId, mskuId: mskuId, period: period }, null, ex); return; }
+      if (!r || !r.ok) { writeFailed('setDemand', { sellerId: sellerId, mskuId: mskuId, period: period }, r, null); return; }
+      if (!reloadPlan('setDemand')) return;
+      t.setAttribute('data-touched', '1');
+      refreshBlock(sku);
+      markSaved('期望销量 ' + mskuId + ' / ' + period + ' = ' + (r.value === null ? '空' : r.value));
+      dbg('setDemand.ok', { seller_id: sellerId, seller_sku: mskuId, period: period, value: r.value, ms: Date.now() - t0 });
+      return;
+    }
+
+    if (t.getAttribute('data-pin')) {
+      var psku = t.getAttribute('data-sku');
+      var pperiod = t.getAttribute('data-period');
+      var pr;
+      try { pr = Store.setPurchase(plan.plan_id, psku, pperiod, t.value); }
+      catch (ex2) { writeFailed('setPurchase', { sku: psku, period: pperiod }, null, ex2); return; }
+      if (!pr || !pr.ok) { writeFailed('setPurchase', { sku: psku, period: pperiod }, pr, null); return; }
+      if (!reloadPlan('setPurchase')) return;
+      t.setAttribute('data-touched', '1');
+      refreshBlock(psku);
+      // ★ 回执里的 made_at / arrives_at 都要说出来：只说「几月到」，
+      //   看的人分不清慢在生产还是慢在运输 —— 而这两件事的处置完全不同
+      markSaved('计划采购量 ' + psku + ' / ' + pperiod + ' = ' + (pr.value === null ? '空' : pr.value) +
+        (pr.arrives_at ? '（' + pr.made_at + ' 完工 → ' + pr.arrives_at + ' 才可售）' : ''));
+      dbg('setPurchase.ok', { sku: psku, period: pperiod, value: pr.value,
+        made_at: pr.made_at, arrives_at: pr.arrives_at, params: Store.params(), ms: Date.now() - t0 });
+      return;
+    }
+  }
+
+  /* ============================================================
+     删除货号 / 删除 msku
+     ============================================================ */
+
+  function doDeleteSku(sku) {
+    var sellers = [], seen = {};
+    (plan.claims || []).forEach(function (c) {
+      if (c.sku === sku && !seen[c.seller_id]) { seen[c.seller_id] = 1; sellers.push(c.seller_id); }
+    });
+    var nMsku = (plan.claims || []).filter(function (c) { return c.sku === sku; }).length;
+    if (!sellers.length) {
+      fail('del-sku.no-claims', { sku: sku, hint: '这个货号在计划里已经没有认领了' });
+      Shell.toast('货号 ' + sku + ' 在本计划里已经没有 msku 了（详情见控制台）', 'warn', 9000);
+      renderAll();
+      return;
+    }
+
+    Shell.confirmDanger({
+      title: '从计划里删掉货号 ' + sku,
+      warn: '会释放它的 ' + nMsku + ' 个 msku 认领，' + periods.length + ' 个采购格子与对应的期望销量格子一并消失',
+      steps: sellers.map(function (s) {
+        var n = (plan.claims || []).filter(function (c) { return c.sku === sku && c.seller_id === s; }).length;
+        return '释放 ' + Store.sellerName(s) + '（' + s + '）下的 ' + n + ' 个 msku';
+      }).concat(['删掉「货号 × 月」的 ' + periods.length + ' 个计划采购量格子（已填的数一并丢掉）',
+        '这些 msku 立刻可以被别的计划认领']),
+      confirmText: '我确认，删掉这个货号',
+      onConfirm: function () {
+        var released = 0, bad = [];
+        sellers.forEach(function (s) {
+          var r;
+          try { r = Store.removeSku(plan.plan_id, s, sku); }
+          catch (e) {
+            fail('removeSku.threw', { plan_id: plan.plan_id, seller_id: s, sku: sku,
+              message: e && e.message, stack: e && e.stack });
+            bad.push(Store.sellerName(s) + '：' + ((e && e.message) || '未知错误'));
+            return;
+          }
+          if (!r || !r.ok) {
+            fail('removeSku.failed', { plan_id: plan.plan_id, seller_id: s, sku: sku, error: r && r.error, detail: r && r.detail });
+            bad.push(Store.sellerName(s) + '：' + ((r && r.error) || '未知') + ' ' + ((r && r.detail) || ''));
+            return;
+          }
+          released += r.released;
+        });
+        if (!reloadPlan('removeSku')) return;
+        // ★ 失败的那一侧要点名，不许只报成功数
+        Shell.toast((bad.length ? '★ ' + bad.length + ' 个店铺没删掉：' + bad.join('；') + '　' : '') +
+          '已删除货号 ' + sku + '：释放 ' + released + ' 个 msku 认领' +
+          (bad.length ? '' : '，' + periods.length + ' 个采购格子已移除'),
+          bad.length ? 'fail' : 'ok', bad.length ? 12000 : 7000);
+        dbg('removeSku.done', { sku: sku, sellers: sellers.length, released: released, failed: bad.length });
+        renderAll();
+      }
+    });
+  }
+
+  function doDeleteMsku(sellerId, sku, sellerSku) {
+    var r;
+    try { r = Store.removeMsku(plan.plan_id, sellerId, sku, sellerSku); }
+    catch (e) {
+      fail('removeMsku.threw', { plan_id: plan.plan_id, seller_id: sellerId, sku: sku, seller_sku: sellerSku,
+        message: e && e.message, cause: e && e.cause && e.cause.code, stack: e && e.stack });
+      Shell.toast('移除出错：' + ((e && e.message) || '未知错误') + '（详情见控制台）', 'fail', 12000);
+      return;
+    }
+    if (!r || !r.ok) {
+      fail('removeMsku.failed', { plan_id: plan.plan_id, seller_id: sellerId, sku: sku, seller_sku: sellerSku,
+        error: r && r.error, detail: r && r.detail });
+      Shell.toast('移除失败（' + ((r && r.error) || '未知错误') + '）：' +
+        ((r && r.detail) || '没有给出 detail —— 这本身就是缺陷，详情见控制台'), 'fail', 12000);
+      return;
+    }
+    if (!reloadPlan('removeMsku')) return;
+    Shell.toast('已移除 msku ' + sellerSku + '：' + Store.sellerName(sellerId) + ' 的 ' + sku +
+      ' 还剩 ' + r.left + ' 个 msku' +
+      (r.row_removed ? '　★ 这个店铺下一个不剩了' : '') +
+      (r.sku_removed ? '　★★ 该货号在本计划已无任何店铺，' + periods.length + ' 个采购格子一并移除' : ''),
+      (r.row_removed || r.sku_removed) ? 'warn' : 'ok',
+      (r.row_removed || r.sku_removed) ? 12000 : 7000);
+    dbg('removeMsku.ok', { seller_id: sellerId, sku: sku, seller_sku: sellerSku,
+      left: r.left, row_removed: !!r.row_removed, sku_removed: !!r.sku_removed });
+
+    // 该货号还在 → 只重画这一块；整块没了 → 重画整页
+    if (r.sku_removed) renderAll();
+    else { renderGrid(); renderHeader(); renderMode(); renderActions(); }
+  }
+
+  document.getElementById('blocks').addEventListener('input', onGridInput);
+  document.getElementById('blocks').addEventListener('click', function (e) {
+    var b = e.target && e.target.closest ? e.target.closest('button[data-act]') : null;
+    if (!b || b.disabled) return;
+    var act = b.getAttribute('data-act');
+    if (act === 'del-sku') { doDeleteSku(b.getAttribute('data-sku')); return; }
+    if (act === 'del-msku') {
+      doDeleteMsku(b.getAttribute('data-seller'), b.getAttribute('data-sku'), b.getAttribute('data-msku'));
+      return;
+    }
+  });
+
+  /* ============================================================
+     提交 / 重置 / 添加货品
+     ============================================================ */
+
+  function renderActions() {
+    var addBox = document.getElementById('addRow');
+    var box = document.getElementById('actions');
+    addBox.innerHTML = '';
+    box.innerHTML = '';
+
+    var blank = skuList().length === 0;
+    var cur = currentRev();
+
+    if (locked()) {
+      addBox.innerHTML = '<span class="i-pencil">' + esc(lockedMsg()) + '</span>';
+      box.innerHTML =
+        '<button type="button" class="btn" disabled title="' + esc(lockedMsg()) + '">添加货品</button>' +
+        '<button type="button" class="btn" disabled title="' + esc(lockedMsg()) + '">重置</button>' +
+        '<button type="button" class="btn btn--danger" disabled title="' + esc(lockedMsg()) + '">已提交 rev ' + (cur ? cur.rev : '?') + '</button>' +
+        '<a class="btn btn--primary" href="ops.html?plan=' + encodeURIComponent(plan.plan_id) + '">查看记录进度</a>';
+      return;
+    }
+
+    if (blank) {
+      addBox.innerHTML = '<span class="i-pencil">先添加货品，网格才会长出来</span>';
+      box.innerHTML = '<a class="btn btn--primary" href="' + esc(addUrl) + '">添加货品</a>';
+      return;
+    }
+
+    var nextRev = (plan.revs || []).length + 1;
+    box.innerHTML =
+      '<a class="btn" href="' + esc(addUrl) + '">添加货品</a>' +
+      '<button type="button" class="btn btn--ghost" id="btnReset">重置</button>' +
+      '<button type="button" class="btn btn--danger" id="btnSubmit">提交，铸出 rev ' + nextRev + '</button>';
+    document.getElementById('btnReset').addEventListener('click', askReset);
+    document.getElementById('btnSubmit').addEventListener('click', function () { askSubmit(nextRev); });
+  }
+
+  /* ---------- 重置 ---------- */
+
+  function askReset() {
+    var dcells = plan.cells_demand || {}, pcells = plan.cells_purchase || {};
+    var dTouched = Object.keys(dcells).filter(function (k) {
+      return dcells[k].demand !== dcells[k].system;
+    }).length;
+    var pFilled = Object.keys(pcells).filter(function (k) {
+      return pcells[k].purchase !== null && pcells[k].purchase !== undefined;
+    }).length;
+
+    Shell.confirmDanger({
+      title: '重置这张计划的填数',
+      warn: '会丢掉你手填的数：' + dTouched + ' 个期望销量格子回到系统预估，' + pFilled + ' 个计划采购量格子被清空',
+      steps: [
+        '把 ' + Object.keys(dcells).length + ' 个期望销量格子改回系统给的销量预估（' + dTouched + ' 个当前不等于预估）',
+        '把 ' + Object.keys(pcells).length + ' 个计划采购量格子清空（' + pFilled + ' 个当前有数）' +
+          '　★ 系统没有「采购建议」这种东西，所以重置只能是清空，不是回到某个默认值',
+        '货号与 msku 的认领不动 —— 要删货品请用每一块右上角的「删除货号」'
+      ],
+      confirmText: '我确认，重置填数',
+      onConfirm: doReset
+    });
+  }
+
+  function doReset() {
+    var t0 = Date.now();
+    var dcells = plan.cells_demand || {}, pcells = plan.cells_purchase || {};
+    var dDone = 0, pDone = 0, bad = [];
+
+    Object.keys(dcells).forEach(function (k) {
+      var c = dcells[k];
+      var r;
+      try { r = Store.setDemand(plan.plan_id, c.seller_id, c.seller_sku, c.period, c.system); }
+      catch (e) {
+        fail('reset.setDemand-threw', { key: k, message: e && e.message, stack: e && e.stack });
+        bad.push(c.seller_sku + '/' + c.period + '：' + ((e && e.message) || '未知错误'));
+        return;
+      }
+      if (!r || !r.ok) { bad.push(c.seller_sku + '/' + c.period + '：' + ((r && r.error) || '未知') + ' ' + ((r && r.detail) || '')); return; }
+      dDone++;
+    });
+    Object.keys(pcells).forEach(function (k) {
+      var c = pcells[k];
+      var r;
+      try { r = Store.setPurchase(plan.plan_id, c.sku, c.period, null); }
+      catch (e) {
+        fail('reset.setPurchase-threw', { key: k, message: e && e.message, stack: e && e.stack });
+        bad.push(c.sku + '/' + c.period + '：' + ((e && e.message) || '未知错误'));
+        return;
+      }
+      if (!r || !r.ok) { bad.push(c.sku + '/' + c.period + '：' + ((r && r.error) || '未知') + ' ' + ((r && r.detail) || '')); return; }
+      pDone++;
+    });
+
+    if (!reloadPlan('reset')) return;
+    // ★ 失败的那一侧必须统计并点名
+    if (bad.length) fail('reset.partial', { failed: bad, demand_ok: dDone, purchase_ok: pDone });
+    Shell.toast('已重置：' + dDone + ' 个期望销量格子回到销量预估，' + pDone + ' 个计划采购量格子已清空' +
+      (bad.length ? '　★ ' + bad.length + ' 个没改成：' + bad.slice(0, 3).join('；') +
+        (bad.length > 3 ? '（其余见控制台）' : '') : ''),
+      bad.length ? 'fail' : 'ok', bad.length ? 12000 : 7000);
+    markSaved('重置：' + dDone + ' 个期望销量 + ' + pDone + ' 个采购量');
+    dbg('reset.done', { demand: dDone, purchase: pDone, failed: bad.length, ms: Date.now() - t0 });
+    renderAll();
+  }
+
+  /* ---------- 提交 ---------- */
+
+  function askSubmit(nextRev) {
+    var pcells = plan.cells_purchase || {};
+    var total = Object.keys(pcells).length;
+    // ★ 提交的判据是**计划采购量**为空（submitPlan 取的是 cell.purchase），不是期望销量
+    var emptyCells = Object.keys(pcells).filter(function (k) {
+      return pcells[k].purchase === null || pcells[k].purchase === undefined;
+    }).length;
+
+    var shortSkus = [];
+    skuList().forEach(function (sku) {
+      var f = null;
+      try { f = Store.forecastSku(plan.plan_id, sku); } catch (e) { return; }
+      if (f && f.any_shortage) shortSkus.push(sku);
+    });
+
+    Shell.confirmDanger({
+      title: '提交「' + plan.title + '」，铸出 rev ' + nextRev,
+      warn: 'rev 一旦铸出内容不可改，本页转为只读' +
+        (shortSkus.length ? '；当前有 ' + shortSkus.length + ' 个货号推演出断货' : ''),
+      steps: [
+        '按「货号 × 月」的 ' + total + ' 个采购格子逐格铸出计划单记录（' + emptyCells + ' 个空格子会被跳过并逐条列出）',
+        '把当时各店铺的期望销量一并冻结，供回溯「当时是按卖多少算的」',
+        '铸出 rev ' + nextRev + ' 与内容摘要（同样的内容得到同样的摘要）',
+        '把旧版里「一点进展都没有」的记录作废；已组单 / 已排货的记录保留',
+        '本页全表转为只读'
+      ].concat(shortSkus.length
+        ? ['★ 断货的货号照样会铸出记录 —— 系统不拦，但你现在看得见是哪 ' +
+           shortSkus.length + ' 个：' + shortSkus.join('、')]
+        : []),
+      confirmText: '我确认，铸出 rev ' + nextRev,
+      onConfirm: doSubmit
+    });
+  }
+
+  function doSubmit() {
+    var t0 = Date.now();
+    var totalCells = Object.keys(plan.cells_purchase || {}).length;
+    var r = null;
+    try { r = Store.submitPlan(plan.plan_id); }
+    catch (e) {
+      // ★ 抛出来的异常要原样点名：名字 / message / 栈首行，都写在页面上，不只写控制台
+      fail('submitPlan.threw', { plan_id: plan.plan_id, cells: totalCells,
+        name: e && e.name, message: e && e.message, cause: e && e.cause && e.cause.code,
+        stack: e && e.stack, ms: Date.now() - t0 });
+      var first = ((e && e.stack) || '').split('\n').slice(0, 3).join('\n');
+      document.getElementById('result').innerHTML =
+        '<div class="flash flash--bad mt" style="flex-direction:column;align-items:stretch">' +
+        '<div>提交出错 <code>' + esc((e && e.name) || 'Error') + '</code>：' +
+        esc((e && e.message) || '未知错误') + '　—— 异常来自 <code>Store.submitPlan</code> 内部，' +
+        '<strong>这一次提交没有铸出 rev</strong>。原文照抄：</div>' +
+        '<pre style="margin:4px 0 0;font-size:var(--t-xs);white-space:pre-wrap">' + esc(first) + '</pre></div>';
+      Shell.toast('提交出错：' + ((e && e.message) || '未知错误') + '（原文见页面与控制台）', 'fail', 15000);
+      return;
+    }
+    if (!r || !r.ok) {
+      fail('submitPlan.failed', { plan_id: plan.plan_id, error: r && r.error, detail: r && r.detail, ms: Date.now() - t0 });
+      Shell.toast('提交失败（' + ((r && r.error) || '未知错误') + '）：' +
+        ((r && r.detail) || '没有给出 detail，详情见控制台'), 'fail', 12000);
+      document.getElementById('result').innerHTML =
+        '<div class="flash flash--bad mt"><span>提交失败 <code>' + esc((r && r.error) || '') + '</code></span>' +
+        '<span>' + esc((r && r.detail) || '（没有给出 detail —— 这本身就是个缺陷，详情见控制台）') + '</span></div>';
+      return;
+    }
+
+    if (!reloadPlan('submitPlan')) return;
+    var skipped = r.skipped || [];
+    renderResult(r, totalCells - skipped.length, totalCells);
+    Shell.toast('rev ' + r.rev + ' 已铸出：' + (totalCells - skipped.length) + ' 条记录' +
+      (skipped.length ? '，跳过 ' + skipped.length + ' 个空格子（逐条列在上面）' : ''),
+      skipped.length ? 'warn' : 'ok', skipped.length ? 12000 : 7000);
+    dbg('submit.ok', { rev: r.rev, made: totalCells - skipped.length, skipped: skipped.length, ms: Date.now() - t0 });
+    renderAll();
+    window.scrollTo(0, 0);
+  }
+
+  function renderResult(r, made, totalCells) {
+    var skipped = r.skipped || [];
+    var q = encodeURIComponent(plan.plan_id);
+    var h = '<div class="flash flash--good mt" style="flex-direction:column;align-items:stretch">' +
+      '<div>rev ' + esc(r.rev) + ' 已铸出　按「货号 × 月」生成 <strong>' + made +
+      '</strong> 条计划单记录 / 共 ' + totalCells + ' 个采购格子' +
+      (skipped.length ? '，<strong>跳过 ' + skipped.length + ' 个</strong>' : '') + '</div>';
+
+    if (skipped.length) {
+      h += '<div>';
+      skipped.forEach(function (s) {
+        // ★ skipped 里只有 {sku, period, reason} —— 没有 seller_id（采购不带店铺）
+        h += '<span class="dropline"><span><code>' + esc(s.sku) + '</code> · ' + esc(s.period) +
+          '</span><span class="k">' + esc(s.reason) + '</span></span>';
+      });
+      h += '</div>';
+      h += '<details class="fold"><summary>为什么这些格子被跳过</summary><div class="fold__body">' +
+        '<p>空格子不会变成 0，而是<strong>不生成记录</strong> —— 「部分跳过」这种说法等于没说，所以逐条点名。</p>' +
+        '<p>这些格子里的<strong>期望销量</strong>可能是填了的 —— 跳过的判据是<strong>计划采购量</strong>为空：' +
+        '运营说了要卖多少，但没说要买多少，供应链就没有可下单的数。</p></div></details>';
+    }
+
+    h += '<div class="btn-row" style="margin-top:6px">' +
+      '<a class="btn btn--primary" href="ops.html?plan=' + q + '">查看记录进度</a>' +
+      '<a class="btn" href="plan-rev.html?plan=' + q + '">版本编辑</a></div>';
+    h += '</div>';
+    document.getElementById('result').innerHTML = h;
+  }
+
+  /* ============================================================
+     启动
+     ============================================================ */
+
+  function renderAll() {
+    renderHeader();
+    renderMode();
+    renderDraftBar();
+    renderLeadSay();     // ★ 提交之后「已提交」那句提示要跟着变，所以它进 renderAll
+    syncLeadInputs('renderAll');        // ★ 提交后三个框一起置灰，所以它也得进 renderAll
+    syncPlanMonthsInput('renderAll');   // ★ 提交后要置灰，所以每次重绘都跟一次真实状态
+    renderPlanMonthsSay();
+    renderGrid();
+    renderActions();
+  }
+
+  mountLeadBar();        // ★ 只挂一次：参数条的 DOM 是静态的，监听器不该跟着重绘反复叠加
+  renderAll();
+  dbg('ready', { plan_id: plan.plan_id, locked: locked(), skus: skuList().length,
+    mskus: (plan.claims || []).length, periods: periods,
+    params: Store.params(),
+    demand_cells: Object.keys(plan.cells_demand || {}).length,
+    purchase_cells: Object.keys(plan.cells_purchase || {}).length });
+})();
+</script>
+
+</body>
+</html>

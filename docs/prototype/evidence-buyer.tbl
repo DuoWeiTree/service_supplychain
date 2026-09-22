@@ -1,0 +1,147 @@
+# buyer.html 的全部变异证据 —— 整表重跑入口
+#
+# ★ 为什么这张表必须存在（而不是只在 test_buyer_page.js 头注释里写「改动要点」）：
+#   那份头注释曾经担保「变异串是完整的原文替换，可以照抄回放」。
+#   ★ 那句担保从写下那天起就是假的 —— 表里记的是**要点**，根本没有串可抄。
+#     它一直没被发现，是因为**没人兑现的承诺不会失败**：
+#     直到 2026-09-18 页面改版后真去贴串，才发现 18 行里 7 行对不上号
+#     （而断言一条都没失效 —— 烂的是串，不是判据）。
+#   所以串落在这里，要点留在头注释里：**串会随改版漂，要点跟着行为走。**
+#
+#   跑法：  export NODE_PATH=<装了 jsdom 的 node_modules>
+#           ./replay.sh --table evidence-buyer.tbl
+#
+#   ★ 改了 buyer.html 之后请重跑这张表，别只跑测试 ——
+#     测试绿不代表证据还回放得动。这两件事是分开的。
+#
+#   M18d 那条改的是**测试文件自己**（把 WHY_IDS 清空），所以单独覆盖 page:。
+#   它守的是这一节的空转：清单一空，三条断言一条都不跑，而测试全绿。
+
+page: buyer.html
+test: test_buyer_page.js
+
+=== M1 表格不长行：kept.forEach 改成空操作
+    r.kept.forEach(function (po) { body.appendChild(poRow(po)); });
+--
+    r.kept.forEach(function (po) { void po; });
+
+=== M2 poRow 不填领星单号列
+      + '<td>' + (po.order_sn
+          ? '<code>' + E(po.order_sn) + '</code>'
+          : '<span class="i-pencil">还没下单</span>') + '</td>'
+--
+      + '<td></td>'
+
+=== M3 三种空状态都写成「暂无数据」
+    box.innerHTML = '<div class="empty" data-empty="' + kind + '">' + html + '</div>';
+--
+    box.innerHTML = '<div class="empty" data-empty="' + kind + '">暂无数据</div>';
+
+=== M4 never 分支判据写成 !open.length
+    if (!all.length) {
+      kind = 'never';
+--
+    if (!open.length) {
+      kind = 'never';
+
+=== M5 filtered 分支不列成因
+        + '<ul>' + why + '</ul></div>'
+--
+        + '</div>'
+
+=== M6 失败时只说「创建失败」，不显示 detail
+      + '<ul><li><code>' + E(code) + '</code>　' + E(detail) + '</li></ul></div></div>';
+--
+      + '<ul><li><code>' + E(code) + '</code>　创建失败</li></ul></div></div>';
+
+=== M7 弹窗不显示「建完不可编辑」那句注
+      + '<p><strong>供应商与收货仓是领星下单的单头，建完之后不可编辑。</strong>'
+      + '要换供应商或收货仓，只能另建一张单 —— 同一货号分两家买，就是两张单。</p>'
+--
+      + ''
+
+=== M8 计划查询忽略状态过滤
+    try { base = Store.planQuery({ state: f.state, from: f.from, to: f.to }) || []; }
+--
+    try { base = Store.planQuery({ from: f.from, to: f.to }) || []; }
+
+=== M9 计划查询忽略 MSKU 过滤
+        if (f.msku && String(c.seller_sku).indexOf(f.msku) < 0) return false;
+--
+        if (false) return false;
+
+=== M10 空单被时间过滤时不单独计一类
+        if (!items.length) { dropped.no_items++; return; }
+--
+        if (!items.length) { dropped.period++; return; }
+
+=== M11 「已完成」那一行在 N=0 时不说话
+      bar.innerHTML = '<span class="muted">还没有已完成的采购单，这里一张都没隐藏</span>';
+--
+      bar.innerHTML = '';
+
+=== M12 「显示已完成」开关点了不生效
+      if (act === 'show-done') { showDone = true; dbg('done.toggle', { show_done: true, from: 'empty' }); renderPos(); return; }
+--
+      if (act === 'show-done') { dbg('done.toggle', { show_done: true, from: 'empty' }); return; }
+
+=== M13 建单成功后不留链接（只靠跳转）
+    document.getElementById('poResult').innerHTML =
+--
+    var _sink = 
+
+=== M14 「未处理」统计成全部而不是草稿
+      stat(drafts, '未处理',
+--
+      stat(all.length, '未处理',
+
+=== M15 页面上不写「换成了店铺」的理由
+        <p><strong>这里没有「MSKU」过滤，换成了「店铺」。</strong>
+--
+        <p><strong>店铺过滤。</strong>
+
+=== M16 分页按钮永不禁用
+    if (off) { btn.setAttribute('disabled', 'disabled'); btn.setAttribute('aria-disabled', 'true'); }
+--
+    if (false) { btn.setAttribute('disabled', 'disabled'); }
+
+=== M17 把说明方块塞回屏幕（.note）
+  <div id="poResult"></div>
+--
+  <div id="poResult"></div>
+  <div class="note"><p>故意留下的说明方块</p></div>
+
+=== M18a 把 #whyPlanFilter 的 id 改掉（说明还在但点不到）
+    <details class="fold" id="whyPlanFilter">
+--
+    <details class="fold" id="whyPlanFilterX">
+
+=== M18b 留外壳、把 #whyPlanFilter 掏空
+        <p>★ <strong>为什么这一块有 MSKU，上面那块没有。</strong>
+          同一个词在两块里能不能用，取决于<strong>那一块的数据有没有这个维度</strong>，
+          不是为了「一致」而一起砍掉。计划是 msku × 月逐格填的，所以它有真 msku；
+          采购单的行只到〈货号 × 店铺〉，没有。</p>
+        <p>★ <strong>命中的是「计划」，不是「格子」。</strong>
+          一张计划认领了几十个货号 / msku，只要<strong>命中任意一个</strong>，
+          整张计划就出现在下表里 —— 表里那一行仍然是整张计划，
+          不会只列出命中的那几个货号。想看具体到哪一格，点「详情」进计划里看。</p>
+        <p>★ <strong>状态</strong>：「草稿」= 一次都没提交过（<code>revs</code> 为空，
+          所以「版本」那一列是空的）；「已提交」= 至少提交过一版，版本号取当前那一版。</p>
+        <p>★ <strong>时间</strong>：比的是这张计划自己的<strong>计划周期</strong>
+          （<code>period_start ~ period_end</code>）与你给的区间<strong>有没有交集</strong>，
+          不是建计划的日期。所以一张跨 10~12 月的计划，填「2026-11」也找得到它。</p>
+--
+
+
+=== M18c #whyPlanFilter 默认展开着（收了等于没收）
+    <details class="fold" id="whyPlanFilter">
+      <summary>这里的货号 / MSKU 匹配的是什么</summary>
+--
+    <details class="fold" id="whyPlanFilter" open>
+      <summary>这里的货号 / MSKU 匹配的是什么</summary>
+
+=== M18d 把点名清单清空（证明非空断言不是摆设）
+page: test_buyer_page.js
+const WHY_IDS = ['whyPoFilter', 'whyPlanFilter'];
+--
+const WHY_IDS = [];

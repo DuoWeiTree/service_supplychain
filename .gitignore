@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+web/dist/
+config.toml
+.pytest_cache/
+.ruff_cache/
+.superpowers/
+docs/prototype/.stage-a-*.md
+var/

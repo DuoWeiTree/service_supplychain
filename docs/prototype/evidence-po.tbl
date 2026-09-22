@@ -1,0 +1,79 @@
+# po.html 的全部变异证据 —— 整表重跑入口
+#
+# ★ 为什么要有这张表：变异证据锚在**源码字面**上，这是最容易烂的锚。
+#   一次零行为变更的改版就能废掉一整批 from 串，而断言可能一条都没失效。
+#   本页实测过：2026-09-18 03:47 那次改版把 chip 配色 'ext' 改成 'dim'，
+#   #7' / #8' 的 from 串当场失效 —— 而测试仍然全绿。
+#   ★ 逐条回放的话，过期是**逐条、静默**的，只有撞上的人才知道；
+#     整表跑一次，过期一次性可见。
+#
+#   跑法：  export NODE_PATH=<jsdom 所在的 node_modules>
+#           ./replay.sh --table evidence-po.tbl
+#   ★ 改了 po.html 之后请重跑这张表，别只跑测试 ——
+#     测试绿不代表证据还回放得动。
+#
+# ------------------------------------------------------------
+# ⚠ 有一条**这张表装不下**：原 #11「details class="fold" → foldx」。
+#   它守的断言是 `doc.querySelectorAll('details.fold').length >= 1`，
+#   要打红它就必须把**全部 5 处**一起改名 —— 改 1 处断言仍然绿。
+#   而闸 1 要求 from 命中数 **恰好 1**，于是这条合法的变异被拒。
+#   ★ 这不是表写错了，是「必须改 N 处」这种变异在当前语法里无法表达。
+#   已报 ui-ops（建议：允许条目声明 `hits: 5`，闸 1 改成核对声明值 ——
+#   既保住「命中数必须是我预期的那个」，又能表达 N > 1）。
+#   在它支持之前，#11 只能手工回放：
+#       sed -i 's/details class="fold"/details class="foldx"/g' po.html
+#   ------------------------------------------------------------
+
+page: po.html
+test: test_po_page.js
+
+=== 1 不渲染勾不动的行（该只剩能勾的）
+        body.appendChild(sellerRow(r, lock));
+--
+        if (r.selectable) body.appendChild(sellerRow(r, lock));
+
+=== 2 计划采购量印成期望销量合计
+qty(g.purchase_planned)
+--
+qty(g.demand_total)
+
+=== 3 items 合并键混进 seller_id（等于不合并）
+      var k = it.sku + '|' + it.period;
+--
+      var k = it.sku + '|' + it.period + '|' + it.seller_id;
+
+=== 4 拒绝原文不上屏
+          return '<li>' + esc(s) + '</li>';
+--
+          return '';
+
+=== 5 恒不只读（提交后也不锁）
+  function readOnly() { return po.state !== '草稿'; }
+--
+  function readOnly() { return false; }
+
+=== 6 恒只读（反向：草稿态也锁死）
+  function readOnly() { return po.state !== '草稿'; }
+--
+  function readOnly() { return true; }
+
+=== 7 入库单号画成空白
+                  ? chip(r.receipt_no, 'dim')
+--
+                  ? chip('', 'dim')
+
+=== 8 入库单号编一个（该只红「是真的那几个」）
+                  ? chip(r.receipt_no, 'dim')
+--
+                  ? chip('RK-FAKE-' + i, 'dim')
+
+=== 9 入库表少画一行
+          + p.receipts.map(function (r, i) {
+--
+          + p.receipts.slice(1).map(function (r, i) {
+
+=== 10 故意留一个 .note 说明方块在屏幕上
+  <div id="banner"></div>
+--
+  <div id="banner"></div>
+  <div class="note"><p>故意留下的说明方块</p></div>

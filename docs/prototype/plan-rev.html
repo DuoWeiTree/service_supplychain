@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>版本编辑 · 供应链服务原型</title>
+<link rel="stylesheet" href="assets/shell.css">
+<style>
+/* ★ 本页独有的样式。旧类名（.shell__* / .toasts / .modal-backdrop / .chip--*）
+   已由 assets/shell.css 收编（2026-09-18）—— 不要在这里再定义一份：
+   同一个类在两个地方有定义，改一处忘一处，屏幕上不会报错，只会慢慢变得不一致。 */
+/* 本页独有：可展开的行 + 被排除的那一侧 */
+tr.row-toggle{cursor:pointer;}
+tr.row-toggle:hover td{background:var(--paper);}
+.caret{display:inline-block;width:1em;color:var(--pencil);font-size:var(--t-xs);transition:transform .12s;}
+tr.row-toggle[aria-expanded="true"] .caret{transform:rotate(90deg);}
+tr.row-detail > td{background:var(--paper-lo);padding:12px;}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <div class="head">
+    <div class="head__main">
+      <h1 id="planTitle">版本编辑</h1>
+      <div class="head__meta" id="planSub"></div>
+    </div>
+    <div class="head__act">
+      <a class="btn" id="backToPlan" href="plan.html">回计划编辑</a>
+    </div>
+  </div>
+
+  <div id="banner"></div>
+
+  <details class="fold" id="whyRev">
+    <summary>说明 · 「流转中」和「当前使用」不是一回事</summary>
+    <div class="fold__body">
+      <p>它们是<strong>两个独立的标记</strong>，同一版可以只占其中一个。</p>
+      <p><strong>流转中</strong>　= 这一版铸出的记录正在走 已确认 → 已下单 → 准备排货 → 已排货 → 已完结。
+        <strong>采购与排货消费的是它</strong>：组单、排货看到的需求都来自这一版的记录。</p>
+      <p><strong>当前使用</strong>　= 计算需求时读的是哪一版，默认是最新那一版。它决定「算出来的数」，
+        不决定「谁在跑」。</p>
+      <p><strong>发货前按「当前使用」算，发货后快照冻结。</strong>
+        否则：货已经发出去了，有人又把「当前使用」切到别的版，
+        于是这批货的计算依据在事后被改掉了 —— 单据还在，依据却对不上，追溯就断在这里。</p>
+      <p>「内容摘要」在本原型的 store 里叫 <code>digest</code>（真实系统的字段名是
+        <code>content_digest</code>）—— 同样的内容得到同样的摘要，用来回答「这两版到底是不是一份东西」。
+        点行展开可看这一版<strong>冻结了哪些格子的什么值</strong>。</p>
+      <p>表里的「记录数」是<strong>真实存在的记录</strong>，不是 <code>rev.line_ids</code> 的长度 ——
+        两者对不上时上面会有横幅点名。<strong>rev 冻结的是「计划采购量」</strong>（铸出记录的 total）；
+        销量预估、库存推演都<strong>不随 rev 冻结</strong>，它们跟着当前数据走。</p>
+    </div>
+  </details>
+
+  <div class="sec">
+    <div class="sec__title">全部版本　<span class="muted" id="revCount"></span></div>
+    <div class="table-scroll">
+      <table class="table" id="revTable">
+        <thead>
+          <tr>
+            <th>rev</th><th>铸出日</th><th>内容摘要</th><th class="r">记录数</th>
+            <th>当前使用</th><th>在流转</th><th>操作</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div id="revNote"></div>
+  </div>
+
+</div>
+
+<script src="assets/store.js"></script>
+<script src="assets/shell.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  Shell.mount({ title: '版本编辑', crumb: [
+    { text: '首页', href: 'index.html' },
+    { text: '运营首页', href: 'ops.html' },
+    { text: '计划编辑', href: 'plan.html' },
+    { text: '版本编辑' }
+  ] });
+
+  var wantPlan = Shell.param('plan');
+  var plan = Store.plan(wantPlan);
+  var ST = Store.STATES;
+
+  if (!plan) {
+    document.getElementById('banner').innerHTML =
+      '<div class="flash flash--bad mt"><span>找不到计划 <code>plan=' + Shell.esc(wantPlan) + '</code></span>' +
+      '<span class="i-pencil">已知：' +
+      Shell.esc(Store.get().plans.map(function (p) { return p.plan_id; }).join('、') || '（一张都没有）') +
+      '</span><span style="margin-left:auto"><a href="ops.html">回运营首页</a></span></div>';
+    document.getElementById('revTable').parentNode.style.display = 'none';
+    return;
+  }
+
+  document.getElementById('backToPlan').href = 'plan.html?plan=' + encodeURIComponent(plan.plan_id);
+
+  /* ---------- 每一版的记录统计 ---------- */
+
+  // ★ 在流转 = 这一版还有记录没走完，也没被撤销。
+  //   「已完结」不算在流转（它走完了），「已撤销」也不算（它被新版取代了）——
+  //   但两者都要单独数出来，不许并进一个「其它」里。
+  function statsOf(rev) {
+    var all = Store.get().lines.filter(function (l) { return l.plan_id === plan.plan_id && l.rev === rev; });
+    var byState = {}, live = 0, closed = 0, cancelled = 0, units = 0;
+    all.forEach(function (l) {
+      byState[l.state] = (byState[l.state] || 0) + 1;
+      units += l.total;
+      if (l.state === ST.CANCELLED) cancelled++;
+      else if (l.state === ST.CLOSED) closed++;
+      else live++;
+    });
+    return { lines: all, byState: byState, live: live, closed: closed, cancelled: cancelled, units: units };
+  }
+
+  var revs = plan.revs.map(function (r) {
+    var st = statsOf(r.rev);
+    // ★ rev.line_ids 与真实记录对不上 = 有东西被悄悄弄丢了，必须看得见
+    var missing = r.line_ids.filter(function (id) {
+      return !st.lines.some(function (l) { return l.line_id === id; });
+    });
+    return { rev: r, stats: st, missing: missing, flowing: st.live > 0 };
+  });
+
+  var flowing = revs.filter(function (x) { return x.flowing; });
+  var current = revs.filter(function (x) { return x.rev.is_current; });
+
+  document.getElementById('planTitle').textContent = '版本编辑：' + plan.title;
+  document.getElementById('planSub').innerHTML =
+    '<span><code>' + Shell.esc(plan.plan_id) + '</code></span>' +
+    '<span>' + Shell.esc(plan.periods[0]) + ' ~ ' + Shell.esc(plan.periods[plan.periods.length - 1]) + '</span>' +
+    '<span>owner <b>' + Shell.esc(plan.owner) + '</b></span>' +
+    '<span>共 <b>' + plan.revs.length + '</b> 版</span>';
+  document.getElementById('revCount').textContent =
+    '当前使用 ' + (current.length ? 'rev ' + current[0].rev.rev : '（没有任何一版被标记）') +
+    '　在流转 ' + flowing.length + ' 版';
+
+  /* ---------- 横幅：口径冲突要看得见 ---------- */
+
+  function renderBanner() {
+    var msgs = [];
+    if (flowing.length > 1) {
+      msgs.push(Shell.chip('两版同时在流转', 'fail') +
+        '<span>rev ' + flowing.map(function (x) { return x.rev.rev; }).join(' 与 rev ') +
+        ' 都还有未走完的记录。<strong>「同一计划同时只有 1 版在流转」这句话此刻不成立</strong> —— ' +
+        '新版只作废旧版里「一点进展都没有」的记录，已组单 / 已排货的会留在旧版继续跑。' +
+        '冲突摆出来，不要靠这句话去推断。</span>');
+    }
+    if (current.length > 1) {
+      msgs.push(Shell.chip('多版被标成当前使用', 'fail') + '<span>rev ' +
+        current.map(function (x) { return x.rev.rev; }).join('、') +
+        ' —— 这是数据缺陷，计算需求时会读到哪一版是不确定的。</span>');
+    }
+    if (!current.length && plan.revs.length) {
+      msgs.push(Shell.chip('没有任何一版被标为当前使用', 'warn') + '<span>计算需求时无版可读。</span>');
+    }
+    var miss = revs.filter(function (x) { return x.missing.length; });
+    if (miss.length) {
+      msgs.push(Shell.chip('rev 记的记录号找不到对应记录', 'fail') + '<span>' +
+        miss.map(function (x) { return 'rev ' + x.rev.rev + ' 缺 ' + x.missing.join('、'); }).join('；') + '</span>');
+    }
+    document.getElementById('banner').innerHTML = msgs.map(function (m) {
+      return '<div class="flash flash--bad mt">' + m + '</div>';
+    }).join('');
+  }
+
+  /* ---------- 版本表 ---------- */
+
+  function stateChipKind(st) {
+    if (st === ST.CLOSED) return 'ok';
+    if (st === ST.SUBMITTED) return 'warn';
+    if (st === ST.CANCELLED) return 'fail';
+    return 'ours';
+  }
+
+  function render() {
+    var tb = document.querySelector('#revTable tbody');
+    tb.innerHTML = '';
+
+    if (!plan.revs.length) {
+      tb.innerHTML = '<tr><td colspan="7" class="muted">这张计划还没有铸出任何 rev —— ' +
+        '版本要等提交才存在。<a href="plan.html?plan=' + encodeURIComponent(plan.plan_id) + '">去填数并提交</a></td></tr>';
+      document.getElementById('revNote').innerHTML = '';
+      return;
+    }
+
+    revs.slice().reverse().forEach(function (x, idx) {
+      var r = x.rev, st = x.stats;
+      var tr = document.createElement('tr');
+      tr.className = 'row-toggle';
+      tr.setAttribute('aria-expanded', 'false');
+      tr.setAttribute('data-row', String(r.rev));
+
+      tr.innerHTML =
+        '<td><span class="caret">▸</span> rev ' + r.rev + '</td>' +
+        '<td>' + Shell.esc(r.day) + '</td>' +
+        '<td><code>' + Shell.esc(r.digest) + '</code></td>' +
+        '<td class="r">' + Shell.qty(st.lines.length) +
+          '<div class="i-pencil" style="font-size:var(--t-xs)">' + st.units + ' 件</div></td>' +
+        '<td>' + (r.is_current
+            ? Shell.chip('当前使用', 'ours') + '<div class="i-pencil" style="font-size:var(--t-xs)">计算需求时读它</div>'
+            : '<span class="i-pencil">—</span>') + '</td>' +
+        '<td>' + (x.flowing
+            ? Shell.chip('在流转', 'warn') + '<div class="i-pencil" style="font-size:var(--t-xs)">' +
+              st.live + ' 未走完 · ' + st.closed + ' 已完结 · ' + st.cancelled + ' 已撤销</div>'
+            : '<span class="i-pencil">否</span><div class="i-pencil" style="font-size:var(--t-xs)">' +
+              st.closed + ' 已完结 · ' + st.cancelled + ' 已撤销</div>') + '</td>' +
+        '<td data-act="' + r.rev + '"></td>';
+      tb.appendChild(tr);
+
+      // 操作列：按钮不能放在 row-toggle 的点击里被顺手触发，所以单独挂
+      var act = tr.querySelector('[data-act="' + r.rev + '"]');
+      if (r.is_current) {
+        act.innerHTML = '<span class="i-pencil">已是当前使用</span>';
+      } else {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn btn--sm';
+        btn.textContent = '设为当前使用';
+        btn.addEventListener('click', function (e) { e.stopPropagation(); askSetCurrent(r.rev); });
+        act.appendChild(btn);
+      }
+      var link = document.createElement('div');
+      link.style.fontSize = 'var(--t-xs)';
+      link.innerHTML = '<a href="plan.html?plan=' + encodeURIComponent(plan.plan_id) + '">在计划编辑里看这一版</a>';
+      act.appendChild(link);
+
+      // 展开：这一版冻结了哪些格子的什么值
+      var det = document.createElement('tr');
+      det.className = 'row-detail';
+      det.style.display = 'none';
+      det.setAttribute('data-detail', String(r.rev));
+      det.innerHTML = '<td colspan="7">' + frozenTable(x) + '</td>';
+      tb.appendChild(det);
+    });
+
+    document.getElementById('revNote').innerHTML = '';
+  }
+
+  function frozenTable(x) {
+    var st = x.stats;
+    if (!st.lines.length) {
+      // ★ 「没冻结任何东西」和「冻结了但没显示」不一样
+      return '<div class="flash"><span>这一版一条记录都没有</span>' +
+        '<span class="i-pencil">提交时 ' + Object.keys(plan.cells).length +
+        ' 个格子全部被跳过（空格子或计划量 ≤ 0）。</span></div>';
+    }
+    var h = '<div class="table-scroll"><table class="table table--dense"><thead><tr>' +
+      '<th>记录</th><th>店铺</th><th>货号</th><th>月</th>' +
+      '<th class="r">冻结的计划采购量</th><th class="r">当前系统销量预估</th><th>记录状态</th><th></th>' +
+      '</tr></thead><tbody>';
+
+    st.lines.slice().sort(function (a, b) {
+      return (a.seller_id + a.sku + a.period).localeCompare(b.seller_id + b.sku + b.period);
+    }).forEach(function (l) {
+      var c = plan.cells[l.seller_id + '|' + l.sku + '|' + l.period];
+      var sys = (c && c.system !== null && c.system !== undefined && c.system !== '') ? Number(c.system) : null;
+      h += '<tr' + (l.state === ST.CANCELLED ? ' style="opacity:.62"' : '') + '>' +
+        '<td><code>' + Shell.esc(l.line_id) + '</code></td>' +
+        '<td>' + Shell.esc(Store.sellerName(l.seller_id)) + '</td>' +
+        '<td><code>' + Shell.esc(l.sku) + '</code></td>' +
+        '<td>' + Shell.esc(l.period) + '</td>' +
+        // ★ 人写的数用蓝黑墨，机器估的用铅笔灰 —— 墨色已经说了它是哪种数
+        '<td class="r"><span class="qty i-ink">' +
+          Shell.esc(Number(l.total).toLocaleString('en-US')) + '</span></td>' +
+        '<td class="r">' + (sys === null ? '<span class="i-pencil">（空）</span>'
+            : '<span class="qty i-pencil">' + Shell.esc(Number(sys).toLocaleString('en-US')) + '</span>') +
+          (sys !== null && sys !== l.total ? ' <span class="i-red" style="font-size:var(--t-xs)">已与冻结值不同</span>' : '') + '</td>' +
+        '<td>' + Shell.chip(l.state, stateChipKind(l.state)) + '</td>' +
+        '<td><a href="trace.html?line=' + encodeURIComponent(l.line_id) + '">下钻</a></td>' +
+        '</tr>';
+    });
+    h += '</tbody></table></div>';
+
+    // 这一版没覆盖到的格子：也要点名，不许只展示「有的」那一侧
+    var covered = {};
+    st.lines.forEach(function (l) { covered[l.seller_id + '|' + l.sku + '|' + l.period] = true; });
+    var uncovered = Object.keys(plan.cells).filter(function (k) { return !covered[k]; }).sort();
+    if (uncovered.length) {
+      // ★ 只看「冻结了什么」会漏掉「什么没被冻结」—— 后者才是提交时被跳过的那批
+      h += '<div class="i-red mt" style="font-size:var(--t-sm)">这一版没冻结的 ' + uncovered.length + ' 个格子</div>';
+      uncovered.forEach(function (k) {
+        var p = k.split('|');
+        h += '<span class="dropline"><span>' + Shell.esc(Store.sellerName(p[0])) + ' · ' + Shell.esc(p[1]) +
+          ' · ' + Shell.esc(p[2]) + '</span><span class="k">这一版没有对应记录</span></span>';
+      });
+    }
+    if (x.missing.length) {
+      h += '<div class="flash flash--bad mt">' + Shell.chip('line_ids 里有找不到的记录号', 'fail') +
+        '<span>' + Shell.esc(x.missing.join('、')) + '</span></div>';
+    }
+    return h;
+  }
+
+  /* 展开/收起 */
+  document.querySelector('#revTable tbody').addEventListener('click', function (e) {
+    if (e.target && (e.target.tagName === 'BUTTON' || e.target.tagName === 'A')) return;
+    var tr = e.target.closest ? e.target.closest('tr.row-toggle') : null;
+    if (!tr) return;
+    var rev = tr.getAttribute('data-row');
+    var det = document.querySelector('#revTable [data-detail="' + rev + '"]');
+    if (!det) return;
+    var open = tr.getAttribute('aria-expanded') === 'true';
+    tr.setAttribute('aria-expanded', open ? 'false' : 'true');
+    det.style.display = open ? 'none' : '';
+  });
+
+  /* ---------- 设为当前使用 ----------
+     ★ store 没有这个 API（Store.* 里没有 setCurrentRev / POST 等价物）。
+       这里直接改 state 的 is_current，再走 Store.save() 落库、Store.log() 留痕 ——
+       原型改得动，但它不是真实路径：真实系统由
+       POST /v1/plans/{id}/revs/{rev}/current 承担（带校验与审计）。
+     ------------------------------------------------------- */
+
+  function askSetCurrent(rev) {
+    var x = revs.filter(function (y) { return y.rev.rev === rev; })[0];
+    var was = current.length ? current[0].rev.rev : null;
+    Shell.confirmDanger({
+      title: '把 rev ' + rev + ' 设为「当前使用」',
+      warn: '改的是「计算需求时读哪一版」，不是「谁在流转」—— 已发货的批次不受影响（它们已按发货时的快照冻结）',
+      steps: [
+        (was === null ? '当前没有任何一版被标记' : '把 rev ' + was + ' 的「当前使用」取消'),
+        '把 rev ' + rev + ' 标为「当前使用」',
+        '计划编辑页的只读横幅会改看这一版（rev ' + rev + '，' + (x ? x.stats.lines.length : 0) + ' 条记录）',
+        '★ 原型直接改 state 再 Store.save() —— 真实系统由 POST /v1/plans/{id}/revs/{rev}/current 承担'
+      ],
+      confirmText: '我确认，设为当前使用',
+      onConfirm: function () { doSetCurrent(rev, was); }
+    });
+  }
+
+  function doSetCurrent(rev, was) {
+    var t0 = Date.now();
+    var p = Store.plan(plan.plan_id);
+    if (!p) {
+      Shell.toast('设置失败（plan_not_found）：计划 ' + plan.plan_id + ' 在 store 里已不存在', 'fail', 12000);
+      console.error('[plan-rev] setCurrent.plan-missing', { plan_id: plan.plan_id });
+      return;
+    }
+    var hit = p.revs.filter(function (r) { return r.rev === rev; })[0];
+    if (!hit) {
+      // ★ 失败点名：要的是哪一版、有的是哪些
+      var known = p.revs.map(function (r) { return r.rev; });
+      Shell.toast('设置失败（rev_not_found）：计划 ' + p.plan_id + ' 里没有 rev ' + rev +
+        '，已有的是 ' + (known.join('、') || '（一版都没有）'), 'fail', 12000);
+      console.error('[plan-rev] setCurrent.rev-missing', { plan_id: p.plan_id, want: rev, known: known });
+      return;
+    }
+    p.revs.forEach(function (r) { r.is_current = (r.rev === rev); });
+    var saved = Store.save();
+    if (!saved || !saved.ok) {
+      Shell.toast('落库失败：Store.save() 没有返回 ok，改动可能只在内存里（详情见控制台）', 'fail', 12000);
+      console.error('[plan-rev] setCurrent.save-failed', { plan_id: p.plan_id, rev: rev, result: saved });
+      return;
+    }
+    Store.log('把「' + p.title + '」的当前使用版本切到 rev ' + rev +
+      (was === null ? '（此前没有任何一版被标记）' : '（此前是 rev ' + was + '）') +
+      '　★ 原型直接改 is_current；真实系统走 POST /v1/plans/' + p.plan_id + '/revs/' + rev + '/current');
+
+    console.debug('[plan-rev] setCurrent.ok', { plan_id: p.plan_id, from: was, to: rev, ms: Date.now() - t0 });
+    Shell.toastAfterReload('已把「当前使用」切到 rev ' + rev +
+      (was === null ? '' : '（此前是 rev ' + was + '）') +
+      '。注意：这不改变哪一版在流转 —— 采购与排货消费的仍是各自版本的记录。', 'ok');
+    window.location.reload();
+  }
+
+  /* ---------- 启动 ---------- */
+  renderBanner();
+  render();
+  console.debug('[plan-rev] ready', {
+    plan_id: plan.plan_id, revs: plan.revs.length,
+    flowing: flowing.map(function (x) { return x.rev.rev; }),
+    current: current.map(function (x) { return x.rev.rev; })
+  });
+})();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,534 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>运营首页 · 供应链服务原型</title>
+<link rel="stylesheet" href="assets/shell.css">
+<style>
+/* ★ 本页独有的样式。旧类名（.shell__* / .toasts / .modal-backdrop / .chip--*）
+   已由 assets/shell.css 收编（2026-09-18）—— 不要在这里再定义一份：
+   同一个类在两个地方有定义，改一处忘一处，屏幕上不会报错，只会慢慢变得不一致。 */
+/* ★ 计数格：五个数一排，点一下就是筛选。它们是**入口**，不是徽章墙 —— 所以只有数与名。 */
+#counts{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+  gap:1px;background:var(--rule);border:1px solid var(--rule);border-radius:var(--r);overflow:hidden;}
+.tile{display:block;padding:12px 14px;background:var(--paper-hi);text-decoration:none;color:inherit;}
+.tile:hover{background:var(--paper-lo);}
+.tile[aria-current="true"]{background:var(--paper-lo);box-shadow:inset 3px 0 0 var(--ink);}
+.tile__n{font-size:var(--t-xl);line-height:1.1;}
+.tile__k{font-size:var(--t-sm);margin-top:2px;}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <div class="head">
+    <div class="head__main">
+      <h1>运营首页</h1>
+      <div class="head__meta" id="countScope"></div>
+    </div>
+    <div class="head__act">
+      <button type="button" class="btn btn--primary" id="btnNewPlan">新建销售计划</button>
+    </div>
+  </div>
+
+  <div id="banner"></div>
+
+  <details class="fold" id="whyBarrel">
+    <summary>说明 · 整体状态是怎么派生出来的、五个桶各自的判据</summary>
+    <div class="fold__body">
+      <p><strong>计划的整体状态是派生的木桶</strong> —— 取它全部记录状态的<strong>最小态</strong>，
+        最慢的那条记录说了算；它不是另存的一个字段，也没人去点。
+        木桶的次序是：已提交 → 已确认 → 已下单 → 准备排货 → 已排货 → 已完结，
+        状态只前进不回退（唯一例外是「已确认 → 已提交」）。</p>
+      <p>上面五个数是<strong>计划级计数</strong>：一张计划算一个数，不是记录数。它们的判据分别是 ——
+        <strong>未提交</strong>：一版都还没铸出；
+        <strong>已提交</strong>：采购还没全部组进采购单；
+        <strong>准备排货</strong>：有货到了，等排货员编排；
+        <strong>已发货</strong>：底层字段是「已排货」；
+        <strong>其他状态…</strong>：兜底桶，不属于前四类的都在这里。</p>
+      <p><strong>兜底不等于归并</strong> —— 「其他状态…」自己还要按真实状态摊开，点开看得见是哪些、各多少。
+        「一版都没提交」和「提交过但记录全被撤销」也不是一回事，不许合并到同一个数里。</p>
+      <p>列表里的「<strong>更新时间</strong>」= <strong>最新 rev 的铸出日</strong>（计划对象本身没有
+        <code>updated_at</code>）—— 未提交的计划没有这个时间，按更新时间排序时它们排在最后并标注，
+        不当成「很久没动」。</p>
+      <p><strong>已完结</strong>的计划计入上面的数，但<strong>不出现在列表里</strong>（负责人要求）——
+        列表底部会注明隐藏了几张并可一键展开。<strong>隐藏不等于不存在。</strong></p>
+      <p>下方「进度概览」里数量与件数都给 —— 只给条数会让「1 条 5000 件」和「5 条各 10 件」长得一样。
+        每行可点，跳到该状态下的<strong>第一条</strong>记录看它卡在等什么事实。</p>
+    </div>
+  </details>
+
+  <div class="mt" id="counts"></div>
+  <div id="otherBreakdown"></div>
+
+  <div class="sec">
+    <div class="sec__title">计划列表　<span class="muted" id="filterEcho"></span></div>
+
+    <div class="bar" id="filters">
+      <div class="bar__grp">
+        <label class="bar__lbl" for="fPeriod">周期</label>
+        <select class="inp inp--text" id="fPeriod" style="max-width:150px" aria-label="按周期筛选"></select>
+      </div>
+      <div class="bar__grp">
+        <label class="bar__lbl" for="fBucket">状态</label>
+        <select class="inp inp--text" id="fBucket" style="max-width:170px" aria-label="按状态筛选"></select>
+      </div>
+      <div class="bar__grp">
+        <label class="bar__lbl" for="fSort">排序</label>
+        <select class="inp inp--text" id="fSort" style="max-width:150px" aria-label="排序方式">
+          <option value="period">按周期</option>
+          <option value="state">按状态</option>
+          <option value="updated">按更新时间</option>
+        </select>
+      </div>
+      <button type="button" class="btn btn--sm btn--ghost" id="btnClearFilter">清空筛选</button>
+    </div>
+
+    <div class="table-scroll mt">
+      <table class="table" id="planTable">
+        <thead>
+          <tr><th>周期</th><th>计划名</th><th>版本</th><th>状态</th><th>详情</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div id="hiddenNote"></div>
+  </div>
+
+  <div class="sec">
+    <div class="sec__title">进度概览　<span class="muted" id="overviewScope"></span></div>
+    <div id="overview"></div>
+  </div>
+
+</div>
+
+<script src="assets/store.js"></script>
+<script src="assets/shell.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  Shell.mount({ title: '运营首页', crumb: [{ text: '首页', href: 'index.html' }, { text: '运营首页' }] });
+
+  var S = Store.get();
+  var ST = Store.STATES;
+
+  /* ★ 木桶的次序：状态只前进不回退（唯一例外是「已确认 → 已提交」），
+     所以「最小态」就是整张计划真正走到的那一环。 */
+  var ORDER = [ST.SUBMITTED, ST.CONFIRMED, ST.ORDERED, ST.READY, ST.SCHEDULED, ST.CLOSED];
+  var UNKNOWN = '状态未知';
+
+  function chipKindOf(state) {
+    if (state === ST.CLOSED) return 'ok';
+    if (state === ST.SUBMITTED) return 'warn';
+    if (state === ST.CANCELLED || state === UNKNOWN) return 'fail';
+    return 'ours';
+  }
+
+  /* ---------- 木桶 ---------- */
+
+  var unknownSeen = {};   // ★ 认不出的状态必须可见，不许当成「最靠前」悄悄参与取小
+
+  function linesOfPlan(planId) {
+    return S.lines.filter(function (l) { return l.plan_id === planId && l.state !== ST.CANCELLED; });
+  }
+
+  function barrelOf(lines) {
+    if (!lines.length) return null;
+    var min = ORDER.length;
+    lines.forEach(function (l) {
+      var i = ORDER.indexOf(l.state);
+      if (i < 0) {
+        unknownSeen[l.state] = (unknownSeen[l.state] || 0) + 1;
+        console.error('[ops] line.state-unknown', { line_id: l.line_id, plan_id: l.plan_id, state: l.state, known: ORDER });
+        return;
+      }
+      if (i < min) min = i;
+    });
+    // 全是认不出的状态 → 不能返回 null（那会被当成「未提交」），得单独说出来
+    return min < ORDER.length ? ORDER[min] : UNKNOWN;
+  }
+
+  function sumQty(lines) {
+    var t = { total: 0, confirmed: 0, ordered: 0, staged: 0, dispatched: 0 };
+    lines.forEach(function (l) {
+      var q = Store.lineQty(l.line_id);
+      t.total += q.total; t.confirmed += q.confirmed; t.ordered += q.ordered;
+      t.staged += q.staged; t.dispatched += q.dispatched;
+    });
+    return t;
+  }
+
+  /* ---------- 分桶 ----------
+     ★ 前四个桶是点名的，第五个「其他状态…」是兜底桶 ——
+       兜底不等于归并：它自己还要按真实状态摊开，点开看得见是哪些、各多少。
+     ------------------------------------------------------- */
+
+  var BUCKETS = [
+    { key: 'unsubmitted', label: '未提交', why: '一版都还没铸出' },
+    { key: 'submitted', label: '已提交', why: '采购还没全部组进采购单' },
+    { key: 'ready', label: '准备排货', why: '有货到了，等排货员编排' },
+    { key: 'shipped', label: '已发货', why: '底层字段是「已排货」' },
+    { key: 'other', label: '其他状态…', why: '兜底桶：不属于前四类的都在这里' }
+  ];
+
+  function bucketOf(row) {
+    if (row.barrel === null) {
+      // ★ 「一版都没提交」和「提交过但记录全被撤销」不是一回事，不许合并到同一个数里
+      return row.plan.revs.length === 0
+        ? { key: 'unsubmitted', label: '未提交' }
+        : { key: 'other', label: '已提交但记录全被撤销' };
+    }
+    if (row.barrel === ST.SUBMITTED) return { key: 'submitted', label: '已提交' };
+    if (row.barrel === ST.READY) return { key: 'ready', label: '准备排货' };
+    if (row.barrel === ST.SCHEDULED) return { key: 'shipped', label: '已发货' };
+    return { key: 'other', label: row.barrel };     // 已确认 / 已下单 / 已完结 / 状态未知
+  }
+
+  /* ---------- 计划行（只算一次，筛选与排序都在它上面做） ---------- */
+
+  var rows = S.plans.map(function (p) {
+    var lines = linesOfPlan(p.plan_id);
+    var barrel = barrelOf(lines);
+    var cur = p.revs.filter(function (r) { return r.is_current; })[0] || null;
+    var latest = p.revs.length ? p.revs[p.revs.length - 1] : null;
+    var row = {
+      plan: p, lines: lines, barrel: barrel, cur: cur,
+      updated: latest ? latest.day : '',           // ★ 没有就是没有，不拿今天顶上
+      qty: sumQty(lines)
+    };
+    row.bucket = bucketOf(row);
+    row.closed = (barrel === ST.CLOSED);
+    return row;
+  });
+
+  var owner = S.plans.length ? S.plans[0].owner : '（无）';
+  var owned = rows.filter(function (r) { return r.plan.owner === owner; });
+  var notOwned = rows.length - owned.length;
+
+  /* ---------- 计数 ---------- */
+
+  var counts = {};
+  BUCKETS.forEach(function (b) { counts[b.key] = 0; });
+  var otherDetail = {};       // label → { n, plans:[] }
+  owned.forEach(function (r) {
+    counts[r.bucket.key]++;
+    if (r.bucket.key === 'other') {
+      var d = otherDetail[r.bucket.label] || (otherDetail[r.bucket.label] = { n: 0, plans: [] });
+      d.n++; d.plans.push(r.plan);
+    }
+  });
+
+  var view = { period: '', bucket: '', otherLabel: '', sort: 'period', showClosed: false, otherOpen: false };
+
+  function renderCounts() {
+    var box = document.getElementById('counts');
+    box.innerHTML = '';
+    BUCKETS.forEach(function (b) {
+      var a = document.createElement('a');
+      a.className = 'tile';
+      a.href = '#planTable';
+      a.setAttribute('data-bucket', b.key);
+      a.title = b.why;                       // ★ 判据没删，收进 title 与上面的 .fold
+      var active = (view.bucket === b.key);
+      if (active) a.setAttribute('aria-current', 'true');
+      a.innerHTML =
+        '<div class="tile__n ' + (counts[b.key] ? 'i-ink' : 'i-pencil') + '">' + counts[b.key] + '</div>' +
+        '<div class="tile__k">' + Shell.esc(b.label) + '</div>' +
+        (b.key === 'other'
+          ? '<div style="margin-top:4px">' +
+            Shell.chip(view.otherOpen ? '收起' : '点开看是哪些', 'dim') + '</div>'
+          : '');
+      a.addEventListener('click', function (e) {
+        e.preventDefault();
+        if (b.key === 'other') view.otherOpen = !view.otherOpen;
+        view.bucket = (view.bucket === b.key) ? '' : b.key;
+        view.otherLabel = '';
+        syncControls();
+        renderCounts();          // 卡片上的「筛选中」标记要跟着变
+        renderOtherBreakdown();  // ★ 兜底桶点开就得摊开，忘了调它 = 点了没反应
+        render();
+        document.getElementById('planTable').scrollIntoView({ block: 'start' });
+      });
+      box.appendChild(a);
+    });
+
+    document.getElementById('countScope').innerHTML =
+      '<span>owner <b>' + Shell.esc(owner) + '</b></span><span><b>' + owned.length + '</b> 张计划</span>';
+  }
+
+  function renderOtherBreakdown() {
+    var box = document.getElementById('otherBreakdown');
+    var labels = Object.keys(otherDetail).sort();
+    if (!view.otherOpen) { box.innerHTML = ''; return; }
+    if (!labels.length) {
+      box.innerHTML = '<div class="flash mt"><span>兜底桶当前是空的</span>' +
+        '<span class="i-pencil">没有计划落在前四类之外 —— 桶是空的，和「有东西但没显示」不一样。</span></div>';
+      return;
+    }
+    var h = '<div class="panel mt"><div class="panel__head">「其他状态…」里到底是哪些' +
+      '<span class="muted">　兜底不等于归并 —— 摊开点名，各多少张</span></div><div class="panel__body">' +
+      '<div class="table-scroll"><table class="table table--dense"><thead><tr>' +
+      '<th>整体状态（木桶）</th><th class="r">计划数</th><th>是哪几张</th></tr></thead><tbody>';
+    labels.forEach(function (lab) {
+      var d = otherDetail[lab];
+      h += '<tr><td>' + Shell.chip(lab, chipKindOf(lab)) + '</td>' +
+        '<td class="r">' + Shell.qty(d.n) + '</td>' +
+        '<td>' + d.plans.map(function (p) {
+          return '<a href="plan.html?plan=' + encodeURIComponent(p.plan_id) + '">' + Shell.esc(p.title) + '</a>';
+        }).join('　') + '</td></tr>';
+    });
+    h += '</tbody></table></div></div></div>';
+    box.innerHTML = h;
+  }
+
+  /* ---------- 筛选 / 排序控件 ---------- */
+
+  function allPeriods() {
+    var set = {}, out = [];
+    rows.forEach(function (r) { r.plan.periods.forEach(function (p) { if (!set[p]) { set[p] = 1; out.push(p); } }); });
+    return out.sort();
+  }
+
+  function buildControls() {
+    var sp = document.getElementById('fPeriod');
+    sp.innerHTML = '<option value="">全部周期</option>' +
+      allPeriods().map(function (p) { return '<option value="' + Shell.esc(p) + '">' + Shell.esc(p) + '</option>'; }).join('');
+    var sb = document.getElementById('fBucket');
+    sb.innerHTML = '<option value="">全部状态</option>' +
+      BUCKETS.map(function (b) {
+        return '<option value="' + b.key + '">' + Shell.esc(b.label) + '（' + counts[b.key] + '）</option>';
+      }).join('');
+
+    sp.addEventListener('change', function () { view.period = sp.value; render(); });
+    sb.addEventListener('change', function () {
+      view.bucket = sb.value; view.otherLabel = '';
+      if (sb.value === 'other') view.otherOpen = true;
+      renderCounts(); renderOtherBreakdown(); render();
+    });
+    document.getElementById('fSort').addEventListener('change', function () { view.sort = this.value; render(); });
+    document.getElementById('btnClearFilter').addEventListener('click', function () {
+      view.period = ''; view.bucket = ''; view.otherLabel = '';
+      syncControls(); renderCounts(); renderOtherBreakdown(); render();
+    });
+  }
+
+  function syncControls() {
+    document.getElementById('fPeriod').value = view.period;
+    document.getElementById('fBucket').value = view.bucket;
+    document.getElementById('fSort').value = view.sort;
+  }
+
+  /* ---------- 列表 ---------- */
+
+  function sortRows(list) {
+    var copy = list.slice();
+    if (view.sort === 'state') {
+      copy.sort(function (a, b) {
+        var ia = a.barrel === null ? -1 : ORDER.indexOf(a.barrel);
+        var ib = b.barrel === null ? -1 : ORDER.indexOf(b.barrel);
+        return ia - ib || a.plan.plan_id.localeCompare(b.plan.plan_id);
+      });
+    } else if (view.sort === 'updated') {
+      // ★ 没有更新时间的排最后，不当成「最旧」混进去
+      copy.sort(function (a, b) {
+        if (!a.updated && !b.updated) return a.plan.plan_id.localeCompare(b.plan.plan_id);
+        if (!a.updated) return 1;
+        if (!b.updated) return -1;
+        return b.updated.localeCompare(a.updated);
+      });
+    } else {
+      copy.sort(function (a, b) {
+        return a.plan.periods[0].localeCompare(b.plan.periods[0]) || a.plan.plan_id.localeCompare(b.plan.plan_id);
+      });
+    }
+    return copy;
+  }
+
+  function render() {
+    var tb = document.querySelector('#planTable tbody');
+    var kept = owned.filter(function (r) {
+      if (view.period && r.plan.periods.indexOf(view.period) < 0) return false;
+      if (view.bucket && r.bucket.key !== view.bucket) return false;
+      if (view.otherLabel && r.bucket.label !== view.otherLabel) return false;
+      return true;
+    });
+
+    // ★ 完结的计划不显示 —— 但要数出来，下面注明
+    var hidden = kept.filter(function (r) { return r.closed && !view.showClosed; });
+    var shown = sortRows(kept.filter(function (r) { return !(r.closed && !view.showClosed); }));
+
+    tb.innerHTML = '';
+    if (!shown.length) {
+      tb.innerHTML = '<tr><td colspan="5" class="muted">当前筛选下没有计划' +
+        (hidden.length ? '（另有 ' + hidden.length + ' 张已完结被隐藏，见下方）' : '') + '。</td></tr>';
+    }
+    shown.forEach(function (r) {
+      var p = r.plan;
+      var tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td>' + Shell.esc(p.periods[0]) + ' ~ ' + Shell.esc(p.periods[p.periods.length - 1]) +
+          '<div class="i-pencil" style="font-size:var(--t-xs)">共 ' + p.months + ' 个月</div></td>' +
+        '<td><a href="plan.html?plan=' + encodeURIComponent(p.plan_id) + '">' + Shell.esc(p.title) + '</a>' +
+          '<div class="i-pencil" style="font-size:var(--t-xs)"><code>' + Shell.esc(p.plan_id) + '</code> · owner ' + Shell.esc(p.owner) +
+          ' · 更新 ' + (r.updated ? Shell.esc(r.updated) : '—（未提交，没有更新时间）') +
+          '</div></td>' +
+        '<td>' + (r.cur
+            ? Shell.chip('rev ' + r.cur.rev, 'ours') +
+              '<div class="i-pencil" style="font-size:var(--t-xs)">摘要 <code>' + Shell.esc(r.cur.digest) + '</code> · ' +
+              r.cur.line_ids.length + ' 条记录 · 共 ' + p.revs.length + ' 版</div>'
+            : '<span class="i-pencil">—</span><div class="i-pencil" style="font-size:var(--t-xs)">未提交，还没有 rev</div>') + '</td>' +
+        '<td>' + (r.barrel
+            ? Shell.chip(r.barrel, chipKindOf(r.barrel)) +
+              '<div class="i-pencil" style="font-size:var(--t-xs)">桶：' + Shell.esc(r.bucket.label) +
+              '　已下单 ' + Shell.qtyOf(r.qty.ordered, r.qty.total) +
+              '　已投送 ' + Shell.qtyOf(r.qty.dispatched, r.qty.total) + '</div>'
+            : Shell.chip(r.bucket.label, 'warn') +
+              '<div class="i-pencil" style="font-size:var(--t-xs)">' +
+              (p.revs.length ? '有 ' + p.revs.length + ' 版，但存活记录为 0' : '还没有记录') + '</div>') + '</td>' +
+        '<td><a href="plan.html?plan=' + encodeURIComponent(p.plan_id) + '">编辑</a>' +
+          '<div style="font-size:var(--t-xs)"><a href="plan-rev.html?plan=' + encodeURIComponent(p.plan_id) + '">版本</a></div></td>';
+      tb.appendChild(tr);
+    });
+
+    // 底部：隐藏了几张已完结 + 一键展开
+    var note = document.getElementById('hiddenNote');
+    var closedAll = kept.filter(function (r) { return r.closed; }).length;
+    if (!closedAll) {
+      note.innerHTML = '';
+    } else if (view.showClosed) {
+      note.innerHTML = '<div class="flash mt"><span>已展开 <strong>' + closedAll +
+        '</strong> 张已完结的计划（它们默认不显示）</span>' +
+        '<span style="margin-left:auto"><button type="button" class="btn btn--sm btn--ghost" id="btnToggleClosed">收起已完结</button></span></div>';
+    } else {
+      // ★ 隐藏不等于不存在 —— 不注明的话，「没有这张计划」和「它已经完结了」在界面上长得一模一样
+      note.innerHTML = '<div class="flash mt"><span>已隐藏 <strong>' + closedAll + '</strong> 张<strong>已完结</strong>的计划</span>' +
+        '<span style="margin-left:auto"><button type="button" class="btn btn--sm" id="btnToggleClosed">一键展开</button></span></div>';
+    }
+    var tg = document.getElementById('btnToggleClosed');
+    if (tg) tg.addEventListener('click', function () { view.showClosed = !view.showClosed; render(); });
+
+    document.getElementById('filterEcho').textContent =
+      '显示 ' + shown.length + ' / ' + owned.length + ' 张' +
+      (view.period ? '　周期=' + view.period : '') +
+      (view.bucket ? '　状态=' + (BUCKETS.filter(function (b) { return b.key === view.bucket; })[0] || {}).label : '') +
+      (hidden.length ? '　已完结隐藏 ' + hidden.length : '');
+
+    console.debug('[ops] list.render', {
+      owned: owned.length, shown: shown.length, hidden_closed: hidden.length,
+      filter_period: view.period || null, filter_bucket: view.bucket || null, sort: view.sort
+    });
+  }
+
+  /* ---------- 进度概览：全部记录按状态分布 ---------- */
+
+  function renderOverview() {
+    var box = document.getElementById('overview');
+    var ownedIds = {};
+    owned.forEach(function (r) { ownedIds[r.plan.plan_id] = true; });
+
+    var mine = [], orphan = [];
+    S.lines.forEach(function (l) {
+      if (ownedIds[l.plan_id]) mine.push(l);
+      else orphan.push(l);      // ★ 被丢掉的那一侧要统计，不许静默少一批
+    });
+
+    document.getElementById('overviewScope').textContent =
+      owned.length + ' 张计划 / ' + mine.length + ' 条记录（含已撤销）';
+
+    if (!mine.length) {
+      box.innerHTML = '<div class="empty"><p class="empty__title">名下还没有任何记录</p>' +
+        '<p class="empty__body">记录要等 rev 铸出才存在。' +
+        '「一条记录都没有」和「提交了但全被跳过」不一样：后者在提交结果里会逐条点名。</p>' +
+        (S.plans.length ? '<div class="empty__act"><a class="btn btn--primary" href="plan.html?plan=' +
+          encodeURIComponent(S.plans[0].plan_id) + '">去填数并提交</a></div>' : '') + '</div>';
+      return;
+    }
+
+    var WAIT = {};
+    WAIT[ST.SUBMITTED] = '等：采购把这条记录组进采购单，且已组单量 = 总量（木桶）';
+    WAIT[ST.CONFIRMED] = '等：关联采购单全部「下单」，已下单量 = 总量（木桶）';
+    WAIT[ST.ORDERED] = '等：关联采购单有任一到货（status_shipped ∈ {2,3}）—— 要点「推进一天」';
+    WAIT[ST.READY] = '等：排货员把它编进排货单并投送，已投送量 = 总量（只认草稿之外的「已投送」）';
+    WAIT[ST.SCHEDULED] = '等：关联排货单领星进度全部 = 已完成 —— 要点「推进一天」';
+    WAIT[ST.CLOSED] = '没有下一步了';
+
+    var h = '<div class="table-scroll"><table class="table table--dense">' +
+      '<thead><tr><th>状态</th><th class="r">记录数</th><th class="r">件数</th><th>卡在等什么</th></tr></thead><tbody>';
+
+    var seen = 0;
+    ORDER.concat([ST.CANCELLED]).forEach(function (st) {
+      var group = mine.filter(function (l) { return l.state === st; });
+      seen += group.length;
+      var units = group.reduce(function (a, l) { return a + l.total; }, 0);
+      h += '<tr><td>' + Shell.chip(st, chipKindOf(st)) + '</td>' +
+        '<td class="r">' + (group.length
+          ? '<a href="trace.html?line=' + encodeURIComponent(group[0].line_id) + '">' + group.length + '</a>'
+          : '<span class="i-pencil">0</span>') + '</td>' +
+        '<td class="r">' + Shell.qty(units) + '</td>' +
+        '<td class="muted">' + Shell.esc(st === ST.CANCELLED ? '被新 rev 取代，且当时尚无任何组单 / 排货' : (WAIT[st] || '')) + '</td></tr>';
+    });
+
+    // ★ 表里没被任何一行认领的记录 = 认不出的状态，必须出现，不许算漏
+    var missed = mine.length - seen;
+    if (missed > 0) {
+      h += '<tr><td>' + Shell.chip(UNKNOWN, 'fail') + '</td>' +
+        '<td class="r">' + missed + '</td><td class="r">—</td>' +
+        '<td class="muted">这些记录的状态不在已知集合里 —— 详情见控制台 <code>[ops] line.state-unknown</code></td></tr>';
+    }
+    h += '</tbody></table></div>';
+
+    if (orphan.length) {
+      // ★ 排除必须说出来，否则「没有」和「没在看」分不开
+      h += '<div class="flash mt">' + Shell.chip('不在本页口径内', 'warn') +
+        '<span>另有 <strong>' + orphan.length + '</strong> 条记录的计划不属于 owner「' + Shell.esc(owner) +
+        '」或已不存在：' + Shell.esc(orphan.slice(0, 6).map(function (l) { return l.line_id + '@' + l.plan_id; }).join('、')) +
+        (orphan.length > 6 ? ' …' : '') + '</span></div>';
+    }
+    box.innerHTML = h;
+
+    console.debug('[ops] overview.render', { lines: mine.length, orphan: orphan.length, unknown_states: unknownSeen });
+  }
+
+  /* ---------- 认不出的状态：横幅点名 ---------- */
+
+  function renderBanner() {
+    var keys = Object.keys(unknownSeen);
+    if (!keys.length && !notOwned) { document.getElementById('banner').innerHTML = ''; return; }
+    var h = '';
+    if (keys.length) {
+      h += '<div class="flash flash--bad mt">' + Shell.chip('有认不出的记录状态', 'fail') +
+        '<span>' + keys.map(function (k) { return '「' + Shell.esc(k) + '」× ' + unknownSeen[k]; }).join('、') +
+        ' —— 它们<strong>没有</strong>参与木桶取小（否则会把整张计划拉到最靠前的那一档），详情见控制台。</span></div>';
+    }
+    if (notOwned) {
+      h += '<div class="flash mt">' + Shell.chip('不在本页口径内', 'warn') +
+        '<span>另有 ' + notOwned + ' 张计划的 owner 不是「' + Shell.esc(owner) + '」，本页不统计它们。</span></div>';
+    }
+    document.getElementById('banner').innerHTML = h;
+  }
+
+  /* ---------- 新建销售计划（原型不真建） ---------- */
+
+  document.getElementById('btnNewPlan').addEventListener('click', function () {
+    Shell.toast('原型里不真建计划：真实系统由 POST /v1/plans 创建（周期 + 月数 + 认领的「店铺 × 货号」），' +
+      '建完落到 plan.html 填数。这里只有剧本里的 ' + S.plans.length + ' 张。', 'warn', 10000);
+    console.debug('[ops] newPlan.stub', { plans: S.plans.length, hint: '真实入口 POST /v1/plans' });
+  });
+
+  /* ---------- 启动 ---------- */
+  buildControls();
+  syncControls();
+  renderCounts();
+  renderOtherBreakdown();
+  render();
+  renderOverview();
+  renderBanner();
+})();
+</script>
+
+</body>
+</html>

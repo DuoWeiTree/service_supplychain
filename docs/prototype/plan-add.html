@@ -1,0 +1,881 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>添加货品 · 供应链服务原型</title>
+<link rel="stylesheet" href="assets/shell.css">
+<style>
+/* ★ 本页独有的样式。旧类名（.shell__* / .toasts / .modal-backdrop / .chip--*）
+   已由 assets/shell.css 收编（2026-09-18）—— 不要在这里再定义一份：
+   同一个类在两个地方有定义，改一处忘一处，屏幕上不会报错，只会慢慢变得不一致。 */
+/* 本页独有：
+   ① 搜索框要大（它是这一页的主角 —— 目录不会全列出来，只能搜）
+   ② 结果区与「已添加」面板的分栏（窄屏堆叠）
+   ③ 添加 / 移除成功时那一行闪一下 —— 即时反馈要看得见 */
+#pick{display:grid;grid-template-columns:2.15fr 1fr;gap:calc(var(--u)*5);align-items:start;}
+#kw{font-size:16px;padding:8px 10px;width:100%;max-width:none;}
+#panelBox{position:sticky;top:12px;}
+tr[data-grow] > td{background:var(--paper-lo);}
+tr[data-flash="ok"] > td{animation:flash-ok 1.4s ease-out;}
+tr[data-flash="fail"] > td{animation:flash-fail 1.4s ease-out;}
+@keyframes flash-ok{from{background:var(--jade-w);}to{background:transparent;}}
+@keyframes flash-fail{from{background:var(--vermilion-w);}to{background:transparent;}}
+@media (max-width:719px){
+  #pick{grid-template-columns:1fr;}
+  #panelBox{position:static;}
+}
+@media (prefers-reduced-motion: reduce){
+  tr[data-flash] > td{animation:none;}
+}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <div class="head">
+    <div class="head__main">
+      <h1 id="pageTitle">添加货品</h1>
+      <div class="head__meta" id="pageSub"></div>
+    </div>
+    <div class="head__act">
+      <a class="btn" id="backToPlan" href="plan.html">回计划</a>
+    </div>
+  </div>
+
+  <div id="banner"></div>
+
+  <details class="fold" id="whyClaim">
+    <summary>说明 · 占用规则、添加之后会长出什么格子、结果表怎么读</summary>
+    <div class="fold__body">
+      <p>从目录里搜出货品，<strong>点一下就加进这张计划</strong>（不需要再点「提交」），
+        加错了在同一行点「移除」。</p>
+      <p>一个 msku 同时只能被<strong>一个尚未下单的计划</strong>占用 ——
+        两张计划同时认领同一个 msku，等于同一批需求被算两遍。
+        计划<strong>下单之后占用自动释放</strong>，别的计划就能再认领它。
+        所以「被计划 X 占用」是<strong>当下的</strong>，<strong>不是永久的</strong> ——
+        它是一句「现在归谁」，不是一句「你永远拿不到」。</p>
+      <p>添加之后计划里会长出<strong>两种粒度</strong>的格子：
+        <strong>期望销量</strong>（msku × 月，每加一个 msku 多 <span id="nPeriodA">3</span> 个）与
+        <strong>计划采购量</strong>（★ 货号 × 月，<strong>不带店铺</strong>，同一货号多加一个 msku
+        也<strong>不会</strong>多出采购格子）。
+        期望销量的系统预估 = 该 (店铺 · 货号) 下<strong>已添加</strong> msku 的销量之和 ——
+        没添加的不计入，所以少添一个，数就小一截。这不是 bug，是口径。</p>
+      <div id="candCaption"></div>
+    </div>
+  </details>
+
+  <div id="pick" class="mt">
+
+    <div>
+      <div class="split__title">搜索目录</div>
+
+      <div class="field">
+        <label class="lbl" for="kw">关键词　<span class="muted">货号 / msku / 品名 / 品类，输入即查</span></label>
+        <input class="inp inp--text" id="kw" type="text" autofocus autocomplete="off"
+               placeholder="例如：猫砂　DCC1800271　A4P-0271-72">
+      </div>
+
+      <div class="bar mt">
+        <div class="bar__grp">
+          <label class="bar__lbl" for="fSeller">店铺</label>
+          <select class="inp inp--text" id="fSeller" style="min-width:160px"></select>
+        </div>
+        <div class="bar__grp">
+          <label class="bar__lbl" for="fCat">品类</label>
+          <select class="inp inp--text" id="fCat" style="min-width:170px"></select>
+        </div>
+        <div class="bar__grp">
+          <label class="bar__lbl" for="fOnly">显示</label>
+          <select class="inp inp--text" id="fOnly" style="min-width:150px">
+            <option value="">全部</option>
+            <option value="selectable">只看可添加</option>
+            <option value="claimed_here">只看已添加</option>
+            <option value="claimed_by_other">只看被占用</option>
+          </select>
+        </div>
+        <button class="btn btn--sm btn--ghost" type="button" id="fClear">清空条件</button>
+      </div>
+
+      <div class="mt" style="font-size:var(--t-sm)" id="stats"></div>
+      <div style="font-size:var(--t-sm)" id="statsWarn"></div>
+
+      <div class="table-scroll mt">
+        <table class="table table--dense" id="cand">
+          <thead></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div id="empty"></div>
+    </div>
+
+    <div>
+      <div id="panelBox">
+        <div class="split__title">本计划已添加</div>
+        <div id="panel"></div>
+      </div>
+    </div>
+
+  </div>
+
+</div>
+
+<script src="assets/store.js"></script>
+<script src="assets/shell.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var TAG = '[plan-add]';
+  function dbg(e, d) { try { console.debug(TAG, e, d || {}); } catch (x) { } }
+  function fail(e, d) { try { console.error(TAG, e, d || {}); } catch (x) { } }
+
+  var esc = Shell.esc, chip = Shell.chip;
+
+  /* ★ 不用 Shell.qty()：新设计里 .qty 是「结论数」的字号，建议值是过程量。
+     数字格式化不变 —— 变的只是墨色由调用处给。 */
+  function num(v) {
+    if (v === null || v === undefined || v === '') return '—';
+    var n = Number(v);
+    return isFinite(n) ? n.toLocaleString('en-US') : String(v);
+  }
+
+  var LIMIT = 50;          // ★ 一次最多渲染这么多行；命中更多要提示细化条件，不是硬塞
+  var DEBOUNCE_MS = 200;
+
+  var wantPlan = Shell.param('plan');
+  var plan = Store.plan(wantPlan);
+
+  Shell.mount({ crumb: [
+    { text: '首页', href: 'index.html' },
+    { text: '运营首页', href: 'ops.html' },
+    { text: '计划编辑', href: 'plan.html' + (wantPlan ? '?plan=' + encodeURIComponent(wantPlan) : '') },
+    { text: '添加货品' }
+  ] });
+
+  if (!plan) {
+    // ★ 失败要点名：要的是哪个、有的是哪些
+    fail('plan.not-found', { want: wantPlan, known: Store.get().plans.map(function (p) { return p.plan_id; }) });
+    document.getElementById('banner').innerHTML =
+      '<div class="flash flash--bad mt"><span>找不到计划 <code>plan=' + esc(wantPlan) + '</code></span>' +
+      '<span class="i-pencil">已知：' +
+      esc(Store.get().plans.map(function (p) { return p.plan_id; }).join('、') || '（一张都没有）') +
+      '</span><span style="margin-left:auto"><a href="ops.html">回运营首页</a></span></div>';
+    document.getElementById('pick').style.display = 'none';
+    return;
+  }
+
+  var periods = plan.periods;
+  var planUrl = 'plan.html?plan=' + encodeURIComponent(plan.plan_id);
+  document.getElementById('nPeriodA').textContent = periods.length;
+  document.getElementById('backToPlan').href = planUrl;
+
+  var table = document.getElementById('cand');
+  var thead = table.querySelector('thead');
+  var tbody = table.querySelector('tbody');
+  var kwBox = document.getElementById('kw');
+
+  /* ---------- 本页状态（都要活过一次重画） ---------- */
+  var flashKey = null;      // 刚添加/移除成功的行 → 闪一下
+  var flashKind = 'ok';
+  var rowError = {};        // 行键 / 组键 → 被拒的原文，画在该行下方
+  var showAll = false;      // 「已添加」面板是否展开全部
+  var lastRes = null;
+  var baseLenWarned = false;
+
+  function locked() { return (plan.revs || []).length > 0; }
+  function currentRev() {
+    var rs = plan.revs || [];
+    return rs.filter(function (x) { return x.is_current; })[0] || rs[rs.length - 1] || null;
+  }
+  function lockedMsg() {
+    var cur = currentRev();
+    return '已提交 rev ' + (cur ? cur.rev : '?') + '，不能再增删货品 —— 要改请建新版本';
+  }
+
+  function rowKey(r) { return r.seller_sku + '|' + r.sid; }
+  function groupKey(r) { return r.seller_id + '|' + r.sku; }
+
+  /* ---------- 两种粒度的格子数（★ 不是一个数） ---------- */
+  function cellCount() {
+    return {
+      demand: Object.keys(plan.cells_demand || {}).length,     // msku × 月
+      purchase: Object.keys(plan.cells_purchase || {}).length  // ★ 货号 × 月，不带店铺
+    };
+  }
+  function cellText() {
+    var c = cellCount();
+    return c.demand + ' 个期望销量格子 / ' + c.purchase + ' 个采购格子';
+  }
+
+  /* ============================================================
+     顶部 / 已提交横幅
+     ============================================================ */
+
+  function renderHeader() {
+    document.getElementById('pageTitle').textContent = '添加货品：' + plan.title;
+    document.getElementById('pageSub').innerHTML =
+      '<span><code>' + esc(plan.plan_id) + '</code></span>' +
+      '<span>' + esc(periods[0]) + ' ~ ' + esc(periods[periods.length - 1]) +
+        ' <b>' + esc(plan.months) + ' 个月</b></span>' +
+      '<span>点一下就加进计划，加错了点「移除」</span>';
+
+    var b = document.getElementById('banner');
+    if (!locked()) { b.innerHTML = ''; return; }
+    var cur = currentRev();
+    // ★ 下面照样能搜、能看 —— 它显示的是「如果建了新版本，能挑到什么」，但增删已禁用
+    b.innerHTML = '<div class="flash mt">' + chip('rev ' + (cur ? cur.rev : '?'), 'ours') +
+      '<span>这张计划已经提交，不能再添加或移除货品；下面仍可搜、可看。</span>' +
+      '<span style="margin-left:auto"><a href="' + esc(planUrl) + '">回计划</a>　' +
+      '<a href="plan-rev.html?plan=' + encodeURIComponent(plan.plan_id) + '">版本编辑</a></span></div>';
+  }
+
+  /* ============================================================
+     筛选条
+     ============================================================ */
+
+  function filterVal() {
+    var f = {
+      keyword: kwBox.value.trim(),
+      seller_id: document.getElementById('fSeller').value || '',
+      category: document.getElementById('fCat').value || '',
+      only: document.getElementById('fOnly').value || '',
+      limit: LIMIT
+    };
+    if (!f.keyword) delete f.keyword;
+    if (!f.seller_id) delete f.seller_id;
+    if (!f.category) delete f.category;
+    if (!f.only) delete f.only;
+    return f;
+  }
+  function hasOtherCond(f) { return !!(f.keyword || f.seller_id || f.category); }
+  function withoutOnly(f) {
+    var g = {}; Object.keys(f).forEach(function (k) { if (k !== 'only') g[k] = f[k]; });
+    return g;
+  }
+  function condText(f) {
+    var parts = [];
+    if (f.keyword) parts.push('关键词「' + f.keyword + '」');
+    if (f.seller_id) parts.push('店铺 ' + Store.sellerName(f.seller_id));
+    if (f.category) parts.push('品类 ' + f.category);
+    if (f.only) parts.push('显示 ' + onlyText(f.only));
+    return parts.length ? parts.join(' · ') : '（没有任何条件）';
+  }
+  function onlyText(v) {
+    return { selectable: '只看可添加', claimed_here: '只看已添加', claimed_by_other: '只看被占用' }[v] || v;
+  }
+
+  function fillSellers() {
+    var sel = document.getElementById('fSeller');
+    var h = '<option value="">（全部店铺）</option>';
+    (Store.get().sellers || []).forEach(function (s) {
+      h += '<option value="' + esc(s.seller_id) + '">' + esc(s.name) + '（' + esc(s.seller_id) + '）' +
+        (s.has_fba ? '' : ' · 无 FBA') + '</option>';
+    });
+    sel.innerHTML = h;
+  }
+
+  function fillCategories() {
+    var sel = document.getElementById('fCat');
+    var cats = [];
+    try { cats = Store.categories() || []; }
+    catch (e) {
+      fail('categories.threw', { message: e && e.message, cause: e && e.cause && e.cause.code, stack: e && e.stack });
+      Shell.toast('取品类失败：' + ((e && e.message) || '未知错误') + '（详情见控制台）', 'fail', 12000);
+    }
+    var h = '<option value="">（全部品类）</option>';
+    cats.forEach(function (c) { h += '<option value="' + esc(c) + '">' + esc(c) + '</option>'; });
+    sel.innerHTML = h;
+    dbg('categories', { count: cats.length });
+  }
+
+  /* ============================================================
+     查询（debounce 200ms）+ 渲染
+     ============================================================ */
+
+  var timer = null;
+  function queryLater() {
+    if (timer) window.clearTimeout(timer);
+    timer = window.setTimeout(function () { timer = null; runQuery(); }, DEBOUNCE_MS);
+  }
+
+  function runQuery() {
+    var f = filterVal();
+    var t0 = Date.now(), res;
+    try { res = Store.catalog(plan.plan_id, f); }
+    catch (e) {
+      fail('catalog.threw', { filter: f, message: e && e.message,
+        cause: e && e.cause && e.cause.code, stack: e && e.stack });
+      Shell.toast('查询目录出错：' + ((e && e.message) || '未知错误') + '（详情见控制台）', 'fail', 12000);
+      return;
+    }
+    // ★ 这个契约变过一次（数组 → 对象）。形状不对要当场喊，不许当成「没数据」
+    if (!res || typeof res !== 'object' || Object.prototype.toString.call(res.rows) !== '[object Array]') {
+      fail('catalog.shape-unexpected', { filter: f, got: res,
+        want: '{rows:[], matched, total, truncated, needQuery}' });
+      document.getElementById('empty').innerHTML =
+        '<div class="flash flash--bad mt"><span>目录返回的形状不对</span>' +
+        '<span>Store.catalog 没有返回 <code>{rows, matched, total, truncated, needQuery}</code> —— 详情见控制台。</span></div>';
+      tbody.innerHTML = '';
+      return;
+    }
+    lastRes = res;
+
+    renderStats(res, f);
+    renderRows(res, f);
+    renderEmpty(res, f);
+
+    dbg('query', { filter: f, matched: res.matched, total: res.total, shown: res.rows.length,
+      truncated: !!res.truncated, needQuery: !!res.needQuery, ms: Date.now() - t0 });
+  }
+
+  function renderStats(res, f) {
+    var s = document.getElementById('stats');
+    var w = document.getElementById('statsWarn');
+
+    if (res.needQuery) {
+      // ★ 「还没查」不是「没有数据」
+      s.innerHTML = '<span class="i-pencil">目录共 <b class="i-ink">' + res.total +
+        '</b> 条 msku —— 还没给条件，所以一条都没查。</span>';
+      w.innerHTML = '';
+      return;
+    }
+
+    // ★ 三种状态各有多少，必须一起说 —— 只报「可添加」会让人以为剩下的不存在
+    var n = { sel: 0, here: 0, other: 0, unknown: 0 };
+    res.rows.forEach(function (r) {
+      if (r.claimed_by) n.other++;
+      else if (r.claimed_here) n.here++;
+      else if (r.selectable) n.sel++;
+      else n.unknown++;
+    });
+
+    s.innerHTML = '命中 <b class="i-ink">' + res.matched + '</b> / 目录 ' + res.total + ' 条' +
+      '　<span class="i-pencil">显示 ' + res.rows.length + '：可添加 ' + n.sel +
+      ' · 已添加 ' + n.here + ' · 被占用 ' + n.other + '</span>' +
+      (n.unknown ? '　<span class="i-red">状态无法判定 ' + n.unknown + '</span>' : '') +
+      '　<span class="i-pencil">条件：' + esc(condText(f)) + '</span>';
+
+    // ★ 没显示出来的那一批不是「不存在」，只是没画出来
+    w.innerHTML = res.truncated
+      ? '<span class="i-red">命中过多，只显示前 ' + LIMIT + ' 条 —— 请细化条件</span>' +
+        '<span class="i-pencil">　还有 ' + (res.matched - res.rows.length) + ' 条没有显示</span>'
+      : '';
+  }
+
+  /* ---------- 三个月建议（按该 msku 占该货号销量的比例折算） ---------- */
+
+  function suggestOf(row, i) {
+    var sh = (row.share === null || row.share === undefined) ? 1 : row.share;
+    var b = row.base ? row.base[i] : undefined;
+    if (b === undefined && !baseLenWarned) {
+      baseLenWarned = true;
+      fail('base.short', { sku: row.sku, seller_sku: row.seller_sku, base: row.base,
+        periods: periods, hint: '目录给的月份数少于计划周期 —— 缺的月份显示（空），不是 0' });
+    }
+    if (b === null || b === undefined) return null;
+    return Math.round(b * sh);
+  }
+  function suggestHtml(row) {
+    var out = [];
+    periods.forEach(function (p, i) {
+      var v = suggestOf(row, i);
+      // ★ 建议是机器估的 —— 铅笔灰
+      out.push('<span class="i-pencil" style="font-size:var(--t-xs)">' + esc(p.slice(5)) + '</span> ' +
+        '<span class="i-pencil">' + (v === null ? '（空）' : num(v)) + '</span>');
+    });
+    return out.join('<span class="i-pencil"> · </span>');
+  }
+  function groupSuggestHtml(g) {
+    var out = [];
+    periods.forEach(function (p, i) {
+      var any = false, s = 0;
+      g.rows.forEach(function (r) { var v = suggestOf(r, i); if (v !== null) { any = true; s += v; } });
+      out.push('<span class="i-pencil" style="font-size:var(--t-xs)">' + esc(p.slice(5)) + '</span> ' +
+        '<span class="i-pencil">' + (any ? num(s) : '（空）') + '</span>');
+    });
+    return out.join('<span class="i-pencil"> · </span>');
+  }
+
+  /* ---------- 操作格：★ 状态与操作合一，三态视觉互斥 ---------- */
+
+  function actionHtml(r) {
+    var lock = locked();
+    var d = ' data-seller="' + esc(r.seller_id) + '" data-sku="' + esc(r.sku) +
+            '" data-msku="' + esc(r.seller_sku) + '" data-sid="' + esc(r.sid) + '"';
+
+    if (r.claimed_by) {
+      // ★ 被别的计划占用：点名到 plan_id 与标题，且没有按钮 —— 不是「点了没反应」
+      return chip('被 ' + r.claimed_by + ' 占用', 'fail') +
+        '<div class="i-pencil" style="font-size:var(--t-xs)">' +
+        esc(r.claimed_by_title || '（计划标题未知）') + '　下单后自动释放</div>';
+    }
+    if (r.claimed_here) {
+      return chip('已添加', 'ok') +
+        ' <button type="button" class="btn btn--sm btn--ghost" data-act="remove"' + d +
+        (lock ? ' disabled title="' + esc(lockedMsg()) + '"' : ' title="从本计划移除 ' + esc(r.seller_sku) + '"') +
+        '>移除</button>';
+    }
+    if (r.selectable) {
+      return '<button type="button" class="btn btn--sm btn--primary" data-act="add"' + d +
+        (lock ? ' disabled title="' + esc(lockedMsg()) + '"' : ' title="立即加进本计划：' + esc(r.seller_sku) + '"') +
+        '>添加</button>';
+    }
+    // ★ 认不出的形态必须默认可见，不许落进 else 被静默过滤掉
+    fail('row.state-unrecognised', { row: r,
+      hint: '既非 claimed_here / claimed_by，selectable 又为 false' });
+    return chip('状态无法判定', 'fail') +
+      '<div class="i-pencil" style="font-size:var(--t-xs)">selectable=false 却没给出原因 —— 详情见控制台</div>';
+  }
+
+  function renderHead() {
+    thead.innerHTML = '<tr>' +
+      '<th>货号</th><th>品名</th><th>品类</th><th>店铺</th>' +
+      '<th>msku</th><th class="r">' + periods.length + ' 个月建议</th>' +
+      '<th style="width:1%;white-space:nowrap">操作</th></tr>';
+  }
+
+  function groupRows(rows) {
+    var map = {}, order = [];
+    rows.forEach(function (r) {
+      var k = groupKey(r);
+      if (!map[k]) { map[k] = { key: k, seller_id: r.seller_id, sku: r.sku, name: r.name, cat: r.cat, rows: [] }; order.push(k); }
+      map[k].rows.push(r);
+    });
+    return order.map(function (k) { return map[k]; });
+  }
+
+  function errRow(key) {
+    if (!rowError[key]) return '';
+    // ★ 原文照抄自 Store 的 rejected / detail，没有改写
+    return '<tr><td colspan="7"><span class="dropline"><span>' + esc(rowError[key]) + '</span></span>' +
+      '<div class="i-pencil" style="font-size:var(--t-xs)">这一条<strong>没有</strong>进入计划</div></td></tr>';
+  }
+
+  function renderRows(res, f) {
+    if (res.needQuery) { tbody.innerHTML = ''; document.getElementById('candCaption').innerHTML = ''; return; }
+
+    var lock = locked();
+    var groups = groupRows(res.rows);
+    var h = '';
+
+    groups.forEach(function (g) {
+      var sel = g.rows.filter(function (r) { return r.selectable; });
+      var here = g.rows.filter(function (r) { return r.claimed_here; }).length;
+      var other = g.rows.filter(function (r) { return !!r.claimed_by; }).length;
+
+      // ---- 组头行：货号 × 店铺 级信息 + 「添加该组全部 msku」----
+      var btn;
+      if (sel.length && !lock) {
+        btn = '<button type="button" class="btn btn--sm" data-act="add-group" data-group="' + esc(g.key) +
+          '" title="一次把这 ' + sel.length + ' 个可添加的 msku 全加进计划">添加该组全部（' + sel.length + '）</button>';
+      } else if (lock) {
+        btn = '<span class="i-pencil" style="font-size:var(--t-xs)">' + esc(lockedMsg()) + '</span>';
+      } else {
+        btn = '<span class="i-pencil" style="font-size:var(--t-xs)">没有可添加的 msku<br>（' +
+          here + ' 已添加 · ' + other + ' 被占用）</span>';
+      }
+
+      h += '<tr data-grow="' + esc(g.key) + '"' +
+        (flashKey === g.key ? ' data-flash="' + esc(flashKind) + '"' : '') + '>' +
+        '<td><code>' + esc(g.sku) + '</code></td>' +
+        '<td>' + esc(g.name || '—') + '</td>' +
+        '<td class="muted">' + esc(g.cat || '—') + '</td>' +
+        '<td>' + esc(Store.sellerName(g.seller_id)) +
+          '<div class="i-pencil" style="font-size:var(--t-xs)">' + esc(g.seller_id) +
+          (Store.hasFba(g.seller_id) ? '' : ' · 该平台无 FBA') + '</div></td>' +
+        '<td class="i-pencil" style="font-size:var(--t-xs)">' + g.rows.length + ' 个 msku' +
+          '<div>可添加 ' + sel.length + ' · 已添加 ' + here + ' · 被占用 ' + other + '</div></td>' +
+        '<td class="r">' + groupSuggestHtml(g) +
+          '<div class="i-pencil" style="font-size:var(--t-xs)">小计</div></td>' +
+        '<td style="white-space:normal">' + btn + '</td></tr>';
+      h += errRow(g.key);
+
+      // ---- msku 行 ----
+      g.rows.forEach(function (r) {
+        var k = rowKey(r);
+        var sh = (r.share === null || r.share === undefined) ? 1 : r.share;
+        h += '<tr data-row="' + esc(k) + '"' +
+          ((flashKey === k || flashKey === g.key) ? ' data-flash="' + esc(flashKind) + '"' : '') + '>' +
+          '<td class="i-pencil" style="font-size:var(--t-xs)">└ ' + esc(g.sku) + '</td>' +
+          '<td class="i-pencil" style="font-size:var(--t-xs)">' + esc(g.name || '—') + '</td>' +
+          '<td class="i-pencil" style="font-size:var(--t-xs)">' + esc(g.cat || '—') + '</td>' +
+          '<td class="i-pencil" style="font-size:var(--t-xs)">' + esc(Store.sellerName(r.seller_id)) +
+            ' · sid ' + esc(r.sid) + '</td>' +
+          '<td><code>' + esc(r.seller_sku) + '</code>' +
+            '<div class="i-pencil" style="font-size:var(--t-xs)">占该货号销量 ' + Math.round(sh * 100) + '%</div></td>' +
+          '<td class="r">' + suggestHtml(r) + '</td>' +
+          '<td style="white-space:normal">' + actionHtml(r) + '</td></tr>';
+        h += errRow(k);
+      });
+    });
+
+    tbody.innerHTML = h;
+    flashKey = null;   // 闪过一次就清掉，下次重画不再闪
+
+    document.getElementById('candCaption').innerHTML = res.rows.length
+      ? '<p>结果表按<strong>货号 + 店铺</strong>分组：每组一个<strong>组头行</strong>（灰底，带「添加该组全部」），' +
+        '下面是它的 msku。状态与操作合一，三态互斥：' +
+        '<span class="chip chip--ok">已添加</span> 带「移除」、' +
+        '<span class="chip chip--fail">被 X 占用</span> 无按钮、可添加的是深色「添加」按钮。</p>'
+      : '';
+  }
+
+  /* ---------- ★ 三种空态必须分开 ---------- */
+
+  var SAMPLES = ['猫砂', '饮水机', '牵引绳', '航空箱'];
+
+  function sampleBtns() {
+    return SAMPLES.map(function (s) {
+      return '<button type="button" class="btn btn--sm" data-sample="' + esc(s) + '">' + esc(s) + '</button>';
+    }).join('');
+  }
+
+  function renderEmpty(res, f) {
+    var box = document.getElementById('empty');
+
+    // ① 没给条件 —— 是「故意不返回」，不是「没有数据」
+    if (res.needQuery) {
+      box.innerHTML = '<div class="empty">' +
+        '<p class="empty__title">先搜索或筛选</p>' +
+        '<p class="empty__body">目录里有 <strong>' + res.total + '</strong> 条 msku，不会一次全列出来 —— ' +
+        '真实上线会是成百上千条，全列出来从第一天就是错的。输入关键词，或选一个店铺 / 品类 / 显示范围。</p>' +
+        '<div class="empty__act btn-row" style="justify-content:center">' +
+        '<span class="muted">试试</span>' + sampleBtns() + '</div></div>';
+      return;
+    }
+
+    if (res.rows.length) { box.innerHTML = ''; return; }
+
+    // ③ 有命中、但一条都没显示 —— 只可能是「显示」这条规则滤掉的，要说是哪一条
+    var diag = null, diagErr = null;
+    if (f.only && hasOtherCond(f)) {
+      try { diag = Store.catalog(plan.plan_id, withoutOnly(f)); }
+      catch (e) {
+        diagErr = e;
+        fail('catalog.diag-threw', { filter: withoutOnly(f), message: e && e.message, stack: e && e.stack });
+      }
+    }
+    var filteredByOnly = !!f.only && (!hasOtherCond(f) || (diag && diag.matched > 0));
+
+    if (res.matched > 0 && !f.only) {
+      // 命中大于 0 却一行都没有，而且没有 only 规则 —— 这是 Store 的形状问题，必须可见
+      fail('rows.empty-but-matched', { matched: res.matched, filter: f,
+        hint: 'rows 为空但 matched > 0，且没有 only 过滤 —— 目录实现变了？' });
+      box.innerHTML = '<div class="flash flash--bad mt"><span>结果对不上</span>' +
+        '<span>命中 ' + res.matched + ' 条，却一行都没有返回，而当前并没有「显示」过滤 —— 详情见控制台。</span></div>';
+      return;
+    }
+
+    if (filteredByOnly) {
+      var hitN = hasOtherCond(f) ? (diag ? diag.matched : '?') : res.total;
+      box.innerHTML = '<div class="empty">' +
+        '<p class="empty__title">是「显示：' + esc(onlyText(f.only)) + '」把它们过滤掉了</p>' +
+        '<p class="empty__body">' +
+        (hasOtherCond(f)
+          ? '其余条件（' + esc(condText(withoutOnly(f))) + '）先命中了 <strong>' + hitN + '</strong> 条，'
+          : '目录里的 <strong>' + hitN + '</strong> 条，') +
+        '再被<strong>「' + esc(onlyText(f.only)) + '」</strong>这一条规则滤成 0 条 —— 不是「没有这些货品」' +
+        (f.only === 'claimed_here' ? '，而是本计划一条都还没添加' : '') +
+        (f.only === 'claimed_by_other' ? '，而是没有别的计划占用它们' : '') +
+        (f.only === 'selectable' ? '，而是它们要么已添加、要么被别的计划占用' : '') + '。</p>' +
+        (diagErr ? '<p class="empty__body i-red">诊断查询本身出错了（详情见控制台），上面的数可能不准</p>' : '') +
+        '<div class="empty__act btn-row" style="justify-content:center">' +
+        '<button type="button" class="btn btn--sm" id="onlyAll">把「显示」改回全部</button>' +
+        '<button type="button" class="btn btn--sm btn--ghost" id="clr2">清空条件</button></div></div>';
+      return;
+    }
+
+    // ② 条件本身没命中
+    box.innerHTML = '<div class="empty">' +
+      '<p class="empty__title">没找到匹配的货品</p>' +
+      '<p class="empty__body">当前条件：' + esc(condText(f)) +
+      '　—— 目录里一共 ' + res.total + ' 条，这些条件命中 <strong>0</strong> 条。</p>' +
+      '<div class="empty__act btn-row" style="justify-content:center">' +
+      '<button type="button" class="btn btn--sm btn--ghost" id="clr2">清空条件</button>' +
+      '<span class="muted">或试试</span>' + sampleBtns() + '</div></div>';
+  }
+
+  /* ============================================================
+     ★「本计划已添加」面板 —— 常驻，每次增删都要当场变
+     ============================================================ */
+
+  function claimList() {
+    // plan.claims 是按添加顺序 push 的 → 末尾就是最近添加的
+    return (plan.claims || []).slice();
+  }
+
+  function renderPanel() {
+    var box = document.getElementById('panel');
+    var claims = claimList();
+    var skuSeen = {}, nSku = 0, pairSeen = {}, nPair = 0;
+    claims.forEach(function (c) {
+      if (!skuSeen[c.sku]) { skuSeen[c.sku] = 1; nSku++; }
+      var pk = c.seller_id + '|' + c.sku;
+      if (!pairSeen[pk]) { pairSeen[pk] = 1; nPair++; }
+    });
+    var cc = cellCount();
+
+    var h = '<div class="panel"><div class="panel__body">';
+    h += '<div class="kpi"><span class="kpi__n ' + (claims.length ? 'i-ink' : 'i-pencil') + '">' +
+      claims.length + '</span><span class="kpi__d">个 msku · ' + nSku + ' 个货号</span></div>';
+    // ★ 两种粒度分开报 —— 合成一个「格子数」就把「采购不带店铺」这件事抹掉了
+    h += '<div class="i-pencil mt" style="font-size:var(--t-xs)">' +
+      '期望销量格子 <b class="i-ink">' + cc.demand + '</b>（msku × ' + periods.length + ' 月）<br>' +
+      '计划采购量格子 <b class="i-ink">' + cc.purchase + '</b>（货号 × ' + periods.length + ' 月，不带店铺）<br>' +
+      '涉及 ' + nPair + ' 个「店铺 × 货号」组合</div>';
+
+    if (!claims.length) {
+      h += '<div class="i-pencil mt">这张计划还没有任何货品 —— 左边搜出来点「添加」，这里会当场多一条。</div>';
+    } else {
+      var recent = claims.slice(-5).reverse();
+      var list = showAll ? claims.slice().reverse() : recent;
+      h += '<div class="i-pencil mt" style="font-size:var(--t-xs)">' +
+        (showAll ? '全部 ' + claims.length + ' 条（新加的在最上面）' : '最近添加的 ' + recent.length + ' 条') + '</div>';
+      h += '<div class="table-scroll" style="margin-top:6px"><table class="table table--dense"><tbody>';
+      list.forEach(function (c) {
+        h += '<tr><td><code>' + esc(c.seller_sku) + '</code>' +
+          '<div class="i-pencil" style="font-size:var(--t-xs)">' + esc(c.sku) + ' · ' +
+          esc(Store.sellerName(c.seller_id)) + '</div></td>' +
+          '<td style="width:1%;white-space:nowrap">' +
+          '<button type="button" class="btn btn--sm btn--ghost" data-act="remove"' +
+          ' data-seller="' + esc(c.seller_id) + '" data-sku="' + esc(c.sku) +
+          '" data-msku="' + esc(c.seller_sku) + '" data-sid="' + esc(c.sid) + '"' +
+          (locked() ? ' disabled title="' + esc(lockedMsg()) + '"' : ' title="从本计划移除 ' + esc(c.seller_sku) + '"') +
+          '>移除</button></td></tr>';
+      });
+      h += '</tbody></table></div>';
+
+      if (claims.length > recent.length) {
+        h += '<div style="margin-top:8px"><a href="#" id="toggleAll">' +
+          (showAll ? '只看最近 5 条' : '查看全部 ' + claims.length + ' 条') + '</a></div>';
+      }
+    }
+
+    h += '<div class="mt"><a class="btn btn--primary" href="' + esc(planUrl) + '">完成，返回计划</a></div>';
+    h += '<details class="fold"><summary>移除之后会连带消失什么</summary><div class="fold__body">' +
+      '<p>移除该货号在该店铺下的最后一个 msku，这个店铺的子行就消失；该货号在<strong>所有</strong>店铺都没有 msku 了，' +
+      periods.length + ' 个采购格子才跟着一起消失。</p></div></details>';
+    h += '</div></div>';
+
+    box.innerHTML = h;
+    dbg('panel', { msku: claims.length, sku: nSku, pairs: nPair,
+      demand_cells: cc.demand, purchase_cells: cc.purchase, show_all: showAll });
+  }
+
+  /* ============================================================
+     ★ 添加 / 移除：点一下立即生效
+     ============================================================ */
+
+  function reloadPlan(why) {
+    var p = Store.plan(plan.plan_id);
+    if (!p) {
+      fail('plan.gone', { plan_id: plan.plan_id, why: why });
+      Shell.toast('刷新失败：计划 ' + plan.plan_id + ' 不见了（详情见控制台）', 'fail', 12000);
+      return false;
+    }
+    plan = p;
+    return true;
+  }
+
+  function refreshAfterWrite(key, kind) {
+    flashKey = key || null;
+    flashKind = kind || 'ok';
+    renderHeader();
+    renderPanel();
+    runQuery();
+  }
+
+  function pickOf(btn) {
+    return {
+      seller_id: btn.getAttribute('data-seller'),
+      sku: btn.getAttribute('data-sku'),
+      seller_sku: btn.getAttribute('data-msku'),
+      sid: Number(btn.getAttribute('data-sid'))
+    };
+  }
+
+  function doAdd(picks, key) {
+    var t0 = Date.now(), r;
+    delete rowError[key];
+    try { r = Store.addClaims(plan.plan_id, picks); }
+    catch (e) {
+      fail('addClaims.threw', { plan_id: plan.plan_id, picks: picks, message: e && e.message,
+        cause: e && e.cause && e.cause.code, stack: e && e.stack });
+      rowError[key] = '添加出错：' + ((e && e.message) || '未知错误') + '（详情见控制台）';
+      Shell.toast(rowError[key], 'fail', 12000);
+      refreshAfterWrite(key, 'fail');
+      return;
+    }
+    if (!r || !r.ok) {
+      // ★ error / detail 原样点名，不许只说「添加失败」
+      fail('addClaims.failed', { plan_id: plan.plan_id, picks: picks,
+        error: r && r.error, detail: r && r.detail, ms: Date.now() - t0 });
+      rowError[key] = '添加失败（' + ((r && r.error) || '未知错误') + '）：' +
+        ((r && r.detail) || '没有给出 detail —— 这本身就是缺陷，详情见控制台');
+      Shell.toast(rowError[key], 'fail', 12000);
+      refreshAfterWrite(key, 'fail');
+      return;
+    }
+
+    if (!reloadPlan('addClaims')) return;
+    var rej = r.rejected || [];
+    if (rej.length) rowError[key] = rej[0] + (rej.length > 1 ? '（另有 ' + (rej.length - 1) + ' 条被拒，详情见控制台）' : '');
+    if (rej.length > 1) fail('addClaims.rejected-more', { plan_id: plan.plan_id, rejected: rej });
+
+    // ★ added=0 时绝不能说「已添加」—— 那正是「静默兜底」最坏的一种说法
+    var label = picks.length === 1 ? picks[0].seller_sku : picks[0].sku + ' 的 ' + picks.length + ' 个 msku';
+    var head = !r.added
+      ? '★ 一条都没有添加成功：试了 ' + picks.length + ' 条，' + rej.length + ' 条被拒（原文写在那一行下面）'
+      : (rej.length
+          ? '已添加 ' + r.added + ' / ' + picks.length + ' 条（' + label + '）　★ ' +
+            rej.length + ' 条被拒（原文写在那一行下面）'
+          : '已添加 ' + label);
+    Shell.toast(head + '　当前 ' + (plan.claims || []).length + ' 个 msku，' + cellText(),
+      !r.added ? 'fail' : (rej.length ? 'warn' : 'ok'), rej.length ? 12000 : 6000);
+
+    dbg('add.ok', { tried: picks.length, added: r.added, rejected: rej.length,
+      claims: (plan.claims || []).length, cells: cellCount(), ms: Date.now() - t0 });
+    refreshAfterWrite(key, rej.length && !r.added ? 'fail' : 'ok');
+  }
+
+  function doRemove(pick, key) {
+    var t0 = Date.now(), r;
+    delete rowError[key];
+    try { r = Store.removeMsku(plan.plan_id, pick.seller_id, pick.sku, pick.seller_sku); }
+    catch (e) {
+      fail('removeMsku.threw', { plan_id: plan.plan_id, pick: pick, message: e && e.message,
+        cause: e && e.cause && e.cause.code, stack: e && e.stack });
+      rowError[key] = '移除出错：' + ((e && e.message) || '未知错误') + '（详情见控制台）';
+      Shell.toast(rowError[key], 'fail', 12000);
+      refreshAfterWrite(key, 'fail');
+      return;
+    }
+    if (!r || !r.ok) {
+      fail('removeMsku.failed', { plan_id: plan.plan_id, pick: pick,
+        error: r && r.error, detail: r && r.detail, ms: Date.now() - t0 });
+      rowError[key] = '移除失败（' + ((r && r.error) || '未知错误') + '）：' +
+        ((r && r.detail) || '没有给出 detail —— 这本身就是缺陷，详情见控制台');
+      Shell.toast(rowError[key], 'fail', 12000);
+      refreshAfterWrite(key, 'fail');
+      return;
+    }
+
+    if (!reloadPlan('removeMsku')) return;
+    Shell.toast('已移除 ' + pick.seller_sku + '：' + Store.sellerName(pick.seller_id) + ' 的 ' +
+      pick.sku + ' 还剩 ' + r.left + ' 个 msku' +
+      (r.row_removed ? '　★ 这个店铺下一个不剩了' : '，期望销量的系统预估已按剩下的 msku 重算') +
+      (r.sku_removed ? '　★★ 该货号在本计划已无任何店铺，' + periods.length + ' 个采购格子一并移除' : ''),
+      (r.row_removed || r.sku_removed) ? 'warn' : 'ok',
+      (r.row_removed || r.sku_removed) ? 12000 : 7000);
+
+    dbg('remove.ok', { pick: pick, left: r.left, row_removed: !!r.row_removed, sku_removed: !!r.sku_removed,
+      claims: (plan.claims || []).length, cells: cellCount(), ms: Date.now() - t0 });
+    refreshAfterWrite(key, 'ok');
+  }
+
+  /* ============================================================
+     事件
+     ============================================================ */
+
+  kwBox.addEventListener('input', queryLater);
+  ['fSeller', 'fCat', 'fOnly'].forEach(function (id) {
+    document.getElementById(id).addEventListener('change', function () { runQuery(); });
+  });
+
+  function clearFilters() {
+    kwBox.value = '';
+    document.getElementById('fSeller').value = '';
+    document.getElementById('fCat').value = '';
+    document.getElementById('fOnly').value = '';
+    rowError = {};
+    kwBox.focus();
+    runQuery();
+  }
+  document.getElementById('fClear').addEventListener('click', clearFilters);
+
+  // 空态里的示例关键词 / 清空 / 改回全部
+  document.getElementById('empty').addEventListener('click', function (e) {
+    var b = e.target && e.target.closest ? e.target.closest('button,a') : null;
+    if (!b) return;
+    var s = b.getAttribute('data-sample');
+    if (s) { kwBox.value = s; kwBox.focus(); runQuery(); dbg('sample.click', { keyword: s }); return; }
+    if (b.id === 'clr2') { clearFilters(); return; }
+    if (b.id === 'onlyAll') { document.getElementById('fOnly').value = ''; runQuery(); return; }
+  });
+
+  // 结果表：添加 / 批量添加 / 移除（委托到 tbody —— 每次查询都会重建行）
+  tbody.addEventListener('click', function (e) {
+    var b = e.target && e.target.closest ? e.target.closest('button[data-act]') : null;
+    if (!b || b.disabled) return;
+    var act = b.getAttribute('data-act');
+
+    if (act === 'add') { var p = pickOf(b); doAdd([p], p.seller_sku + '|' + p.sid); return; }
+    if (act === 'remove') { var q = pickOf(b); doRemove(q, q.seller_sku + '|' + q.sid); return; }
+
+    if (act === 'add-group') {
+      var gk = b.getAttribute('data-group');
+      if (!lastRes) { fail('add-group.no-result', { group: gk }); return; }
+      var picks = lastRes.rows.filter(function (r) { return groupKey(r) === gk && r.selectable; })
+        .map(function (r) {
+          return { seller_id: r.seller_id, sku: r.sku, seller_sku: r.seller_sku, sid: r.sid };
+        });
+      if (!picks.length) {
+        // 结果已经变了（别人刚占走？）—— 说出来，不许静默没反应
+        fail('add-group.nothing-selectable', { group: gk, hint: '组里已经没有 selectable 的 msku 了' });
+        Shell.toast('这个组在当前结果里已经没有可添加的 msku 了 —— 刚被别的计划占走？已重查。', 'warn', 9000);
+        runQuery();
+        return;
+      }
+      dbg('add-group', { group: gk, picks: picks.length });
+      doAdd(picks, gk);
+      return;
+    }
+  });
+
+  // 「已添加」面板：移除 / 展开全部
+  document.getElementById('panel').addEventListener('click', function (e) {
+    var t = e.target && e.target.closest ? e.target.closest('a,button') : null;
+    if (!t) return;
+    if (t.id === 'toggleAll') { e.preventDefault(); showAll = !showAll; renderPanel(); return; }
+    if (t.getAttribute && t.getAttribute('data-act') === 'remove' && !t.disabled) {
+      var q = pickOf(t);
+      doRemove(q, q.seller_sku + '|' + q.sid);
+    }
+  });
+
+  /* ============================================================
+     启动
+     ============================================================ */
+
+  renderHeader();
+  fillSellers();
+  fillCategories();
+  renderHead();
+  renderPanel();
+
+  // 从计划页某一行点过来时带着 ?seller= / ?sku=
+  var preSeller = Shell.param('seller');
+  var preSku = Shell.param('sku');
+  if (preSeller) {
+    var ss = document.getElementById('fSeller');
+    ss.value = preSeller;
+    if (ss.value !== preSeller) {
+      fail('preset.seller-unknown', { want: preSeller,
+        known: (Store.get().sellers || []).map(function (x) { return x.seller_id; }) });
+      Shell.toast('URL 里的店铺 ' + preSeller + ' 不在店铺列表里 —— 已按「全部店铺」查（详情见控制台）', 'warn', 9000);
+    }
+  }
+  if (preSku) kwBox.value = preSku;
+
+  runQuery();
+  kwBox.focus();
+  dbg('ready', { plan_id: plan.plan_id, locked: locked(), claims: (plan.claims || []).length,
+    cells: cellCount(), preset_seller: preSeller, preset_sku: preSku,
+    limit: LIMIT, debounce_ms: DEBOUNCE_MS });
+})();
+</script>
+
+</body>
+</html>

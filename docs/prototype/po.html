@@ -1,0 +1,1436 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>采购单详情 · 为采购单添加销售计划货品</title>
+<link rel="stylesheet" href="assets/shell.css">
+<style>
+/* ★ 本页只加 shell.css 里没有的四件事，全部用 data 属性选择器，不另起类名：
+
+   ① 候选表是**两层**的：货号合计行 + 该货号下的各店铺行。
+      层次看不出来，「计划采购量（货号级）」和「期望销量（店铺级）」
+      就会被当成一排同级的数 —— 而它俩恰恰是本项目反复确认过的分水岭。
+
+   ② selectable=false 的行用 shell.css 的 `tr.off`：**标灰但留在表里**。
+      过滤掉的话，人永远不知道「我要的那行为什么没出现」。
+
+   ③ ★ 「挑 → 合并」是这一页的主动作，所以给它一条**看得见的滑道**（.chute）：
+      候选在上、采购单在下，中间那条竖线在没勾东西时是灰的，
+      勾上就转成墨色，并在滑道里**当场算出会落下去的那几笔**
+      （按货号 + 月份合并、各是多少件、来自几个店）。
+      ★ 这替掉了原来那句「勾选后会合并」—— 合并结果自己在那儿摆着。
+
+   ④ 只读态：提交采购之后整页禁用。禁用必须**看得见**，
+      否则「点了没反应」和「这里本来就不能点」长得一模一样。 */
+
+/* ① 两层候选：合计行压一层底 + 左边一条墨线；店铺行缩进 */
+tr[data-lvl="grp"] > td {
+  background: var(--paper-lo);
+  border-top: 1px solid var(--rule-hard);
+}
+tr[data-lvl="grp"] > td:first-child { box-shadow: inset 3px 0 0 var(--ink); }
+tr[data-lvl="sell"] > td:first-child { padding-left: calc(var(--u) * 6); }
+
+/* 勾上的店铺行：左边一条墨线 —— 它就是「即将落下去的那几行」 */
+tr[data-picked="1"] > td { background: var(--paper); }
+tr[data-picked="1"] > td:first-child { box-shadow: inset 3px 0 0 var(--ink); }
+
+/* ③ 滑道 */
+.chute {
+  position: relative;
+  display: flex; align-items: center; flex-wrap: wrap;
+  gap: calc(var(--u) * 2) calc(var(--u) * 4);
+  margin: calc(var(--u) * 5) 0 calc(var(--u) * 5) 0;
+  padding: calc(var(--u) * 3) calc(var(--u) * 3) calc(var(--u) * 3) calc(var(--u) * 10);
+  border: 1px solid var(--rule); border-radius: var(--r);
+  background: var(--paper-hi);
+}
+/* 上下各接一段竖线：把「候选」和「采购单」串成一条落料路径 */
+.chute::before, .chute::after {
+  content: ""; position: absolute; left: calc(var(--u) * 5); width: 2px;
+  background: var(--rule-hard);
+}
+.chute::before { top: calc(var(--u) * -5); height: calc(var(--u) * 5); }
+.chute::after  { bottom: calc(var(--u) * -5); height: calc(var(--u) * 5); }
+.chute[data-armed="1"]::before, .chute[data-armed="1"]::after { background: var(--ink); }
+
+.chute__mark {
+  position: absolute; left: calc(var(--u) * 5); top: 50%;
+  transform: translate(-50%, -50%);
+  width: 0; height: 0;
+  border-left: 7px solid transparent; border-right: 7px solid transparent;
+  border-top: 9px solid var(--rule-hard);
+}
+.chute[data-armed="1"] .chute__mark { border-top-color: var(--ink); }
+
+.chute__from { font-size: var(--t-sm); color: var(--pencil); min-width: 10em; }
+.chute__from b { font-weight: 400; color: var(--ink); font-size: var(--t-lg); }
+.chute__to { font-size: var(--t-sm); flex: 1 1 320px; min-width: 0; }
+.chute__line { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chute__line .k { color: var(--pencil); }
+.chute__act { margin-left: auto; }
+
+/* ④ 只读：禁用的控件要看得出来（浏览器默认的灰太淡，密集表格里看不见） */
+[data-mut][disabled], [data-mut][aria-disabled="true"] { opacity: .45; cursor: not-allowed; }
+
+/* 两个粒度不同的数并置：标签 · 数 · 是谁的量 */
+.two { display: inline-block; text-align: left; }
+.two__row { display: flex; align-items: baseline; gap: calc(var(--u) * 1.5); white-space: nowrap; }
+.two__k { font-size: var(--t-xs); color: var(--pencil); min-width: 6em; }
+.two__w { font-size: var(--t-xs); color: var(--pencil); }
+
+/* items 区：可展开的货号级行 */
+tr[data-lvl="item"] > td { background: var(--paper-lo); cursor: pointer; }
+tr[data-lvl="item"] > td:first-child { box-shadow: inset 3px 0 0 var(--ink); }
+tr[data-lvl="line"] > td:first-child { padding-left: calc(var(--u) * 6); }
+.caret { display: inline-block; width: 1.1em; color: var(--pencil); font-size: var(--t-xs); }
+
+/* 候选行里的两个小输入框：挤在「操作」列里 */
+.inp--tiny { width: 62px; padding: calc(var(--u)) calc(var(--u) * 1.5); font-size: var(--t-xs); }
+.table td.r, .table th.r, .nowrap { white-space: nowrap; }
+.bar .inp--text { width: 170px; min-width: 0; }
+.bar .inp[type="month"] { width: 130px; }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <!-- ============ 头部：采购单表头 ============ -->
+  <div id="poHead"></div>
+
+  <div id="banner"></div>
+
+  <!-- ============ 块一：未处理销售计划产品筛选器 ============ -->
+  <div class="sec" id="candSec">
+    <div class="sec__title">
+      未处理销售计划产品
+      <span class="muted">计划记录 × 店铺，分别勾</span>
+    </div>
+
+    <div class="bar">
+      <div class="bar__grp">
+        <label class="bar__lbl" for="fPlan">销售计划</label>
+        <select class="inp inp--text" id="fPlan"></select>
+      </div>
+      <div class="bar__grp">
+        <label class="bar__lbl" for="fSku">货号</label>
+        <input class="inp inp--text" type="text" id="fSku" placeholder="货号片段即可">
+      </div>
+      <div class="bar__grp">
+        <label class="bar__lbl" for="fSeller">店铺</label>
+        <select class="inp inp--text" id="fSeller"></select>
+      </div>
+      <div class="bar__grp">
+        <label class="bar__lbl" for="fFrom">月份</label>
+        <input class="inp" type="month" id="fFrom">
+        <span class="bar__lbl">至</span>
+        <input class="inp" type="month" id="fTo">
+      </div>
+      <label class="bar__grp nowrap"><input type="checkbox" id="fOpen"> 只看未组单 &gt; 0</label>
+      <button class="btn btn--sm btn--ghost" type="button" id="btnClearFilter">清空筛选</button>
+      <span class="bar__say" id="candSum"></span>
+    </div>
+
+    <details class="fold">
+      <summary>这张表怎么读：两层、两个数、以及为什么勾不动的行还留着</summary>
+      <div class="fold__body">
+        <p>压底色的是<strong>货号合计行</strong>，下面缩进的是<strong>该货号在各店铺的那一份</strong>。
+          合计行上那两个数<strong>粒度不同</strong>：
+          「计划采购量」是货号级、供应链要买的量；「期望销量合计」是各店铺想卖的量之和。
+          <strong>它们不是同一个数，也不该被合成一个。</strong>
+          运营想卖多少和供应链要买多少本来就是两回事 ——
+          安全库存、起订量、箱规、汇率都长在这个差里。</p>
+        <p><strong>看的时候分店，下单的时候合并。</strong>
+          候选按「计划记录 × 店铺」展开，人<strong>分别勾</strong>；
+          勾完按货号合并成采购单一行下给供应商。
+          这条能成立的关键是：<strong>店铺归属是人勾出来的，不是系统摊的</strong> ——
+          所以「已下单量[店铺]」是<strong>事实</strong>，而不是一个分摊假设。
+          （库存预测里那个「未定向量」是反过来的：那是系统在猜归属，措辞不能混用。）</p>
+        <p>勾不动的行<strong>标灰留在表里，没有过滤掉</strong>，每一行都写了为什么勾不动 ——
+          过滤掉的话，人永远不知道自己要的那行为什么没出现。</p>
+        <p>「平台」这一列一律是「—」：Store 的 sellers 里只有 <code>market</code>、
+          <strong>没有 platform 字段</strong>。这里不猜、不从店铺名反推 ——
+          猜出来的标签会被下游当成事实。</p>
+      </div>
+    </details>
+
+    <div class="table-scroll">
+      <table class="table table--dense" id="candTable">
+        <thead>
+          <tr>
+            <th style="width:30px"></th>
+            <th>销售计划ID</th>
+            <th>货号</th>
+            <th>平台</th>
+            <th>店铺</th>
+            <th class="r">年</th>
+            <th class="r">月</th>
+            <th class="r">需求量</th>
+            <th class="r">已确认量</th>
+            <th class="r">已下单量</th>
+            <th class="r">未组单量</th>
+            <th>状态</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="candBody"></tbody>
+      </table>
+    </div>
+
+    <!-- 被拒绝的原因**原样**列在这里，不许摘要成「部分失败」：
+         原因里已经把「本次多少 / 需求多少 / 已组单多少 / 已下单多少」全点名了，
+         摘要等于把这些数扔掉，人就得自己再复现一遍。 -->
+    <div id="rejectBox"></div>
+  </div>
+
+  <!-- ============ 滑道：勾中的店铺行从这里落进采购单 ============ -->
+  <div class="chute" id="candActions" data-armed="0"></div>
+
+  <!-- ============ 块二：items ============ -->
+  <div class="sec" id="itemSec">
+    <div class="sec__title">
+      采购单 items
+      <span class="muted">按「货号 + 月份」合并显示，点开看各店</span>
+      <span class="sec__act" id="itemSum"></span>
+    </div>
+
+    <details class="fold">
+      <summary>合并只是显示层的事：底下存的是每店一行</summary>
+      <div class="fold__body">
+        <p>合并只是<strong>显示层</strong>的事：底下存的是<strong>未合并</strong>的，每个店铺一行。
+          合并键是「货号 + 月份」—— 把不同月份并成一行会把月份藏掉，而月份是要下给供应商的。</p>
+        <p>单价各店不同时，这里<strong>列出有几种、各是多少</strong>，不挑一个显示 —— 挑一个就是编的。</p>
+      </div>
+    </details>
+
+    <div class="table-scroll">
+      <table class="table table--dense" id="itemTable">
+        <thead>
+          <tr>
+            <th>记录 / 货号</th>
+            <th>店铺 · 月</th>
+            <th class="r">数量</th>
+            <th class="r">单价</th>
+            <th>关联销售计划ID</th>
+            <th>状态</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="itemBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ============ 块三：本地仓到货进度 ============ -->
+  <div class="sec" id="progSec">
+    <div class="sec__title">
+      本地仓到货进度
+      <span class="muted">领星回执的镜像，我们不写</span>
+    </div>
+
+    <details class="fold">
+      <summary>到货是外部事实，这一块为什么没有按钮</summary>
+      <div class="fold__body">
+        <p><strong>到货是外部事实，不是这张页面上的按钮能跳过的。</strong>
+          入库单来自领星回执，我们只读不写。所以「还没到货」和「没有数据」
+          必须分开说 —— 前者是正常的等待，后者是采集出了问题。</p>
+        <p>入库单上的数字<strong>不摊回</strong>那几条计划记录 ——
+          一张入库单只说「这个货号、这么多件、到了哪个仓、哪天到的」，
+          它<strong>不知道</strong>这批货里有多少是给哪个店铺那份的。
+          硬摊回去只会造出一个看着精确、其实是编的数。</p>
+      </div>
+    </details>
+
+    <div id="progBox"></div>
+  </div>
+
+</div>
+
+<script src="assets/store.js"></script>
+<script src="assets/shell.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  /* ★ 2026-09-18 改版：只动版面与文案，**逻辑一行没改** ——
+       Store 调用、校验分支、被丢弃一侧的统计、fail() 留痕全部原样。
+       满屏的说明文字搬进了页面上那四个 <details class="fold">，一个字没删。
+       新增的只有滑道（.chute）里那份**合并预览**：它是显示层的计算，
+       不改任何状态，也不参与校验。 */
+
+  var TAG = '[scm-po-detail]';
+  function dbg(e, d) { try { console.debug(TAG, e, d || {}); } catch (x) { } }
+  function fail(e, d) { try { console.error(TAG, e, d || {}); } catch (x) { } }
+
+  var esc = Shell.esc, chip = Shell.chip, qty = Shell.qty, qtyOf = Shell.qtyOf;
+
+  var poId = Shell.param('po', '');
+  var po = null;
+
+  Shell.mount({ crumb: [
+    { text: '首页', href: 'index.html' },
+    { text: '采购台', href: 'buyer.html' },
+    { text: '采购单详情' }
+  ] });
+
+  /* ============================================================
+     入口守卫：没有 po 参数 / 找不到这张单
+     —— 两种成因不同，说法也必须不同
+     ============================================================ */
+
+  function knownPoIds() {
+    return (Store.get().pos || []).map(function (p) { return p.po_id; });
+  }
+  function hideBody(why) {
+    ['candSec', 'candActions', 'itemSec', 'progSec'].forEach(function (id) {
+      var n = document.getElementById(id);
+      if (n) n.style.display = 'none';
+    });
+    dbg('body.hidden', { why: why });
+  }
+  function poListHtml() {
+    var all = Store.get().pos || [];
+    if (!all.length) {
+      return '<div class="empty__body">本地剧本里<strong>一张采购单都没有</strong> —— '
+        + '去 <a href="buyer.html">采购台</a> 先建一张。</div>';
+    }
+    return '<div class="empty__body">已有的采购单：' + all.map(function (p) {
+      return '<a href="po.html?po=' + encodeURIComponent(p.po_id) + '">' + esc(p.po_id) + '</a>'
+        + '<span class="i-pencil">（' + esc(p.state) + '）</span>';
+    }).join('、') + '</div>';
+  }
+  function headOnly(sub) {
+    document.getElementById('poHead').innerHTML =
+      '<div class="head"><div class="head__main"><h1>采购单详情</h1>'
+      + '<div class="head__meta">' + sub + '</div></div></div>';
+  }
+
+  if (!poId) {
+    // ★ 缺参数不是「找不到」：前者是入口没带上，后者是单据真的不存在
+    fail('param.po-missing', { search: window.location.search,
+      hint: '本页的入口是 po.html?po=<po_id>；采购单列表已经搬去 buyer.html 了',
+      known: knownPoIds() });
+    document.getElementById('banner').innerHTML =
+      '<div class="empty"><div class="empty__title">' + chip('缺少参数 po', 'bad')
+      + '　本页是采购单详情，入口是 <code>po.html?po=&lt;po_id&gt;</code></div>'
+      + '<div class="empty__body">采购单<strong>列表</strong>已经搬到 <a href="buyer.html">采购台</a> 了。</div>'
+      + poListHtml() + '</div>';
+    hideBody('no-param');
+    headOnly('没有点名是哪一张。');
+    return;
+  }
+
+  po = Store.po(poId);
+  if (!po) {
+    // ★ 失败要点名：要的是哪个、有的是哪些
+    fail('po.not-found', { want: poId, known: knownPoIds() });
+    document.getElementById('banner').innerHTML =
+      '<div class="empty"><div class="empty__title">' + chip('找不到采购单', 'bad')
+      + '　参数 <code>po=' + esc(poId) + '</code> 在本地剧本里不存在</div>'
+      + poListHtml() + '</div>';
+    hideBody('po-not-found');
+    headOnly(esc(poId) + ' 不存在。');
+    return;
+  }
+
+  /* ============================================================
+     页面状态
+     ============================================================ */
+
+  var filter = { plan_id: '', sku: '', seller_id: '', from: '', to: '', only_open: false };
+  var picks = {};          // 'line_id|seller_id' → {checked, units, price}，跨重绘保留
+  var openItems = {};      // 'sku|period' → items 区那一组是否展开
+  var progOpen = true;     // 块三的入库单明细是否展开
+  var lastRejected = null; // { at, added, list:[中文原因原文] }
+  var candIndex = {};      // 'line_id|seller_id' → 候选行（只给滑道的合并预览用）
+
+  function pickKey(lineId, sellerId) { return lineId + '|' + sellerId; }
+  function readOnly() { return po.state !== '草稿'; }
+  function lockMsg() {
+    return '采购单已是「' + po.state + '」'
+      + (po.order_sn ? '（领星单号 ' + po.order_sn + '）' : '')
+      + ' —— 全页只读：货可能在做、钱可能已付，改不回来了';
+  }
+
+  function reloadPo(where) {
+    var fresh = Store.po(poId);
+    if (!fresh) {
+      // ★ 单据在两次读之间消失了：静默重画会让页面显示一份**过期快照**
+      fail('po.vanished', { po_id: poId, where: where, known: knownPoIds() });
+      Shell.toast('采购单 ' + poId + ' 不见了（' + where + ' 之后再读就没有了）—— 详情见控制台', 'fail', 12000);
+      return false;
+    }
+    po = fresh;
+    return true;
+  }
+
+  function sum(arr, f) { var t = 0; (arr || []).forEach(function (x) { t += (Number(f(x)) || 0); }); return t; }
+  function yearOf(p) { return String(p || '').split('-')[0] || '—'; }
+  function monthOf(p) { return String(p || '').split('-')[1] || '—'; }
+
+  /* ============================================================
+     头部
+     ============================================================ */
+
+  function renderHead() {
+    var units = sum(po.items, function (i) { return i.units; });
+    var lock = readOnly();
+
+    var h = '<div class="head">'
+      + '<div class="head__main">'
+      + '<h1>采购单 <code>' + esc(po.po_id) + '</code></h1>'
+      + '<div class="head__meta">'
+      +   '<span>供应商 <b>' + esc(po.supplier) + '</b></span>'
+      +   '<span>收货仓 <b>' + esc(Store.warehouseName(po.wid)) + '</b></span>'
+      +   '<span>建单 <b>' + esc(po.created_day) + '</b></span>'
+      // ★ 供应商 / 收货仓只读，理由写在下面那个 fold 里 —— 不说的话，看起来就只是「忘了做」
+      +   '<span>' + chip('单头只读', 'dim') + '</span>'
+      + '</div>'
+      + '<div class="head__meta">'
+      +   '<span>' + chip(po.state, po.state === '已下单' ? 'good' : '') + '</span>'
+      +   '<span>幂等键 <code>' + esc(po.custom_order_sn) + '</code></span>'
+      +   (po.order_sn ? '<span>领星单号 ' + chip(po.order_sn, 'dim')
+                       + ' ' + esc(po.placed_day) + ' 下单</span>' : '')
+      +   '<span><b>' + po.items.length + '</b> 行 / <b>' + units + '</b> 件</span>'
+      + '</div>'
+      + '</div>'
+      + '<div class="head__act">'
+      +   '<button class="btn" type="button" id="btnSaveDraft" data-mut="1"'
+      +     (lock ? ' disabled title="' + esc(lockMsg()) + '"' : '') + '>保存草稿</button>'
+      +   '<button class="btn btn--danger" type="button" id="btnPlace" data-mut="1"'
+      +     (lock ? ' disabled title="' + esc(lockMsg()) + '"' : '') + '>提交采购</button>'
+      + '</div>'
+      + '</div>'
+      + '<details class="fold"><summary>表头为什么不能改，以及「保存草稿」到底保存了什么</summary>'
+      + '<div class="fold__body">'
+      + '<p><strong>供应商与收货仓是领星下单的单头，建单时就定了，之后不可编辑。</strong>'
+      + '要换就得另建一张单 —— 同一货号分两家买，就是两张单。</p>'
+      + '<p>「保存草稿」<strong>不是</strong>「不点就不保存」：每一次加 / 改 / 删都已经立刻落盘了。'
+      + '这个按钮只是再确认一次 —— 不点也不会丢。</p>'
+      + '</div></details>';
+
+    document.getElementById('poHead').innerHTML = h;
+
+    if (!lock) {
+      document.getElementById('btnSaveDraft').addEventListener('click', doSaveDraft);
+      document.getElementById('btnPlace').addEventListener('click', askPlace);
+    }
+
+    // 只读横幅：禁用必须说清「为什么」，而不是一片灰
+    var b = document.getElementById('banner');
+    b.innerHTML = lock
+      ? '<div class="flash flash--bad" id="roBanner"><div>'
+        + '<strong>本单已提交采购，整页只读。</strong>' + esc(lockMsg()) + '。'
+        + '<div class="mt">已经在领星里建出真单了 —— 加货品、改数量、移除、再提交，全部禁用。'
+        + '要改只能在领星那边处理，或者另建一张单。</div>'
+        + '</div></div>'
+      : '';
+  }
+
+  /* ---------- 保存草稿 ---------- */
+
+  function doSaveDraft() {
+    // ★ 这个按钮**不是**「不点就不保存」：每一次加/改/删都已经立刻落盘了。
+    //   如果这里假装是它在保存，人就会以为不点就能反悔 —— 那是假的。
+    var t0 = Date.now(), r;
+    try { r = Store.save(); }
+    catch (e) {
+      fail('save.threw', { po_id: poId, message: e && e.message,
+        cause: e && e.cause && e.cause.code, stack: e && e.stack });
+      Shell.toast('保存失败：' + ((e && e.message) || '未知异常') + '（详情见控制台）', 'fail', 12000);
+      return;
+    }
+    if (!r || !r.ok) {
+      fail('save.failed', { po_id: poId, result: r });
+      Shell.toast('保存没成功（返回 ' + JSON.stringify(r) + '）—— 详情见控制台', 'fail', 12000);
+      return;
+    }
+    dbg('save.ok', { po_id: poId, items: po.items.length, ms: Date.now() - t0 });
+    Shell.toast('已落盘。每加一项、每改一个数都已经立刻存进浏览器了，这个按钮只是再确认一次。', 'ok');
+  }
+
+  /* ============================================================
+     块一：筛选器 + 候选（两层）
+     ============================================================ */
+
+  function mountFilters() {
+    // ★ 只挂一次：筛选条的 DOM 是静态的，监听器不该跟着重绘反复叠加
+    var planSel = document.getElementById('fPlan');
+    var plans = [];
+    try { plans = Store.planQuery({}) || []; }
+    catch (e) {
+      fail('planQuery.threw', { message: e && e.message, stack: e && e.stack });
+      plans = [];
+    }
+    planSel.innerHTML = '<option value="">全部计划</option>'
+      + plans.map(function (p) {
+          return '<option value="' + esc(p.plan_id) + '">' + esc(p.plan_id)
+            + '（' + esc(p.state) + (p.rev ? ' rev' + esc(p.rev) : '') + '）</option>';
+        }).join('');
+
+    var sellerSel = document.getElementById('fSeller');
+    sellerSel.innerHTML = '<option value="">全部店铺</option>'
+      + (Store.get().sellers || []).map(function (x) {
+          return '<option value="' + esc(x.seller_id) + '">' + esc(x.name)
+            + '（' + esc(x.market) + '）</option>';
+        }).join('');
+
+    function bind(id, key, kind) {
+      var n = document.getElementById(id);
+      n.addEventListener('change', function () {
+        filter[key] = kind === 'bool' ? !!n.checked : String(n.value || '').trim();
+        dbg('filter.change', { key: key, value: filter[key] });
+        renderCandidates();
+      });
+      if (kind !== 'bool') n.addEventListener('input', function () {
+        filter[key] = String(n.value || '').trim();
+        renderCandidates();
+      });
+    }
+    bind('fPlan', 'plan_id');
+    bind('fSku', 'sku');
+    bind('fSeller', 'seller_id');
+    bind('fFrom', 'from');
+    bind('fTo', 'to');
+    bind('fOpen', 'only_open', 'bool');
+
+    document.getElementById('btnClearFilter').addEventListener('click', function () {
+      filter = { plan_id: '', sku: '', seller_id: '', from: '', to: '', only_open: false };
+      ['fPlan', 'fSku', 'fSeller', 'fFrom', 'fTo'].forEach(function (id) {
+        document.getElementById(id).value = '';
+      });
+      document.getElementById('fOpen').checked = false;
+      dbg('filter.cleared', {});
+      renderCandidates();
+    });
+  }
+
+  function askCandidates(f, where) {
+    try { return Store.poCandidates(f); }
+    catch (e) {
+      // ★ 回退必须有声：这里吞掉，「查不到」和「一条都没有」就长得一模一样了
+      fail('poCandidates.threw', { where: where, filter: f,
+        message: e && e.message, cause: e && e.cause && e.cause.code, stack: e && e.stack });
+      return null;
+    }
+  }
+
+  function renderCandidates() {
+    var body = document.getElementById('candBody');
+    var sumEl = document.getElementById('candSum');
+    var lock = readOnly();
+    var t0 = Date.now();
+
+    // ★ 空的三种成因要分开说 —— 所以既要查「当前过滤」也要查「完全不过滤」
+    var all = askCandidates({}, 'unfiltered');
+    var hit = askCandidates({
+      plan_id: filter.plan_id || undefined,
+      sku: filter.sku || undefined,
+      seller_id: filter.seller_id || undefined,
+      from: filter.from || undefined,
+      to: filter.to || undefined,
+      only_open: filter.only_open || undefined
+    }, 'filtered');
+
+    if (!all || !hit) {
+      body.innerHTML = '<tr><td colspan="13"><span class="i-red">'
+        + '候选查询抛异常了 —— 这不是「没有候选」，是查不出来。详情见控制台。</span></td></tr>';
+      sumEl.textContent = '';
+      renderCandActions(0);
+      return;
+    }
+
+    /* 滑道的合并预览按**全量**候选建索引：勾选是跨过滤保留的，
+       只认当前过滤的话，一改条件预览就少几行 —— 那比不给预览更坏。 */
+    candIndex = {};
+    all.rows.forEach(function (r) {
+      if (r.seller_id === null) return;
+      candIndex[pickKey(r.line_id, r.seller_id)] = r;
+    });
+
+    // ★ only_open 会真的滤掉行。滤掉多少必须报出来 ——
+    //   「被丢弃的那一侧」不统计，就会有人以为那些行根本不存在。
+    var hiddenByOpen = 0;
+    if (filter.only_open) {
+      var wide = askCandidates({
+        plan_id: filter.plan_id || undefined, sku: filter.sku || undefined,
+        seller_id: filter.seller_id || undefined,
+        from: filter.from || undefined, to: filter.to || undefined
+      }, 'open-toggle-baseline');
+      if (wide) hiddenByOpen = Math.max(0, wide.rows.length - hit.rows.length);
+    }
+
+    body.innerHTML = '';
+    renderRejectBox();
+
+    if (!hit.rows.length) {
+      body.appendChild(emptyRow(all, hit));
+      sumEl.innerHTML = emptySum(all, hit, hiddenByOpen);
+      renderCandActions();
+      dbg('cand.render', { matched: 0, all: all.rows.length, filter: filter, ms: Date.now() - t0 });
+      return;
+    }
+
+    // 按 line_id 分组：合计行在前，店铺行缩进在后
+    var byLine = {}, order = [];
+    hit.rows.forEach(function (r) {
+      if (!byLine[r.line_id]) { byLine[r.line_id] = []; order.push(r.line_id); }
+      byLine[r.line_id].push(r);
+    });
+    var groupOf = {};
+    hit.groups.forEach(function (g) { groupOf[g.line_id] = g; });
+
+    var noGroup = 0, selectable = 0, blocked = 0;
+    order.forEach(function (lineId) {
+      var rows = byLine[lineId];
+      var g = groupOf[lineId];
+      if (!g) {
+        // 合计行缺失：不许静默只画店铺行 —— 那两个数就此消失了
+        noGroup++;
+        fail('cand.group-missing', { line_id: lineId, rows: rows.length,
+          hint: 'poCandidates 返回了店铺行却没有对应的合计行；「计划采购量」无处可放' });
+        body.appendChild(rawRow('<td colspan="13"><span class="i-red">记录 ' + esc(lineId)
+          + ' 有 ' + rows.length + ' 个店铺行，却没有货号合计行 —— '
+          + '「计划采购量」这一刻显示不出来。详情见控制台。</span></td>'));
+      } else {
+        body.appendChild(groupRow(g, rows, lock));
+      }
+      rows.forEach(function (r) {
+        if (r.selectable) selectable++; else blocked++;
+        body.appendChild(sellerRow(r, lock));
+      });
+    });
+
+    sumEl.innerHTML = '命中 <b>' + hit.rows.length + '</b> 店铺行 / <b>'
+      + hit.groups.length + '</b> 货号（全库 ' + all.rows.length + '）'
+      + '　·　可勾 <b>' + selectable + '</b>'
+      + '　·　<b>' + blocked + '</b> 行勾不动，标灰留在表里、<strong>没有过滤掉</strong>'
+      + (hiddenByOpen ? '　·　<span class="i-red">「只看未组单 &gt; 0」另外隐藏了 '
+          + hiddenByOpen + ' 行</span>' : '')
+      + (noGroup ? '　·　<span class="i-red">' + noGroup + ' 条记录缺合计行</span>' : '');
+
+    renderCandActions();
+    dbg('cand.render', { matched: hit.rows.length, groups: hit.groups.length,
+      selectable: selectable, blocked: blocked, hidden_by_only_open: hiddenByOpen,
+      no_group: noGroup, filter: filter, locked: lock, ms: Date.now() - t0 });
+  }
+
+  function rawRow(html) {
+    var tr = document.createElement('tr');
+    tr.innerHTML = html;
+    return tr;
+  }
+
+  /* ---------- 空态：三种成因分开说 ---------- */
+
+  function emptyRow(all, hit) {
+    var why;
+    if (!all.rows.length) {
+      why = '<strong>还没有任何已提交的销售计划。</strong>'
+          + '候选来自<strong>计划记录</strong>，而计划记录是提交计划时才铸出来的 —— '
+          + '草稿状态的计划在这里一行都不会出现。'
+          + '<br>去 <a href="ops.html">运营首页</a> 提交一张计划。';
+    } else if (all.rows.every(function (r) { return !r.selectable; })) {
+      why = '<strong>有 ' + all.rows.length + ' 条计划记录，但没有一条还剩未组单量</strong> —— '
+          + '全部组完或下完单了。这不是筛选的问题：把筛选条件全清掉也还是这些。'
+          + '<br>要继续采购，得先有新的销售计划（或新版本）。';
+    } else {
+      why = '<strong>当前筛选条件太窄</strong>：全库有 ' + all.rows.length + ' 行候选，'
+          + '按现在的条件一行都不剩。'
+          + '<br>点上面的「清空筛选」看看全部。';
+    }
+    return rawRow('<td colspan="13"><div class="empty">'
+      + '<div class="empty__title">一条候选都没有</div>'
+      + '<div class="empty__body">' + why + '</div></div></td>');
+  }
+
+  function emptySum(all, hit, hiddenByOpen) {
+    return '命中 <b>0</b> 行（全库共 ' + all.rows.length + ' 行）'
+      + (hiddenByOpen ? '　·　<span class="i-red">「只看未组单 &gt; 0」隐藏了 '
+          + hiddenByOpen + ' 行</span>' : '');
+  }
+
+  /* ---------- 合计行（货号级）---------- */
+
+  function groupRow(g, rows, lock) {
+    var tr = document.createElement('tr');
+    tr.setAttribute('data-lvl', 'grp');
+    tr.setAttribute('data-line', g.line_id);
+
+    var anySel = rows.some(function (r) { return r.selectable; });
+    var allChecked = anySel && rows.every(function (r) {
+      return !r.selectable || (picks[pickKey(r.line_id, r.seller_id)] || {}).checked;
+    });
+
+    tr.innerHTML =
+      '<td>' + (anySel
+        ? '<input type="checkbox" data-mut="1" data-all="' + esc(g.line_id) + '"'
+          + (allChecked ? ' checked' : '')
+          + (lock ? ' disabled title="' + esc(lockMsg()) + '"' : '')
+          + ' title="勾上这个货号下所有还能勾的店铺行">'
+        : '') + '</td>'
+      + '<td><code>' + esc(g.plan_id) + '</code>'
+        + '<br><span class="i-pencil">rev ' + esc(g.rev) + ' · ' + esc(g.line_id) + '</span></td>'
+      + '<td><code>' + esc(g.sku) + '</code></td>'
+      // ★ 「平台」在 Store 的 sellers 里**没有建模**（只有 market）。
+      //   这里不猜、不从店铺名反推 —— 猜出来的标签会被下游当成事实。
+      + '<td><span class="i-pencil" title="Store 的 sellers 里只有 market，没有 platform 字段 —— 这里不猜">—</span></td>'
+      + '<td><span class="i-pencil">' + g.sellers + ' 个店铺</span></td>'
+      + '<td class="r"><span class="i-pencil">' + esc(yearOf(g.period)) + '</span></td>'
+      + '<td class="r"><span class="i-pencil">' + esc(monthOf(g.period)) + '</span></td>'
+      // ★★ 两个数并置，粒度不同，都要显示，且各自标清是谁的量
+      + '<td class="r" colspan="2">'
+        + '<span class="two">'
+        + '<span class="two__row"><span class="two__k">计划采购量</span>'
+          + '<span class="i-ink">' + qty(g.purchase_planned) + '</span>'
+          + '<span class="two__w">供应链要买</span></span>'
+        + '<span class="two__row"><span class="two__k">期望销量合计</span>'
+          + '<span class="i-ink">' + qty(g.demand_total) + '</span>'
+          + '<span class="two__w">运营想卖</span></span>'
+        + '</span></td>'
+      + '<td class="r"><span class="i-pencil">' + esc(g.placed) + '</span></td>'
+      + '<td class="r">' + qty(g.open) + '</td>'
+      + '<td><span class="i-pencil">货号合计</span></td>'
+      + '<td><a href="trace.html?line=' + encodeURIComponent(g.line_id) + '">看进度</a></td>';
+
+    var box = tr.querySelector('input[data-all]');
+    if (box && !lock) {
+      box.addEventListener('change', function () {
+        var want = box.checked;
+        rows.forEach(function (r) {
+          if (!r.selectable) return;
+          var k = pickKey(r.line_id, r.seller_id);
+          picks[k] = picks[k] || {};
+          picks[k].checked = want;
+          if (picks[k].units === undefined) picks[k].units = r.open;
+        });
+        dbg('cand.select-all', { line_id: g.line_id, want: want, rows: rows.length });
+        renderCandidates();
+      });
+    }
+    return tr;
+  }
+
+  /* ---------- 店铺行 ---------- */
+
+  function sellerRow(r, lock) {
+    var tr = document.createElement('tr');
+    tr.setAttribute('data-lvl', 'sell');
+    tr.setAttribute('data-line', r.line_id);
+    tr.setAttribute('data-seller', r.seller_id === null ? '' : r.seller_id);
+    tr.setAttribute('data-sel', r.selectable ? 'yes' : 'no');
+    // ★ 勾不动的行**留在表里**标灰（shell.css 的 tr.off），不是过滤掉
+    if (!r.selectable) tr.className = 'off';
+
+    var k = pickKey(r.line_id, r.seller_id);
+    var p = picks[k] || {};
+    var checked = !!p.checked;
+    if (checked) tr.setAttribute('data-picked', '1');
+    var unitVal = p.units !== undefined && p.units !== null ? p.units : r.open;
+    var priceVal = p.price !== undefined && p.price !== null ? p.price : '';
+
+    // why_not 直接写在「状态」列
+    var whyHtml = r.selectable ? ''
+      : ' <span class="why">' + esc(r.why_not || '（没给原因 —— 这本身就是缺陷）') + '</span>';
+
+    var actions;
+    if (!r.selectable) {
+      actions = '<span class="i-pencil">勾不动</span>';
+    } else {
+      actions = '<span class="nowrap">'
+        + '<input class="inp inp--tiny" type="number" min="1" step="1" inputmode="numeric"'
+          + ' data-mut="1" data-units="' + esc(k) + '" value="' + esc(unitVal) + '"'
+          + ' title="本次要下多少件（默认 = 未组单量 ' + esc(r.open) + '）"'
+          + (lock ? ' disabled' : '') + '>'
+        + ' <input class="inp inp--tiny" type="number" min="0" step="0.01" inputmode="decimal"'
+          + ' data-mut="1" data-price="' + esc(k) + '" value="' + esc(priceVal) + '" placeholder="单价"'
+          + ' title="单价，可留空，之后在 items 里逐行改"'
+          + (lock ? ' disabled' : '') + '>'
+        + ' <button class="btn btn--sm" type="button" data-mut="1" data-act="add" data-k="' + esc(k) + '"'
+          + (lock ? ' disabled title="' + esc(lockMsg()) + '"' : '') + '>添加</button>'
+        + '</span>';
+    }
+    // 「移除」：把本单里属于这一行的采购单行退回去。没有对应行时禁用并说清
+    var mine = r.seller_id === null ? [] : po.items.filter(function (it) {
+      return it.line_id === r.line_id && String(it.seller_id) === String(r.seller_id);
+    });
+    var mineUnits = sum(mine, function (x) { return x.units; });
+    actions += ' <button class="btn btn--sm btn--ghost" type="button" data-mut="1"'
+      + ' data-act="drop" data-line="' + esc(r.line_id) + '"'
+      + ' data-seller="' + esc(r.seller_id === null ? '' : r.seller_id) + '"'
+      + ((lock || !mine.length)
+          ? ' disabled title="' + esc(lock ? lockMsg()
+              : '本单里没有这一行的采购单行 —— 没什么可移除的') + '"'
+          : ' title="把本单里这一行的 ' + mineUnits + ' 件退回「未组单」"')
+      + '>移除' + (mine.length ? '（' + mineUnits + ' 件）' : '') + '</button>';
+
+    tr.innerHTML =
+      '<td>' + (r.selectable
+        ? '<input type="checkbox" data-mut="1" data-pick="' + esc(k) + '"'
+          + (checked ? ' checked' : '')
+          + (lock ? ' disabled title="' + esc(lockMsg()) + '"' : '') + '>'
+        : '') + '</td>'
+      + '<td><span class="i-pencil">' + esc(r.plan_id) + ' rev' + esc(r.rev) + '</span></td>'
+      + '<td><code>' + esc(r.sku) + '</code></td>'
+      + '<td><span class="i-pencil">—</span></td>'
+      + '<td>' + esc(r.seller_name)
+        + (r.market ? '<br><span class="i-pencil">' + esc(r.market) + '</span>' : '') + '</td>'
+      + '<td class="r"><span class="i-pencil">' + esc(yearOf(r.period)) + '</span></td>'
+      + '<td class="r"><span class="i-pencil">' + esc(monthOf(r.period)) + '</span></td>'
+      + '<td class="r">' + (r.demand === null
+          ? '<span class="i-red">空</span>'
+          : '<span class="i-ink">' + esc(r.demand) + '</span>') + '</td>'
+      + '<td class="r"><span class="i-pencil">' + esc(r.drafted) + '</span></td>'
+      + '<td class="r"><span class="i-pencil">' + esc(r.placed) + '</span></td>'
+      + '<td class="r">' + qty(r.open) + '</td>'
+      + '<td>' + chip(r.state, r.state === Store.STATES.ORDERED ? 'good' : '') + whyHtml + '</td>'
+      + '<td>' + actions + '</td>';
+
+    if (!lock) wireSellerRow(tr, r, k);
+    return tr;
+  }
+
+  function wireSellerRow(tr, r, k) {
+    var box = tr.querySelector('input[data-pick]');
+    if (box) box.addEventListener('change', function () {
+      picks[k] = picks[k] || {};
+      picks[k].checked = box.checked;
+      if (picks[k].units === undefined) picks[k].units = r.open;
+      if (box.checked) tr.setAttribute('data-picked', '1');
+      else tr.removeAttribute('data-picked');
+      dbg('cand.pick', { key: k, checked: box.checked });
+      renderCandActions();
+    });
+
+    var u = tr.querySelector('input[data-units]');
+    if (u) u.addEventListener('input', function () {
+      picks[k] = picks[k] || {}; picks[k].units = u.value;
+      renderCandActions();
+    });
+    var pr = tr.querySelector('input[data-price]');
+    if (pr) pr.addEventListener('input', function () {
+      picks[k] = picks[k] || {}; picks[k].price = pr.value;
+    });
+
+    var addBtn = tr.querySelector('button[data-act="add"]');
+    if (addBtn) addBtn.addEventListener('click', function () {
+      doAdd([onePick(r, k)], '单行添加');
+    });
+
+    var dropBtn = tr.querySelector('button[data-act="drop"]');
+    if (dropBtn && !dropBtn.disabled) dropBtn.addEventListener('click', function () {
+      doDropCandidate(r);
+    });
+  }
+
+  function onePick(r, k) {
+    var p = picks[k] || {};
+    return {
+      line_id: r.line_id,
+      seller_id: r.seller_id,
+      units: (p.units === undefined || p.units === '') ? r.open : p.units,
+      price: (p.price === undefined || p.price === '') ? null : p.price
+    };
+  }
+
+  /* ---------- 滑道：勾中的店铺行 → 合并后落进采购单 ----------
+     ★ 这里不解释「勾选后会合并」，直接把**合并结果**算出来摆着：
+       按「货号 + 月份」并，各是多少件、来自几个店。
+       数是显示层算的，不写任何状态；勾选不到东西时滑道是灰的。 */
+
+  function checkedKeys() {
+    return Object.keys(picks).filter(function (k) { return picks[k] && picks[k].checked; });
+  }
+
+  function mergePreview(keys) {
+    var byKey = {}, order = [], lost = 0, units = 0, sellers = {};
+    keys.forEach(function (k) {
+      var r = candIndex[k];
+      // 勾着却查不到的行在这里只计数 —— 真正的点名在 doAddPicked 里（那才是动手的一刻）
+      if (!r) { lost++; return; }
+      var mk = r.sku + '|' + r.period;
+      if (!byKey[mk]) { byKey[mk] = { sku: r.sku, period: r.period, units: 0, sellers: 0 }; order.push(mk); }
+      var p = picks[k] || {};
+      var n = Number((p.units === undefined || p.units === '') ? r.open : p.units) || 0;
+      byKey[mk].units += n;
+      byKey[mk].sellers++;
+      units += n;
+      sellers[r.seller_id] = 1;
+    });
+    return {
+      lines: order.map(function (mk) { return byKey[mk]; }),
+      units: units, sellers: Object.keys(sellers).length, lost: lost
+    };
+  }
+
+  function renderCandActions() {
+    var box = document.getElementById('candActions');
+    var lock = readOnly();
+    var keys = checkedKeys();
+    var n = keys.length;
+
+    if (lock) {
+      box.setAttribute('data-armed', '0');
+      box.innerHTML = '<span class="chute__mark"></span>'
+        + '<span class="chute__from">已封存</span>'
+        + '<span class="chute__to i-pencil">' + esc(lockMsg()) + '</span>'
+        + '<span class="chute__act"><button class="btn btn--primary" type="button" data-mut="1" disabled'
+        + ' title="' + esc(lockMsg()) + '">添加勾选的行</button></span>';
+      return;
+    }
+
+    var prev = mergePreview(keys);
+    box.setAttribute('data-armed', n ? '1' : '0');
+
+    var to;
+    if (!n) {
+      to = '<span class="i-pencil">勾上面的店铺行，这里会算出它们合并成哪几笔</span>';
+    } else {
+      to = prev.lines.slice(0, 4).map(function (l) {
+        return '<span class="chute__line"><code>' + esc(l.sku) + '</code>'
+          + ' <span class="k">·</span> ' + esc(l.period)
+          + ' <span class="k">·</span> <span class="i-ink">' + esc(l.units) + '</span> 件'
+          + ' <span class="k">（' + l.sellers + ' 店合并）</span></span>';
+      }).join('')
+        + (prev.lines.length > 4
+            ? '<span class="chute__line k">…另有 ' + (prev.lines.length - 4) + ' 笔</span>' : '')
+        + (prev.lost
+            ? '<span class="chute__line i-red">' + prev.lost + ' 行勾着却查不到了</span>' : '');
+    }
+
+    box.innerHTML = '<span class="chute__mark"></span>'
+      + '<span class="chute__from">勾选 <b>' + n + '</b> 行'
+        + (n ? '<br>' + prev.sellers + ' 店 · ' + prev.units + ' 件' : '') + '</span>'
+      + '<span class="chute__to">' + to + '</span>'
+      + '<span class="chute__act">'
+      + '<button class="btn btn--primary" type="button" id="btnAddPicked" data-mut="1"'
+      + (n ? '' : ' disabled title="一行都没勾"') + '>'
+      + '添加勾选的 ' + n + ' 行</button></span>';
+
+    var b = document.getElementById('btnAddPicked');
+    if (b && n) b.addEventListener('click', function () { doAddPicked(); });
+  }
+
+  function doAddPicked() {
+    var keys = checkedKeys();
+    if (!keys.length) {
+      // 理论上按钮已经禁用了；走到这里说明状态和界面对不上，要吼一声
+      fail('add.no-pick', { picks: Object.keys(picks).length,
+        hint: '按钮本该是禁用的 —— 勾选状态和界面对不上了' });
+      Shell.toast('一行都没勾（按钮本该是禁用的，详情见控制台）', 'warn');
+      return;
+    }
+    // 从当前候选里把勾中的行找回来（open / demand 都可能已经变了，要用最新的）
+    var hit = askCandidates({}, 'add-resolve');
+    if (!hit) { Shell.toast('取候选失败，没有添加任何东西（详情见控制台）', 'fail', 12000); return; }
+    var byKey = {};
+    hit.rows.forEach(function (r) {
+      if (r.seller_id === null) return;
+      byKey[pickKey(r.line_id, r.seller_id)] = r;
+    });
+
+    var list = [], lost = [];
+    keys.forEach(function (k) {
+      var r = byKey[k];
+      // ★ 勾了却找不回来的行不许静默少加：那是「加了 N 项」里悄悄缺的一项
+      if (!r) { lost.push(k); return; }
+      list.push(onePick(r, k));
+    });
+    if (lost.length) {
+      fail('add.picks-lost', { lost: lost, hint: '勾选时还在的候选行，这一刻查不到了' });
+      Shell.toast(lost.length + ' 行勾着却查不到了，本次没有提交它们：'
+        + lost.join('、') + '（详情见控制台）', 'fail', 12000);
+    }
+    if (!list.length) return;
+    doAdd(list, '批量添加');
+  }
+
+  function doAdd(list, where) {
+    var t0 = Date.now(), r;
+    try { r = Store.addPoItems(poId, list); }
+    catch (e) {
+      fail('addPoItems.threw', { po_id: poId, where: where, picks: list.length,
+        message: e && e.message, cause: e && e.cause && e.cause.code, stack: e && e.stack });
+      Shell.toast('添加出错：' + ((e && e.message) || '未知异常') + '（详情见控制台）', 'fail', 12000);
+      return;
+    }
+    if (!r || !r.ok) {
+      fail('addPoItems.rejected', { po_id: poId, where: where,
+        code: r && r.error, detail: r && r.detail, ms: Date.now() - t0 });
+      Shell.toast('添加被拒（' + ((r && r.error) || '未知') + '）：'
+        + ((r && r.detail) || '没有给出 detail —— 这本身就是缺陷'), 'fail', 12000);
+      return;
+    }
+
+    var rejected = r.rejected || [];
+    // ★ 部分成功：added 和 rejected 可能同时非空。两边都要说，不许只报成功数。
+    lastRejected = rejected.length
+      ? { at: Store.day(), added: r.added, list: rejected.slice() }
+      : null;
+    if (rejected.length) {
+      fail('po.items-partially-rejected', { po_id: poId, where: where,
+        added: r.added, rejected: rejected });
+    }
+    dbg('po.items-added', { po_id: poId, where: where, added: r.added,
+      rejected: rejected.length, items: r.items, ms: Date.now() - t0 });
+
+    // 勾选态整体清空：Store 只回一个 added 计数，认不出**哪几项**成了。
+    // 按「第 N 项」去反解那串中文原因，会让这里的正确性挂在一句提示的措辞上 ——
+    // 所以宁可全清，让被拒的那几行照原文重新填（原文就在候选表下面，一个数都没少）。
+    picks = {};
+
+    if (!reloadPo('addPoItems')) return;
+    renderAll();
+    Shell.toast(
+      '加了 ' + r.added + ' 项'
+      + (rejected.length ? '，另有 ' + rejected.length + ' 项被拒（原因已原样列在候选表下面）' : '')
+      + '。当前 ' + po.items.length + ' 行 / ' + sum(po.items, function (x) { return x.units; }) + ' 件。',
+      rejected.length ? 'warn' : 'ok', rejected.length ? 12000 : 7000);
+  }
+
+  function renderRejectBox() {
+    var box = document.getElementById('rejectBox');
+    if (!lastRejected) { box.innerHTML = ''; return; }
+    box.innerHTML = '<div class="flash flash--bad mt"><div>'
+      + '<strong>上一次添加有 ' + lastRejected.list.length + ' 项被拒</strong>'
+      + '（同一次里成功加了 ' + lastRejected.added + ' 项 —— 部分成功是正常形态）'
+      + '<ul>'
+      + lastRejected.list.map(function (s) {
+          // ★ 原样列出。原因里已经把「本次多少 / 需求多少 / 已组单 / 已下单」全点名了，
+          //   摘要成「部分失败」等于把这些数扔掉，人就得自己再复现一遍。
+          return '<li>' + esc(s) + '</li>';
+        }).join('')
+      + '</ul>'
+      + '<div>被拒的那几行的勾选已经清掉了 —— 照上面的数改完再勾一次。</div>'
+      + '</div></div>';
+  }
+
+  /* ---------- 从候选行把本单里对应的行退回去 ---------- */
+
+  function doDropCandidate(r) {
+    var idxs = [];
+    po.items.forEach(function (it, i) {
+      if (it.line_id === r.line_id && String(it.seller_id) === String(r.seller_id)) idxs.push(i);
+    });
+    if (!idxs.length) {
+      fail('drop.nothing', { line_id: r.line_id, seller_id: r.seller_id,
+        hint: '按钮本该是禁用的 —— 界面和单据对不上了' });
+      Shell.toast('本单里没有这一行的采购单行（按钮本该是禁用的，详情见控制台）', 'warn');
+      return;
+    }
+    dropIndexes(idxs, '候选行移除 ' + r.sku + ' · ' + r.seller_name);
+  }
+
+  function dropIndexes(idxs, where) {
+    // ★ 从后往前删：removePoItem 按下标定位，从前往后删会越删越错位
+    var sorted = idxs.slice().sort(function (a, b) { return b - a; });
+    var done = 0, bad = [];
+    sorted.forEach(function (i) {
+      var r;
+      try { r = Store.removePoItem(poId, i); }
+      catch (e) {
+        fail('removePoItem.threw', { po_id: poId, idx: i, where: where,
+          message: e && e.message, cause: e && e.cause && e.cause.code, stack: e && e.stack });
+        bad.push('第 ' + (i + 1) + ' 行：' + ((e && e.message) || '未知异常'));
+        return;
+      }
+      if (!r || !r.ok) {
+        fail('removePoItem.failed', { po_id: poId, idx: i, where: where,
+          error: r && r.error, detail: r && r.detail });
+        bad.push('第 ' + (i + 1) + ' 行：' + ((r && r.error) || '未知') + ' '
+          + ((r && r.detail) || '（没有 detail）'));
+        return;
+      }
+      done++;
+    });
+    if (!reloadPo('removePoItem')) return;
+    renderAll();
+    dbg('po.items-dropped', { po_id: poId, where: where, asked: idxs.length, done: done, failed: bad.length });
+    // ★ 失败的那一侧要点名，不许只报成功数
+    Shell.toast((bad.length ? bad.length + ' 行没删掉：' + bad.join('；') + '　' : '')
+      + '已移除 ' + done + ' 行（' + where + '），对应的量已退回「未组单」。',
+      bad.length ? 'fail' : 'ok', bad.length ? 12000 : 7000);
+  }
+
+  /* ============================================================
+     块二：items —— 两层（货号级一行，点开看各店）
+     ============================================================ */
+
+  function renderItems() {
+    var body = document.getElementById('itemBody');
+    var sumEl = document.getElementById('itemSum');
+    var lock = readOnly();
+    body.innerHTML = '';
+
+    if (!po.items.length) {
+      body.innerHTML = '<tr><td colspan="7"><div class="empty">'
+        + '<div class="empty__title">这张单还一件货都没有</div>'
+        + '<div class="empty__body">' + (lock
+            ? '而它已经提交了 —— 一张没有明细的单被下出去，这不该发生，详情见控制台。'
+            : '在上面的候选表里勾几行，中间那条会当场算出它们合并成哪几笔，再点「添加勾选的 N 行」。')
+        + '</div></div></td></tr>';
+      if (lock) {
+        fail('po.placed-but-empty', { po_id: poId, state: po.state,
+          hint: '已下单却零明细 —— 要么下单前的守卫漏了，要么明细在别处被清掉了' });
+      }
+      sumEl.innerHTML = '';
+      dbg('items.render', { items: 0, locked: lock });
+      return;
+    }
+
+    // ★ 合并键 = 货号 + 月份。不并月份：同一货号的 10 月和 11 月是两笔要分别下的货。
+    var groups = {}, order = [];
+    po.items.forEach(function (it, idx) {
+      var k = it.sku + '|' + it.period;
+      if (!groups[k]) { groups[k] = { sku: it.sku, period: it.period, rows: [] }; order.push(k); }
+      groups[k].rows.push({ it: it, idx: idx });
+    });
+
+    var missingLine = 0;
+    order.forEach(function (k) {
+      var g = groups[k];
+      var units = sum(g.rows, function (x) { return x.it.units; });
+      var prices = {};
+      g.rows.forEach(function (x) { if (x.it.price !== null && x.it.price !== undefined) prices[x.it.price] = 1; });
+      var priceKeys = Object.keys(prices);
+      var noPrice = g.rows.filter(function (x) { return x.it.price === null || x.it.price === undefined; }).length;
+
+      var lineIds = {}, planIds = {};
+      g.rows.forEach(function (x) {
+        lineIds[x.it.line_id] = 1;
+        var l = Store.line(x.it.line_id);
+        if (l) planIds[l.plan_id] = 1;
+        else missingLine++;
+      });
+
+      body.appendChild(itemGroupRow(k, g, units, priceKeys, noPrice,
+        Object.keys(lineIds), Object.keys(planIds), lock));
+
+      if (openItems[k]) {
+        g.rows.forEach(function (x) { body.appendChild(itemLineRow(x.it, x.idx, lock)); });
+      }
+    });
+
+    var total = sum(po.items, function (x) { return x.units; });
+    var priced = po.items.filter(function (x) { return x.price !== null && x.price !== undefined; }).length;
+    sumEl.innerHTML = '合并 <b>' + order.length + '</b> 行'
+      + '　·　实存 <b>' + po.items.length + '</b> 行（每店一行）'
+      + '　·　<b>' + total + '</b> 件'
+      + '　·　已填单价 ' + priced + ' / ' + po.items.length
+      + (missingLine ? '　·　<span class="i-red">' + missingLine + ' 行的计划记录查不到</span>' : '');
+    dbg('items.render', { groups: order.length, items: po.items.length, units: total,
+      priced: priced, missing_line: missingLine, locked: lock });
+  }
+
+  function itemGroupRow(k, g, units, priceKeys, noPrice, lineIds, planIds, lock) {
+    var tr = document.createElement('tr');
+    tr.setAttribute('data-lvl', 'item');
+    tr.setAttribute('data-key', k);
+    tr.setAttribute('aria-expanded', openItems[k] ? 'true' : 'false');
+
+    // ★ 单价不一致时**不许挑一个显示** —— 那是编的。点名有几种，各是多少。
+    var priceCell;
+    if (priceKeys.length === 0) {
+      priceCell = chip('未填', 'bad');
+    } else if (priceKeys.length === 1 && !noPrice) {
+      priceCell = '<span class="i-ink">' + esc(priceKeys[0]) + '</span>';
+    } else {
+      priceCell = '<span class="i-red">' + priceKeys.length + ' 种单价</span>'
+        + '<br><span class="i-pencil">' + esc(priceKeys.join(' / '))
+        + (noPrice ? '，另有 ' + noPrice + ' 行未填' : '') + '</span>';
+    }
+
+    var planCell = planIds.length === 1
+      ? '<code>' + esc(planIds[0]) + '</code>'
+      : '<span class="i-pencil">' + planIds.length + ' 张计划</span>';
+
+    tr.innerHTML =
+      '<td><span class="caret">' + (openItems[k] ? '▾' : '▸') + '</span><code>' + esc(g.sku) + '</code>'
+        + '<br><span class="i-pencil">' + g.rows.length + ' 个店铺合并</span></td>'
+      + '<td><span class="i-pencil">合计 · ' + esc(g.period) + '</span></td>'
+      + '<td class="r">' + qty(units) + '</td>'
+      + '<td class="r">' + priceCell + '</td>'
+      + '<td>' + planCell
+        + '<br><span class="i-pencil">关联 ' + lineIds.length + ' 条计划记录'
+        + (lineIds.length === 1
+            ? '（<a href="trace.html?line=' + encodeURIComponent(lineIds[0]) + '">可追溯</a>）'
+            : '（点开逐条追溯）') + '</span></td>'
+      + '<td>' + chip(po.state, po.state === '已下单' ? 'good' : '')
+        + (po.order_sn ? '<br>' + chip(po.order_sn, 'dim') : '') + '</td>'
+      + '<td><span class="i-pencil">' + (openItems[k] ? '收起' : '点开看各店') + '</span></td>';
+
+    tr.addEventListener('click', function (e) {
+      if (e.target.closest && e.target.closest('button,a,input')) return;
+      openItems[k] = !openItems[k];
+      dbg('items.toggle', { key: k, open: openItems[k] });
+      renderItems();
+    });
+    return tr;
+  }
+
+  function itemLineRow(it, idx, lock) {
+    var tr = document.createElement('tr');
+    tr.setAttribute('data-lvl', 'line');
+    tr.setAttribute('data-idx', String(idx));
+
+    var l = Store.line(it.line_id);
+    if (!l) {
+      // ★ 记录不见了：静默跳过会让「这一件货为谁而买」变成一句空话
+      fail('po.item-line-missing', { po_id: poId, idx: idx, line_id: it.line_id,
+        sku: it.sku, units: it.units,
+        hint: '来源计划记录查不到；已在界面上标出来，不许静默少一行' });
+      tr.innerHTML = '<td colspan="7"><span class="i-red">找不到计划记录 ' + esc(it.line_id)
+        + '（' + esc(it.sku) + ' · ' + esc(Store.sellerName(it.seller_id))
+        + ' ' + esc(it.units) + ' 件）—— 详情见控制台</span></td>';
+      return tr;
+    }
+
+    tr.innerHTML =
+      '<td><span class="i-pencil">' + esc(it.line_id) + '</span><br><code>' + esc(it.sku) + '</code></td>'
+      + '<td>' + esc(Store.sellerName(it.seller_id))
+        + '<br><span class="i-pencil">' + esc(it.period) + '</span></td>'
+      + '<td class="r"><input class="inp inp--tiny" type="number" min="1" step="1" inputmode="numeric"'
+        + ' data-mut="1" data-edit="units" data-idx="' + idx + '" value="' + esc(it.units) + '"'
+        + (lock ? ' disabled title="' + esc(lockMsg()) + '"' : '') + '></td>'
+      + '<td class="r"><input class="inp inp--tiny" type="number" min="0" step="0.01" inputmode="decimal"'
+        + ' data-mut="1" data-edit="price" data-idx="' + idx + '"'
+        + ' value="' + esc(it.price === null || it.price === undefined ? '' : it.price) + '"'
+        + ' placeholder="未填"'
+        + (lock ? ' disabled title="' + esc(lockMsg()) + '"' : '') + '></td>'
+      + '<td><code>' + esc(l.plan_id) + '</code> <span class="i-pencil">rev' + esc(l.rev) + '</span>'
+        + '<br><a href="trace.html?line=' + encodeURIComponent(it.line_id) + '">可追溯</a></td>'
+      + '<td>' + chip(l.state, l.state === Store.STATES.ORDERED ? 'good' : '') + '</td>'
+      + '<td><button class="btn btn--sm btn--ghost" type="button" data-mut="1"'
+        + ' data-act="rm" data-idx="' + idx + '"'
+        + (lock ? ' disabled title="' + esc(lockMsg()) + '"' : '') + '>移除</button></td>';
+
+    if (!lock) {
+      Array.prototype.forEach.call(tr.querySelectorAll('input[data-edit]'), function (inp) {
+        inp.addEventListener('change', function () { doEditItem(idx, inp); });
+      });
+      var rm = tr.querySelector('button[data-act="rm"]');
+      if (rm) rm.addEventListener('click', function () { dropIndexes([idx], '逐行移除'); });
+    }
+    return tr;
+  }
+
+  function doEditItem(idx, inp) {
+    var what = inp.getAttribute('data-edit');
+    var patch = {};
+    patch[what] = inp.value;
+    var before = po.items[idx];
+    if (!before) {
+      fail('edit.idx-gone', { po_id: poId, idx: idx, items: po.items.length,
+        hint: '界面上的下标和单据对不上了 —— 没有改任何东西' });
+      Shell.toast('第 ' + (idx + 1) + ' 行不见了，没有改任何东西（详情见控制台）', 'fail', 12000);
+      renderAll();
+      return;
+    }
+    var old = before[what];
+
+    var r;
+    try { r = Store.setPoItem(poId, idx, patch); }
+    catch (e) {
+      fail('setPoItem.threw', { po_id: poId, idx: idx, patch: patch,
+        message: e && e.message, cause: e && e.cause && e.cause.code, stack: e && e.stack });
+      inp.value = (old === null || old === undefined) ? '' : old;   // 不许在界面上留一个没生效的数
+      Shell.toast('改不动：' + ((e && e.message) || '未知异常') + '（详情见控制台）', 'fail', 12000);
+      return;
+    }
+    if (!r || !r.ok) {
+      fail('setPoItem.failed', { po_id: poId, idx: idx, patch: patch,
+        error: r && r.error, detail: r && r.detail });
+      // ★ 被拒之后把框恢复成真实值 —— 留着假数，人会以为改成功了
+      inp.value = (old === null || old === undefined) ? '' : old;
+      Shell.toast('改不动（' + ((r && r.error) || '未知') + '）：'
+        + ((r && r.detail) || '没有给出 detail —— 这本身就是缺陷'), 'fail', 12000);
+      return;
+    }
+    dbg('setPoItem.ok', { po_id: poId, idx: idx, what: what, from: old, to: r.item[what] });
+    if (!reloadPo('setPoItem')) return;
+    renderAll();
+    Shell.toast('第 ' + (idx + 1) + ' 行 ' + esc(r.item.sku) + ' · '
+      + Store.sellerName(r.item.seller_id) + '：'
+      + (what === 'units' ? '数量 ' + old + ' → ' + r.item.units + ' 件'
+                          : '单价 ' + (old === null ? '（空）' : old) + ' → '
+                            + (r.item.price === null ? '（空）' : r.item.price)), 'ok');
+  }
+
+  /* ============================================================
+     块三：本地仓到货进度（★ 领星回执的镜像，我们不写）
+     ============================================================ */
+
+  function renderProgress() {
+    var box = document.getElementById('progBox');
+    var p;
+    try { p = Store.poProgress(poId); }
+    catch (e) {
+      fail('poProgress.threw', { po_id: poId, message: e && e.message,
+        cause: e && e.cause && e.cause.code, stack: e && e.stack });
+      box.innerHTML = '<p class="i-red">到货进度查询抛异常了 —— 这不是「没到货」，是查不出来。详情见控制台。</p>';
+      return;
+    }
+    if (!p) {
+      fail('poProgress.null', { po_id: poId, hint: 'poProgress 找不到这张单，但页面上它还在' });
+      box.innerHTML = '<p class="i-red">查不到这张单的到货进度（poProgress 返回 null）—— 详情见控制台。</p>';
+      return;
+    }
+
+    var head = '<div class="bar">'
+      + '<div class="kpi"><span class="kpi__n">' + qtyOf(p.arrived, p.total) + '</span>'
+        + '<span class="kpi__d">已到 / 总量　' + p.pct + '%</span></div>'
+      + '<div class="bar__grp">'
+        + chip(p.lx_status === null || p.lx_status === undefined
+            ? '领星状态未知' : String(p.lx_status), 'dim')
+        + chip('status_shipped = ' + p.shipped_flag, 'dim')
+      + '</div>'
+      + '<div class="bar__grp" style="margin-left:auto"><button class="btn btn--sm" type="button" id="btnProg">'
+        + (progOpen ? '收起入库明细' : '展开入库明细') + '</button></div>'
+      + '</div>';
+
+    var detail = '';
+    if (progOpen) {
+      if (!p.receipts.length) {
+        // ★ 「还没到货」和「没有数据」必须分开说 —— 前者正常，后者是采集出了问题
+        detail = po.state === '草稿'
+          ? '<div class="empty mt"><div class="empty__title">这张单还没提交采购</div>'
+            + '<div class="empty__body">领星那边还不存在它，自然也不会有入库单。'
+            + '这不是「没有数据」，是<strong>还没到能有数据的那一步</strong>。</div></div>'
+          : '<div class="empty mt"><div class="empty__title">尚未到货（不是「没有数据」）</div>'
+            + '<div class="empty__body">下单于 ' + esc(po.placed_day) + '，当前模拟日期 ' + esc(Store.day())
+            + '。到货是外部事实，由每日采集的领星回执推进 —— 点顶部的'
+            + '<span class="kbd">推进一天</span>：第 2 天到约 60%，第 5 天补齐。</div></div>';
+      } else {
+        detail = '<div class="table-scroll mt"><table class="table table--dense"><thead><tr>'
+          + '<th>入库单号</th><th>货号</th><th class="r">数量</th>'
+          + '<th>本地仓名称</th><th>入库日期</th>'
+          + '</tr></thead><tbody>'
+          + p.receipts.map(function (r, i) {
+              // ★ 单号直接用 Store 给的 receipt_no —— 它认的是写入方的字段名。
+              //   这里**不做回退**：页面自己去别处捞一遍，会把「Store 取错了」
+              //   悄悄补上，于是根因永远不会浮出来。
+              //   没单号时也不许画成空白：Store 那边已经吼过 po.receipt-missing-doc-no，
+              //   界面这一侧要让它看得见 —— 空白会被当成「这批货本来就没单号」。
+              return '<tr><td>' + (r.receipt_no
+                  ? chip(r.receipt_no, 'dim')
+                  : '<span class="i-red">无单号</span>') + '</td>'
+                + '<td><code>' + esc(r.sku) + '</code></td>'
+                + '<td class="r"><span class="i-jade">' + esc(r.units) + '</span></td>'
+                + '<td>' + esc(r.warehouse) + '</td>'
+                + '<td>' + esc(r.at) + '</td></tr>';
+            }).join('')
+          + '</tbody></table></div>';
+      }
+    }
+
+    box.innerHTML = head + detail;
+    document.getElementById('btnProg').addEventListener('click', function () {
+      progOpen = !progOpen;
+      dbg('prog.toggle', { open: progOpen });
+      renderProgress();
+    });
+    dbg('prog.render', { po_id: poId, arrived: p.arrived, total: p.total, pct: p.pct,
+      lx_status: p.lx_status, shipped_flag: p.shipped_flag, receipts: p.receipts.length,
+      open: progOpen });
+  }
+
+  /* ============================================================
+     提交采购（★ 不可逆）
+     ============================================================ */
+
+  function askPlace() {
+    if (!reloadPo('askPlace')) return;
+    if (readOnly()) {
+      fail('place.already', { po_id: poId, state: po.state, order_sn: po.order_sn,
+        hint: '按钮本该是禁用的' });
+      Shell.toast(lockMsg() + '（按钮本该是禁用的，详情见控制台）', 'warn', 12000);
+      return;
+    }
+    // 空单不许下：领星会吃一个没有明细的单，而那是最难查的一种
+    if (!po.items.length) {
+      fail('place.empty', { po_id: poId, hint: '零明细的采购单不该被下出去' });
+      Shell.toast('这张单一件货都没有 —— 先在上面的候选表里勾几行加进来。', 'warn');
+      return;
+    }
+    var noPrice = po.items.filter(function (x) { return x.price === null || x.price === undefined; });
+    var units = sum(po.items, function (x) { return x.units; });
+    var sellers = {};
+    po.items.forEach(function (x) { sellers[x.seller_id] = 1; });
+
+    Shell.confirmDanger({
+      title: '提交采购 ' + poId,
+      warn: '将在领星建出真实采购单（CreatePurchaseOrder），之后本页整页只读',
+      steps: [
+        '校验领星必填项（供应商 ' + po.supplier + ' · 收货仓 ' + Store.warehouseName(po.wid) + '）',
+        '调用 CreatePurchaseOrder（幂等键 ' + po.custom_order_sn + '）'
+          + '　—— ' + po.items.length + ' 行 / ' + units + ' 件 / '
+          + Object.keys(sellers).length + ' 个店铺那份',
+        '回填领星单号并冻结本单：加、删、改全部禁用',
+        '对应的计划记录转「已下单」—— 那些量从此计入「已下单量[店铺]」'
+      ] .concat(noPrice.length
+          ? ['注意：有 ' + noPrice.length + ' 行没填单价 —— 会按空值下过去']
+          : []),
+      confirmText: '我确认，提交采购',
+      onConfirm: function () { doPlace(); }
+    });
+  }
+
+  function doPlace() {
+    var t0 = Date.now(), r;
+    try { r = Store.placePo(poId); }
+    catch (e) {
+      fail('placePo.threw', { po_id: poId, message: e && e.message,
+        cause: e && e.cause && e.cause.code, stack: e && e.stack });
+      Shell.toast('提交采购失败：' + ((e && e.message) || '未知异常') + '（详情见控制台）', 'fail', 12000);
+      return;
+    }
+    if (!r || !r.ok) {
+      // ★ 点名：error 与 detail 原样显示
+      fail('placePo.rejected', { po_id: poId, code: r && r.error, detail: r && r.detail,
+        ms: Date.now() - t0 });
+      Shell.toast('提交被拒（' + ((r && r.error) || '未知') + '）：'
+        + ((r && r.detail) || '没有给出 detail —— 这本身就是缺陷'), 'fail', 12000);
+      return;
+    }
+    dbg('placePo.ok', { po_id: poId, order_sn: r.order_sn, ms: Date.now() - t0 });
+    if (!reloadPo('placePo')) return;
+    picks = {};
+    lastRejected = null;
+    renderAll();
+    // ★ 本页没有待办块，所以这里**不**调 Shell.todos —— 调了它会因为找不到挂载点
+    //   打一条 target.missing 的 error，把真正的故障淹掉。待办在采购台那边。
+    Shell.toast(poId + ' 已提交采购，领星单号 ' + r.order_sn
+      + '\n本页已转只读。到货由每日采集回执推进 —— 点顶部「推进一天」，'
+      + '第 2 天到约 60%，第 5 天补齐。', 'ok', 12000);
+  }
+
+  /* ============================================================
+     装配
+     ============================================================ */
+
+  function renderAll() {
+    renderHead();
+    renderCandidates();
+    renderItems();
+    renderProgress();
+  }
+
+  mountFilters();     // ★ 只挂一次：筛选条是静态 DOM，监听器不该跟着重绘叠加
+  renderAll();
+
+  dbg('ready', {
+    po_id: poId, state: po.state, read_only: readOnly(),
+    supplier: po.supplier, wid: po.wid, warehouse: Store.warehouseName(po.wid),
+    items: po.items.length, units: sum(po.items, function (x) { return x.units; }),
+    receipts: (po.receipts || []).length, day: Store.day(),
+    // ★ 「平台」列在 Store 里没有建模：sellers 只有 market。界面上标成「—」，
+    //   不从店铺名反推 —— 猜出来的标签会被下游当成事实。
+    platform_modeled: false
+  });
+})();
+</script>
+
+</body>
+</html>

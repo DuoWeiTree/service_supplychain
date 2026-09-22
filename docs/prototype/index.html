@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>供应链服务 · 可点击原型</title>
+<link rel="stylesheet" href="assets/shell.css">
+</head>
+<body>
+
+<div class="wrap">
+
+  <div class="masthead">
+    <h1>供应链服务 · 可点击原型</h1>
+    <div class="masthead__sub">
+      数据是假的，形状是真的。状态存在浏览器本地（<code>localStorage['scm_proto']</code>），
+      随时可以「↺ 重置剧本」从头再来。
+    </div>
+  </div>
+
+  <details class="fold">
+    <summary>状态是事实驱动的 —— 不推进时间，这一圈走不完</summary>
+    <div class="fold__body">
+      <p>到货、领星回执会自动把记录往前推，没有哪一步靠「人记得去点」。
+        所以原型给了一个 <span class="kbd">推进一天</span> 按钮：
+        不推进时间，货不会到、回执不会来。</p>
+      <p>手动流转的真正成本：一旦有人忘了点，看板就是错的 —— 而且没有任何东西会报错，
+        它和「业务真的卡在那一步」长得一模一样。</p>
+    </div>
+  </details>
+
+  <div class="sec">
+    <div class="sec__title">这个原型能走通什么</div>
+    <p>
+      运营在一张季度计划里给「店铺 × 货号 × 月份」填数并提交，系统按格子生成<strong>计划单记录</strong>；
+      采购员把记录组成采购单、下单；<strong>等货到本地仓</strong>之后，排货员看到候选、建排货表、
+      拆成一张张排货单（海外仓 / FBA）、编排装箱与货件，<strong>过 6 项确认闸</strong>才能确认，
+      再逐张投送到领星；投送后领星每天回执，进度沿
+      <code>待配货 → 待发货 → 待收货 → 已完成</code> 走，记录最终「已完结」。
+      运营全程能在同一条记录上看到<strong>这批货此刻在哪一环</strong>。
+    </p>
+    <p class="muted">
+      初始剧本：1 张「2026 Q4 补货计划」（起始月 2026-10，跨 3 月，owner 张运营）、
+      4 个认领组合（其中 <code>11072 | DCC1800264</code> 有 2 个 msku，跟卖迭代款）、12 个格子
+      —— <strong>其中 2 个格子是空的</strong>，提交时会被跳过并逐条列出来（被丢掉的东西必须看得见）。
+      本地仓可发量<strong>初始全为 0</strong>：必须先下单、先到货，才排得出货。
+    </p>
+  </div>
+
+  <div class="sec">
+    <div class="sec__title">走完一圈的十步</div>
+    <div class="flow">
+      <div class="flow__item">
+        <span class="flow__no"></span>
+        <span class="flow__who">运营</span>
+        <span class="flow__what">打开 <a href="plan.html">计划填数表</a>，按月给 4 个组合填计划量（默认等于系统建议，可改）。</span>
+      </div>
+      <div class="flow__item">
+        <span class="flow__no"></span>
+        <span class="flow__who">运营</span>
+        <span class="flow__what"><strong>提交计划</strong> → 生成 rev1 与一批计划单记录；★ 2 个空格子被跳过，页面会逐条点名「哪个格子、为什么」。</span>
+      </div>
+      <div class="flow__item">
+        <span class="flow__no"></span>
+        <span class="flow__who">采购员</span>
+        <span class="flow__what">在 <a href="buyer.html">采购台</a> 挑记录<strong>组采购单</strong>（供应商 / 收货仓 / 采购员 / 采购方必填），再 <strong>⛔ 下单</strong>。
+          下单后记录自动转「已下单」（已下单量 = 总量，木桶判据）。</span>
+      </div>
+      <div class="flow__item flow__item--tick">
+        <span class="flow__no"></span>
+        <span class="flow__who">— 时间 —</span>
+        <span class="flow__what"><strong>货到本地仓</strong>：下单后第 2 天到约 60%，第 5 天补齐。到第一批货时记录转「准备排货」
+          （★ 布尔判据：有任一到货就能排，不等全到）。</span>
+      </div>
+      <div class="flow__item">
+        <span class="flow__no"></span>
+        <span class="flow__who">排货员</span>
+        <span class="flow__what">在 <a href="dispatcher.html">排货台</a> 看候选（待排量、本地仓可发量、货在哪个仓 —— <strong>三个数并排，不相减</strong>），
+          <strong>新建排货表</strong>并把要发的行捡进来。</span>
+      </div>
+      <div class="flow__item">
+        <span class="flow__no"></span>
+        <span class="flow__who">排货员</span>
+        <span class="flow__what">在排货表里<strong>拆排货单</strong>：选渠道（海外仓 / FBA）与目的地，把行编排进去；FBA 行还要归属货件号、填装箱数据。</span>
+      </div>
+      <div class="flow__item">
+        <span class="flow__no"></span>
+        <span class="flow__who">排货员</span>
+        <span class="flow__what"><strong>🔒 确认排货表（过闸）</strong>：G1 装箱 / G2 货件归属 / G3 可发量 / G4 账本水位 / G5 未关联发货 / G6 目的地 ——
+          ★ 6 项<strong>全部列出</strong>，过的也列；不过时状态不变，失败点名到「排货单#N 第 M 行」。</span>
+      </div>
+      <div class="flow__item">
+        <span class="flow__no"></span>
+        <span class="flow__who">排货员</span>
+        <span class="flow__what"><strong>⛔ 逐张投送</strong>：海外仓 3 步（建备货单 OWS → 锁库存 → 发货扣减）；
+          FBA 5 步（建发货计划 RP → 锁库存 → STA 建货件 FBA → 建发货单 SP → 发货扣减）。
+          ★ 海外仓<strong>没有</strong>「STA 建货件」这一步。
+          ★ 偶数号 FBA 排货单会在最后一步<strong>超时</strong> —— 前几步的单据照样真的落下了，我方进度停在「已确认」。</span>
+      </div>
+      <div class="flow__item flow__item--tick">
+        <span class="flow__no"></span>
+        <span class="flow__who">— 时间 —</span>
+        <span class="flow__what"><strong>领星回执</strong>：已投送的排货单每天前进一档；全部「已完成」后记录转「已完结」。</span>
+      </div>
+      <div class="flow__item">
+        <span class="flow__no"></span>
+        <span class="flow__who">运营</span>
+        <span class="flow__what">回到 <a href="ops.html">运营看板</a> 看同一条记录的全链路：组了哪些采购单、到了多少货、排进哪几张排货单、领星走到哪一档。</span>
+      </div>
+    </div>
+    <p class="muted mt">★ 标黄的第 4 步和第 9 步不是点按钮能跳过的 —— 它们是<strong>外部事实</strong>，
+      得点 <span class="kbd">⏩ 推进一天</span> 才会发生。第 4 步推 2 天见首批到货（第 5 天补齐），
+      第 9 步推 3 天走完 <code>待配货 → 待发货 → 待收货 → 已完成</code>。</p>
+  </div>
+
+  <div class="sec">
+    <div class="sec__title">从哪个角色开始</div>
+    <div class="cards" id="roleCards"></div>
+  </div>
+
+  <div class="sec">
+    <div class="sec__title">当前待办（<span id="roleLabel"></span>）</div>
+    <div id="todos"></div>
+  </div>
+
+  <div class="sec">
+    <div class="sec__title">操作日志　<span class="muted" id="logCount"></span></div>
+    <div class="logs" id="logs"></div>
+  </div>
+
+</div>
+
+<script src="assets/store.js"></script>
+<script src="assets/shell.js"></script>
+<script>
+(function () {
+  'use strict';
+  Shell.mount({ title: '首页', crumb: [{ text: '供应链服务原型' }] });
+
+  var S = Store.get();
+
+  /* 三个角色入口卡：显示该角色当前的待办条数 */
+  var descs = {
+    ops: { file: 'plan.html · ops.html', why: '建计划、填数、提交；提交后跟进每条记录走到哪一环。' },
+    buyer: { file: 'buyer.html · po.html', why: '把需求组成采购单并下单；下单不可撤销，到货由每日回执推进。' },
+    dispatcher: { file: 'dispatcher.html · sheet.html', why: '看候选、建排货表、拆排货单、过 6 项闸、逐张投送。' }
+  };
+  var cards = document.getElementById('roleCards');
+  Shell.ROLES.forEach(function (r) {
+    var n = Store.todos(r.key).length;
+    var urgent = Store.todos(r.key).filter(function (t) { return t.urgent; }).length;
+    var a = document.createElement('a');
+    a.className = 'card';
+    a.href = r.home;
+    a.innerHTML =
+      '<div class="card__name">' + Shell.esc(r.name) +
+        (Store.role() === r.key ? ' ' + Shell.chip('当前视角', 'ours') : '') + '</div>' +
+      '<div class="card__file">' + Shell.esc(descs[r.key].file) + '</div>' +
+      '<div class="card__why">' + Shell.esc(descs[r.key].why) + '</div>' +
+      '<div class="card__tags">' +
+        Shell.chip('待办 ' + n + ' 条', n ? 'ours' : '') +
+        (urgent ? ' ' + Shell.chip('其中 ' + urgent + ' 条要紧', 'warn') : '') +
+      '</div>';
+    a.addEventListener('click', function () { Store.setRole(r.key); });
+    cards.appendChild(a);
+  });
+
+  /* 当前角色待办 */
+  document.getElementById('roleLabel').textContent = Shell.roleName(Store.role());
+  Shell.todos('todos');
+
+  /* 操作日志：倒序，让人看见自己刚才做了什么 */
+  var logs = S.logs.slice().reverse();
+  document.getElementById('logCount').textContent = logs.length + ' 条，最新在上';
+  var box = document.getElementById('logs');
+  if (!logs.length) {
+    box.innerHTML = '<div class="log"><span class="log__text muted">还没有操作。</span></div>';
+  } else {
+    logs.forEach(function (l) {
+      var row = document.createElement('div');
+      row.className = 'log';
+      row.innerHTML =
+        '<span class="log__day">' + Shell.esc(l.day) + '</span>' +
+        '<span class="log__role">' + Shell.esc(l.role === 'system' ? '系统' : Shell.roleName(l.role)) + '</span>' +
+        '<span class="log__text">' + Shell.esc(l.text) + '</span>';
+      box.appendChild(row);
+    });
+  }
+})();
+</script>
+
+</body>
+</html>

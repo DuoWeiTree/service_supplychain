@@ -1,0 +1,550 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>排货台 · 供应链服务原型</title>
+<link rel="stylesheet" href="assets/shell.css">
+<style>
+/* 本页只补 shell.css 里没有的两件事，其余一律用设计系统的部件 */
+.pager { display: flex; align-items: center; gap: 12px; justify-content: flex-end;
+         margin-top: 12px; font-size: 12.5px; color: var(--pencil); }
+#kpiRow .kpi__n { font-size: var(--t-xl); line-height: 1; }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <div class="head">
+    <div class="head__main">
+      <h1>排货台</h1>
+      <div class="head__meta" id="headMeta"></div>
+    </div>
+    <div class="head__act">
+      <a class="btn" href="sheet.html" id="toSheets">排货单管理</a>
+    </div>
+  </div>
+
+  <div id="flash"></div>
+
+  <!-- 说明文字全部收在这里，默认收起 -->
+  <details class="fold">
+    <summary>口径与判据</summary>
+    <div class="fold__body">
+      <p><b>已入本地仓销售计划量</b>：这些销售计划对应的采购单，已经到本地仓的量（采购收货逐笔累加）。
+        分母是计划里所有未撤销记录的需求量之和。比例由这两个数现算，不单独存一份。</p>
+      <p><b>排货单</b>是一个目的地一张：同一批货发两个 FC 就是两张。它们挂在<b>排货表</b>
+        （<code>SHEET-xx</code>）下面 —— 排货表是一次排货作业，排货单是这次作业里的一个目的地。
+        列表里 <b>（未编排）</b> 的行是「建了排货表、还没拆出任何排货单」，
+        和「没建过」是两回事，所以不隐藏。</p>
+      <p><b>本地仓可发量为 0</b> 是「真的没货」，不是「没查到」。货要先下采购单、
+        到货才进本地仓；用顶栏的「推进一天」推到到货日。</p>
+      <p><b>渠道与收货仓</b>：FBA 的目的地是「店铺 + 亚马逊 FC」，海外仓的目的地是一个仓号，
+        两种形状不同。原型的仓表只有两个本地仓，海外仓的目的仓也从这张表里选；
+        真实环境是海外仓清单。<b>排货员</b>这一栏当前取登录用户，原型里只显示不落库。</p>
+      <p><b>分组筛选</b>过滤掉的行数会写在小标题上 —— 过滤掉却不说，人永远不知道
+        「我要的那行为什么没出现」。</p>
+    </div>
+  </details>
+
+  <!-- ── 块一：销售计划完成度 ─────────────────────────────── -->
+  <div class="sec">
+    <div class="sec__title">
+      销售计划完成度
+      <span class="muted" id="planCount"></span>
+    </div>
+
+    <div class="bar" id="kpiRow">
+      <div class="bar__grp">
+        <span class="kpi__n i-jade num" id="kpiArrived">—</span>
+        <span class="kpi__d">/</span>
+        <span class="kpi__n num" id="kpiDemand">—</span>
+        <span class="bar__lbl">已入本地仓销售计划量 / 销售计划总量</span>
+      </div>
+      <div class="bar__grp" style="margin-left:auto">
+        <span class="kpi__n num" id="kpiPct">—</span>
+        <span class="bar__lbl">入库比例</span>
+      </div>
+    </div>
+    <div class="kpi__bar"><div class="kpi__fill" id="kpiFill" style="width:0%"></div></div>
+
+    <div class="bar mt">
+      <div class="bar__grp">
+        <span class="bar__lbl">过滤 销售计划状态</span>
+        <select class="inp" id="fState">
+          <option value="">全部</option>
+          <option value="已提交">已提交</option>
+          <option value="草稿">草稿</option>
+        </select>
+      </div>
+      <span class="bar__say" id="planFilterSay"></span>
+    </div>
+
+    <div class="mt" id="plans"></div>
+    <div class="pager">
+      <button class="btn btn--sm" type="button" id="prevPage">上一页</button>
+      <span id="pageSay"></span>
+      <button class="btn btn--sm" type="button" id="nextPage">下一页</button>
+    </div>
+  </div>
+
+  <!-- ── 块二：排货单 ─────────────────────────────────────── -->
+  <div class="sec">
+    <div class="sec__title">
+      排货单
+      <span class="muted" id="consCount"></span>
+      <span class="sec__act">
+        <button class="btn btn--primary" type="button" id="btnNew">新建排货单</button>
+      </span>
+    </div>
+
+    <div class="bar">
+      <div class="bar__grp">
+        <span class="bar__lbl">分组筛选</span>
+        <select class="inp inp--text" id="fWid"><option value="">本地仓名（全部）</option></select>
+        <select class="inp inp--text" id="fSku"><option value="">货号（全部）</option></select>
+        <select class="inp inp--text" id="fSid"><option value="">店铺（全部）</option></select>
+      </div>
+      <span class="bar__say" id="consFilterSay"></span>
+    </div>
+
+    <div class="mt" id="cons"></div>
+  </div>
+
+</div>
+
+<!-- 新建排货单 -->
+<dialog class="modal" id="dlgNew">
+  <div class="modal__head">新建排货单</div>
+  <div class="modal__body">
+    <div class="field">
+      <label class="lbl" for="nwChannel">渠道 channel</label>
+      <select class="inp inp--text" id="nwChannel">
+        <option value="fba">FBA</option>
+        <option value="oversea">海外仓</option>
+      </select>
+    </div>
+    <div class="field">
+      <label class="lbl" for="nwDest">收货仓 wid</label>
+      <select class="inp inp--text" id="nwDest"></select>
+    </div>
+    <div class="field">
+      <label class="lbl" for="nwOwner">排货员</label>
+      <input class="inp inp--text" id="nwOwner" value="当前供应链用户" readonly>
+    </div>
+    <div id="nwErr"></div>
+  </div>
+  <div class="modal__foot">
+    <button class="btn" type="button" id="nwCancel">取消</button>
+    <button class="btn btn--primary" type="button" id="nwOk">创建</button>
+  </div>
+</dialog>
+
+<script src="assets/store.js"></script>
+<script src="assets/shell.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var TAG = '[dispatcher]';
+  function dbg(e, d) { try { console.debug(TAG, e, d || {}); } catch (x) { } }
+  function fail(e, d) { try { console.error(TAG, e, d || {}); } catch (x) { } }
+
+  var esc = Shell.esc, el = Shell.el, chip = Shell.chip, qty = Shell.qty;
+
+  Store.setRole('dispatcher');
+  /* ★ 顶栏一律走 Shell.mount() —— 角色条是用户判断「我现在是谁」的唯一依据，
+     它在某一页换个样子，比没样式更糟。推进一天 / 重置剧本也都在里面。 */
+  Shell.mount({ title: '排货台', crumb: [{ text: '首页', href: 'index.html' }, { text: '排货台' }] });
+
+  /* 每个店铺的默认 FC —— 原型常量。真实环境由收货地址决定。 */
+  var FC = { US: 'FBA9', UK: 'LTN4', DE: 'DUS2' };
+
+  var PAGE = 10;
+  var planPage = 0;
+
+  /* ---------- dialog：jsdom 与老浏览器都要能开 ---------- */
+
+  function openDlg(id) {
+    var d = document.getElementById(id);
+    if (!d) { fail('dialog.missing', { id: id }); return null; }
+    if (typeof d.showModal === 'function') {
+      try { d.showModal(); return d; }
+      catch (e) {
+        // 已经打开过一次 / 不在文档里都会抛 —— 回退要有声，不然「点了没反应」查不出来
+        fail('dialog.showModal-threw', { id: id, message: e && e.message, code: e && e.name });
+      }
+    }
+    d.setAttribute('open', 'open');
+    return d;
+  }
+  function closeDlg(id) {
+    var d = document.getElementById(id);
+    if (!d) { fail('dialog.missing', { id: id }); return; }
+    if (typeof d.close === 'function') { try { d.close(); return; } catch (e) { fail('dialog.close-threw', { id: id, message: e && e.message }); } }
+    d.removeAttribute('open');
+  }
+
+  /* ---------- 当场发生的结果：一行 .flash ---------- */
+
+  function flash(kind, text, lines, link) {
+    var box = document.getElementById('flash');
+    box.innerHTML = '';
+    var f = el('div', 'flash' + (kind ? ' flash--' + kind : ''));
+    var body = el('div');
+    body.appendChild(el('span', null, text));
+    if (lines && lines.length) {
+      var ul = el('ul');
+      lines.forEach(function (t) { ul.appendChild(el('li', null, t)); });
+      body.appendChild(ul);
+    }
+    if (link) {
+      var p = el('div');
+      var a = el('a', null, link.text);
+      a.href = link.href;
+      p.appendChild(a);
+      body.appendChild(p);
+    }
+    f.appendChild(body);
+    box.appendChild(f);
+  }
+
+  /* ============================================================
+     块一：销售计划完成度
+     ============================================================ */
+
+  function renderPlans() {
+    var pp = Store.planProgress();
+    var want = document.getElementById('fState').value;
+    var kept = pp.rows.filter(function (r) { return !want || r.state === want; });
+    var hidden = pp.rows.length - kept.length;
+
+    /* KPI —— 两个数摆出来，比例由它们现算 */
+    document.getElementById('kpiArrived').textContent = pp.arrived_total.toLocaleString('en-US');
+    document.getElementById('kpiDemand').textContent = pp.demand_total.toLocaleString('en-US');
+    var pct = pp.demand_total ? Math.round(pp.arrived_total * 1000 / pp.demand_total) / 10 : 0;
+    document.getElementById('kpiPct').textContent = pct + '%';
+    document.getElementById('kpiFill').style.width = Math.min(100, pct) + '%';
+    document.getElementById('planCount').textContent = pp.rows.length + ' 张计划';
+    document.getElementById('planFilterSay').innerHTML = hidden
+      ? '按状态「' + esc(want) + '」过滤，隐藏 ' + hidden + ' 张'
+      : '没有被过滤掉的计划';
+
+    var pages = Math.max(1, Math.ceil(kept.length / PAGE));
+    if (planPage >= pages) planPage = pages - 1;
+    if (planPage < 0) planPage = 0;
+    var slice = kept.slice(planPage * PAGE, planPage * PAGE + PAGE);
+    document.getElementById('pageSay').textContent = '第 ' + (planPage + 1) + ' / ' + pages + ' 页';
+    document.getElementById('prevPage').disabled = planPage <= 0;
+    document.getElementById('nextPage').disabled = planPage >= pages - 1;
+
+    var box = document.getElementById('plans');
+    box.innerHTML = '';
+
+    if (!slice.length) {
+      var e = el('div', 'empty');
+      e.appendChild(el('div', 'empty__title', want ? '这个状态下没有销售计划' : '还没有销售计划'));
+      e.appendChild(el('div', 'empty__body', want
+        ? '把过滤换回「全部」就能看到其它状态的计划。'
+        : '运营在计划页提交一张，货号与需求量才会出现在这里。'));
+      box.appendChild(e);
+      dbg('plans.render', { rows: 0, filter: want, hidden: hidden });
+      return;
+    }
+
+    var wrap = el('div', 'table-scroll');
+    var tbl = el('table', 'table');
+    tbl.style.minWidth = '720px';
+    tbl.innerHTML = '<thead><tr><th>销售计划id</th><th class="r">货品数</th><th class="r">需求量</th>'
+      + '<th class="r">生产已入库数量</th><th class="r">比例</th><th>操作</th></tr></thead>';
+    var tb = el('tbody');
+
+    slice.forEach(function (r) {
+      var tr = el('tr');
+      if (!r.demand) tr.className = 'off';
+
+      var tdId = el('td');
+      tdId.innerHTML = esc(r.plan_id) + '<br><span class="muted">' + esc(r.title || '')
+        + ' · ' + esc(r.owner || '') + ' ' + chip(r.state, r.state === '已提交' ? 'good' : 'dim') + '</span>';
+      tr.appendChild(tdId);
+
+      var tdS = el('td', 'r'); tdS.innerHTML = qty(r.skus); tr.appendChild(tdS);
+      var tdD = el('td', 'r'); tdD.innerHTML = '<span class="i-ink">' + qty(r.demand) + '</span>'; tr.appendChild(tdD);
+      var tdA = el('td', 'r'); tdA.innerHTML = '<span class="i-jade">' + qty(r.arrived) + '</span>'; tr.appendChild(tdA);
+
+      var tdP = el('td', 'r');
+      tdP.innerHTML = r.demand
+        ? '<span class="' + (r.pct >= 100 ? 'i-jade' : (r.pct > 0 ? 'i-ink' : 'i-pencil')) + '">' + r.pct + '%</span>'
+        : '<span class="muted">—</span>';
+      tr.appendChild(tdP);
+
+      var tdAct = el('td');
+      var a = el('a', null, '详情');
+      a.href = 'plan.html?plan=' + encodeURIComponent(r.plan_id);
+      tdAct.appendChild(a);
+      tr.appendChild(tdAct);
+
+      tb.appendChild(tr);
+    });
+
+    tbl.appendChild(tb);
+    wrap.appendChild(tbl);
+    box.appendChild(wrap);
+    dbg('plans.render', { rows: slice.length, of: kept.length, filter: want, hidden: hidden, page: planPage });
+  }
+
+  /* ============================================================
+     块二：排货单
+     ============================================================ */
+
+  // 一行排货单牵到的三个维度 —— 列表本身不带，得回排货表里看
+  function dims(r) {
+    var out = { wids: {}, skus: {}, sids: {} };
+    var sh = Store.sheet(r.sheet_id);
+    if (!sh) { fail('sheet.missing-for-row', { row: r }); return out; }
+    if (r.cid) {
+      var c = (sh.consignments || []).filter(function (x) { return String(x.cid) === String(r.cid); })[0];
+      if (!c) { fail('consignment.missing-for-row', { row: r }); return out; }
+      (c.lines || []).forEach(function (l) { out.wids[l.from_wid] = 1; out.skus[l.sku] = 1; });
+      if (c.channel === 'fba' && (c.dest || {}).sid) out.sids[c.dest.sid] = 1;
+    } else {
+      (sh.pool || []).forEach(function (p) {
+        out.wids[p.from_wid] = 1; out.skus[p.sku] = 1;
+        if (p.seller_id) out.sids[p.seller_id] = 1;
+      });
+    }
+    return out;
+  }
+
+  function fillOptions(sel, values, label, render) {
+    var keep = sel.value;
+    sel.innerHTML = '';
+    var o0 = el('option', null, label);
+    o0.value = '';
+    sel.appendChild(o0);
+    values.forEach(function (v) {
+      var o = el('option', null, render(v));
+      o.value = v;
+      sel.appendChild(o);
+    });
+    sel.value = keep;
+    if (sel.value !== keep) sel.value = '';     // 选项没了就回到「全部」，不许静默留一个失效的过滤
+  }
+
+  function renderCons() {
+    var all = Store.sheetList({});
+    var tagged = all.map(function (r) { return { row: r, d: dims(r) }; });
+
+    var wids = {}, skus = {}, sids = {};
+    tagged.forEach(function (t) {
+      Object.keys(t.d.wids).forEach(function (k) { wids[k] = 1; });
+      Object.keys(t.d.skus).forEach(function (k) { skus[k] = 1; });
+      Object.keys(t.d.sids).forEach(function (k) { sids[k] = 1; });
+    });
+    fillOptions(document.getElementById('fWid'), Object.keys(wids).sort(),
+      '本地仓名（全部）', function (v) { return Store.warehouseName(Number(v)); });
+    fillOptions(document.getElementById('fSku'), Object.keys(skus).sort(),
+      '货号（全部）', function (v) { return v; });
+    fillOptions(document.getElementById('fSid'), Object.keys(sids).sort(),
+      '店铺（全部）', function (v) { return v + ' ' + Store.sellerName(v); });
+
+    var fw = document.getElementById('fWid').value;
+    var fk = document.getElementById('fSku').value;
+    var fs = document.getElementById('fSid').value;
+
+    var kept = tagged.filter(function (t) {
+      if (fw && !t.d.wids[fw]) return false;
+      if (fk && !t.d.skus[fk]) return false;
+      if (fs && !t.d.sids[fs]) return false;
+      return true;
+    });
+    var hidden = tagged.length - kept.length;
+
+    document.getElementById('consCount').textContent = all.length + ' 张';
+    document.getElementById('consFilterSay').innerHTML = hidden
+      ? '按分组筛选隐藏 ' + hidden + ' 张（点回「全部」看回来）'
+      : '没有被过滤掉的排货单';
+
+    var box = document.getElementById('cons');
+    box.innerHTML = '';
+
+    if (!kept.length) {
+      var e = el('div', 'empty');
+      e.appendChild(el('div', 'empty__title', tagged.length ? '这组筛选下没有排货单' : '还没有排货单'));
+      e.appendChild(el('div', 'empty__body', tagged.length
+        ? '把三个筛选换回「全部」，被隐藏的 ' + hidden + ' 张就会回来。'
+        : '点右上角「新建排货单」，选好渠道与收货仓就有第一张。'));
+      box.appendChild(e);
+      dbg('cons.render', { rows: 0, all: all.length, hidden: hidden });
+      return;
+    }
+
+    var wrap = el('div', 'table-scroll');
+    var tbl = el('table', 'table');
+    tbl.style.minWidth = '760px';
+    tbl.innerHTML = '<thead><tr><th>排货单</th><th class="r">货品数</th><th class="r">总数</th>'
+      + '<th>渠道</th><th>收货仓</th><th>操作</th></tr></thead>';
+    var tb = el('tbody');
+
+    kept.forEach(function (t) {
+      var r = t.row;
+      var tr = el('tr');
+      if (r.pooled_only) tr.className = 'off';
+
+      var tdId = el('td');
+      tdId.innerHTML = (r.cid ? '#' + esc(r.cid) : '<span class="muted">（未编排）</span>')
+        + '<br><span class="muted">' + esc(r.sheet_id) + ' ' + chip(r.state, r.state === '已确认' ? 'good' : 'dim')
+        + (r.cid ? ' ' + chip(r.our_stage, r.our_stage === '已投送' ? 'good' : 'dim') : '') + '</span>';
+      tr.appendChild(tdId);
+
+      var tdS = el('td', 'r'); tdS.innerHTML = qty(r.skus); tr.appendChild(tdS);
+      var tdU = el('td', 'r'); tdU.innerHTML = qty(r.units); tr.appendChild(tdU);
+      tr.appendChild(el('td', null, r.channel_label));
+
+      var tdD = el('td');
+      tdD.innerHTML = esc(r.dest_label)
+        + (r.lingxing_stage ? '<br><span class="muted">领星 ' + esc(r.lingxing_stage) + '</span>' : '');
+      tr.appendChild(tdD);
+
+      var tdAct = el('td');
+      var a = el('a', null, '详情');
+      a.href = 'sheet.html?sheet=' + encodeURIComponent(r.sheet_id) + (r.cid ? '&cid=' + encodeURIComponent(r.cid) : '');
+      tdAct.appendChild(a);
+      tr.appendChild(tdAct);
+
+      tb.appendChild(tr);
+    });
+
+    tbl.appendChild(tb);
+    wrap.appendChild(tbl);
+    box.appendChild(wrap);
+    dbg('cons.render', { rows: kept.length, all: all.length, hidden: hidden, filter: { wid: fw, sku: fk, sid: fs } });
+  }
+
+  /* ============================================================
+     新建排货单
+     ============================================================ */
+
+  function destOptions() {
+    var sel = document.getElementById('nwDest');
+    var ch = document.getElementById('nwChannel').value;
+    sel.innerHTML = '';
+    if (ch === 'fba') {
+      Store.get().sellers.filter(function (x) { return x.has_fba; }).forEach(function (x) {
+        var fc = FC[x.market];
+        if (!fc) {
+          // 认不出的市场必须可见，不许悄悄落一个空 FC
+          fail('fc.unknown-market', { seller_id: x.seller_id, market: x.market, known: Object.keys(FC) });
+          fc = '';
+        }
+        var o = el('option', null, x.seller_id + ' ' + x.name + ' · ' + (fc || '（缺 FC）'));
+        o.value = x.seller_id + '|' + fc;
+        sel.appendChild(o);
+      });
+    } else {
+      Store.get().warehouses.forEach(function (w) {
+        var o = el('option', null, w.name);
+        o.value = String(w.wid);
+        sel.appendChild(o);
+      });
+    }
+  }
+
+  function doCreate() {
+    var ch = document.getElementById('nwChannel').value;
+    var raw = document.getElementById('nwDest').value;
+    var errBox = document.getElementById('nwErr');
+    errBox.innerHTML = '';
+
+    var dest;
+    if (ch === 'fba') {
+      var parts = String(raw).split('|');
+      dest = { sid: parts[0], fc: parts[1] || '' };
+      if (!dest.sid || !dest.fc) {
+        fail('create.bad-dest', { channel: ch, raw: raw });
+        errBox.innerHTML = '<div class="flash flash--bad">收货仓没选全：FBA 要「店铺 + FC」，当前是 ' + esc(raw) + '</div>';
+        return;
+      }
+    } else {
+      dest = { wid: Number(raw) };
+      if (!dest.wid) {
+        fail('create.bad-dest', { channel: ch, raw: raw });
+        errBox.innerHTML = '<div class="flash flash--bad">收货仓没选：海外仓要一个仓号，当前是 ' + esc(raw) + '</div>';
+        return;
+      }
+    }
+
+    // 排货单挂在排货表下 —— 有草稿排货表就用它，没有就先开一张
+    var drafts = Store.get().sheets.filter(function (x) { return x.state === '草稿'; });
+    var sheetId, made = null;
+    if (drafts.length) {
+      sheetId = drafts[drafts.length - 1].sheet_id;
+    } else {
+      made = Store.createSheet();
+      if (!made.ok) {
+        fail('sheet.create-failed', { result: made });
+        errBox.innerHTML = '<div class="flash flash--bad">建排货表失败：' + esc(made.error || '未知')
+          + ' ' + esc(made.detail || '') + '</div>';
+        return;
+      }
+      sheetId = made.sheet_id;
+    }
+
+    var t0 = Date.now();
+    var r = Store.createConsignment(sheetId, { channel: ch, dest: dest });
+    dbg('cons.create', {
+      sheet_id: sheetId, channel: ch, dest: dest, new_sheet: !!made,
+      ok: r.ok, error: r.error || null, detail: r.detail || null, ms: Date.now() - t0
+    });
+    if (!r.ok) {
+      fail('cons.create-rejected', { sheet_id: sheetId, channel: ch, dest: dest, error: r.error, detail: r.detail });
+      errBox.innerHTML = '<div class="flash flash--bad">' + esc(r.error) + ' ' + esc(r.detail || '') + '</div>';
+      return;
+    }
+
+    closeDlg('dlgNew');
+    renderAll();
+    flash('good', '已建排货单 #' + r.cid + '（' + (ch === 'fba' ? 'FBA' : '海外仓') + '）在 ' + sheetId
+      + (made ? '，同时开了这张排货表' : ''), null,
+      { text: '去 ' + sheetId + ' 安排发货', href: 'sheet.html?sheet=' + encodeURIComponent(sheetId) + '&cid=' + encodeURIComponent(r.cid) });
+  }
+
+  /* ============================================================
+     绑定与首渲
+     ============================================================ */
+
+  function renderAll() {
+    var n = Store.todos('dispatcher').length;
+    document.getElementById('headMeta').innerHTML =
+      '待办 <b>' + n + '</b> 条 · 排货表 <b>' + Store.get().sheets.length + '</b> 张 · 模拟日期 <b>' + esc(Store.day()) + '</b>';
+    renderPlans();
+    renderCons();
+  }
+
+  document.getElementById('fState').addEventListener('change', function () { planPage = 0; renderPlans(); });
+  document.getElementById('prevPage').addEventListener('click', function () { planPage--; renderPlans(); });
+  document.getElementById('nextPage').addEventListener('click', function () { planPage++; renderPlans(); });
+  ['fWid', 'fSku', 'fSid'].forEach(function (id) {
+    document.getElementById(id).addEventListener('change', renderCons);
+  });
+
+  document.getElementById('btnNew').addEventListener('click', function () {
+    document.getElementById('nwErr').innerHTML = '';
+    destOptions();
+    openDlg('dlgNew');
+  });
+  document.getElementById('nwChannel').addEventListener('change', destOptions);
+  document.getElementById('nwCancel').addEventListener('click', function () { closeDlg('dlgNew'); });
+  document.getElementById('nwOk').addEventListener('click', doCreate);
+
+  renderAll();
+  dbg('ready', {
+    day: Store.day(), plans: Store.planProgress().rows.length,
+    sheets: Store.get().sheets.length, cons_rows: Store.sheetList({}).length
+  });
+})();
+</script>
+
+</body>
+</html>

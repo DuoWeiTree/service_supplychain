@@ -1,0 +1,998 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>采购员首页 · 供应链服务原型</title>
+<link rel="stylesheet" href="assets/shell.css">
+<style>
+/* ★ 本页只加 shell.css 里没有的四件事：
+
+   ① 统计数字：两个大数并排。两个数**粒度不同**（未处理 = 草稿张数，
+      未完成 = 本页显示的全部），所以各带**一行口径标签**（不是一段话）。
+      只摆数字，人会把两个数当成同一件事的两种说法。
+   ② 「已完成 N 张已隐藏」那一条：**常驻一行**（挂在分区标题右边），不是 toast。
+      过滤掉的东西不给出路，人会以为单子丢了 —— 所以它任何时候都在，哪怕 N = 0。
+   ③ 空状态三种成因**长得必须不一样**，各挂一个 data-empty 值，左边条颜色不同：
+      「从没建过」中性、「全完成了」石绿（已落地）、「被过滤掉了」朱红（要人处理）。
+   ④ 弹窗遮罩：shell.js 造的是 div.modal-backdrop（不是 <dialog>），
+      shell.css 只管里面那层 .modal，所以遮罩本身在这里补。
+
+   ★ 说明文字一律进 <details class="fold">：一个字都没删，只是默认收起。 */
+
+/* ① 统计 */
+#poStats { gap: calc(var(--u) * 2) calc(var(--u) * 8); }
+.stat__say { font-size: var(--t-xs); color: var(--pencil); margin-top: 2px; }
+
+/* ③ 空状态：三种成因各一种左边条 */
+.empty[data-empty] { text-align: left; border-style: solid; border-left-width: 3px; }
+.empty[data-empty="never"]     { border-left-color: var(--ink); }
+.empty[data-empty="all-done"]  { border-left-color: var(--jade); }
+.empty[data-empty="filtered"]  { border-left-color: var(--vermilion); }
+.empty[data-empty] .empty__body { margin: 0; max-width: 64ch; }
+.empty[data-empty] ul { margin: calc(var(--u) * 1.5) 0 0; padding-left: 1.2em; }
+
+/* ④ 遮罩 */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 50;
+  background: rgba(22, 41, 61, .34);
+  display: flex; align-items: center; justify-content: center;
+  padding: calc(var(--u) * 4);
+}
+
+/* 过滤条里的输入：.inp--text 默认 100%，在一行式 .bar 里要收窄 */
+.bar .inp--text { width: 158px; min-width: 0; }
+.bar .inp[type="month"] { width: 132px; }
+
+table.table caption {
+  caption-side: top; text-align: left;
+  padding: calc(var(--u) * 1.5) calc(var(--u) * 2.5);
+  font-size: var(--t-xs); color: var(--pencil);
+}
+.cellstack { line-height: 1.45; }
+.pager { display: flex; gap: calc(var(--u) * 2.5); align-items: center; justify-content: flex-end;
+         padding-top: calc(var(--u) * 2); font-size: var(--t-sm); color: var(--pencil); }
+</style>
+</head>
+<body>
+
+<script src="assets/store.js"></script>
+<script src="assets/shell.js"></script>
+<script>
+  Shell.mount({
+    title: '采购员首页',
+    crumb: [{ text: '首页', href: 'index.html' }, { text: '采购员首页' }]
+  });
+</script>
+
+<div class="wrap">
+
+  <div class="head">
+    <div class="head__main">
+      <h1>采购员首页</h1>
+      <div class="head__meta" id="headMeta"></div>
+    </div>
+    <div class="head__act">
+      <button class="btn btn--primary" type="button" id="btnNewPo">新建采购单</button>
+    </div>
+  </div>
+
+  <!-- 建单结果常驻在这里，不用 toast：建完会跳去 po.html，
+       万一跳不过去（拦截、脚本报错），toast 一闪就没了。 -->
+  <div id="poResult"></div>
+
+  <!-- ══════════ 块一 · 我的采购单 ══════════ -->
+  <div class="sec">
+    <div class="sec__title">
+      我的采购单
+      <span class="muted" id="poScopeSay"></span>
+      <span class="sec__act" id="doneBar"></span>
+    </div>
+
+    <div class="bar" id="poStats"></div>
+
+    <div class="bar mt">
+      <div class="bar__grp">
+        <label class="bar__lbl" for="fState">状态</label>
+        <select class="inp inp--text" id="fState">
+          <option value="">全部</option>
+          <option value="草稿">草稿（还没下单）</option>
+          <option value="已下单">已下单</option>
+        </select>
+      </div>
+      <div class="bar__grp">
+        <label class="bar__lbl" for="fSku">货号</label>
+        <input class="inp inp--text" id="fSku" placeholder="含即匹配">
+      </div>
+      <div class="bar__grp">
+        <label class="bar__lbl" for="fSeller">店铺</label>
+        <select class="inp inp--text" id="fSeller"><option value="">全部</option></select>
+      </div>
+      <div class="bar__grp">
+        <label class="bar__lbl" for="fFrom">计划月</label>
+        <input class="inp" type="month" id="fFrom">
+        <span class="bar__lbl">至</span>
+        <input class="inp" type="month" id="fTo">
+      </div>
+      <button class="btn btn--sm btn--ghost" type="button" id="btnClearPoFilter">清空过滤</button>
+      <span class="bar__say" id="poFilterSay"></span>
+    </div>
+
+    <!-- ★ id 是给测试点名用的：数 .fold 的个数是个假地板 ——
+         页面上有好几个 fold，把这一个删掉「≥ 1」照样成立。 -->
+    <details class="fold" id="whyPoFilter">
+      <summary>这张表的口径：为什么按店铺过滤而不是 MSKU、「计划月」指哪个月、被筛掉的怎么计数</summary>
+      <div class="fold__body">
+        <p>上半页看<strong>我的采购单</strong>（建单 → 挑货品 → 下单 → 等到货），
+          下半页查<strong>销售计划</strong>（货从哪来的）。建单只定<strong>供应商与收货仓</strong>，
+          货品在<a href="po.html">采购单详情</a>里挑。</p>
+        <p><strong>这里没有「MSKU」过滤，换成了「店铺」。</strong>
+          采购单的行只有〈计划记录 × 货号 × <strong>店铺</strong>〉，<strong>没有 msku</strong> ——
+          同一个货号在同一个店铺下可以挂多个 msku（跟卖迭代款），
+          从采购行反推 msku 只能反推出<strong>一组</strong>，推不出<strong>一个</strong>。
+          按 msku 过滤会静默漏掉兄弟 listing，比没有这个过滤器更坏。</p>
+        <p>要按 msku 找，去下面的<a href="#planSec">销售计划查询</a> ——
+          计划本来就是按 msku 逐格填的，那里的 msku 是真的。
+          「计划月」过滤的是<strong>货品所属的计划月</strong>（<code>items[].period</code>），
+          不是建单日期。<strong>领星状态</strong>是采集回执的镜像、我们不写，所以不作过滤条件。</p>
+        <p>被筛掉的计数：一张单可能同时不满足多个条件，只记<strong>第一个</strong>成因，
+          所以各项相加 = 筛掉总数，不会重复计。
+          <strong>空单没有计划月</strong>，任何时间过滤都必然排除它 —— 那不是「不匹配」，
+          是「无从比较」，所以单独计一类。</p>
+        <p>「已完成」的判据取<strong>领星回执</strong>（<code>status_shipped = 3</code>、单据置「9完成」），
+          不是我们这边的 <code>state</code>：我们的 state 只有「草稿 / 已下单」，
+          下完单就再也不动了 —— 拿它当完成判据，所有下过单的单子会永远算「未完成」。</p>
+      </div>
+    </details>
+
+    <div class="table-scroll">
+      <table class="table table--dense" id="poTable">
+        <caption id="poCaption"></caption>
+        <thead>
+          <tr>
+            <th>采购单号</th>
+            <th>供应商</th>
+            <th>收货仓</th>
+            <th class="r">货品数</th>
+            <th class="r">总量</th>
+            <th>本地状态</th>
+            <th>领星单号</th>
+            <th>领星状态</th>
+            <th class="r">到货</th>
+            <th>操作记录</th>
+            <th>详情</th>
+          </tr>
+        </thead>
+        <tbody id="poBody"></tbody>
+      </table>
+    </div>
+    <div id="poEmpty"></div>
+  </div>
+
+  <!-- ══════════ 块二 · 销售计划查询 ══════════ -->
+  <div class="sec" id="planSec">
+    <div class="sec__title">
+      销售计划查询
+      <span class="muted">采购单里的货，都是从这些计划里挑出来的</span>
+    </div>
+
+    <div class="bar">
+      <div class="bar__grp">
+        <label class="bar__lbl" for="gState">状态</label>
+        <select class="inp inp--text" id="gState">
+          <option value="">全部</option>
+          <option value="草稿">草稿</option>
+          <option value="已提交">已提交</option>
+        </select>
+      </div>
+      <div class="bar__grp">
+        <label class="bar__lbl" for="gSku">货号</label>
+        <input class="inp inp--text" id="gSku" placeholder="如 DCC1800264">
+      </div>
+      <div class="bar__grp">
+        <label class="bar__lbl" for="gMsku">MSKU</label>
+        <input class="inp inp--text" id="gMsku" placeholder="如 A4P-0264-72">
+      </div>
+      <div class="bar__grp">
+        <label class="bar__lbl" for="gFrom">时间</label>
+        <input class="inp" type="month" id="gFrom">
+        <span class="bar__lbl">至</span>
+        <input class="inp" type="month" id="gTo">
+      </div>
+      <button class="btn btn--sm btn--ghost" type="button" id="btnClearPlanFilter">清空过滤</button>
+      <span class="bar__say" id="planFilterSay"></span>
+    </div>
+
+    <details class="fold" id="whyPlanFilter">
+      <summary>这里的货号 / MSKU 匹配的是什么</summary>
+      <div class="fold__body">
+        <p>匹配的是「这张计划<strong>认领了</strong>哪些货号 / msku」（<code>plan.claims</code>）。
+          这是<strong>有依据的</strong>过滤，不是装样子：计划本来就是按 msku 逐格填的。</p>
+        <p>★ <strong>为什么这一块有 MSKU，上面那块没有。</strong>
+          同一个词在两块里能不能用，取决于<strong>那一块的数据有没有这个维度</strong>，
+          不是为了「一致」而一起砍掉。计划是 msku × 月逐格填的，所以它有真 msku；
+          采购单的行只到〈货号 × 店铺〉，没有。</p>
+        <p>★ <strong>命中的是「计划」，不是「格子」。</strong>
+          一张计划认领了几十个货号 / msku，只要<strong>命中任意一个</strong>，
+          整张计划就出现在下表里 —— 表里那一行仍然是整张计划，
+          不会只列出命中的那几个货号。想看具体到哪一格，点「详情」进计划里看。</p>
+        <p>★ <strong>状态</strong>：「草稿」= 一次都没提交过（<code>revs</code> 为空，
+          所以「版本」那一列是空的）；「已提交」= 至少提交过一版，版本号取当前那一版。</p>
+        <p>★ <strong>时间</strong>：比的是这张计划自己的<strong>计划周期</strong>
+          （<code>period_start ~ period_end</code>）与你给的区间<strong>有没有交集</strong>，
+          不是建计划的日期。所以一张跨 10~12 月的计划，填「2026-11」也找得到它。</p>
+      </div>
+    </details>
+
+    <div class="table-scroll">
+      <table class="table table--dense" id="planTable">
+        <caption id="planCaption"></caption>
+        <thead>
+          <tr>
+            <th>周期</th>
+            <th>销售计划名</th>
+            <th>计划ID</th>
+            <th>版本</th>
+            <th>状态</th>
+            <th>详情</th>
+          </tr>
+        </thead>
+        <tbody id="planBody"></tbody>
+      </table>
+    </div>
+    <div id="planEmpty"></div>
+    <div class="pager">
+      <span id="pagerSay"></span>
+      <button class="btn btn--sm" type="button" id="btnPrev">上一页</button>
+      <button class="btn btn--sm" type="button" id="btnNext">下一页</button>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ============================================================
+     采购员首页
+
+     日志约定（与 plan.html 一致）：
+       dbg  渲染/交互的正常留痕，带上「筛了多少、剩多少」这种能复盘的数
+       fail 任何**回退分支**与拒绝，带上下文（哪个 id / 哪一步 / 为什么）
+     ★ 静默兜底是最坏的一种：本页每一处 `if (!x) return` 之前都要先有声。
+
+     ★ 2026-09-18 改版：只动版面与文案，**逻辑一行没改** ——
+       Store 调用、过滤判据、被丢弃一侧的统计、fail() 留痕全部原样。
+       原来满屏的说明文字搬进了页面上那三个 <details class="fold">（两个在页面、
+       一个在新建弹窗里），一个字没删。
+     ============================================================ */
+
+  var TAG = '[scm-buyer]';
+  function dbg(e, d) { try { console.debug(TAG, e, d || {}); } catch (x) { } }
+  function fail(e, d) { try { console.error(TAG, e, d || {}); } catch (x) { } }
+
+  var E = Shell.esc;
+
+  /* 供应商目录：原型里写死几家 —— 真实实现读领星供应商档案。
+     ★ 保留「其它（手填）」，否则演示时碰到目录外的供应商就只能卡住。 */
+  var SUPPLIERS = [
+    'SUP-01 · 东莞宠悦制品厂',
+    'SUP-02 · 佛山萌宠家居',
+    'SUP-03 · 宁波乐宠塑胶'
+  ];
+  var OTHER = '__other__';
+
+  /* 领星硬性必填的两个人员字段的默认值。给默认值是为了别让人在弹窗里卡住，
+     但必须可改 —— 写死等于假装这两个字段不存在。 */
+  var DEF_OPT_UID = '8801';
+  var DEF_PURCHASER = '2001';
+
+  var PLAN_PAGE = 10;
+  var planPage = 0;
+  var showDone = false;
+
+  /* ---------- 判据：一张采购单算不算「已完成」 ----------
+     ★ 判据取**领星回执**（status_shipped=3 / status='9完成'），不是我们这边的 state：
+       我们的 state 只有「草稿 / 已下单」，下完单它就再也不动了 ——
+       拿它当完成判据，会让所有下过单的单子永远算「未完成」。
+       到货是采集回执推进的事实（见 store.js tick()）。*/
+  function isDone(po) {
+    if (!po) return false;
+    if (po.state !== '已下单') return false;
+    var snap = po.snapshot;
+    if (!snap) {
+      // 快照缺失不许当成「没完成」悄悄放过去 —— 它意味着这张单的领星镜像坏了
+      fail('po.snapshot-missing', { po_id: po.po_id, hint: '按「未完成」显示，但这张单的领星状态列会是空的' });
+      return false;
+    }
+    return Number(snap.status_shipped) >= 3;
+  }
+
+  /* ============================================================
+     块一 · 我的采购单
+     ============================================================ */
+
+  function poFilter() {
+    return {
+      state: document.getElementById('fState').value,
+      sku: document.getElementById('fSku').value.trim(),
+      seller: document.getElementById('fSeller').value,
+      from: document.getElementById('fFrom').value,
+      to: document.getElementById('fTo').value
+    };
+  }
+  function poFilterActive(f) {
+    return !!(f.state || f.sku || f.seller || f.from || f.to);
+  }
+
+  /* ★ 过滤时**同时统计被丢弃的那一侧**（本项目踩过六次「静默丢失」）。
+       同一张单可能同时不满足多个条件，这里按固定顺序只记**第一个**成因，
+       并在 fold 里说明这一点 —— 否则计数加起来对不上，人会以为漏了。 */
+  var REASON_ORDER = ['state', 'sku', 'seller', 'period', 'no_items'];
+  var REASON_NAME = {
+    state: '采购单状态',
+    sku: '货号',
+    seller: '店铺',
+    period: '计划月',
+    no_items: '计划月（这几张是空单，还没挑货品，没有计划月可比）'
+  };
+
+  function filterPos(pool, f) {
+    var kept = [], dropped = {};
+    REASON_ORDER.forEach(function (k) { dropped[k] = 0; });
+
+    pool.forEach(function (po) {
+      var items = po.items || [];
+
+      if (f.state && po.state !== f.state) { dropped.state++; return; }
+
+      if (f.sku && !items.some(function (it) { return String(it.sku).indexOf(f.sku) >= 0; })) {
+        dropped.sku++; return;
+      }
+      if (f.seller && !items.some(function (it) { return String(it.seller_id) === f.seller; })) {
+        dropped.seller++; return;
+      }
+      if (f.from || f.to) {
+        // ★ 空单没有 period，任何时间过滤都必然排除它 —— 这不是「不匹配」，
+        //   是「无从比较」。单独计一类，界面上单独说破，否则新建的空单会凭空消失。
+        if (!items.length) { dropped.no_items++; return; }
+        var hit = items.some(function (it) {
+          if (f.from && String(it.period) < f.from) return false;
+          if (f.to && String(it.period) > f.to) return false;
+          return true;
+        });
+        if (!hit) { dropped.period++; return; }
+      }
+      kept.push(po);
+    });
+
+    return { kept: kept, dropped: dropped };
+  }
+
+  function droppedTotal(d) {
+    return REASON_ORDER.reduce(function (t, k) { return t + d[k]; }, 0);
+  }
+
+  function renderPos() {
+    var t0 = Date.now();
+    var all, f = poFilter();
+    try { all = Store.pos() || []; }
+    catch (e) {
+      fail('pos.threw', { message: e && e.message, cause: e && e.cause && e.cause.code, stack: e && e.stack });
+      document.getElementById('poEmpty').innerHTML =
+        '<div class="empty" data-empty="filtered"><div class="empty__title i-red">读采购单出错了</div>'
+        + '<div class="empty__body">' + E((e && e.message) || '未知异常') + '（详情见控制台）</div></div>';
+      return;
+    }
+
+    var done = all.filter(isDone);
+    var open = all.filter(function (p) { return !isDone(p); });
+    var pool = showDone ? all : open;
+    var r = filterPos(pool, f);
+
+    renderStats(all, open, done);
+    renderDoneBar(done.length, all.length);
+    renderFilterSay(pool.length, r);
+
+    var body = document.getElementById('poBody');
+    body.innerHTML = '';
+    r.kept.forEach(function (po) { body.appendChild(poRow(po)); });
+
+    document.getElementById('poScopeSay').textContent =
+      showDone ? '已完成的也一起显示' : '仅显示未完成的';
+    /* caption 只在「确实有被隐藏的东西」时才说隐藏 ——
+       「另有 0 张已完成未显示」这种话会让人回头去找那 0 张 */
+    document.getElementById('poCaption').textContent =
+      r.kept.length
+        ? '共 ' + r.kept.length + ' 张'
+          + (showDone
+              ? '　（未完成 ' + open.length + ' + 已完成 ' + done.length + '）'
+              : (done.length ? '　（另有 ' + done.length + ' 张已完成未显示）' : ''))
+        : '';
+
+    renderPoEmpty(all, open, done, r, f);
+    dbg('pos.render', {
+      total: all.length, open: open.length, done: done.length,
+      show_done: showDone, shown: r.kept.length,
+      dropped: r.dropped, filter: f, ms: Date.now() - t0
+    });
+  }
+
+  function renderStats(all, open, done) {
+    var drafts = open.filter(function (p) { return p.state === '草稿'; }).length;
+    var placed = open.filter(function (p) { return p.state === '已下单'; }).length;
+
+    /* ★ 两个数**粒度不同**，所以各带一行自己的口径标签：
+         只摆一个没有口径的数，人会把它和另一个当成同一件事的两种说法。
+         ——「未处理」是要人动手的，用朱批红；「未完成」是还没落地的进行时，用墨色。 */
+    document.getElementById('poStats').innerHTML =
+      stat(drafts, '未处理', '本地状态＝草稿　球在你这边', 'red')
+      + stat(open.length, '未完成', '领星回执 status_shipped &lt; 3　草稿 ' + drafts
+          + ' + 已下单待到货 ' + placed, 'ink');
+  }
+  function stat(n, name, say, ink) {
+    return '<div class="stat">'
+      + '<div class="kpi"><span class="kpi__n ' + (n ? 'i-' + ink : 'i-pencil') + '">' + E(n) + '</span>'
+      + '<span class="kpi__d">' + E(name) + '</span></div>'
+      + '<div class="stat__say">' + say + '</div></div>';
+  }
+
+  function renderDoneBar(nDone, nAll) {
+    var bar = document.getElementById('doneBar');
+    if (!nAll) {
+      bar.innerHTML = '<span class="muted">还没有任何采购单，谈不上隐藏</span>';
+      return;
+    }
+    if (showDone) {
+      bar.innerHTML = '<span class="muted">已完成 ' + E(nDone) + ' 张正在一起显示</span>　'
+        + '<button class="btn btn--sm" type="button" id="btnToggleDone">只看未完成</button>';
+    } else if (nDone) {
+      bar.innerHTML = '<span class="i-jade">已完成 ' + E(nDone) + ' 张已隐藏</span>　'
+        + '<button class="btn btn--sm" type="button" id="btnToggleDone">显示已完成（' + E(nDone) + ' 张）</button>';
+    } else {
+      bar.innerHTML = '<span class="muted">还没有已完成的采购单，这里一张都没隐藏</span>';
+    }
+    var b = document.getElementById('btnToggleDone');
+    if (b) b.addEventListener('click', function () {
+      showDone = !showDone;
+      dbg('done.toggle', { show_done: showDone, done: nDone });
+      renderPos();
+    });
+  }
+
+  function renderFilterSay(poolN, r) {
+    var say = document.getElementById('poFilterSay');
+    var f = poFilter();
+    var n = droppedTotal(r.dropped);
+    if (!poFilterActive(f)) {
+      say.innerHTML = '<span class="muted">未过滤，' + E(poolN) + ' 张全在表里</span>';
+      return;
+    }
+    var parts = REASON_ORDER.filter(function (k) { return r.dropped[k]; }).map(function (k) {
+      return Shell.chip(REASON_NAME[k] + ' ' + r.dropped[k], k === 'no_items' ? 'bad' : 'dim');
+    });
+    say.innerHTML = '候选 <b>' + E(poolN) + '</b> → 显示 <b>' + E(r.kept.length)
+      + '</b>，筛掉 <b>' + E(n) + '</b>　' + parts.join(' ');
+  }
+
+  function poRow(po) {
+    var prog;
+    try { prog = Store.poProgress(po.po_id); }
+    catch (e) {
+      fail('poProgress.threw', { po_id: po.po_id, message: e && e.message, stack: e && e.stack });
+      prog = null;
+    }
+    if (!prog) {
+      // ★ 有声回退：拿不到进度就把这一行标出来，不许悄悄渲染成 0
+      fail('poProgress.missing', { po_id: po.po_id, hint: '该行的总量/到货显示为「取不到」' });
+    }
+    var total = prog ? prog.total : null;
+    var arrived = prog ? prog.arrived : null;
+    var items = po.items || [];
+    var receipts = (po.receipts || []).length;
+
+    var sellers = {};
+    items.forEach(function (it) { sellers[it.seller_id] = 1; });
+    var lines = {};
+    items.forEach(function (it) { lines[it.line_id] = 1; });
+
+    var tr = document.createElement('tr');
+    tr.setAttribute('data-po', po.po_id);
+    tr.innerHTML =
+      '<td><code>' + E(po.po_id) + '</code><br>'
+        + '<span class="i-pencil">幂等键 ' + E(po.custom_order_sn || '—') + '</span></td>'
+      + '<td>' + E(po.supplier) + '</td>'
+      + '<td>' + E(Store.warehouseName(po.wid)) + '</td>'
+      + '<td class="r">' + E(items.length)
+        + (items.length ? '<br><span class="i-pencil">' + Object.keys(sellers).length + ' 店 · '
+            + Object.keys(lines).length + ' 条计划记录</span>' : '') + '</td>'
+      + '<td class="r">' + (total === null ? Shell.chip('取不到', 'bad') : E(total)) + '</td>'
+      + '<td>' + Shell.chip(po.state, po.state === '已下单' ? 'good' : '') + '</td>'
+      + '<td>' + (po.order_sn
+          ? '<code>' + E(po.order_sn) + '</code>'
+          : '<span class="i-pencil">还没下单</span>') + '</td>'
+      /* 领星的数据一律用 chip--dim 退后一层：这一列我们不写，只是镜像 */
+      + '<td>' + (po.snapshot && po.snapshot.status
+          ? Shell.chip(po.snapshot.status, 'dim')
+          : Shell.chip('无快照', 'bad')) + '</td>'
+      + '<td class="r">' + (total === null || !total
+          ? '<span class="i-pencil">—</span>'
+          : '<span class="' + (arrived >= total ? 'i-jade' : 'i-ink') + '">' + E(arrived) + '</span>'
+            + '<span class="i-pencil"> / ' + E(total) + '　' + E(prog.pct) + '%</span>') + '</td>'
+      + '<td class="cellstack"><span class="i-pencil">建单</span> ' + E(po.created_day)
+        + (po.placed_day ? '<br><span class="i-pencil">下单</span> ' + E(po.placed_day) : '')
+        + (receipts ? '<br><span class="i-pencil">入库单</span> ' + receipts + ' 张' : '')
+        + '</td>'
+      + '<td><a href="po.html?po=' + encodeURIComponent(po.po_id) + '">详情</a></td>';
+    return tr;
+  }
+
+  /* ★ 三种空状态必须长得不一样。都写成「暂无数据」的话，
+       「还没建过」「全完成了被隐藏」「过滤太窄」这三件完全不同的事就合并成一件，
+       而它们的出路也完全不同：去建单 / 去打开开关 / 去放宽条件。 */
+  function renderPoEmpty(all, open, done, r, f) {
+    var box = document.getElementById('poEmpty');
+    if (r.kept.length) { box.innerHTML = ''; return; }
+
+    var kind, html;
+    if (!all.length) {
+      kind = 'never';
+      html = '<div class="empty__title">还没有任何采购单</div>'
+        + '<div class="empty__body">一张都没建过 —— 不是被隐藏了，也不是被过滤掉了。'
+        + '建单先定<strong>供应商</strong>与<strong>收货仓</strong>（领星下单的单头），'
+        + '建出空单之后再去详情页挑货品。</div>'
+        + '<div class="empty__act"><button class="btn btn--primary btn--sm" type="button" data-act="new">新建采购单</button></div>';
+    } else if (!showDone && !open.length && done.length) {
+      kind = 'all-done';
+      html = '<div class="empty__title"><span class="i-jade">' + E(all.length) + ' 张采购单全部已完成</span>，按「仅显示未完成」的规则被隐藏了</div>'
+        + '<div class="empty__body">不是没有单子，是这张表刻意不显示它们。'
+        + '已完成 = 领星回执到货补齐（<code>status_shipped=3</code>，单据置「9完成」）。</div>'
+        + '<div class="empty__act"><button class="btn btn--sm" type="button" data-act="show-done">显示已完成（' + E(done.length) + ' 张）</button></div>';
+    } else {
+      kind = 'filtered';
+      var n = droppedTotal(r.dropped);
+      var why = REASON_ORDER.filter(function (k) { return r.dropped[k]; }).map(function (k) {
+        return '<li><strong>' + REASON_NAME[k] + '</strong> 筛掉 ' + r.dropped[k] + ' 张'
+          + (k === 'state' ? '（= 「' + E(f.state) + '」）' : '')
+          + (k === 'sku' ? '（含「' + E(f.sku) + '」）' : '')
+          + (k === 'seller' ? '（= ' + E(Store.sellerName(f.seller)) + '）' : '')
+          + (k === 'period' ? '（' + E(f.from || '不限') + ' ~ ' + E(f.to || '不限') + '）' : '')
+          + '</li>';
+      }).join('');
+      html = '<div class="empty__title">候选 ' + E(showDone ? all.length : open.length)
+          + ' 张里，<span class="i-red">一张都没通过当前过滤条件</span></div>'
+        + '<div class="empty__body">单子还在，是过滤条把它们挡住了。被筛掉的 ' + E(n) + ' 张：'
+        + '<ul>' + why + '</ul></div>'
+        + '<div class="empty__act"><button class="btn btn--sm" type="button" data-act="clear">清空过滤</button></div>';
+    }
+
+    box.innerHTML = '<div class="empty" data-empty="' + kind + '">' + html + '</div>';
+    dbg('pos.empty', { kind: kind, all: all.length, open: open.length, done: done.length, dropped: r.dropped });
+
+    var b = box.querySelector('button[data-act]');
+    if (b) b.addEventListener('click', function () {
+      var act = b.getAttribute('data-act');
+      if (act === 'new') { openNewPo(); return; }
+      if (act === 'show-done') { showDone = true; dbg('done.toggle', { show_done: true, from: 'empty' }); renderPos(); return; }
+      if (act === 'clear') { clearPoFilter(); return; }
+      fail('empty.act-unknown', { act: act, known: ['new', 'show-done', 'clear'] });
+    });
+  }
+
+  function clearPoFilter() {
+    ['fState', 'fSku', 'fSeller', 'fFrom', 'fTo'].forEach(function (id) {
+      document.getElementById(id).value = '';
+    });
+    dbg('filter.clear', { which: 'po' });
+    renderPos();
+  }
+
+  /* ============================================================
+     块二 · 销售计划查询
+     ============================================================ */
+
+  function planFilter() {
+    return {
+      state: document.getElementById('gState').value,
+      sku: document.getElementById('gSku').value.trim(),
+      msku: document.getElementById('gMsku').value.trim(),
+      from: document.getElementById('gFrom').value,
+      to: document.getElementById('gTo').value
+    };
+  }
+
+  /* 货号 / MSKU 在 Store.planQuery 里没有对应条件 —— 在页面上按
+     「这张计划认领了哪些货号 / msku」（plan.claims）匹配。
+     ★ 这是**有依据的**过滤，不是装样子：计划本来就是按 msku 逐格填的。 */
+  function claimsOf(planId) {
+    var p = Store.plan(planId);
+    if (!p) {
+      // 查得到计划行却查不到计划本体 —— 必须可见，不许当成「没认领任何货号」
+      fail('plan.body-missing', { plan_id: planId, hint: '按「不匹配货号/MSKU 过滤」处理，该行会被筛掉' });
+      return [];
+    }
+    return p.claims || [];
+  }
+
+  function renderPlans() {
+    var t0 = Date.now();
+    var f = planFilter();
+    var base;
+    try { base = Store.planQuery({ state: f.state, from: f.from, to: f.to }) || []; }
+    catch (e) {
+      fail('planQuery.threw', { message: e && e.message, cause: e && e.cause && e.cause.code, stack: e && e.stack });
+      document.getElementById('planEmpty').innerHTML =
+        '<div class="empty" data-empty="filtered"><div class="empty__title i-red">查销售计划出错了</div>'
+        + '<div class="empty__body">' + E((e && e.message) || '未知异常') + '（详情见控制台）</div></div>';
+      return;
+    }
+
+    var allN = Store.planQuery({}).length;
+    var droppedClaim = 0;
+    var kept = base.filter(function (row) {
+      if (!f.sku && !f.msku) return true;
+      var cs = claimsOf(row.plan_id);
+      var hit = cs.some(function (c) {
+        if (f.sku && String(c.sku).indexOf(f.sku) < 0) return false;
+        if (f.msku && String(c.seller_sku).indexOf(f.msku) < 0) return false;
+        return true;
+      });
+      if (!hit) droppedClaim++;
+      return hit;
+    });
+
+    var pages = Math.max(1, Math.ceil(kept.length / PLAN_PAGE));
+    if (planPage >= pages) {
+      // 过滤变窄后当前页可能已经越界 —— 拉回最后一页，并留痕（否则表会莫名其妙空掉）
+      dbg('plan.page-clamped', { was: planPage, to: pages - 1, kept: kept.length });
+      planPage = pages - 1;
+    }
+    if (planPage < 0) planPage = 0;
+    var slice = kept.slice(planPage * PLAN_PAGE, (planPage + 1) * PLAN_PAGE);
+
+    var body = document.getElementById('planBody');
+    body.innerHTML = '';
+    slice.forEach(function (row) { body.appendChild(planRow(row)); });
+
+    document.getElementById('planCaption').textContent =
+      kept.length ? '共 ' + kept.length + ' 张计划（全部 ' + allN + ' 张）' : '';
+
+    var say = document.getElementById('planFilterSay');
+    var active = !!(f.state || f.sku || f.msku || f.from || f.to);
+    say.innerHTML = active
+      ? '全部 <b>' + E(allN) + '</b> → 状态/时间后 <b>' + E(base.length)
+        + '</b> → 货号/MSKU 再筛掉 <b>' + E(droppedClaim) + '</b> → 显示 <b>'
+        + E(kept.length) + '</b>'
+      : '<span class="muted">未过滤，共 ' + E(allN) + ' 张计划</span>';
+
+    renderPlanEmpty(allN, base, kept, f, droppedClaim);
+    renderPager(kept.length, pages);
+    dbg('plans.render', {
+      all: allN, after_state_time: base.length, dropped_claim: droppedClaim,
+      kept: kept.length, page: planPage, pages: pages, shown: slice.length,
+      filter: f, ms: Date.now() - t0
+    });
+  }
+
+  function planRow(row) {
+    var tr = document.createElement('tr');
+    tr.setAttribute('data-plan', row.plan_id);
+    tr.setAttribute('data-state', row.state);
+    tr.innerHTML =
+      '<td>' + E(row.period_start) + ' ~ ' + E(row.period_end || '?')
+        + '<br><span class="i-pencil">' + E(row.months) + ' 个月</span></td>'
+      + '<td>' + E(row.title) + '<br><span class="i-pencil">' + E(row.owner) + '</span></td>'
+      + '<td><code>' + E(row.plan_id) + '</code></td>'
+      /* ★ 草稿没有版本号，显示「还没提交过」而不是空白：
+           空白和「rev 取不到」长得一模一样 */
+      + '<td>' + (row.rev ? '<code>' + E(row.rev) + '</code>'
+                          : '<span class="i-pencil">还没提交过</span>') + '</td>'
+      + '<td>' + Shell.chip(row.state, row.state === '已提交' ? 'good' : '')
+        + '<br><span class="i-pencil">' + E(row.lines) + ' 条计划记录</span></td>'
+      + '<td><a href="plan.html?plan=' + encodeURIComponent(row.plan_id) + '">详情</a></td>';
+    return tr;
+  }
+
+  function renderPlanEmpty(allN, base, kept, f, droppedClaim) {
+    var box = document.getElementById('planEmpty');
+    if (kept.length) { box.innerHTML = ''; return; }
+    if (!allN) {
+      box.innerHTML = '<div class="empty" data-empty="never"><div class="empty__title">一张销售计划都没有</div>'
+        + '<div class="empty__body">采购单里的货是从销售计划挑出来的，没有计划就没有可挑的货品。</div></div>';
+      dbg('plans.empty', { kind: 'never' });
+      return;
+    }
+    box.innerHTML = '<div class="empty" data-empty="filtered">'
+      + '<div class="empty__title">' + E(allN) + ' 张计划里，<span class="i-red">一张都没通过当前过滤条件</span></div>'
+      + '<div class="empty__body">'
+      + '状态/时间筛后剩 ' + E(base.length) + ' 张'
+      + (droppedClaim ? '，货号/MSKU 又筛掉 ' + E(droppedClaim) + ' 张' : '')
+      + '。当前条件：'
+      + [f.state ? '状态=' + f.state : '', f.sku ? '货号含 ' + f.sku : '',
+         f.msku ? 'MSKU 含 ' + f.msku : '', (f.from || f.to) ? '时间 ' + (f.from || '不限') + ' ~ ' + (f.to || '不限') : '']
+        .filter(Boolean).map(E).join(' · ')
+      + '</div>'
+      + '<div class="empty__act"><button class="btn btn--sm" type="button" id="btnClearPlanFilter2">清空过滤</button></div></div>';
+    dbg('plans.empty', { kind: 'filtered', all: allN, base: base.length, dropped_claim: droppedClaim });
+    var b = document.getElementById('btnClearPlanFilter2');
+    if (b) b.addEventListener('click', clearPlanFilter);
+  }
+
+  function renderPager(n, pages) {
+    document.getElementById('pagerSay').textContent =
+      n ? '第 ' + (planPage + 1) + ' / ' + pages + ' 页　共 ' + n + ' 张' : '没有可翻的页';
+    var prev = document.getElementById('btnPrev'), next = document.getElementById('btnNext');
+    setDisabled(prev, planPage <= 0);
+    setDisabled(next, planPage >= pages - 1);
+  }
+  function setDisabled(btn, off) {
+    if (off) { btn.setAttribute('disabled', 'disabled'); btn.setAttribute('aria-disabled', 'true'); }
+    else { btn.removeAttribute('disabled'); btn.removeAttribute('aria-disabled'); }
+  }
+
+  function clearPlanFilter() {
+    ['gState', 'gSku', 'gMsku', 'gFrom', 'gTo'].forEach(function (id) {
+      document.getElementById(id).value = '';
+    });
+    planPage = 0;
+    dbg('filter.clear', { which: 'plan' });
+    renderPlans();
+  }
+
+  /* ============================================================
+     弹窗 · 新建采购单
+     ============================================================ */
+
+  var modalEls = null;
+
+  function openNewPo() {
+    if (modalEls) { dbg('modal.already-open', {}); modalEls.supplier.focus(); return; }
+    var t0 = Date.now();
+
+    var backdrop = document.createElement('div');
+    backdrop.className = 'modal-backdrop';
+    backdrop.id = 'newPoBackdrop';
+
+    var modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    modal.setAttribute('aria-label', '新建采购单');
+
+    modal.innerHTML =
+      '<div class="modal__head">新建采购单</div>'
+      + '<div class="modal__body">'
+
+      + '<div class="field"><label class="lbl" for="mSupplier">供应商</label>'
+      + '<select class="inp inp--text" id="mSupplier"><option value="">— 请选择 —</option></select>'
+      + '<input class="inp inp--text mt" id="mSupplierOther" placeholder="手填供应商名称" hidden></div>'
+
+      + '<div class="field"><label class="lbl" for="mWid">收货仓</label>'
+      + '<select class="inp inp--text" id="mWid"><option value="">— 请选择 —</option></select></div>'
+
+      + '<div class="field"><label class="lbl" for="mOpt">采购员　<code>opt_uid</code></label>'
+      + '<input class="inp" id="mOpt" value="' + E(DEF_OPT_UID) + '"></div>'
+
+      + '<div class="field"><label class="lbl" for="mPurchaser">采购方　<code>purchaser_id</code></label>'
+      + '<input class="inp" id="mPurchaser" value="' + E(DEF_PURCHASER) + '"></div>'
+
+      /* ★ 线框旁边那句注必须出现在界面上，不能只留在代码注释里 ——
+           但它是说明，所以收进 fold，一个字没删。 */
+      + '<details class="fold"><summary>这四个字段建完之后会怎样</summary>'
+      + '<div class="fold__body">'
+      + '<p><strong>供应商与收货仓是领星下单的单头，建完之后不可编辑。</strong>'
+      + '要换供应商或收货仓，只能另建一张单 —— 同一货号分两家买，就是两张单。</p>'
+      + '<p>采购员默认当前采购用户（' + E(DEF_OPT_UID) + '）、采购方默认 ' + E(DEF_PURCHASER) + '，都可改。'
+      + '这两个是<strong>领星硬性必填</strong> —— 缺了会在下单那一刻吃 500，'
+      + '而那时人已经以为下完单了，所以在建单这一步就拦下来。</p>'
+      + '</div></details>'
+
+      + '<div id="mErr"></div>'
+      + '</div>'
+      + '<div class="modal__foot">'
+      + '<button class="btn" type="button" id="mCancel">取消</button>'
+      + '<button class="btn btn--primary" type="button" id="mCreate">创建</button>'
+      + '</div>';
+
+    backdrop.appendChild(modal);
+    document.body.appendChild(backdrop);
+
+    var sel = modal.querySelector('#mSupplier');
+    SUPPLIERS.forEach(function (s) {
+      var o = document.createElement('option'); o.value = s; o.textContent = s; sel.appendChild(o);
+    });
+    var oo = document.createElement('option');
+    oo.value = OTHER; oo.textContent = '其它（手填）';
+    sel.appendChild(oo);
+
+    var other = modal.querySelector('#mSupplierOther');
+    sel.addEventListener('change', function () { other.hidden = (sel.value !== OTHER); });
+
+    var wsel = modal.querySelector('#mWid');
+    var whs = Store.get().warehouses || [];
+    whs.forEach(function (w) {
+      var o = document.createElement('option'); o.value = w.wid; o.textContent = w.name; wsel.appendChild(o);
+    });
+    if (!whs.length) {
+      // ★ 有声：下拉是空的，人点「创建」一定会被 missing_wid 拒，得先说破
+      fail('warehouses.empty', { hint: '收货仓下拉没有任何选项 —— 建单必然被 missing_wid 拒' });
+      modal.querySelector('#mErr').innerHTML =
+        '<div class="flash flash--bad"><div><strong>收货仓下拉是空的</strong>'
+        + '<ul><li><code>warehouses.empty</code>　Store.get().warehouses 没有数据 —— '
+        + '现在点「创建」一定会被 missing_wid 拒绝，先去重置剧本。</li></ul></div></div>';
+    }
+
+    var lastFocus = document.activeElement;
+    modalEls = { backdrop: backdrop, modal: modal, supplier: sel, other: other, wid: wsel, t0: t0 };
+
+    modal.querySelector('#mCancel').addEventListener('click', function () { closeNewPo('cancel'); });
+    modal.querySelector('#mCreate').addEventListener('click', onCreate);
+    backdrop.addEventListener('click', function (e) { if (e.target === backdrop) closeNewPo('backdrop'); });
+    document.addEventListener('keydown', onModalKey, true);
+
+    function onModalKey(e) {
+      if (e.key === 'Escape') { e.preventDefault(); closeNewPo('esc'); }
+    }
+    modalEls.detach = function () {
+      document.removeEventListener('keydown', onModalKey, true);
+      if (lastFocus && lastFocus.focus) { try { lastFocus.focus(); } catch (x) { } }
+    };
+
+    sel.focus();
+    dbg('modal.open', { suppliers: SUPPLIERS.length, warehouses: whs.length });
+  }
+
+  function closeNewPo(how) {
+    if (!modalEls) { dbg('modal.close-noop', { how: how }); return; }
+    var ms = Date.now() - modalEls.t0;
+    if (modalEls.detach) modalEls.detach();
+    if (modalEls.backdrop.parentNode) modalEls.backdrop.parentNode.removeChild(modalEls.backdrop);
+    modalEls = null;
+    dbg('modal.close', { how: how, ms: ms });
+  }
+
+  function currentSupplier() {
+    if (!modalEls) return '';
+    if (modalEls.supplier.value === OTHER) return modalEls.other.value.trim();
+    return modalEls.supplier.value;
+  }
+
+  /* ★ 把 Store 给的 error + detail **原样**显示出来。
+       只说「创建失败」，人就不知道是缺了哪个字段 —— 而这四个字段是领星硬性必填，
+       缺了会在下单那一刻吃 500。 */
+  function showCreateFail(code, detail, where) {
+    var box = modalEls ? modalEls.modal.querySelector('#mErr') : document.getElementById('poResult');
+    var html =
+      '<div class="flash flash--bad">'
+      + '<div><strong>创建失败，什么都没建出来</strong>（' + E(where) + '）'
+      + '<ul><li><code>' + E(code) + '</code>　' + E(detail) + '</li></ul></div></div>';
+    if (box) box.innerHTML = html;
+    else fail('createFail.nowhere-to-show', { code: code, detail: detail, where: where });
+    fail('po.create-rejected', { code: code, detail: detail, where: where });
+    Shell.toast('建单被拒：' + code + '\n' + detail, 'fail');
+  }
+
+  function onCreate() {
+    var t0 = Date.now();
+    var payload = {
+      supplier: currentSupplier(),
+      wid: modalEls ? modalEls.wid.value : '',
+      opt_uid: modalEls ? modalEls.modal.querySelector('#mOpt').value.trim() : '',
+      purchaser_id: modalEls ? modalEls.modal.querySelector('#mPurchaser').value.trim() : ''
+    };
+
+    var r;
+    try { r = Store.createPo(payload); }
+    catch (e) {
+      fail('createPo.threw', {
+        message: e && e.message, cause: e && e.cause && e.cause.code,
+        payload: payload, stack: e && e.stack
+      });
+      showCreateFail('exception', (e && e.message) || '未知异常（详情见控制台）', 'Store.createPo 抛异常');
+      return;
+    }
+    if (!r || !r.ok) {
+      showCreateFail(
+        (r && r.error) || 'no_result',
+        (r && r.detail) || '（Store 没有给 detail —— 这本身就是个问题）',
+        'Store.createPo');
+      return;
+    }
+
+    dbg('po.create-ok', {
+      po_id: r.po_id, supplier: payload.supplier, wid: payload.wid,
+      opt_uid: payload.opt_uid, purchaser_id: payload.purchaser_id, ms: Date.now() - t0
+    });
+    closeNewPo('created');
+
+    var href = 'po.html?po=' + encodeURIComponent(r.po_id);
+    /* ★ 成功提示常驻页面，不只是 toast：下面马上要跳去 po.html，
+         万一跳不过去（脚本报错、浏览器拦截），toast 一闪就没了，
+         人手里就只剩「好像建了一张单但找不着」。这条链接是有声的兜底。 */
+    document.getElementById('poResult').innerHTML =
+      '<div class="flash flash--good"><div>'
+      + '已建出<strong>空单</strong> <strong>' + E(r.po_id) + '</strong>'
+      + '（' + E(payload.supplier) + ' → ' + E(Store.warehouseName(payload.wid)) + '）　'
+      + '<a href="' + E(href) + '">去 ' + E(r.po_id) + ' 挑货品</a>'
+      + '</div></div>';
+
+    Shell.toastAfterReload('已建出采购单 ' + r.po_id + '（空单）—— 供应商与收货仓已定死，接下来挑货品。', 'ok');
+    renderPos();
+    goTo(href);
+  }
+
+  function goTo(href) {
+    dbg('nav', { href: href });
+    try { window.location.href = href; }
+    catch (e) {
+      // 跳转失败必须有声；页面上那条链接就是给这一刻准备的
+      fail('nav.failed', {
+        href: href, message: e && e.message, cause: e && e.cause && e.cause.code
+      });
+      Shell.toast('没能自动跳转到 ' + href + '，请点页面上那条链接。', 'warn');
+    }
+  }
+
+  /* ============================================================
+     装配
+     ============================================================ */
+
+  function boot() {
+    if (!window.Store) { fail('store.missing', { hint: '页面必须先 <script src="assets/store.js">' }); return; }
+
+    var sellers = Store.get().sellers || [];
+    var ssel = document.getElementById('fSeller');
+    sellers.forEach(function (x) {
+      var o = document.createElement('option');
+      o.value = x.seller_id;
+      o.textContent = x.name + '（' + x.seller_id + '）';
+      ssel.appendChild(o);
+    });
+    if (!sellers.length) fail('sellers.empty', { hint: '店铺过滤下拉是空的 —— 这个过滤器点了不会有反应' });
+
+    document.getElementById('headMeta').innerHTML =
+      '模拟日期 <b>' + E(Store.day()) + '</b>'
+      // ★ 只留流程本身；「建单只定供应商与收货仓」那句解释在下面的 fold 里，
+      //   一字未删 —— 页头是给人定位的，不是讲道理的地方。
+      + '<span>建单 → 挑货品 → 下单 → 等到货</span>';
+
+    ['fState', 'fSku', 'fSeller', 'fFrom', 'fTo'].forEach(function (id) {
+      var n = document.getElementById(id);
+      n.addEventListener('change', renderPos);
+      n.addEventListener('input', renderPos);
+    });
+    ['gState', 'gSku', 'gMsku', 'gFrom', 'gTo'].forEach(function (id) {
+      var n = document.getElementById(id);
+      // 改过滤条件就回第一页 —— 不回的话人会停在一个「空的第 3 页」上
+      n.addEventListener('change', function () { planPage = 0; renderPlans(); });
+      n.addEventListener('input', function () { planPage = 0; renderPlans(); });
+    });
+
+    document.getElementById('btnClearPoFilter').addEventListener('click', clearPoFilter);
+    document.getElementById('btnClearPlanFilter').addEventListener('click', clearPlanFilter);
+    document.getElementById('btnNewPo').addEventListener('click', openNewPo);
+    document.getElementById('btnPrev').addEventListener('click', function () {
+      if (planPage <= 0) { dbg('pager.at-first', {}); return; }
+      planPage--; renderPlans();
+    });
+    document.getElementById('btnNext').addEventListener('click', function () {
+      planPage++; renderPlans();
+    });
+
+    renderPos();
+    renderPlans();
+
+    dbg('boot', {
+      day: Store.day(), pos: (Store.pos() || []).length,
+      plans: Store.planQuery({}).length, sellers: sellers.length,
+      warehouses: (Store.get().warehouses || []).length
+    });
+  }
+
+  boot();
+})();
+</script>
+
+</body>
+</html>

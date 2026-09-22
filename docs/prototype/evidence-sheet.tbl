@@ -1,0 +1,304 @@
+# sheet.html 的全部变异证据 —— 整表重跑入口
+#
+# ★ 为什么要有这张表，而不是让每条散在测试文件头里：
+#   证据表锚在「源码字面」上，这是最容易烂的锚 —— 一次**零行为变更**的改版
+#   （换 token、加个 class、把说明收进 fold）就能废掉一整批 from 串，
+#   而断言可能一条都没失效。逐条回放的话，过期是**逐条、静默**的；
+#   整表跑一次，过期一次性可见。
+#
+#   跑法：  export NODE_PATH=...     ← 没有它测试会「明说跳过」，闸 3 会拦住
+#           ./replay.sh --table evidence-sheet.tbl
+#
+#   ★ 改了 sheet.html 之后请重跑这张表，别只跑测试 ——
+#     测试绿不代表证据还回放得动。
+
+page: sheet.html
+test: test_dispatch_page.js
+
+=== A 待编排池默认展开（两个入口又回来了）
+    fold.id = 'poolFold';                 // ★ 默认不加 open：平时只看到网格
+--
+    fold.id = 'poolFold';
+    fold.setAttribute('open', 'open');
+
+=== B 摘要那一行不数行数
+      sum.appendChild(el('span', null, '已安排待编排 ' + poolUnits + ' 件 / ' + sh.pool.length + ' 行'));
+--
+      sum.appendChild(el('span', null, '待编排池'));
+
+=== C 「改」不预填（打开就是空的 → 确定＝清零）
+    if (mode === 'edit') Object.keys(pre).forEach(function (w) { vals[w] = String(pre[w]); });
+--
+
+=== D 重画表时不回填（预填只活一瞬）
+      inp.value = String(ctx.vals[String(x.wid)] || '');
+--
+      inp.value = '';
+
+=== E 确定时只读画出来的那几行（被筛掉的量被吞掉）
+    syncArrangeVals();
+    var picks = [], bad = [];
+    ctx.rows.forEach(function (x) {
+      var raw = String(ctx.vals[String(x.wid)] == null ? '' : ctx.vals[String(x.wid)]).trim();
+--
+    var picks = [], bad = [];
+    ctx.inputs.forEach(function (x) {
+      var raw = String(x.inp.value || '').trim();
+
+=== F 隐藏的那几行填没填不说
+            ? '；其中 ' + hiddenFilled.length + ' 行已经填了量（'
+--
+            ? '；'
+
+=== G 改与撤回恒显示（安排发货也补一个，免得页面整个找不到格子）
+    var act = el('div', 'btn-row');
+    if (c.pooled > 0) {
+--
+    var act = el('div', 'btn-row');
+    var btnX = el('button', 'btn btn--sm', '安排发货');
+    btnX.type = 'button';
+    btnX.setAttribute('data-arrange', key);
+    btnX.addEventListener('click', function () { openArrange(r, c, 'new'); });
+    act.appendChild(btnX);
+    if (true) {
+
+=== AC 编入之后退回［安排发货］（就是那个 bug 本身）
+    } else if (c.consigned > 0 || c.dispatched > 0) {
+--
+    } else if (c.dispatched > 0) {
+
+=== AD 格子上两个数合成一个
+      if (c.consigned > 0) rows.appendChild(miniRow('其中已编入单', c.consigned, 'i-jade'));
+--
+
+=== AE 说了编进哪张单，却不给跳过去的路
+    where.forEach(function (x) {
+      var a = el('a', null, '跳到 #' + x.cid);
+      a.href = '#' + consId(x.cid);
+      a.setAttribute('data-consigned-jump', key);
+--
+    [].forEach(function (x) {
+      var a = el('a', null, '跳到 #' + x.cid);
+      a.href = '#' + consId(x.cid);
+      a.setAttribute('data-consigned-jump', key);
+
+=== AI 投送之后格子上不写「已投送 N」
+    if (c.dispatched > 0) rows.appendChild(miniRow('已投送', c.dispatched, 'i-jade'));
+--
+
+=== AJ 投送之后退回［安排发货］（同一个形状的第三次）
+    } else if (c.consigned > 0 || c.dispatched > 0) {
+--
+    } else if (c.consigned > 0) {
+
+=== AK 那一格做成死路（只给说明，不给往下走的路）
+      act.appendChild(more);
+--
+
+=== AL 「再安排一批」标成「安排发货」（两种状态又长成一个样）
+      var more = el('button', 'btn btn--sm', '再安排一批');
+--
+      var more = el('button', 'btn btn--sm', '安排发货');
+
+=== AM 已投送那句恒显示
+    if (c.dispatched > 0) act.appendChild(dispatchedNote(r, c, key));
+--
+    act.appendChild(dispatchedNote(r, c, key));
+
+=== AN 说了投送在哪张单，却不给跳过去的路
+    where.forEach(function (x) {
+      var a = el('a', null, '跳到 #' + x.cid);
+      a.href = '#' + consId(x.cid);
+      a.setAttribute('data-dispatched-jump', key);
+--
+    [].forEach(function (x) {
+      var a = el('a', null, '跳到 #' + x.cid);
+      a.href = '#' + consId(x.cid);
+      a.setAttribute('data-dispatched-jump', key);
+
+=== AO 合计列里不给「已投送」
+    if (dispatched > 0) rows.appendChild(miniRow('已投送', dispatched, 'i-jade'));
+--
+
+=== AP 货号块头上不给「已投送」
+      if (shipped > 0) stat.appendChild(el('span', 'i-jade', '已投送 ' + shipped + ' 件'));
+--
+
+=== AQ 货件号那一栏又变回输入框（让人填一个此刻不存在的号）
+    if (l.shipment_no) {
+--
+    var inpShip = el('input', 'inp');
+    inpShip.type = 'text';
+    inpShip.placeholder = 'FBA16XXXXXX';
+    inpShip.value = l.shipment_no || '';
+    inpShip.setAttribute('aria-label', '第 ' + (i + 1) + ' 行货件号');
+    tdShip.appendChild(inpShip);
+    if (false) {
+
+=== AR 投送前那一格留白（说不出「为什么这里没有号」）
+      wait.textContent = '投送时由亚马逊分配';
+--
+      wait.textContent = '';
+
+=== AS 投送前把正常状态报成错误（「未归属货件」红标回来）
+      var wait = el('div', 'muted');
+--
+      var wait = el('div', 'chip chip--bad');
+      tdShip.appendChild(el('span', 'chip chip--bad', '未归属货件'));
+
+=== AT 投送之后仍然显示「投送时由亚马逊分配」（号回填了也不显示）
+    if (l.shipment_no) {
+--
+    if (false) {
+
+=== AU 显示一个页面自己编的号（不是 Store 里那个）
+      got.textContent = l.shipment_no;
+--
+      got.textContent = 'FBA16XPLACEHOLDER';
+
+=== AV 装箱那 6 个格子被一起删掉（A-8 管的只是装箱）
+      inputs[f[0]] = ip;
+      holder.appendChild(ip);
+      brow.appendChild(holder);
+--
+      inputs[f[0]] = ip;
+
+=== AG 池里还有剩时，不说「这两个按钮只动池里那部分」
+      ? '另有 ' + c.consigned + ' 件已编入排货单 ' + where.map(function (x) { return '#' + x.cid; }).join('、')
+        + '，上面两个按钮只动待编排的那 ' + c.pooled + ' 件'
+--
+      ? '这一格还有别的量'
+
+=== AH 弹窗里不说「另有 N 件已编入排货单」
+      if (ctx.consigned > 0) {
+        var fc = el('div', 'flash flash--bad');
+        fc.appendChild(el('div', null, '这一格另有 ' + ctx.consigned + ' 件**已经编入排货单**，'
+          + '不在这个窗口里、也不会被这次替换动到。要改那部分，去排货单上动。'));
+        box.appendChild(fc);
+      }
+--
+
+=== AF 「已编入排货单」那句恒显示
+    if (c.consigned > 0) act.appendChild(consignedNote(r, c, key, c.pooled > 0 ? 'partial' : 'only'));
+--
+    act.appendChild(consignedNote(r, c, key, c.pooled > 0 ? 'partial' : 'only'));
+
+=== H 撤回不问就做
+      un.addEventListener('click', function () { askUnarrange(r, c); });
+--
+      un.addEventListener('click', function () { doUnarrange(r, c); });
+
+=== I 撤回之后不重渲
+    render();
+    if (!res.was) {
+--
+    if (!res.was) {
+
+=== J 「改」走回追加那条老路（不是整体替换）
+    var r = Store.setArrangement(sheetId, {
+--
+    var r = Store.arrangeShipment(sheetId, {
+
+=== K rejected 只列第一条
+      (r.rejected && r.rejected.length ? r.rejected : [r.detail || r.error]).forEach(function (t) {
+--
+      (r.rejected && r.rejected.length ? [r.rejected[0]] : [r.detail || r.error]).forEach(function (t) {
+
+=== L 弹窗表头只给一个数
+      + '<th class="r">仓里</th><th class="r">已被别处占</th><th class="r">现在能安排</th>'
+--
+      + '<th class="r">可发</th>'
+
+=== M 「现在能安排」那一列整个不画
+      tr.appendChild(tdFree);
+--
+
+=== N 三列都是空壳（有列没数）
+      tdValid.setAttribute('data-src-valid', String(x.valid === null ? '' : x.valid));
+--
+      tdValid.setAttribute('data-src-valid', '');
+
+=== O 顺序那一行改名（等于没有）
+    order.id = 'flowLine';
+--
+    order.id = 'flowLineX';
+
+=== P 「全手动」那句被抹掉
+    <summary>手动排货还是自动排货？——「全手动」，系统只算该排多少，不替你决定发什么</summary>
+    <div class="fold__body">
+      <p><b>全手动。</b>系统只算「该排多少」：这一格的缺口、这条计划记录还能排多少、
+--
+    <summary>手动排货还是自动排货？</summary>
+    <div class="fold__body">
+      <p>系统只算「该排多少」：这一格的缺口、这条计划记录还能排多少、
+
+=== Q 「谁定的」三件事不点名
+        本地仓现在还能安排多少。<b>发哪些、从哪个仓出、给哪个店</b> —— 全是人定的，
+--
+        本地仓现在还能安排多少。—— 全是人定的，
+
+=== R 一行都没勾也照跑
+    if (!picked || !picked.length) {
+      flash('bad', '一行都没勾 —— 在左边的方框里勾几行，再点「把勾中的编入排货单」。');
+      dbg('batch.empty', { sheet_id: sheetId, cid: cid });
+      return;
+    }
+--
+    picked = picked || [];
+
+=== S 批量编入之后不重渲
+    render();
+
+    var movedUnits = done.reduce(function (t, d) { return t + d.p.units; }, 0);
+--
+    var movedUnits = done.reduce(function (t, d) { return t + d.p.units; }, 0);
+
+=== T 批量的结果不点名挪了几行几件
+      flash('good', done.length + ' 行 / ' + movedUnits + ' 件编入排货单 #' + cid, null,
+--
+      flash('good', '编入完成', null,
+
+=== U 池子空了那句摘要改掉
+      sum.appendChild(el('span', null, '待编排池是空的'));
+--
+      sum.appendChild(el('span', null, '池'));
+
+=== V ［改］按钮点了没反应
+      ed.addEventListener('click', function () { openArrange(r, c, 'edit'); });
+--
+      ed.addEventListener('click', function () { });
+
+=== W 弹窗不说这是整体替换
+      f.appendChild(el('div', null, '这一格现在安排了 ' + ctx.was + ' 件，各仓的量已经预填在下面。'
+        + '确定后按你填的量整体替换，不是往上加。'));
+--
+      f.appendChild(el('div', null, '填写分拨数量。'));
+
+=== X 隐藏了几行不说
+        '按本地仓名过滤，隐藏 ' + hidden + ' 行'
+--
+        '按本地仓名过滤'
+
+=== Z ［安排发货］和［改］又并列回来
+    } else {
+      var btn = el('button', 'btn btn--sm', '安排发货');
+--
+    }
+    {
+      var btn = el('button', 'btn btn--sm', '安排发货');
+
+=== AA 单行编入不传 seller_id（同记录两店撞成歧义）
+      seller_id: p.seller_id, units: Number(rawUnits)
+--
+      units: Number(rawUnits)
+
+=== AB 批量编入不传 seller_id
+        seller_id: p.seller_id, units: p.units
+--
+        units: p.units
+
+=== Y 单行编入之后不重渲
+    render();
+    flash('good', p.sku + ' × ' + rawUnits + ' 件编入排货单 #' + cid + '（第 ' + (r.idx + 1) + ' 行）', null,
+--
+    flash('good', p.sku + ' × ' + rawUnits + ' 件编入排货单 #' + cid + '（第 ' + (r.idx + 1) + ' 行）', null,

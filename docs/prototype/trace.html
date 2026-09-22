@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>记录下钻 · 供应链服务原型</title>
+<link rel="stylesheet" href="assets/shell.css">
+</head>
+<body>
+
+<div class="wrap">
+
+  <div class="masthead">
+    <h1 id="title">记录下钻</h1>
+    <div class="masthead__sub" id="sub">
+      一条计划单记录的全链路：这批货此刻在哪一环、这些件从哪来、排到哪去了、还在等什么事实。
+    </div>
+  </div>
+
+  <div id="body"></div>
+
+</div>
+
+<script src="assets/store.js"></script>
+<script src="assets/shell.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  Shell.mount({ title: '记录下钻', crumb: [
+    { text: '首页', href: 'index.html' },
+    { text: '运营看板', href: 'ops.html' },
+    { text: '记录下钻' }
+  ] });
+
+  var ST = Store.STATES;
+  var body = document.getElementById('body');
+  var wantLine = Shell.param('line');
+
+  function chipKindOf(state) {
+    if (state === ST.CLOSED) return 'ok';
+    if (state === ST.SUBMITTED) return 'warn';
+    if (state === ST.CANCELLED) return 'fail';
+    return 'ours';
+  }
+
+  /* ---------- 没给参数 / 给错了：点名，并给出能点的东西 ---------- */
+
+  var all = Store.get().lines;
+  if (!wantLine || !Store.line(wantLine)) {
+    var why = !wantLine
+      ? '地址里没有 <code>?line=</code> 参数。'
+      : Shell.chip('找不到记录', 'fail') + '　<code>line=' + Shell.esc(wantLine) + '</code> 在本地剧本里不存在。';
+    var h = '<div class="empty"><p class="empty__title">' + why + '</p><p class="empty__body">当前剧本共有 ' + all.length +
+      ' 条记录' + (all.length ? '，在下面挑一条：' : ' —— 计划还没提交过，' +
+      '<a href="plan.html">先去填数并提交 →</a>') + '</p></div>';
+    if (all.length) {
+      h += '<div class="table-scroll mt"><table class="table table--dense"><thead><tr>' +
+        '<th>记录</th><th>店铺</th><th>货号</th><th>月</th><th class="num">总量</th><th>状态</th></tr></thead><tbody>';
+      all.forEach(function (l) {
+        h += '<tr><td><a href="trace.html?line=' + encodeURIComponent(l.line_id) + '"><code>' +
+          Shell.esc(l.line_id) + '</code></a></td>' +
+          '<td>' + Shell.esc(Store.sellerName(l.seller_id)) + '</td>' +
+          '<td><code>' + Shell.esc(l.sku) + '</code></td>' +
+          '<td>' + Shell.esc(l.period) + '</td>' +
+          '<td class="num">' + Shell.qty(l.total) + '</td>' +
+          '<td>' + Shell.chip(l.state, chipKindOf(l.state)) + '</td></tr>';
+      });
+      h += '</tbody></table></div>';
+    }
+    body.innerHTML = h;
+    return;
+  }
+
+  var t = Store.trace(wantLine);
+  var line = t.line;
+  var q = t.qty;
+
+  document.getElementById('title').textContent = '记录 ' + line.line_id;
+
+  /* ============================================================
+     1) 摘要
+     ============================================================ */
+
+  var html = '';
+  html += '<div class="panel"><div class="panel__head">记录摘要　<span class="muted">' +
+    Shell.esc(line.plan_id) + ' · rev ' + line.rev + '</span></div><div class="panel__body">';
+  html += '<p style="font-size:15px">' +
+    '<strong>' + Shell.esc(Store.sellerName(line.seller_id)) + '</strong>' +
+    '（' + Shell.esc(line.seller_id) + '）　·　<code>' + Shell.esc(line.sku) + '</code>　·　' +
+    Shell.esc(line.period) + '　·　共 ' + Shell.qty(q.total) + ' 件</p>';
+  html += '<p>当前状态 ' + Shell.chip(line.state, chipKindOf(line.state)) +
+    '　已下单 ' + Shell.qtyOf(q.ordered, q.total) +
+    '　已投送 ' + Shell.qtyOf(q.dispatched, q.total) + '</p>';
+  html += '<p class="muted">★ 状态不是人点出来的：它由下面这些量与外部事实推出来，' +
+    '所以「看板对不对」永远等于「量对不对」。</p>';
+  html += '</div></div>';
+
+  /* ============================================================
+     2) 量的明细 + 两条恒等式
+     ============================================================ */
+
+  var QROWS = [
+    ['总量', q.total, '提交 ' + line.plan_id + ' rev' + line.rev + ' 时这个格子的计划采购量 —— 铸出后不可改'],
+    ['已确认量', q.confirmed, '所有采购单（<strong>含草稿</strong>）里指向本记录的明细 units 之和'],
+    ['已下单量', q.ordered, '同上，但<strong>只算</strong> state = 「已下单」的采购单'],
+    ['已排未发量', q.staged, '排货表<strong>待编排池</strong> + our_stage ∈ {草稿, 已确认} 的排货单行（已取消的排货表不算）'],
+    ['　其中待编排池', q.pooled, '只在排货表池子里、还没编进任何一张排货单的量 —— 不算它就会把同一批需求排两遍'],
+    ['已投送量', q.dispatched, 'our_stage ∈ {已投送, 已归档} 的排货单行　★ <strong>不认草稿</strong>'],
+    ['待排量', q.pending, '<code>max(0, 总量 − 已排未发 − 已投送)</code> —— 排货台的候选就是按它筛的']
+  ];
+
+  html += '<div class="sec"><div class="sec__title">量的明细　<span class="muted">每个数从哪来</span></div>';
+  html += '<div class="table-scroll"><table class="table table--dense"><thead><tr>' +
+    '<th>量</th><th class="num">值</th><th>这个数从哪来</th></tr></thead><tbody>';
+  QROWS.forEach(function (r) {
+    html += '<tr><td>' + r[0] + '</td><td class="num">' + Shell.qty(r[1]) + '</td><td class="muted">' + r[2] + '</td></tr>';
+  });
+  html += '</tbody></table></div>';
+  html += '<div class="mt" id="identities"></div>';
+  html += '<p class="muted mt">★ 这两条恒等式是<strong>当场算</strong>的，不是记在某处的结论。' +
+    '一旦标红，说明闸被绕过了 —— 那时看板的数已经不可信，不要再照着它做决定。</p>';
+  html += '</div>';
+
+  /* ============================================================
+     3) 承重墙反查
+     ============================================================ */
+
+  html += '<div class="sec"><div class="sec__title">承重墙反查</div><div class="split">';
+
+  /* ---- 3a) 这些件从哪来 ---- */
+  html += '<div class="split__left"><div class="split__title">这些件从哪来　—— 采购单来源</div>';
+  if (!t.sources.length) {
+    html += '<p class="muted">还没有任何采购单指向这条记录 —— ' + Shell.qty(q.total) + ' 件<strong>全部未组单</strong>。</p>';
+  } else {
+    html += '<div class="table-scroll"><table class="table table--dense"><thead><tr>' +
+      '<th>单号</th><th>供应商</th><th class="num">件数</th><th>状态</th><th>领星单号</th><th>到货</th>' +
+      '</tr></thead><tbody>';
+    t.sources.forEach(function (s) {
+      var got = s.receipts.reduce(function (a, r) { return a + r.units; }, 0);
+      var arrive = s.receipts.length
+        ? Shell.qtyOf(got, s.units) + '<div class="muted" style="font-size:12px">' +
+          Shell.esc(s.receipts.map(function (r) { return r.doc_no + ' ' + r.day + ' ' + r.units + ' 件'; }).join('；')) +
+          '<br>status_shipped = ' + Shell.esc(s.status_shipped) + '</div>'
+        : '<span class="qty qty--zero">未到货</span><div class="muted" style="font-size:12px">status_shipped = ' +
+          Shell.esc(s.status_shipped) + '（到货由每日采集回执推进，点「⏩ 推进一天」）</div>';
+      html += '<tr>' +
+        '<td><code>' + Shell.esc(s.po_id) + '</code><div class="muted" style="font-size:12px">收货仓 ' +
+          Shell.esc(Store.warehouseName(s.wid)) + '</div></td>' +
+        '<td>' + Shell.esc(s.supplier) + '</td>' +
+        '<td class="num">' + Shell.qty(s.units) + '</td>' +
+        '<td>' + Shell.chip(s.state, s.state === '已下单' ? 'ours' : 'warn') +
+          '<div class="muted" style="font-size:12px">' + Shell.esc(s.status) + '</div></td>' +
+        '<td>' + (s.order_sn
+            ? '<code>' + Shell.esc(s.order_sn) + '</code>'
+            : '<span class="muted">未下单</span>') +
+          '<div class="muted" style="font-size:12px">幂等键 <code>' + Shell.esc(s.custom_order_sn) + '</code></div></td>' +
+        '<td>' + arrive + '</td>' +
+        '</tr>';
+    });
+    html += '</tbody></table></div>';
+  }
+
+  /* ★ 未组单的剩余量必须标出来 —— 它正是「为什么还停在已提交」的答案 */
+  var unconfirmed = q.total - q.confirmed;
+  if (unconfirmed > 0) {
+    html += '<div class="mt"><div class="dropped">未组单剩余 ' + unconfirmed + ' 件（总量 ' + q.total +
+      ' − 已确认 ' + q.confirmed + '）<span class="dropped__why">没有任何采购单承接这部分；木桶不满，记录就到不了「已确认」</span></div>' +
+      '<p class="mt">' + Shell.chip('缺口 ' + unconfirmed + ' 件', 'warn') +
+      '　<span class="muted">采购员在采购台把它组进采购单后，这个缺口才会归零。</span></p></div>';
+  } else if (t.sources.length) {
+    html += '<p class="mt">' + Shell.chip('已全部组单', 'ok') + '　<span class="muted">已确认 ' +
+      q.confirmed + ' 件 = 总量 ' + q.total + ' 件，木桶已满。</span></p>';
+  }
+  html += '</div>';
+
+  /* ---- 3b) 排到哪去了 ---- */
+  html += '<div class="split__right"><div class="split__title">排到哪去了　—— 排货单</div>';
+  if (!t.dispatches.length) {
+    html += '<p class="muted">还没有被排进任何排货表 / 排货单。' +
+      (line.state === ST.READY ? '本地仓已有货，排货员可以排了。' : '要等记录先走到「准备排货」。') + '</p>';
+  } else {
+    t.dispatches.forEach(function (d) {
+      var conflict = null;
+      if (d.cid !== null && d.our_stage === '已确认' && d.ext_refs && d.ext_refs.length) {
+        conflict = '我方停在「已确认」，领星侧却已经落下单据 ' +
+          d.ext_refs.map(function (r) { return r.doc_no; }).join('、') + ' —— 多半是锁库存静默失败，' +
+          '投送的最后一步超时了。重投会重复建单，必须先按单号去领星核实。';
+      } else if (d.our_stage === '已投送' && !d.lingxing_stage) {
+        conflict = '我方已投送，领星侧却没有任何进度 —— 多半是锁库存静默失败，单据没真的建起来。';
+      } else if (d.lingxing_stage === '已完成' && d.our_stage !== '已归档') {
+        conflict = '领星已完成，我方却没归档 —— 两轴对不上，回执可能漏读了。';
+      }
+
+      html += '<div class="panel mt"><div class="panel__head">' +
+        (d.cid === null
+          ? '待编排池　<span class="muted">' + Shell.esc(d.sheet_id) + '</span>'
+          : '排货单 #' + Shell.esc(d.cid) + '　<span class="muted">' + Shell.esc(d.sheet_id) +
+            ' 第 ' + Shell.esc(d.row) + ' 行 · ' + (d.channel === 'fba' ? '美国 FBA' : (d.channel === 'oversea' ? '海外仓' : '未分渠道')) + '</span>') +
+        '</div><div class="panel__body">';
+
+      html += '<p>' + Shell.qty(d.units) + ' 件　出自 ' + Shell.esc(Store.warehouseName(d.from_wid)) +
+        (d.shipment_no ? '　货件 <code>' + Shell.esc(d.shipment_no) + '</code>' : '') + '</p>';
+
+      html += '<div class="dual' + (conflict ? ' dual--conflict' : '') + '">' +
+        '<div class="dual__row"><span class="dual__label">我方</span><span class="dual__val">' +
+          Shell.esc(d.our_stage || '（无）') + '　<span class="muted">排货表 ' + Shell.esc(d.sheet_state) + '</span>' +
+        '</span></div>' +
+        '<div class="dual__row dual__row--ext"><span class="dual__label">领星</span><span class="dual__val">' +
+          Shell.esc(d.lingxing_stage || '（还没有进度）') +
+          (d.ext_refs && d.ext_refs.length
+            ? '　' + Shell.esc(d.ext_refs.map(function (r) { return r.kind + ' ' + r.doc_no; }).join('　'))
+            : '　（没有单据）') +
+        '</span></div>' +
+        '</div>';
+
+      if (conflict) {
+        html += '<p class="mt"><span class="stale">两轴不一致</span>　' + Shell.esc(conflict) + '</p>';
+      }
+
+      if (d.cid !== null && d.dest) {
+        var dest = d.channel === 'fba'
+          ? ('店铺 sid ' + (d.dest.sid || '（缺）') + ' · FC ' + (d.dest.fc || '（缺）'))
+          : ('目的仓 wid ' + (d.dest.wid || '（缺）'));
+        html += '<p class="muted">目的地：' + Shell.esc(dest) + '</p>';
+      }
+      html += '</div></div>';
+    });
+  }
+  html += '</div></div></div>';
+
+  /* ============================================================
+     4) 时间线
+     ============================================================ */
+
+  html += '<div class="sec"><div class="sec__title">时间线　<span class="muted">每一步由什么事实驱动</span></div>';
+  if (!t.events.length) {
+    html += '<p class="muted">没有事件 —— 这不正常，记录至少应该有一条「提交」。</p>';
+  } else {
+    html += '<div class="flow">';
+    t.events.forEach(function (e) {
+      html += '<div class="flow__item' + (e.by === '每日回执' ? ' flow__item--tick' : '') + '">' +
+        '<span class="flow__no"></span>' +
+        '<span class="flow__who">' + Shell.esc(e.by || '系统') + '</span>' +
+        '<span class="flow__what"><strong>' + Shell.esc(e.from || '（新建）') + ' → ' + Shell.esc(e.to) + '</strong>' +
+        '　<span class="muted">' + Shell.esc(e.day) + '</span>' +
+        '<div class="muted">由此事实驱动：' + Shell.esc(e.fact || '（没记 fact —— 这是个缺陷，事后就查不出为什么动了）') + '</div>' +
+        '</span></div>';
+    });
+    html += '</div>';
+  }
+  html += '</div>';
+
+  /* ============================================================
+     5) 还没发生的下一步在等什么事实
+     ============================================================ */
+
+  html += '<div class="sec"><div class="sec__title">下一步在等什么事实</div>';
+  html += '<div class="flash">' + nextWaits() + '</div>';
+  html += '<p class="muted mt">★ 到货与领星回执<strong>不是点按钮能跳过的</strong> —— ' +
+    '它们是外部事实，要点顶部的「⏩ 推进一天」才会发生。</p>';
+  html += '<p class="mt"><a href="ops.html?plan=' + encodeURIComponent(line.plan_id) + '">← 回运营看板</a></p>';
+  html += '</div>';
+
+  body.innerHTML = html;
+
+  /* ---------- 两条恒等式：当场验（过的也列，和确认闸同一套呈现） ---------- */
+  renderIdentities([
+    {
+      code: 'I1',
+      name: '已排未发 + 已投送 ≤ 总量',
+      pass: (q.staged + q.dispatched) <= q.total,
+      detail: '已排未发 ' + q.staged + ' + 已投送 ' + q.dispatched + ' = ' + (q.staged + q.dispatched) +
+        (((q.staged + q.dispatched) <= q.total)
+          ? ' ≤ 总量 ' + q.total + '　（待排 ' + q.pending + ' 件）'
+          : ' > 总量 ' + q.total + '　★ 同一批需求被排了两遍 —— G4 账本水位没拦住')
+    },
+    {
+      code: 'I2',
+      name: '已下单 ≤ 已确认 ≤ 总量',
+      pass: (q.ordered <= q.confirmed) && (q.confirmed <= q.total),
+      detail: '已下单 ' + q.ordered + ' ≤ 已确认 ' + q.confirmed + ' ≤ 总量 ' + q.total +
+        ((q.ordered <= q.confirmed && q.confirmed <= q.total)
+          ? '　（已下单是已确认的子集：只算 state=「已下单」的采购单）'
+          : '　★ ' + (q.ordered > q.confirmed
+              ? '已下单 > 已确认 —— 有下了单却不在已确认口径里的量'
+              : '已确认 > 总量 —— 组单超额，buildPo 的 over_confirmed 校验被绕过了'))
+    }
+  ]);
+
+  /* ★ 过的也列：只列失败项，人就不知道另一条到底跑没跑 */
+  function renderIdentities(list) {
+    var node = document.getElementById('identities');
+    if (!node) {
+      console.error('[trace] identities.target-missing', { hint: '页面上应有 <div id="identities">；本次恒等式没渲染出来' });
+      return;
+    }
+    var passed = list.filter(function (g) { return g.pass; }).length;
+    var h = '<div class="gate"><div class="gate__sum">恒等式 ' + passed + ' / ' + list.length + ' 条成立' +
+      (passed === list.length ? '　—— 两条都当场算过了' : '　—— ★ 有不成立的，这条记录的量已经不可信') + '</div>';
+    list.forEach(function (g) {
+      h += '<div class="gate__item gate__item--' + (g.pass ? 'pass' : 'fail') + '">' +
+        '<span class="gate__code">' + Shell.esc(g.code) + '</span>' + Shell.esc(g.name) +
+        '<span class="gate__detail">' + Shell.esc(g.detail) + '</span></div>';
+    });
+    node.innerHTML = h + '</div>';
+  }
+
+  function nextWaits() {
+    var s = line.state;
+    if (s === ST.CANCELLED) {
+      return '<p>' + Shell.chip('已撤销', 'fail') +
+        '　这条记录被新 rev 取代，且当时一点进展都没有，所以随旧版作废了。它不会再往前走。</p>';
+    }
+    if (s === ST.CLOSED) {
+      return '<p>' + Shell.chip('已完结', 'ok') + '　没有下一步了 —— 关联排货单的领星进度全部 = 已完成。</p>';
+    }
+    var need;
+    if (s === ST.SUBMITTED) {
+      need = ['等：<strong>采购把这条记录组进采购单</strong>，且已确认量 = 总量（木桶）。' +
+        '当前 ' + q.confirmed + ' / ' + q.total + '，还差 <strong>' + (q.total - q.confirmed) + '</strong> 件。',
+        '★ 部分组单不算数：木桶不满，状态就不动 —— 这正是「看起来在推进、其实没人接」的唯一防线。'];
+    } else if (s === ST.CONFIRMED) {
+      need = ['等：<strong>关联采购单全部「⛔ 下单」</strong>，已下单量 = 总量（木桶）。' +
+        '当前 ' + q.ordered + ' / ' + q.total + '，还差 <strong>' + (q.total - q.ordered) + '</strong> 件。',
+        '★ 反向也可能发生：组单被撤掉，木桶不再满 → 自动退回「已提交」。这是唯一的自动回退。'];
+    } else if (s === ST.ORDERED) {
+      need = ['等：<strong>关联采购单有任一到货</strong>（status_shipped ∈ {2, 3}）—— 布尔判据，<strong>不要求全到</strong>，也不摊分到货量。',
+        '货是一批批来的，等全到齐再排，货就白躺在仓里。',
+        '★ 这是外部事实：点顶部「⏩ 推进一天」。下单后第 2 天到约 60%，第 5 天补齐。'];
+    } else if (s === ST.READY) {
+      need = ['等：<strong>排货员把它编进排货单并投送</strong>，已投送量 = 总量（木桶，★ 只认已投送/已归档，不认草稿）。' +
+        '当前已投送 ' + q.dispatched + ' / ' + q.total + '，待排 <strong>' + q.pending + '</strong> 件。',
+        (q.staged > 0
+          ? '★ 已有 ' + q.staged + ' 件处于「已排未发」（其中待编排池 ' + q.pooled + ' 件）—— ' +
+            '这部分已经占住了名额，但还没真的投送出去，状态不会因为它前进。'
+          : '★ 一件都还没捡进排货表；本地仓有没有货由排货台的可发量说了算，最终由确认闸 G3 兜底。')];
+    } else if (s === ST.SCHEDULED) {
+      need = ['等：<strong>关联排货单的领星进度全部 = 已完成</strong>。',
+        '★ 这是外部事实：点顶部「⏩ 推进一天」，已投送的排货单每天沿 待配货 → 待发货 → 待收货 → 已完成 前进一档。'];
+    } else {
+      need = ['认不出的状态「' + Shell.esc(s) + '」—— 这本身就是缺陷，不要当成「没有下一步」。'];
+    }
+    return need.map(function (x) { return '<p>' + x + '</p>'; }).join('');
+  }
+})();
+</script>
+
+</body>
+</html>
