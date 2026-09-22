@@ -52,7 +52,7 @@ def list_plans(request: Request, who: str | None = Depends(actor_optional)):
            " p.archived_at, v.overall, v.state_rev"
            " FROM plan p JOIN v_plan_overall_state v USING (plan_id)"
            f" WHERE {' AND '.join(where)} ORDER BY p.plan_id DESC")
-    with pg_conn() as c, c.cursor() as cur:
+    with timed("list_plans", actor=who), pg_conn() as c, c.cursor() as cur:
         cur.execute(sql, args)
         # ★ 对外的字段名是 state（裁定第 3 条）；库里的列叫 overall，
         #   两边同名反而会让人以为它是张表上的字段 —— 它是派生的

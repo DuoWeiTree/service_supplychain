@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 
 from api.ui.deps import actor_optional, declared
-from shared.pg_client import business_schema, pg_conn
+from shared.pg_client import business_schema, pg_conn, timed
 
 health_router = APIRouter()
 system_router = APIRouter()
@@ -18,7 +18,7 @@ def health():
 @system_router.get("/readiness")
 def readiness(request: Request, who: str | None = Depends(actor_optional)):
     declared(request)
-    with pg_conn() as c, c.cursor() as cur:
+    with timed("readiness"), pg_conn() as c, c.cursor() as cur:
         cur.execute("SELECT mirror, refreshed_at FROM v_mirror_freshness ORDER BY mirror")
         mirrors = [{"mirror": m, "refreshed_at": a.isoformat() if a else None}
                    for m, a in cur.fetchall()]
