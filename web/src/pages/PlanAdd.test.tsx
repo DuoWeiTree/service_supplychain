@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import type { CatalogResult } from '../api/types';
@@ -110,7 +110,7 @@ describe('批量添加', () => {
     await userEvent.click(screen.getByRole('button', { name: '添加' }));
 
     const report = await screen.findByTestId('claim-report');
-    expect(report).toHaveTextContent('成功 1');
+    expect(report).toHaveTextContent('已添加 1');
     expect(report).toHaveTextContent('被拒 1');
     // ★ 被拒的那一条要说出是被谁占着 —— 只说「被拒 1」等于没说
     expect(within(report).getByText(/2026 Q3 补货计划/)).toBeInTheDocument();
@@ -124,7 +124,7 @@ describe('批量添加', () => {
     await userEvent.click(within(screen.getByTestId('msku-MSKU-W')).getByRole('checkbox'));
     await userEvent.click(screen.getByRole('button', { name: '添加' }));
     const report = await screen.findByTestId('claim-report');
-    expect(report).toHaveTextContent('成功 1');
+    expect(report).toHaveTextContent('已添加 1');
     expect(report).toHaveTextContent('被拒 1');
   });
 
@@ -175,7 +175,7 @@ describe('批量添加', () => {
 
     await screen.findByTestId('claim-report');
     const status = screen.getByRole('status');
-    expect(status).toHaveTextContent('已加入 2 个 msku');
+    expect(status).toHaveTextContent('已添加 2 个 msku');
     expect(status).toHaveTextContent('1 个没有销售历史，系统预估为空，需要人填');
     // ★ 页面文案不许出现西式中点 —— 这正是 team-lead 的裁定
     expect(status.textContent).not.toContain('·');
@@ -186,5 +186,124 @@ describe('批量添加', () => {
     // 标记要留到会话结束：重新搜索刷新结果之后仍然看得见
     await search('SKU-1');
     expect(await screen.findByTestId('no-history-MSKU-A')).toBeInTheDocument();
+  });
+
+  // ★ Finding 1（review）：add() 在认领循环跑完之前 picked 不清空，按钮也没有「在飞」态 ——
+  // 双击会用同一份 picked 快照并发跑两次 add()，向同一批 msku 发出两倍的 claim 请求。
+  // 用同步的 fireEvent.click 连打两次（不像 userEvent 那样在两次点击之间等待微任务落定），
+  // 逼出这条竞态：真正的护栏必须在 add() 入口同步早退，不能只靠 UI 层"看起来"禁用了。
+  it('★ 添加在飞时禁用并防重入：双击只产生一份认领批次', async () => {
+    const { ApiError } = await import('../api/client');
+    const claimCalls: { seller_sku: string; sid: string }[] = [];
+    vi.doMock('../api', () => ({
+      ApiError,
+      api: {
+        searchCatalog: async (q: { q?: string }) =>
+          !q.q ? { need_query: true, truncated: false, limit: 50, items: [] }
+               : JSON.parse(JSON.stringify(CATALOG)) as CatalogResult,
+        claim: async (_p: number, t: { seller_sku: string; sid: string }) => {
+          claimCalls.push({ seller_sku: t.seller_sku, sid: t.sid });
+          return { claimed: { seller_sku: t.seller_sku, sid: t.sid, sku: 'SKU-1' },
+                   seeded: { demand_cells: 0, purchase_cells: 0 }, no_history: [] };
+        },
+      },
+    }));
+    const { PlanAdd } = await import('./PlanAdd');
+    render(
+      <MemoryRouter initialEntries={['/plans/1/add']}>
+        <Routes><Route path="/plans/:planId/add" element={<PlanAdd />} /></Routes>
+      </MemoryRouter>,
+    );
+    await search('SKU-1');
+    await userEvent.click(within(await screen.findByTestId('msku-MSKU-A')).getByRole('checkbox'));
+    await userEvent.click(within(screen.getByTestId('msku-MSKU-W')).getByRole('checkbox'));
+
+    const button = screen.getByRole('button', { name: '添加' });
+    fireEvent.click(button);
+    fireEvent.click(button);
+
+    await screen.findByTestId('claim-report');
+    // ★ 两个 msku、一次批次 —— 不是两个 msku × 两次点击 = 四次
+    expect(claimCalls).toHaveLength(2);
+    expect(screen.getAllByTestId('claim-report')).toHaveLength(1);
+  });
+
+  // ★ Finding 3（review）：brief fixture 里 SKU-1 的三个 msku 互不同名（MSKU-A/C/W），
+  // 从未出现"同一 seller_sku、不同 sid"这个 CLAUDE.md 明确点名的真实场景（同一 msku 字符串
+  // 在不同店铺下是不同 listing）。这里单独造一份 fixture 补上，钉住 key() 真的按 sid 分开。
+  it('★ 同一 seller_sku 在不同 sid 下是不同 listing：勾一行不影响另一行的认领', async () => {
+    const DUAL_STORE: CatalogResult = {
+      need_query: false, truncated: false, limit: 50,
+      items: [
+        { sku: 'SKU-9', name: '猫抓板',
+          mskus: [
+            { seller_sku: 'MSKU-DUAL', sid: '11072', seller_name: 'A4Pet-US', selectable: true, claimed_by: null },
+            { seller_sku: 'MSKU-DUAL', sid: '11094', seller_name: 'A4Pet-BS-UK', selectable: true, claimed_by: null },
+          ],
+          unbuildable_sellers: [], claimed_by: null, claimed_by_plans: [] },
+      ],
+    };
+    const { ApiError } = await import('../api/client');
+    const claimCalls: { seller_sku: string; sid: string }[] = [];
+    vi.doMock('../api', () => ({
+      ApiError,
+      api: {
+        searchCatalog: async (q: { q?: string }) =>
+          !q.q ? { need_query: true, truncated: false, limit: 50, items: [] }
+               : JSON.parse(JSON.stringify(DUAL_STORE)) as CatalogResult,
+        claim: async (_p: number, t: { seller_sku: string; sid: string }) => {
+          claimCalls.push({ seller_sku: t.seller_sku, sid: t.sid });
+          return { claimed: { seller_sku: t.seller_sku, sid: t.sid, sku: 'SKU-9' },
+                   seeded: { demand_cells: 0, purchase_cells: 0 }, no_history: [] };
+        },
+      },
+    }));
+    const { PlanAdd } = await import('./PlanAdd');
+    render(
+      <MemoryRouter initialEntries={['/plans/1/add']}>
+        <Routes><Route path="/plans/:planId/add" element={<PlanAdd />} /></Routes>
+      </MemoryRouter>,
+    );
+    await search('SKU-9');
+
+    // ★ 两行共用同一个 seller_sku，data-testid 因而也相同 —— 用 findAllByTestId 各自取出
+    const rows = await screen.findAllByTestId('msku-MSKU-DUAL');
+    expect(rows).toHaveLength(2);
+    const [rowA, rowB] = rows as [HTMLElement, HTMLElement];
+    await userEvent.click(within(rowA).getByRole('checkbox'));
+    expect(within(rowB).getByRole('checkbox')).not.toBeChecked();
+
+    await userEvent.click(screen.getByRole('button', { name: '添加' }));
+    await screen.findByTestId('claim-report');
+
+    expect(claimCalls).toHaveLength(1);
+    expect(claimCalls[0]).toEqual({ seller_sku: 'MSKU-DUAL', sid: '11072' });
+  });
+
+  // ★ Finding（review「其它核对」）：search() 的 catch 只设置 err state，result 保持不变，
+  // 理论上不会回退成"查不到"；但此前没有测试真的让 searchCatalog 抛错去验证这条路径。
+  it('★ 搜索报错走 ErrorDetail，不回退成「查不到」', async () => {
+    const { ApiError } = await import('../api/client');
+    vi.doMock('../api', () => ({
+      ApiError,
+      api: {
+        searchCatalog: async () => {
+          throw new ApiError(503, 'mirror_stale', '目录镜像过期，稍后重试');
+        },
+        claim: async () => { throw new Error('本用例不应调用 claim'); },
+      },
+    }));
+    const { PlanAdd } = await import('./PlanAdd');
+    render(
+      <MemoryRouter initialEntries={['/plans/1/add']}>
+        <Routes><Route path="/plans/:planId/add" element={<PlanAdd />} /></Routes>
+      </MemoryRouter>,
+    );
+    await search('SKU-1');
+
+    expect(await screen.findByText('目录镜像过期，稍后重试')).toBeInTheDocument();
+    expect(screen.getByText('503 mirror_stale')).toBeInTheDocument();
+    // ★ 报错 ≠ 查不到：不许把请求失败悄悄显示成「没有命中的货号」
+    expect(screen.queryByTestId('no-hit')).toBeNull();
   });
 });

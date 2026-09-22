@@ -10,7 +10,7 @@ interface Outcome {
   seller_sku: string;
   sid: string;
   ok: boolean;
-  /** 成功给「已认领」；失败给后端的 hint（人话），不是裸错误码 */
+  /** 成功给「已添加」（与按钮/toast 同一动词）；失败给后端的 hint（人话），不是裸错误码 */
   hint: string;
   /** ★ 被拒时点名是被谁占的；不预先拼成一句话，留给渲染层分开落地（判据①1） */
   holder: ClaimHolder | null;
@@ -28,6 +28,9 @@ export function PlanAdd() {
   // ★ 没有历史 ≠ 预估 0（api/ui/plans.py:163-170）：认领这一下点了名，
   //   标记要留到本次会话结束，不是闪一下 toast 就没了
   const [noHistory, setNoHistory] = useState<Set<string>>(new Set());
+  // ★ 与 PlanGrid.tsx 同一护栏模式（pending + disabled + 入口早退）：认领在飞时
+  //   按钮与勾选框一起置灰，防止双击对同一批 msku 发出重复请求
+  const [adding, setAdding] = useState(false);
 
   const key = (m: { seller_sku: string; sid: string }) => `${m.seller_sku}/${m.sid}`;
 
@@ -48,33 +51,41 @@ export function PlanAdd() {
   }
 
   async function add() {
-    const targets = result.items.flatMap((s) => s.mskus).filter((m) => picked.has(key(m)));
-    const out: Outcome[] = [];
-    const freshNoHistory: string[] = [];
-    for (const m of targets) {
-      try {
-        const r = await api.claim(planId, { seller_sku: m.seller_sku, sid: m.sid });
-        out.push({ seller_sku: m.seller_sku, sid: m.sid, ok: true, hint: '已认领', holder: null });
-        for (const h of r.no_history ?? []) freshNoHistory.push(`${h.seller_sku}/${h.sid}`);
-      } catch (e) {
-        const ae = e as ApiError;
-        // ★ 原则五：一次列全，不是修一条报一条 —— 被拒的继续往下做，最后一起交代
-        out.push({ seller_sku: m.seller_sku, sid: m.sid, ok: false, hint: ae.hint, holder: holderFrom(ae) });
+    // ★ 入口早退：与 PlanGrid.tsx 的 pending 早退同一形状，防双击并发发出重复认领请求
+    if (adding) return;
+    setAdding(true);
+    try {
+      const targets = result.items.flatMap((s) => s.mskus).filter((m) => picked.has(key(m)));
+      const out: Outcome[] = [];
+      const freshNoHistory: string[] = [];
+      for (const m of targets) {
+        try {
+          const r = await api.claim(planId, { seller_sku: m.seller_sku, sid: m.sid });
+          // ★ 动作一名到底：按钮「添加」→ toast「已添加」→ 这里的「已添加」，不再混用「已认领/加入/成功」
+          out.push({ seller_sku: m.seller_sku, sid: m.sid, ok: true, hint: '已添加', holder: null });
+          for (const h of r.no_history ?? []) freshNoHistory.push(`${h.seller_sku}/${h.sid}`);
+        } catch (e) {
+          const ae = e as ApiError;
+          // ★ 原则五：一次列全，不是修一条报一条 —— 被拒的继续往下做，最后一起交代
+          out.push({ seller_sku: m.seller_sku, sid: m.sid, ok: false, hint: ae.hint, holder: holderFrom(ae) });
+        }
       }
+      setReport(out);
+      setPicked(new Set());
+      if (freshNoHistory.length > 0) {
+        setNoHistory((s) => { const n = new Set(s); freshNoHistory.forEach((k) => n.add(k)); return n; });
+      }
+      await search();
+      const bad = out.filter((o) => !o.ok).length;
+      const ok = out.length - bad;
+      // ★ 页面文案不用西式中点拼句 —— 分句用中文标点，占用方另起结构化片段
+      let text = `已添加 ${ok} 个 msku`;
+      if (bad > 0) text += `；被拒 ${bad}`;
+      if (freshNoHistory.length > 0) text += `；${freshNoHistory.length} 个没有销售历史，系统预估为空，需要人填`;
+      pushToast({ kind: bad === 0 ? 'ok' : 'warn', text });
+    } finally {
+      setAdding(false);
     }
-    setReport(out);
-    setPicked(new Set());
-    if (freshNoHistory.length > 0) {
-      setNoHistory((s) => { const n = new Set(s); freshNoHistory.forEach((k) => n.add(k)); return n; });
-    }
-    await search();
-    const bad = out.filter((o) => !o.ok).length;
-    const ok = out.length - bad;
-    // ★ 页面文案不用西式中点拼句 —— 分句用中文标点，占用方另起结构化片段
-    let text = `已加入 ${ok} 个 msku`;
-    if (bad > 0) text += `；被拒 ${bad}`;
-    if (freshNoHistory.length > 0) text += `；${freshNoHistory.length} 个没有销售历史，系统预估为空，需要人填`;
-    pushToast({ kind: bad === 0 ? 'ok' : 'warn', text });
   }
 
   const unbuildable = result.items.flatMap((s) => s.unbuildable_sellers.map((u) => ({ ...u, sku: s.sku })));
@@ -85,7 +96,7 @@ export function PlanAdd() {
         <div className="head__main"><h1>添加货品</h1></div>
         <div className="head__act">
           <span className="muted" data-testid="picked">已选 {picked.size}</span>
-          <button type="button" className="btn btn--primary" disabled={picked.size === 0} onClick={() => void add()}>添加</button>
+          <button type="button" className="btn btn--primary" disabled={picked.size === 0 || adding} onClick={() => void add()}>添加</button>
           <Link className="btn btn--ghost" to={`/plans/${planId}`}>返回网格</Link>
         </div>
       </div>
@@ -146,7 +157,7 @@ export function PlanAdd() {
                       <input
                         type="checkbox"
                         aria-label={`认领 ${m.seller_sku}`}
-                        disabled={!m.selectable}
+                        disabled={!m.selectable || adding}
                         checked={picked.has(key(m))}
                         onChange={() => toggle(m)}
                       />
@@ -178,7 +189,7 @@ export function PlanAdd() {
       {report && (
         <div className="sec" data-testid="claim-report">
           <div className="gate__sum">
-            成功 {report.filter((r) => r.ok).length}；被拒 {report.filter((r) => !r.ok).length}
+            已添加 {report.filter((r) => r.ok).length}；被拒 {report.filter((r) => !r.ok).length}
           </div>
           <ul>
             {report.map((r) => (
