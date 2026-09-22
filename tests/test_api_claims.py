@@ -1,0 +1,179 @@
+import threading
+
+import psycopg2.errors
+import pytest
+
+from shared.pg_client import pg_conn
+
+
+def H(a):
+    return {"x-actor": a}
+
+
+def mk(client, seed, title="10 月计划"):
+    return client.post("/v1/plans", json={"title": title, "period_start": "2026-10-01",
+                                          "months": 3}, headers=H(seed.actor)).json()["plan_id"]
+
+
+def test_catalog_without_a_query_deliberately_returns_nothing(client, seed):
+    """★ P11：不给条件 → 故意不返回，且必须与「查不到」长得不一样。"""
+    r = client.get("/v1/catalog/skus", headers=H(seed.actor)).json()
+    assert r["need_query"] is True and r["items"] == [] and r["matched"] == 0
+    miss = client.get("/v1/catalog/skus", params={"q": "ZZZ"}, headers=H(seed.actor)).json()
+    assert miss["need_query"] is False and miss["items"] == [] and miss["matched"] == 0
+
+
+def test_claimed_rows_stay_in_the_table_marked(client, seed):
+    """★ P11：被占用的行留在表里标出来，不过滤 ——
+    过滤掉，人永远不知道「我要的那个为什么没出现」。"""
+    p1 = mk(client, seed)
+    client.post(f"/v1/plans/{p1}/claims",
+                json={"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]}, headers=H(seed.actor))
+    items = client.get("/v1/catalog/skus", params={"q": seed.sku_a},
+                       headers=H(seed.actor)).json()["items"]
+    m = [x for x in items[0]["mskus"] if x["seller_sku"] == seed.msku_a[0]][0]
+    assert m["selectable"] is False and m["claimed_by"]["plan_id"] == p1
+    assert items[0]["claimed_by"] == {"plan_id": p1, "title": "10 月计划"}
+
+
+def test_a_sku_held_by_two_plans_does_not_pick_one(client, seed):
+    """★ 两张计划各占该货号的一部分 msku 时，货号级 claimed_by 挑一个显示就是编。
+    留 null，名单放 claimed_by_plans —— 「一个答案说不清」要看得出来。"""
+    p1, p2 = mk(client, seed), mk(client, seed, title="另一张")
+    client.post(f"/v1/plans/{p1}/claims",
+                json={"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]}, headers=H(seed.actor))
+    client.post(f"/v1/plans/{p2}/claims",
+                json={"seller_sku": seed.msku_c[0], "sid": seed.msku_c[1]}, headers=H(seed.actor))
+    item = client.get("/v1/catalog/skus", params={"q": seed.sku_a},
+                      headers=H(seed.actor)).json()["items"][0]
+    assert item["claimed_by"] is None
+    assert [x["plan_id"] for x in item["claimed_by_plans"]] == [p1, p2]
+
+
+def test_unbuildable_sellers_is_empty_for_a_stated_reason(client, seed):
+    """★ 这个数组在阶段 A 恒空，成因是 seller 镜像里没有渠道码列。
+
+    盯住列本身：渠道码一进表，这条测试转红，逼 catalog 长出真的判据（06 §1.2）——
+    否则它会永远空着，而「没有建不出的店」和「我们根本没判」长得一样。
+    """
+    from shared.pg_client import pg_conn
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT column_name FROM information_schema.columns"
+                    " WHERE table_schema = current_schema() AND table_name = 'seller'")
+        cols = {r[0] for r in cur.fetchall()}
+    assert "channel_code" not in cols, "seller 有渠道码了 —— 去实现 unbuildable_sellers"
+    item = client.get("/v1/catalog/skus", params={"q": seed.sku_a},
+                      headers=H(seed.actor)).json()["items"][0]
+    assert item["unbuildable_sellers"] == []
+
+
+def test_truncation_is_reported_with_the_limit(client, seed):
+    body = client.get("/v1/catalog/skus", params={"q": "MSKU", "limit": 1},
+                      headers=H(seed.actor)).json()
+    assert body["truncated"] is True and body["limit"] == 1 and len(body["items"]) == 1
+
+
+def test_sellers_dimension_carries_market_and_has_fba(client, seed):
+    rows = client.get("/v1/sellers", headers=H(seed.actor)).json()["sellers"]
+    wm = [r for r in rows if r["seller_id"] == seed.seller_nofba][0]
+    assert wm == {"seller_id": seed.seller_nofba, "name": "A4Pet-WM", "market": "US",
+                  "has_fba": False, "platform": "walmart"}
+
+
+def test_claim_seeds_both_grids_and_names_mskus_without_history(client, seed):
+    p = mk(client, seed)
+    r = client.post(f"/v1/plans/{p}/claims",
+                    json={"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]},
+                    headers=H(seed.actor)).json()
+    assert r["seeded"] == {"demand_cells": 3, "purchase_cells": 3}
+    assert r["no_history"] == []
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT period_start, system_units, system_extrapolated, expected_units"
+                    " FROM plan_demand_cell WHERE plan_id = %s ORDER BY period_start", (p,))
+        rows = cur.fetchall()
+    # fixture 里 MSKU-A 的历史是 100/120/90，计划 3 个月 → 不外推
+    assert [r[1] for r in rows] == [100, 120, 90]
+    assert [r[2] for r in rows] == [False, False, False]
+    assert [r[3] for r in rows] == [None, None, None], "★ 人填列留空 = 未知，不预填"
+
+
+def test_msku_without_history_is_seeded_null_and_named(client, seed):
+    """★ 没有历史 ≠ 预估 0。格子照建，system_units 留 NULL，并在返回里点名。"""
+    p = mk(client, seed)
+    r = client.post(f"/v1/plans/{p}/claims",
+                    json={"seller_sku": seed.msku_nofba[0], "sid": seed.msku_nofba[1]},
+                    headers=H(seed.actor)).json()
+    assert r["no_history"] == [{"seller_sku": seed.msku_nofba[0], "sid": seed.msku_nofba[1],
+                                "reason": "no_sales_history"}]
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT DISTINCT system_units FROM plan_demand_cell WHERE plan_id = %s", (p,))
+        assert cur.fetchall() == [(None,)]
+
+
+def test_second_plan_claiming_the_same_msku_is_409_and_names_the_holder(client, seed):
+    """★ 判据③ 的接口那一半。"""
+    p1, p2 = mk(client, seed), mk(client, seed, title="另一张")
+    body = {"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]}
+    assert client.post(f"/v1/plans/{p1}/claims", json=body, headers=H(seed.actor)).status_code == 200
+    r = client.post(f"/v1/plans/{p2}/claims", json=body, headers=H(seed.actor))
+    assert r.status_code == 409 and r.json()["error"] == "msku_already_claimed"
+    assert r.json()["claimed_by"] == {"plan_id": p1, "actor": seed.actor}
+
+
+def test_two_connections_racing_for_the_same_msku(client, seed):
+    """★ 判据③ 的库层那一半：先查后写挡不住并发，部分唯一索引能。
+
+    B 在 A 未提交时插同一把键 → 必须**阻塞**；A 提交后 B 收到唯一冲突。
+    只跑「A 提交完 B 再插」的话，证明的是「重复插入被拒」，不是竞态。
+    """
+    p1, p2 = mk(client, seed), mk(client, seed, title="另一张")
+    err, started = [], threading.Event()
+
+    def other():
+        started.set()
+        try:
+            with pg_conn() as c, c.cursor() as cur:
+                cur.execute("INSERT INTO msku_claim (plan_id, seller_sku, sid, claimed_by)"
+                            " VALUES (%s, %s, %s, %s)", (p2, *seed.msku_a, seed.actor))
+        except psycopg2.errors.UniqueViolation as e:
+            err.append(e)
+
+    conn = psycopg2.connect  # noqa: F841  （用 pg_conn 拿一条独立连接）
+    with pg_conn() as a, a.cursor() as cur:
+        cur.execute("INSERT INTO msku_claim (plan_id, seller_sku, sid, claimed_by)"
+                    " VALUES (%s, %s, %s, %s)", (p1, *seed.msku_a, seed.actor))
+        t = threading.Thread(target=other)
+        t.start()
+        started.wait(1)
+        t.join(timeout=0.5)
+        assert t.is_alive(), "★ B 没有被挡住 —— 唯一索引没生效，或它根本没走到插入"
+        # 退出 with → A 提交 → B 被唤醒并撞上唯一索引
+    t.join(timeout=5)
+    assert not t.is_alive() and len(err) == 1
+
+
+def test_release_keeps_the_row_and_names_the_cells_it_drops(client, seed):
+    """★ 释放不删行；而被一起删掉的期望销量格子必须逐条点名 ——
+    「少了几个数」在界面上是看不出来的。"""
+    p = mk(client, seed)
+    body = {"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]}
+    client.post(f"/v1/plans/{p}/claims", json=body, headers=H(seed.actor))
+    client.put(f"/v1/plans/{p}/demand/{seed.msku_a[0]}/{seed.msku_a[1]}/2026-10",
+               json={"expected_units": 130}, headers=H(seed.actor))
+    r = client.delete(f"/v1/plans/{p}/claims/{seed.msku_a[0]}/{seed.msku_a[1]}",
+                      headers=H(seed.actor)).json()
+    assert {"period": "2026-10", "expected_units": 130} in r["dropped_cells"]
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT released_at IS NOT NULL FROM msku_claim WHERE plan_id = %s", (p,))
+        assert cur.fetchone()[0] is True
+
+
+def test_reclaiming_in_the_same_plan_revives_the_row(client, seed):
+    p = mk(client, seed)
+    body = {"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]}
+    client.post(f"/v1/plans/{p}/claims", json=body, headers=H(seed.actor))
+    client.delete(f"/v1/plans/{p}/claims/{seed.msku_a[0]}/{seed.msku_a[1]}", headers=H(seed.actor))
+    assert client.post(f"/v1/plans/{p}/claims", json=body, headers=H(seed.actor)).status_code == 200
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT count(*) FROM msku_claim WHERE plan_id = %s", (p,))
+        assert cur.fetchone()[0] == 1, "★ 复认领是复活那一行，不是新插一行（主键就在那）"
