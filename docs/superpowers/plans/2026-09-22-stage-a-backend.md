@@ -74,7 +74,8 @@
   "sku_pipeline":[{"sku": "", "period": "YYYY-MM", "units": 0,
                    "sources": [], "no_seller_attribution": true}]
 }
-// 2. POST /v1/plans/{id}/submit → {"rev": 1, "lines": 3, "skipped": [{"sku","period","reason"}]}
+// 2. POST /v1/plans/{id}/submit → {"rev": 1, "lines": 3, "skipped": [{"sku","period","reason"}],
+//                                  "in_flight": true, "content_digest": "…"}   // 后两个也是保证的，不是可选
 //    旧版在流转 → 409 {"error": "rev_in_flight", "hint": "...", "in_flight_rev": 1}
 //    ★ code 一律 rev_in_flight，不用 another_rev_in_flight
 // 3. GET /v1/plans        每项含 "state": string|null —— ★ 从未提交返回 null，不是「已撤销」

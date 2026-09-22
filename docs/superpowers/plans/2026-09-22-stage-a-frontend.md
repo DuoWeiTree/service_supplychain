@@ -904,7 +904,14 @@ export interface CatalogResult {
 
 export interface ClaimTarget { seller_sku: string; sid: Sid }
 export interface ClaimResult { claimed: { seller_sku: string; sid: Sid; sku: string } }
-export interface ReleaseResult { released: { seller_sku: string; sid: Sid }; dropped_cells: number }
+// ★ 后端把丢掉的格逐条回给界面（含人填过的数），不是一个数；货号级采购格不删、只点名「搁浅」
+export interface DroppedCell { period: string; expected_units: number | null }
+export interface StrandedPurchaseCell { sku: string; period: string }
+export interface ReleaseResult {
+  released: { seller_sku: string; sid: Sid };
+  dropped_cells: DroppedCell[];
+  stranded_purchase_cells: StrandedPurchaseCell[];
+}
 
 /** S-14：值域已裁定，只有这两个 */
 export type SkipReason = 'zero_purchase' | 'no_claimed_msku';
@@ -1418,7 +1425,7 @@ export function createMockApi(): SupplyChainApi {
     async releaseClaim(_planId, sellerSku, sid) {
       const msku = catalog.items.flatMap((s) => s.mskus).find((m) => m.seller_sku === sellerSku && m.sid === sid);
       if (msku) { msku.selectable = true; msku.claimed_by = null; }   // ★ 释放不删行
-      return { released: { seller_sku: sellerSku, sid }, dropped_cells: 0 };
+      return { released: { seller_sku: sellerSku, sid }, dropped_cells: [], stranded_purchase_cells: [] };
     },
 
     async submit(planId) {
@@ -2628,7 +2635,7 @@ async function renderGrid(grid: GridResponse = makeGrid()) {
         c.planned_units = units;
         return c;
       },
-      releaseClaim: async () => ({ released: { seller_sku: '', sid: '' }, dropped_cells: 0 }),
+      releaseClaim: async () => ({ released: { seller_sku: '', sid: '' }, dropped_cells: [], stranded_purchase_cells: [] }),
       submit: async () => ({ rev: 1, lines: 1, in_flight: true, content_digest: 'x', skipped: [] }),
     },
   }));
@@ -2866,7 +2873,7 @@ export function PlanGrid() {
   async function removeSku(block: SkuBlock) {
     let dropped = 0;
     for (const row of block.mskus) {
-      dropped += (await api.releaseClaim(planId, row.seller_sku, row.sid)).dropped_cells;
+      dropped += (await api.releaseClaim(planId, row.seller_sku, row.sid)).dropped_cells.length;
     }
     await load();
     pushToast({ kind: 'ok', text: `${block.sku} 移出 ${block.mskus.length} 个 msku · 丢弃 ${dropped} 格` });
@@ -2875,7 +2882,7 @@ export function PlanGrid() {
   async function removeMsku(sellerSku: string, sid: string) {
     const { dropped_cells } = await api.releaseClaim(planId, sellerSku, sid);
     await load();
-    pushToast({ kind: 'ok', text: `${sellerSku} 已移出 · 丢弃 ${dropped_cells} 格` });
+    pushToast({ kind: 'ok', text: `${sellerSku} 已移出 · 丢弃 ${dropped_cells.length} 格` });
   }
 
   const toggle = (key: string) => setExpanded((s) => {
@@ -4002,7 +4009,7 @@ async function renderGrid(submit: () => Promise<SubmitResult>) {
       getGrid: async () => JSON.parse(JSON.stringify(GRID)) as GridResponse,
       putDemand: async () => GRID.demand[0]!,
       putPurchase: async () => GRID.purchase[0]!,
-      releaseClaim: async () => ({ released: { seller_sku: '', sid: '' }, dropped_cells: 0 }),
+      releaseClaim: async () => ({ released: { seller_sku: '', sid: '' }, dropped_cells: [], stranded_purchase_cells: [] }),
       submit,
     },
   }));
