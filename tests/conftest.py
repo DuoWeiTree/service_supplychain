@@ -104,7 +104,9 @@ def seed(wipe):
         seller_a="11072", seller_b="11094", seller_nofba="90001",
         sku_a="DCC1800264G1", sku_b="A4P-TOY-002",
         msku_a=("MSKU-A", "11072"), msku_b=("MSKU-B", "11072"),
-        msku_c=("MSKU-C", "11094"), msku_nofba=("MSKU-W", "90001"),
+        msku_c=("MSKU-C", "11094"),          # ★ 与 msku_a 同货号、不同店 → 在途无归属那一形态
+        msku_d=("MSKU-D", "11072"),          # ★ sku_b 在有 FBA 的店 → closing 有真数那一形态
+        msku_nofba=("MSKU-W", "90001"),      # ★ 无 FBA → 不适用那一形态
     )
     with pg_conn() as c, c.cursor() as cur:
         cur.executemany("INSERT INTO actor (actor_id, name, active) VALUES (%s, %s, %s)",
@@ -119,5 +121,6 @@ def seed(wipe):
                         [(ns.sku_a, "猫爬架"), (ns.sku_b, "逗猫棒")])
         cur.executemany("INSERT INTO msku_bridge VALUES (%s, %s, %s, now())",
                         [(*ns.msku_a, ns.sku_a), (*ns.msku_b, ns.sku_a),
-                         (*ns.msku_c, ns.sku_a), (*ns.msku_nofba, ns.sku_b)])
+                         (*ns.msku_c, ns.sku_a), (*ns.msku_d, ns.sku_b),
+                         (*ns.msku_nofba, ns.sku_b)])
     return ns
