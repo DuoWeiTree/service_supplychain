@@ -44,7 +44,11 @@ CREATE TABLE IF NOT EXISTS plan_demand_cell (
     system_units   int    CONSTRAINT plan_demand_cell_system_nonneg CHECK (system_units >= 0),
     -- ★ 外推出来的预估不是预估（M-13）：标记必须跟着数一起存，
     --   否则界面只能回头读别处，同一个数两个来源迟早分叉。
-    system_extrapolated boolean NOT NULL DEFAULT false,
+    -- ★ 配套 CHECK 照抄 docs/03 §7.1 的同名列先例（ck_cell_extrapolated）：
+    --   标记了却没有 system_units，就是「标记了却没数」，正是 M-13 想防的反面情形。
+    system_extrapolated boolean NOT NULL DEFAULT false
+                         CONSTRAINT plan_demand_cell_extrapolated_has_value
+                         CHECK (NOT system_extrapolated OR system_units IS NOT NULL),
     expected_units int    CONSTRAINT plan_demand_cell_expected_nonneg CHECK (expected_units >= 0),
     updated_by     text,
     updated_at     timestamptz NOT NULL DEFAULT now(),

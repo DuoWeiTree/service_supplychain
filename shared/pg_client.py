@@ -7,6 +7,7 @@ import re
 import time
 
 import psycopg2
+import psycopg2.extensions
 
 from shared.config import business_pg
 
@@ -91,6 +92,15 @@ def pg_conn(autocommit: bool = False):
             cur.execute(f"SET search_path TO {schema}")
         yield conn
         if not autocommit:
+            # ★ 块内可能用 pytest.raises（或任何 try/except）吞掉了一次库层异常再正常退出——
+            #   此时事务已 aborted，PG 对它的 COMMIT 会静默折成 ROLLBACK（无异常、无日志），
+            #   同一事务里更早的写入会一并消失。2026-09-22 Task 4 复核实测踩到：两行
+            #   plan/plan_rev 就这样无声无息地丢了。宁可在这里响亮地炸，也不能替调用方
+            #   悄悄兜底——兜底了它就再也不知道自己吞过一次异常。
+            if conn.get_transaction_status() == psycopg2.extensions.TRANSACTION_STATUS_INERROR:
+                conn.rollback()
+                raise RuntimeError(
+                    "pg_conn: 事务已中止却走到了 commit —— 块内有异常被吞掉了")
             conn.commit()
     except BaseException:
         if not autocommit:

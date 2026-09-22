@@ -55,21 +55,25 @@ def test_warehouse_kind_is_a_closed_set(wipe):
 
 
 def test_forbid_update_delete_names_the_table_and_the_op(wipe, seed):
-    """守卫函数本身要能被证伪：挂一张临时的只追加表，改它或删它都必须炸且点名。"""
-    with pg_conn() as c, c.cursor() as cur:
-        cur.execute("CREATE TEMP TABLE probe_append_only (x int)")
-        cur.execute("CREATE TRIGGER t BEFORE UPDATE OR DELETE ON probe_append_only "
-                    "FOR EACH ROW EXECUTE FUNCTION forbid_update_delete()")
-        cur.execute("INSERT INTO probe_append_only VALUES (1)")
-        with pytest.raises(psycopg2.errors.RaiseException) as ei:
-            cur.execute("UPDATE probe_append_only SET x = 2")
-        assert "probe_append_only" in str(ei.value) and "UPDATE" in str(ei.value)
+    """守卫函数本身要能被证伪：挂一张临时的只追加表，改它或删它都必须炸且点名。
 
-    with pg_conn() as c, c.cursor() as cur:
+    ★ 临时表只在建它的那条连接里存活，不能像别处违规行测试那样拆成
+    「建数据的块」+「触发违规的块」两个独立 pg_conn()。改成让
+    pytest.raises 整段包住 with pg_conn()，异常直接穿出去 ——
+    `pg_conn()` 现在会对着「块内吞异常后正常退出」主动报错
+    （见 shared/pg_client.py、tests/test_pg_client.py），这里不能再吞。"""
+    with pytest.raises(psycopg2.errors.RaiseException) as ei, pg_conn() as c, c.cursor() as cur:
         cur.execute("CREATE TEMP TABLE probe_append_only (x int)")
         cur.execute("CREATE TRIGGER t BEFORE UPDATE OR DELETE ON probe_append_only "
                     "FOR EACH ROW EXECUTE FUNCTION forbid_update_delete()")
         cur.execute("INSERT INTO probe_append_only VALUES (1)")
-        with pytest.raises(psycopg2.errors.RaiseException) as ei:
-            cur.execute("DELETE FROM probe_append_only")
-        assert "probe_append_only" in str(ei.value) and "DELETE" in str(ei.value)
+        cur.execute("UPDATE probe_append_only SET x = 2")
+    assert "probe_append_only" in str(ei.value) and "UPDATE" in str(ei.value)
+
+    with pytest.raises(psycopg2.errors.RaiseException) as ei, pg_conn() as c, c.cursor() as cur:
+        cur.execute("CREATE TEMP TABLE probe_append_only (x int)")
+        cur.execute("CREATE TRIGGER t BEFORE UPDATE OR DELETE ON probe_append_only "
+                    "FOR EACH ROW EXECUTE FUNCTION forbid_update_delete()")
+        cur.execute("INSERT INTO probe_append_only VALUES (1)")
+        cur.execute("DELETE FROM probe_append_only")
+    assert "probe_append_only" in str(ei.value) and "DELETE" in str(ei.value)
