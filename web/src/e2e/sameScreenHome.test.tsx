@@ -12,7 +12,13 @@ import type { CountKey, PlanSummary } from '../api/types';
  *
  *  ★ 桩按**后端**的规则答（`api/ui/plans.py:69` 的 archived 默认值、
  *    `api/ui/dashboard.py:30`/`:57` 的 archived_at IS NULL），不是照 mock 抄一遍：
- *    mock 要是跟后端不一致，红的就是这一条。 */
+ *    mock 要是跟后端不一致，红的就是这一条。
+ *
+ *  ⚠ **但有一段不是这样，它是循环的**：`changed_since_submit` 两侧都写死 `plan_id === 2`
+ *    （桩见下面的 `backendBody`，mock 见 `mock.ts` 的 dashboardUnsubmitted）。真后端
+ *    （`api/ui/dashboard.py` 的 content_digest 比对）跟这个常量毫无关系，所以这一段
+ *    **不证明任何事**，只是为了让这一屏渲染得出来。载重的是另外四段：
+ *    `GET /plans` 的归档分叉、`excluded.archived` 现算、两个看板只数没归档的。 */
 
 const PLANS = plansFixture.plans as PlanSummary[];
 const RANKED: CountKey[] = ['已提交', '已确认', '已下单', '准备排货', '已排货', '已完结'];
@@ -41,6 +47,8 @@ function backendBody(url: string): unknown {
   if (url.includes('/dashboard/unsubmitted')) {
     return {
       never_submitted: live.filter((p) => p.state === null).map((p) => ({ plan_id: p.plan_id, title: p.title })),
+      // ⚠ 循环的那一段：`plan_id === 2` 是 mock 的老约定，这里照抄了它，两侧同一个常量
+      //   ⇒ 这一行不载重。真后端按 content_digest 比，与这个数无关。
       changed_since_submit: live.filter((p) => p.plan_id === 2)
         .map((p) => ({ plan_id: p.plan_id, title: p.title, since_rev: p.state_rev ?? 0 })),
     };

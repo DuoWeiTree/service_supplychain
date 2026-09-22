@@ -65,6 +65,19 @@ describe('http 数据源', () => {
     expect(got.effective_units).toBe(realCell.effective_units);
   });
 
+  // ★ M15（复审 R4）：路径的**每一段**都要转义。putDemand 补上了 sid，releaseClaim 当时漏了 ——
+  //   「下一个人照抄旁边那段」正是这种漏活下去的方式。当前 sid 都是数字串，所以这里
+  //   拿一个真会被转义的值当靶子，否则两种写法给同一个 URL，这条断言什么都证不了。
+  it('★ 路径每一段都过 encodeURIComponent —— 不是只转义第一段', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch')
+      .mockImplementation(() => Promise.resolve(ok({ cell: {} })));
+    const api = mk();
+    await api.putDemand(1, 'MSKU/A', '110 72', '2026-10', null);
+    await api.releaseClaim(1, 'MSKU/A', '110 72');
+    expect(String(spy.mock.calls[0]![0])).toBe('/v1/plans/1/demand/MSKU%2FA/110%2072/2026-10');
+    expect(String(spy.mock.calls[1]![0])).toBe('/v1/plans/1/claims/MSKU%2FA/110%2072');
+  });
+
   it('409 抛 ApiError，点名字段从顶层收进 fields', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
       JSON.stringify({ error: 'rev_in_flight', hint: '先处理 rev 2', in_flight_rev: 2 }),

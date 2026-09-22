@@ -207,6 +207,52 @@ describe('版本编辑', () => {
     expect(calls).toHaveLength(1);
   });
 
+  // ★ M8（复审 R3）：加载态与「取到了、但一版都没有」是两种成因，两句话必须分开 ——
+  //   合成一句就会在还没取到的时候说「还没有版本」，那是编的
+  it('★ 还在取数时说「正在取版本」，不是一个字都没有的空框', async () => {
+    const { ApiError } = await import('../api/client');
+    vi.doMock('../api', () => ({
+      ApiError,
+      api: {
+        listRevs: () => new Promise<RevList>(() => {}),      // 永不落地：把加载态撑开
+        setCurrentRev: async (_p: number, rev: number) => ({ current_rev: rev }),
+        diff: async () => DIFF,
+        cancelRev: async () => ({ cancelled: [], skipped_terminal: 0, reason: '' }),
+      },
+    }));
+    const { PlanRevs } = await import('./PlanRevs');
+    render(
+      <MemoryRouter initialEntries={['/plans/2/revs']}>
+        <Routes><Route path="/plans/:planId/revs" element={<PlanRevs />} /></Routes>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText('正在取版本…')).toBeInTheDocument();
+    // ★ 还没取到就说「还没有版本」是编的 —— 两种成因不许同形
+    expect(screen.queryByTestId('no-revs')).toBeNull();
+  });
+
+  it('★ 一版都没有：给下一步「先在网格里提交一次」，不是一张空表', async () => {
+    const { ApiError } = await import('../api/client');
+    vi.doMock('../api', () => ({
+      ApiError,
+      api: {
+        listRevs: async (): Promise<RevList> => ({ revs: [], in_flight_rev: null, current_rev: null }),
+        setCurrentRev: async (_p: number, rev: number) => ({ current_rev: rev }),
+        diff: async () => DIFF,
+        cancelRev: async () => ({ cancelled: [], skipped_terminal: 0, reason: '' }),
+      },
+    }));
+    const { PlanRevs } = await import('./PlanRevs');
+    render(
+      <MemoryRouter initialEntries={['/plans/2/revs']}>
+        <Routes><Route path="/plans/:planId/revs" element={<PlanRevs />} /></Routes>
+      </MemoryRouter>,
+    );
+    const empty = await screen.findByTestId('no-revs');
+    expect(empty).toHaveTextContent('还没有版本，先在网格里提交一次');
+    expect(screen.queryByText('正在取版本…')).toBeNull();
+  });
+
   // ★ I4（终审）：current_rev 为 null 时原来发的是 to=0 —— 后端对不存在的 rev 不报错，
   //   plan_line 里没有 rev 0 的行，于是三块全是「无」，与「这两版一模一样」长得完全一样。
   it('★ 没有当前使用的版本：比较禁用、不发请求，并说出下一步', async () => {

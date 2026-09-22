@@ -31,7 +31,16 @@ export function PlanRevs() {
     .catch((e: ApiError) => setErr(e));
   useEffect(() => { void load(); }, [planId]);
 
-  if (!list) return <AppShell crumb="版本">{err ? <ErrorDetail err={err} /> : <div className="empty" />}</AppShell>;
+  // ★ M8：加载态不是一个字都没有的空框。★ 而且它与「取到了、但一版都没有」是两种成因，
+  //   两句话分开写 —— 合成一句就会在还没取到的时候说「还没有版本」，那是编的
+  if (!list) {
+    return (
+      <AppShell crumb="版本">
+        {err ? <ErrorDetail err={err} />
+             : <div className="empty"><p className="empty__title">正在取版本…</p></div>}
+      </AppShell>
+    );
+  }
 
   async function setCurrent(rev: number) {
     // ★ 入口早退：与 PlanGrid.tsx 的 pending 早退同一形状，防双击并发发出重复请求
@@ -121,6 +130,12 @@ export function PlanRevs() {
           </tbody>
         </table>
       </div>
+      {/* ★ M8：取到了、但一版都没有 —— 给下一步，不是一张空表 */}
+      {list.revs.length === 0 && (
+        <div className="empty" data-testid="no-revs">
+          <p className="empty__title">还没有版本，先在网格里提交一次</p>
+        </div>
+      )}
 
       <div className="bar">
         <label className="bar__grp">

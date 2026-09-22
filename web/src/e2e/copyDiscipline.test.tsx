@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 
@@ -30,6 +30,10 @@ async function app(entry: string) {
       </Routes>
     </MemoryRouter>,
   );
+  // ★ 与 planFlow 的 app() 同法：本函数是 async，调用方 `await` 它的那一下就是一次
+  //   微任务跳变，只发一个请求的页面（PlanRevs 的 listRevs）正好在 act() 之外落地。
+  //   同一个根因在本轮已经诊断并修过两次，这第三个文件当时没跟上。
+  await act(async () => {});
   return utils;
 }
 

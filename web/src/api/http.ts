@@ -107,8 +107,10 @@ export function createHttpApi(opt: HttpOptions): SupplyChainApi {
 
     searchCatalog: (q) => call<CatalogResult>('GET', `/catalog/skus${qs({ q: q.q, limit: q.limit })}`),
     claim: (planId, target) => call('POST', `/plans/${planId}/claims`, target),
+    // ★ M15：sid 也要转义 —— putDemand 那一行补上了，这一行当时漏了，
+    //   而「下一个人照抄旁边那段」正是这种漏活下去的方式
     releaseClaim: (planId, sellerSku, sid) =>
-      call('DELETE', `/plans/${planId}/claims/${encodeURIComponent(sellerSku)}/${sid}`),
+      call('DELETE', `/plans/${planId}/claims/${encodeURIComponent(sellerSku)}/${encodeURIComponent(sid)}`),
 
     submit: (planId) => call('POST', `/plans/${planId}/submit`),
     listRevs: (planId) => call('GET', `/plans/${planId}/revs`),
