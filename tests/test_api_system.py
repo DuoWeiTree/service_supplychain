@@ -1,4 +1,10 @@
 """接口层的地基：错误形状、操作人、未声明参数、镜像陈旧。"""
+import asyncio
+import json
+
+from fastapi.exceptions import RequestValidationError
+from starlette.requests import Request
+
 from shared.pg_client import pg_conn
 
 
@@ -67,3 +73,41 @@ def test_readiness_says_erp_is_not_implemented(client, seed):
     assert body["erp"] == "not_implemented"
     assert body["migrations"][-1].startswith("00")
     assert len(body["mirrors"]) == 4
+
+
+def test_unknown_path_is_404_reshaped(client):
+    """★ S-30：框架自己抛的 404 也要走 S-29 的 {error, hint, …} 形状，
+    不是 FastAPI 默认的 {"detail": "Not Found"}。"""
+    r = client.get("/v1/does-not-exist")
+    assert r.status_code == 404
+    body = r.json()
+    assert body["error"] == "not_found" and body["hint"]
+    assert body["path"] == "/v1/does-not-exist" and body["method"] == "GET"
+
+
+def test_wrong_method_is_405_reshaped(client):
+    r = client.delete("/health")
+    assert r.status_code == 405
+    body = r.json()
+    assert body["error"] == "method_not_allowed" and body["hint"]
+    assert body["path"] == "/health" and body["method"] == "DELETE"
+
+
+def test_validation_error_handler_reshapes_to_400_not_422():
+    """★ S-30/S-18：请求体校验失败是「你写错了」，400；422 专留给 illegal_transition。
+
+    阶段 A 目前没有解析 body 的路由（Task 10 的 POST /v1/plans 落地后才有端点能
+    端到端触发它），先直接调处理函数验证形状与状态码，避免这条规则等到 Task 10
+    才第一次被测到。
+    """
+    from api import _reshape_validation_error
+
+    exc = RequestValidationError([{"loc": ("body", "title"), "msg": "field required",
+                                   "type": "missing"}])
+    request = Request({"type": "http", "method": "POST", "path": "/v1/plans", "headers": []})
+    response = asyncio.run(_reshape_validation_error(request, exc))
+    assert response.status_code == 400
+    body = json.loads(response.body)
+    assert body["error"] == "validation_error" and body["hint"]
+    assert body["fields"] == [{"loc": ["body", "title"], "msg": "field required",
+                               "type": "missing"}]
