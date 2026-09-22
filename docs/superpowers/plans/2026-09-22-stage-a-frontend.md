@@ -26,7 +26,9 @@
 - 期望销量留空 = **未知**，发 `null`，**不发 0**；输入框 `placeholder` 为空串，不是 `"0"`。
 - 无 FBA 的店铺显示 **「不适用」**（`.chip--dim`），**不是 0**。
 - 阶段 A 够不着的状态**不渲染**（不是置灰、不是 0）。首页状态计数只渲染 **未提交 / 已提交 / 已撤销** 三态（`00e:45` · S-20）。
-- 跨月求和的存量列渲染 **「不可求和」**（`14` §1.1 ①）；未知渲染 `—`（`.cell__unknown`）。三者用三个不同的字形，**不许合成一个**。
+- 存量**不跨月求和**：`onhand` 是一条链（本月期初 = 上月期末），加起来等于把同一批货数三遍 ⇒ 合计列给 **「期末」**，不给和。
+- 未知渲染 `—`（`.cell__unknown`）· 不适用渲染 **「不适用」**（`.chip--dim`）· 「不可求和」留给阶段 C 的跨货号/跨市场合计。三者三个字形，**不许合成一个**。
+- ★ `basis.reason` 与 `basis.closing_reason` 是**两个字段**：前者恒为 `no_seller_attribution`（解释 `inbound` 为什么是 null），后者才解释 `closing`。混用会出现「这一格既未知又恒定」而只说得出一件。
 
 **一个数要能回答「它是关于什么的」**
 - 库存预估每格必须回显 `basis`（在仓 / `as_of`）与标注 **「未计本计划采购」**；★ 采购在途是**货号级**，单独一行只读并标 **「未分摊到店铺」**，一件都不并进任何店铺的库存。
@@ -214,7 +216,7 @@ frontend-design 点名要避开的三种排版 tell，本设计的处置：
 │ 店铺·货号     │2026-10 │2026-11 │2026-12 │ 合计   │         │  th.gh--row / gh--sum
 ├──────────────┼────────┼────────┼────────┼────────┤         │
 │ ▸ A4Pet-US   │ 预估180│ 预估200│ 预估210│  590   │ ← 铅笔灰 │
-│   DCC1800264 │ 库存420│ 库存220│ 库存 10│不可求和│ ← 灰+basis│
+│   DCC1800264 │ 库存420│ 库存220│ 库存 10│期末  10│ ← 灰+basis│
 │              │ [ 180 ]│ [ 200 ]│ [    ] │  380   │ ← 蓝黑   │
 ├──────────────┼────────┼────────┼────────┼────────┤         │
 │ 计划采购量    │ [ 500 ]│ [    ] │ [    ] │  500   │         │  第二块 .sheet
@@ -229,7 +231,7 @@ frontend-design 点名要避开的三种排版 tell，本设计的处置：
 2. **一格三行，顺序恒定**：预估（灰）→ 库存（灰 + basis）→ 输入（蓝黑）。位置固定，眼睛在 30 个格子之间移动时不用重新定位。
 3. **唯一的大字留给结论。** 26px 整屏只出现在首页三个计数上；网格里最大的是库存预估（17px），因为那是「填完数当场看见的影响」（`14` §0）。其余一律 12.5px 以下。
 4. **输入框是下划线不是盒子**（`.cell input.g` 只有 `border-bottom`）。一屏 100 个盒子会把纸变成表单；下划线让「可以写字的地方」既显眼又不抢版面。
-5. **空、不适用、不可求和，三个字形。** `—` / `不适用` / `不可求和` 各自独立，**永不退化成 0** —— 这三种情况在本项目里已经咬过人（`CLAUDE.md` 判据表第一行）。
+5. **空、不适用、不可求和，三个字形。** `—` / `不适用` / `不可求和` 各自独立，**永不退化成 0** —— 这三种情况在本项目里已经咬过人（`CLAUDE.md` 判据表第一行）。阶段 A 用到前两个；第三个留给阶段 C 的跨货号合计（登记在附录 A.3）。
 
 **★ 对照 brief 复核（frontend-design 第二遍）—— 改了两处**
 
@@ -1039,15 +1041,16 @@ describe('grid fixture 与后端同源', () => {
   it('★ fixture 覆盖三种长得像的形态，缺一种前端就永远画不出它', () => {
     const g = JSON.parse(readFileSync(new URL(MINE, import.meta.url), 'utf8'));
     const inv = g.inventory as { closing: number | null; onhand: number | null; inbound: null;
-                                 basis: { reason: string | null } }[];
-    expect(inv.some((r) => r.basis.reason === 'not_applicable')).toBe(true);          // 不适用
-    expect(inv.some((r) => r.basis.reason === 'unknown_demand')).toBe(true);          // 未知
+                                 basis: { reason: string; closing_reason: string | null } }[];
+    expect(inv.some((r) => r.basis.closing_reason === 'not_applicable')).toBe(true);  // 不适用
+    expect(inv.some((r) => r.basis.closing_reason === 'unknown_demand')).toBe(true);  // 未知
     expect(inv.some((r) => typeof r.closing === 'number')).toBe(true);                // 有数
-    // ★ 三种 null 成因必须靠 reason 分得开，不能只看 closing===null
-    expect(new Set(inv.filter((r) => r.closing === null).map((r) => r.basis.reason)).size)
+    // ★ 两种 null 成因必须靠 closing_reason 分得开，不能只看 closing===null
+    expect(new Set(inv.filter((r) => r.closing === null).map((r) => r.basis.closing_reason)).size)
       .toBeGreaterThan(1);
-    // ★ inbound 恒 null（不是 0）：阶段 A 这一层根本不成立
+    // ★ inbound 恒 null（不是 0）；reason 恒定 —— 它解释的是 inbound，不是 closing
     expect(inv.every((r) => r.inbound === null)).toBe(true);
+    expect(new Set(inv.map((r) => r.basis.reason))).toEqual(new Set(['no_seller_attribution']));
     expect(g.demand.some((d: { basis: string }) => d.basis === 'human')).toBe(true);
     expect(g.demand.some((d: { basis: string }) => d.basis === 'system')).toBe(true);
   });
@@ -1166,13 +1169,16 @@ describe('mock 数据源', () => {
     const g = await api.getGrid(1);
     const cell = g.inventory.find((i) => i.sku === d.sku && i.sid === d.sid && i.period === d.period)!;
     expect(cell.closing).toBeNull();
-    expect(cell.basis.reason).toBe('unknown_demand');
+    expect(cell.basis.closing_reason).toBe('unknown_demand');
+    // ★ reason 是另一件事，不许被顺手改掉 —— 改了就把「在途没归属」这条信息抹掉了
+    expect(cell.basis.reason).toBe('no_seller_attribution');
   });
 
   it('★ inbound 恒 null（不是 0）；在途总量只在 basis 与 sku_pipeline 里出现', async () => {
     const g = await api.getGrid(1);
     expect(g.inventory.every((i) => i.inbound === null)).toBe(true);
     expect(g.inventory.every((i) => i.basis.includes_plan_purchase === false)).toBe(true);
+    expect(g.sku_pipeline.every((r) => r.no_seller_attribution === true)).toBe(true);
     // ★ 在途一件都没有并进任何一格库存
     for (const i of g.inventory) {
       const t = i.basis.sku_level_in_transit;
@@ -1180,19 +1186,31 @@ describe('mock 数据源', () => {
     }
   });
 
-  it('★ 跨月口径：mock 与 fixture 用同一条规则（累计链 vs 每月独立）', async () => {
+  it('★ 跨月是一条链：本月期初 = 上月期末（不是同一个在仓快照抄三遍）', async () => {
     const g0 = await api.getGrid(1);
-    const key = (i: { sku: string; sid: string }) => `${i.sku}/${i.sid}`;
     const groups = new Map<string, typeof g0.inventory>();
-    for (const i of g0.inventory) groups.set(key(i), [...(groups.get(key(i)) ?? []), i]);
-    const pair = [...groups.values()]
+    for (const i of g0.inventory) {
+      const k = `${i.sku}/${i.sid}`;
+      groups.set(k, [...(groups.get(k) ?? []), i]);
+    }
+    const chain = [...groups.values()]
       .map((rows) => rows.sort((a, b) => a.period.localeCompare(b.period)))
-      .find((rows) => rows.length >= 2 && rows[0]!.closing !== null && rows[1]!.closing !== null
-                      && rows[0]!.closing !== rows[0]!.onhand);   // ★ 两种规则在这里才分得开
-    // ★ fixture 分不开两种规则时必须硬失败：那说明这条门禁其实什么都没测
-    expect(pair, 'fixture 无法区分「累计链」与「每月独立」，请让后端补一个有消耗的月份').toBeDefined();
-    const [a, b] = pair!;
-    expect(b!.onhand).toBe(a!.closing);   // 累计链：本月期初 = 上月期末
+      .find((rows) => rows.length >= 2 && rows[0]!.closing !== null
+                      && rows[0]!.closing !== rows[0]!.onhand);   // ★ 有消耗，两种口径才分得开
+    // ★ fixture 里没有一个「有消耗」的月份时必须硬失败：那说明这条门禁什么都没测
+    expect(chain, 'fixture 里没有 closing ≠ onhand 的月份，链式口径无法证伪，请让后端补一个').toBeDefined();
+    expect(chain![1]!.onhand).toBe(chain![0]!.closing);
+  });
+
+  it('★ basis.demand 与前端自己算的 Σ 是两个证人，必须一致', async () => {
+    const g = await api.getGrid(1);
+    for (const i of g.inventory) {
+      if (i.basis.closing_reason === 'not_applicable') continue;
+      const mine = g.demand.filter((d) => d.sku === i.sku && d.sid === i.sid && d.period === i.period);
+      const sum = mine.length === 0 || mine.some((d) => d.effective_units === null)
+        ? null : mine.reduce((a, d) => a + (d.effective_units as number), 0);
+      expect(i.basis.demand).toBe(sum);
+    }
   });
 
   it('★ 占用撞了抛 409 并点名占用方（点名字段在顶层，不在 detail 里）', async () => {
@@ -1280,7 +1298,7 @@ export function createMockApi(): SupplyChainApi {
 
   /** ★ 一格的库存 = 该**店铺 × 货号**的在仓 − 该店该货号各 msku 的生效期望销量之和。
    *  任何一个 msku 未知 ⇒ 整格未知（M-8 向后传染）。落回 0 就是把「算不出来」说成「没货」。
-   *  ★ 跨月口径跟着 fixture 走，见 Task 2 那条「mock 与 fixture 用同一条规则」的测试。 */
+   *  ★ 跨月是一条链：本月期初 = 上月期末（后端接口形状块 `onhand` 那一行写死了这一点）。 */
   function recompute(g: GridResponse, sku: string, sid: string): void {
     const rows = g.inventory
       .filter((i) => i.sku === sku && i.sid === sid)
@@ -2192,8 +2210,8 @@ EOF
   - `MskuRow = { seller_sku: string; sid: Sid; cells: MskuCell[] }`
   - `MskuCell = { period; system_units; system_extrapolated; expected_units; effective_units; basis }`
   - `PurchaseRow = { sku: string; cells: { period: Period; planned_units: number | null }[] }`
-  - `Orphan = { kind: 'unknown_seller' | 'inventory_without_demand' | 'demand_without_inventory' | 'na_disagrees_with_seller' | 'in_transit_disagrees'; key: string }`
-  - `sumUnits(values: (number | null)[]): QtyValue` · `demandAt(block, period): QtyValue` · `inventoryAt(block, period): QtyValue` · `INVENTORY_TOTAL: QtyValue`
+  - `Orphan = { kind: 'unknown_seller' | 'inventory_without_demand' | 'demand_without_inventory' | 'na_disagrees_with_seller' | 'in_transit_disagrees' | 'demand_disagrees'; key: string }`
+  - `sumUnits(values: (number | null)[]): QtyValue` · `demandAt(block, period): QtyValue` · `inventoryAt(block, period): QtyValue` · `closingOfLast(block, periods): QtyValue` · `outageCount(block): number`
   - Task 7 会在这个文件里加「提交」按钮，**不改本 Task 的任何导出名与 `data-testid`**
 
 **这一屏的四条口径**（`02` §3.1a 可售库存 = [店铺, 货号] · 负责人原理图）
@@ -2202,8 +2220,12 @@ EOF
 ① 库存预估的身份是**店铺 × 货号** —— 画在**店铺·货号行**上（折叠态就能看见，与原理图一致）
 ② 展开后的 msku 行只有**销量预估**与**期望销量输入** —— 库存不在 msku 这一层，不许重复画
 ③ 货号级在途单独一行只读（铅笔灰 + 「未分摊到店铺」）—— 只展示，一件都不并进任何店铺的库存
-④ 合计列：量可跨月求和；★ **存量不可跨月求和**（同一批货会被数三遍），写「不可求和」
+④ 合计列：量跨月求和；★ **存量不求和，给「期末」**（`onhand` 是一条链，加起来等于把同一批货数三遍）
+⑤ 断货计数挂在块头：按**折叠行的 closing** 数出几个月见底 —— 折起来也看得见
 ```
+
+★ 「不可求和」这个字形在阶段 A **没有落点**（每块只有一个货号一个店铺，不存在跨货号/跨市场的合计列）。
+`Qty` 里保留这个分支是为阶段 C，登记在附录 A.3 —— ★ 它现在属于「不执行的东西不会失败」的一例。
 
 ★ 由 ① ② 得出一个后果，写在这里免得被当成 bug：**折叠态没有输入框，要填数必须先展开**。
 这是原理图本来的样子（「输入框…msku 级；折叠行显示 Σ 只读」），不是遗漏。
@@ -2214,9 +2236,9 @@ EOF
 // web/src/pages/planGridModel.test.ts
 import { describe, expect, it } from 'vitest';
 import {
-  buildGridModel, demandAt, inventoryAt, sumUnits, INVENTORY_TOTAL,
+  buildGridModel, closingOfLast, demandAt, inventoryAt, outageCount, sumUnits,
 } from './planGridModel';
-import type { DemandCell, GridResponse, InventoryCell, InventoryReason, Seller } from '../api/types';
+import type { ClosingReason, DemandCell, GridResponse, InventoryCell, Seller } from '../api/types';
 
 const P = ['2026-10', '2026-11', '2026-12'];
 
@@ -2230,10 +2252,13 @@ const d = (seller_sku: string, sid: string, period: string, eff: number | null):
   expected_units: eff, effective_units: eff, basis: eff === null ? 'unknown' : 'human',
 });
 const inv = (sid: string, period: string, onhand: number | null, closing: number | null,
-             reason: InventoryReason = null, transit: number | null = 80): InventoryCell => ({
+             closing_reason: ClosingReason = null, transit: number | null = 80,
+             demand: number | null = null): InventoryCell => ({
   sku: 'SKU-1', sid, period, onhand, inbound: null, closing,
-  basis: { source: 'ch', as_of: '2026-09-21', includes_plan_purchase: false, reason,
-           sku_level_in_transit: transit },
+  basis: { source: 'ch', as_of: '2026-09-21', includes_plan_purchase: false,
+           demand: demand ?? (onhand !== null && closing !== null ? onhand - closing : null),
+           reason: 'no_seller_attribution', closing_reason,
+           sku_level_in_transit: transit, sources: [] },
 });
 
 function makeGrid(): GridResponse {
@@ -2252,7 +2277,10 @@ function makeGrid(): GridResponse {
       inv('90001', P[1]!, null, null, 'not_applicable', null),
       inv('90001', P[2]!, null, null, 'not_applicable', null),
     ],
-    sku_pipeline: P.map((p, n) => ({ sku: 'SKU-1', period: p, in_transit: n === 0 ? 80 : null })),
+    sku_pipeline: P.map((p, n) => ({
+      sku: 'SKU-1', period: p, units: n === 0 ? 80 : null,
+      sources: [], no_seller_attribution: true as const,
+    })),
   };
 }
 
@@ -2278,7 +2306,7 @@ describe('网格模型', () => {
     expect(demandAt(m.blocks[0]!, P[1]!)).toEqual({ kind: 'unknown' });  // MSKU-B 11 月未知
   });
 
-  it('★ 库存一格三种形态三个字：有数 / 未知 / 不适用', () => {
+  it('★ 库存一格三种形态三个字：有数 / 未知 / 不适用（都由 closing_reason 说了算）', () => {
     const m = buildGridModel(makeGrid(), sellers);
     expect(inventoryAt(m.blocks[0]!, P[0]!)).toEqual({ kind: 'num', value: 200 });
     expect(inventoryAt(m.blocks[0]!, P[1]!)).toEqual({ kind: 'unknown' });
@@ -2287,15 +2315,39 @@ describe('网格模型', () => {
     expect(inventoryAt(m.blocks[1]!, P[0]!)).not.toEqual(inventoryAt(m.blocks[0]!, P[1]!));
   });
 
-  it('★ 存量不可跨月求和 —— 合计列给字不给数', () => {
-    expect(INVENTORY_TOTAL).toEqual({ kind: 'nosum' });
+  it('★ 合计列的存量给「期末」，不是三个月相加（onhand 是一条链，加起来数三遍）', () => {
+    const m = buildGridModel(makeGrid(), sellers);
+    expect(closingOfLast(m.blocks[0]!, m.periods)).toEqual({ kind: 'unknown' });   // 12 月未知
+    const solid = buildGridModel({ ...makeGrid(), inventory: [
+      inv('11072', P[0]!, 420, 200), inv('11072', P[1]!, 200, 150), inv('11072', P[2]!, 150, 100),
+      inv('90001', P[0]!, null, null, 'not_applicable', null),
+      inv('90001', P[1]!, null, null, 'not_applicable', null),
+      inv('90001', P[2]!, null, null, 'not_applicable', null),
+    ] }, sellers);
+    expect(closingOfLast(solid.blocks[0]!, solid.periods)).toEqual({ kind: 'num', value: 100 });
+    expect(closingOfLast(solid.blocks[0]!, solid.periods)).not.toEqual({ kind: 'num', value: 450 });
+  });
+
+  it('★ 断货计数按折叠行的 closing 数：未知与不适用都不算断货', () => {
+    const g = makeGrid();
+    g.inventory[0] = inv('11072', P[0]!, 420, -5);
+    const m = buildGridModel(g, sellers);
+    expect(outageCount(m.blocks[0]!)).toBe(1);
+    expect(outageCount(m.blocks[1]!)).toBe(0);    // 整块不适用
   });
 
   it('★ 在途只展示不分摊：一件都没并进任何一格库存', () => {
     const m = buildGridModel(makeGrid(), sellers);
-    expect(m.pipeline[0]!.in_transit).toBe(80);
+    expect(m.pipeline[0]!.units).toBe(80);
     const closings = m.blocks.flatMap((b) => b.inventory.map((i) => i.closing));
     expect(closings).not.toContain(280);   // 200 + 80 —— 并进去就是这个数
+  });
+
+  it('★ basis.demand 与前端算的 Σ 是两个证人；不一致要点名，不许挑一个信', () => {
+    const g = makeGrid();
+    g.inventory[0] = { ...g.inventory[0]!, basis: { ...g.inventory[0]!.basis, demand: 999 } };
+    const m = buildGridModel(g, sellers);
+    expect(m.orphans).toContainEqual({ kind: 'demand_disagrees', key: 'SKU-1/11072/2026-10' });
   });
 
   it('★ 被丢掉的那一侧必须统计：认不出的店铺 / 对不上的库存行 / 两处在途不一致', () => {
@@ -2303,6 +2355,7 @@ describe('网格模型', () => {
     g.demand.push(d('GHOST', '99999', P[0]!, 1));
     g.inventory.push(inv('11094', P[0]!, 5, 5));                       // 没有对应的需求
     g.inventory[0] = { ...g.inventory[0]!, basis: { ...g.inventory[0]!.basis, sku_level_in_transit: 999 } };
+    // ★ 在途两处来源不一致 —— 两个真相不报，最后就会有人拿其中一个去对账
     const m = buildGridModel(g, sellers);
     expect(m.orphans).toEqual(expect.arrayContaining([
       { kind: 'unknown_seller', key: '99999/GHOST' },
@@ -2314,9 +2367,16 @@ describe('网格模型', () => {
 
   it('★ 「不适用」必须与镜像里的 has_fba 一致 —— 不一致是两个真相，要点名', () => {
     const g = makeGrid();
-    g.inventory[0] = { ...g.inventory[0]!, basis: { ...g.inventory[0]!.basis, reason: 'not_applicable' } };
+    g.inventory[0] = { ...g.inventory[0]!,
+      basis: { ...g.inventory[0]!.basis, closing_reason: 'not_applicable' } };
     const m = buildGridModel(g, sellers);
     expect(m.orphans).toContainEqual({ kind: 'na_disagrees_with_seller', key: 'SKU-1/11072/2026-10' });
+  });
+
+  it('★ reason 恒定：它解释 inbound，不参与 closing 的判断', () => {
+    const m = buildGridModel(makeGrid(), sellers);
+    const all = m.blocks.flatMap((b) => b.inventory.map((i) => i.basis.reason));
+    expect(new Set(all)).toEqual(new Set(['no_seller_attribution']));
   });
 });
 ```
@@ -2354,16 +2414,13 @@ export interface SkuBlock {
 export interface PurchaseRow { sku: string; cells: { period: Period; planned_units: number | null }[] }
 export interface Orphan {
   kind: 'unknown_seller' | 'inventory_without_demand' | 'demand_without_inventory'
-      | 'na_disagrees_with_seller' | 'in_transit_disagrees';
+      | 'na_disagrees_with_seller' | 'in_transit_disagrees' | 'demand_disagrees';
   key: string;
 }
 export interface GridModel {
   periods: Period[]; blocks: SkuBlock[]; purchase: PurchaseRow[];
   pipeline: SkuPipelineRow[]; orphans: Orphan[];
 }
-
-/** ★ 跨月把期末库存加起来，同一批货会被数三遍 —— 合计列给字不给数（14 §1.1 ①） */
-export const INVENTORY_TOTAL: QtyValue = { kind: 'nosum' };
 
 /** ★ 任何一项未知 ⇒ 和未知。空数组也是未知：没有数不等于 0 */
 export function sumUnits(values: (number | null)[]): QtyValue {
@@ -2379,8 +2436,21 @@ export function inventoryAt(block: SkuBlock, period: Period): QtyValue {
   const cell = block.inventory.find((i) => i.period === period);
   if (!cell) return { kind: 'unknown' };
   // ★ 「不适用」不是 0 也不是未知：该店根本没有 FBA，这一格问的问题不成立（02 §3.1a）
-  if (cell.basis.reason === 'not_applicable') return { kind: 'na' };
+  // ★ 看的是 closing_reason，不是 reason —— reason 恒为 no_seller_attribution，只解释 inbound
+  if (cell.basis.closing_reason === 'not_applicable') return { kind: 'na' };
   return cell.closing === null ? { kind: 'unknown' } : { kind: 'num', value: cell.closing };
+}
+
+/** ★ 合计列的存量给**期末**，不是三个月相加 —— `onhand` 是一条链，加起来等于把同一批货数三遍 */
+export function closingOfLast(block: SkuBlock, periods: Period[]): QtyValue {
+  const last = periods[periods.length - 1];
+  return last === undefined ? { kind: 'unknown' } : inventoryAt(block, last);
+}
+
+/** ★ 断货计数按**折叠行的 closing** 数。未知与不适用都不算断货 —— 它们是「不知道」，不是「没货」 */
+export function outageCount(block: SkuBlock): number {
+  return block.inventory.filter((i) =>
+    i.basis.closing_reason !== 'not_applicable' && i.closing !== null && i.closing <= 0).length;
 }
 
 export function buildGridModel(grid: GridResponse, sellers: Seller[]): GridModel {
@@ -2419,8 +2489,17 @@ export function buildGridModel(grid: GridResponse, sellers: Seller[]): GridModel
       if (!cell) { orphans.push({ kind: 'demand_without_inventory', key: k }); continue; }
       usedInv.add(k);
       // ★ 「不适用」必须与镜像里的 has_fba 一致；不一致是两个真相，要点名而不是挑一个信
-      if ((cell.basis.reason === 'not_applicable') !== !block.has_fba) {
+      if ((cell.basis.closing_reason === 'not_applicable') !== !block.has_fba) {
         orphans.push({ kind: 'na_disagrees_with_seller', key: k });
+      }
+      // ★ 这一格用掉的需求有两处来源（后端的 basis.demand 与前端自己算的 Σ）；不一致要点名
+      if (cell.basis.closing_reason !== 'not_applicable') {
+        const mine = demandAt(block, period);
+        const theirs: QtyValue = cell.basis.demand === null
+          ? { kind: 'unknown' } : { kind: 'num', value: cell.basis.demand };
+        if (JSON.stringify(mine) !== JSON.stringify(theirs)) {
+          orphans.push({ kind: 'demand_disagrees', key: k });
+        }
       }
       block.inventory.push(cell);
     }
@@ -2433,8 +2512,8 @@ export function buildGridModel(grid: GridResponse, sellers: Seller[]): GridModel
   // ★ 同一个在途数字有两处来源（basis 与 sku_pipeline）；不一致要报，不许挑一个显示
   for (const p of grid.sku_pipeline) {
     for (const cell of grid.inventory.filter((i) => i.sku === p.sku && i.period === p.period)) {
-      if (cell.basis.reason === 'not_applicable') continue;
-      if (cell.basis.sku_level_in_transit !== p.in_transit) {
+      if (cell.basis.closing_reason === 'not_applicable') continue;
+      if (cell.basis.sku_level_in_transit !== p.units) {
         orphans.push({ kind: 'in_transit_disagrees', key: `${p.sku}/${p.period}` });
         break;
       }
@@ -2460,7 +2539,7 @@ export function buildGridModel(grid: GridResponse, sellers: Seller[]): GridModel
 ```bash
 cd web && npx vitest run src/pages/planGridModel.test.ts
 ```
-Expected: PASS（8 个用例）。
+Expected: PASS（11 个用例）。
 
 - [ ] **Step 5: 写网格页的失败测试**
 
@@ -2473,7 +2552,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import type { GridResponse, InventoryReason, PlanSummary, Seller } from '../api/types';
+import type { ClosingReason, GridResponse, PlanSummary, Seller } from '../api/types';
 
 const P = ['2026-10', '2026-11', '2026-12'];
 const PLAN: PlanSummary = {
@@ -2492,10 +2571,12 @@ function makeGrid(): GridResponse {
     basis: (eff === null ? 'unknown' : 'human') as 'unknown' | 'human',
   });
   const i = (sid: string, p: string, onhand: number | null, closing: number | null,
-             reason: InventoryReason = null, transit: number | null = 80) => ({
-    sku: 'SKU-1', sid, period: p, onhand, inbound: null, closing,
+             closing_reason: ClosingReason = null, transit: number | null = 80) => ({
+    sku: 'SKU-1', sid, period: p, onhand, inbound: null as null, closing,
     basis: { source: 'ch' as const, as_of: '2026-09-21', includes_plan_purchase: false as const,
-             reason, sku_level_in_transit: transit },
+             demand: onhand !== null && closing !== null ? onhand - closing : null,
+             reason: 'no_seller_attribution' as const, closing_reason,
+             sku_level_in_transit: transit, sources: [] },
   });
   return {
     plan_id: 1, periods: [...P],
@@ -2510,7 +2591,10 @@ function makeGrid(): GridResponse {
                 i('90001', P[0]!, null, null, 'not_applicable', null),
                 i('90001', P[1]!, null, null, 'not_applicable', null),
                 i('90001', P[2]!, null, null, 'not_applicable', null)],
-    sku_pipeline: P.map((p, n) => ({ sku: 'SKU-1', period: p, in_transit: n === 0 ? 80 : null })),
+    sku_pipeline: P.map((p, n) => ({
+      sku: 'SKU-1', period: p, units: n === 0 ? 80 : null,
+      sources: [], no_seller_attribution: true as const,
+    })),
   };
 }
 
@@ -2534,8 +2618,9 @@ async function renderGrid(grid: GridResponse = makeGrid()) {
         const mine = state.grid.demand.filter((x) => x.sku === cell.sku && x.sid === sid && x.period === period);
         const sum = mine.some((x) => x.effective_units === null)
           ? null : mine.reduce((a, x) => a + (x.effective_units as number), 0);
+        iv.basis.demand = sum;
         iv.closing = iv.onhand === null || sum === null ? null : iv.onhand - sum;
-        iv.basis.reason = iv.closing === null ? 'unknown_demand' : null;
+        iv.basis.closing_reason = iv.closing === null ? 'unknown_demand' : null;
         return cell;
       },
       putPurchase: async (_p: number, sku: string, period: string, units: number | null) => {
@@ -2574,7 +2659,7 @@ describe('计划编辑网格', () => {
     const block = await screen.findByTestId('block-11072-SKU-1');
     const cell = within(block).getByTestId('sku-cell-2026-10');
     expect(within(cell).getByTestId('closing')).toHaveTextContent('200');
-    expect(within(cell).getByText('在仓 420')).toBeInTheDocument();
+    expect(within(cell).getByText('期初 420')).toBeInTheDocument();
     expect(within(cell).getByText('未计本计划采购')).toBeInTheDocument();
     expect(within(cell).getByTestId('sum-expected-2026-10')).toHaveTextContent('220');
     // ★ 折叠态没有输入框：填数是 msku 级的事
@@ -2624,11 +2709,23 @@ describe('计划编辑网格', () => {
     expect(within(block).getByTestId('sku-cell-2026-10')).not.toHaveAttribute('data-state');
   });
 
-  it('★ 合计列：期望可求和，存量写「不可求和」', async () => {
+  it('★ 合计列：期望跨月求和；存量给「期末」而不是三个月相加', async () => {
     await renderGrid();
     const block = await screen.findByTestId('block-11072-SKU-1');
-    expect(within(block).getByTestId('sum-inventory')).toHaveTextContent('不可求和');
+    expect(within(block).getByText('期末')).toBeInTheDocument();
+    // 12 月 closing 未知 ⇒ 期末也是未知；★ 而 200 + (−30) 这种和一个字都不许出现
+    expect(within(block).getByTestId('sum-inventory')).toHaveTextContent('—');
+    expect(within(block).queryByText('170')).toBeNull();
     expect(within(block).getByTestId('sum-demand')).toHaveTextContent('—');  // 12 月未知 ⇒ 传染
+  });
+
+  it('★ 断货计数挂在块头，折起来也看得见', async () => {
+    await renderGrid();
+    const block = await screen.findByTestId('block-11072-SKU-1');
+    expect(within(block).getByTestId('outage-11072-SKU-1')).toHaveTextContent('断货 1 个月');
+    // ★ 整块不适用的不算断货
+    expect(within(screen.getByTestId('block-90001-SKU-1'))
+      .queryByTestId('outage-90001-SKU-1')).toBeNull();
   });
 
   it('填期望销量 → 保存并当场刷新店铺·货号行的库存预估', async () => {
@@ -2660,6 +2757,7 @@ describe('计划编辑网格', () => {
 
     const transit = within(block).getByTestId('transit-row');
     expect(transit).toHaveTextContent('80');
+    expect(transit).toHaveTextContent('货号级在途');
     expect(within(transit).getByText('未分摊到店铺')).toBeInTheDocument();
     expect(within(transit).queryByRole('textbox')).toBeNull();   // ★ 只读
     expect(transit).toHaveTextContent('—');                       // 11/12 月无在途 ⇒ 未知不是 0
@@ -2677,7 +2775,8 @@ describe('计划编辑网格', () => {
     expect(screen.queryByTestId('orphans')).toBeNull();
 
     const dirty = makeGrid();
-    dirty.sku_pipeline[0] = { sku: 'SKU-1', period: P[0]!, in_transit: 999 };
+    dirty.sku_pipeline[0] = { sku: 'SKU-1', period: P[0]!, units: 999,
+                              sources: [], no_seller_attribution: true };
     vi.resetModules();
     await renderGrid(dirty);
     expect(await screen.findByTestId('orphans')).toHaveTextContent('in_transit_disagrees');
@@ -2698,7 +2797,9 @@ describe('计划编辑网格', () => {
     expect(blocks.length).toBeGreaterThan(0);
     expect(screen.getAllByText('不适用').length).toBeGreaterThan(0);
     expect(screen.getAllByText('未计本计划采购').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('不可求和').length).toBe(blocks.length);
+    expect(screen.getAllByText('未分摊到店铺').length).toBeGreaterThan(0);
+    // ★ 「不可求和」在阶段 A 没有落点：出现了就说明有人把它当默认值用了
+    expect(screen.queryByText('不可求和')).toBeNull();
   });
 });
 ```
@@ -2708,7 +2809,7 @@ describe('计划编辑网格', () => {
 ```bash
 cd web && npx vitest run src/pages/PlanGrid.test.tsx
 ```
-Expected: FAIL —— 14 条全红，首条报 `Unable to find an accessible element with the role "heading" and name "2026 Q4 销售计划"`。
+Expected: FAIL —— 16 条全红，首条报 `Unable to find an accessible element with the role "heading" and name "2026 Q4 销售计划"`。
 
 - [ ] **Step 7: 写网格页**
 
@@ -2723,7 +2824,7 @@ import { Qty, type QtyValue } from '../components/Qty';
 import { api, ApiError } from '../api';
 import type { GridResponse, PlanSummary, Seller } from '../api/types';
 import {
-  buildGridModel, demandAt, inventoryAt, sumUnits, INVENTORY_TOTAL, type SkuBlock,
+  buildGridModel, closingOfLast, demandAt, inventoryAt, outageCount, sumUnits, type SkuBlock,
 } from './planGridModel';
 
 export function PlanGrid() {
@@ -2820,6 +2921,12 @@ export function PlanGrid() {
               <span className="sheet__sku">{block.sku}</span>
               <span className="sheet__name">{block.seller_name}</span>
               <span className="sheet__stat">
+                {/* ★ 断货计数挂在块头：折起来也看得见 */}
+                {outageCount(block) > 0 && (
+                  <span className="chip chip--bad" data-testid={`outage-${block.sid}-${block.sku}`}>
+                    断货 {outageCount(block)} 个月
+                  </span>
+                )}
                 <button type="button" className="btn btn--sm btn--danger" onClick={() => void removeSku(block)}>
                   删除货号
                 </button>
@@ -2856,9 +2963,9 @@ export function PlanGrid() {
                               <Qty v={closing} big />
                             </div>
                             <span hidden data-testid="closing-sku" />
-                            {cell && cell.basis.reason !== 'not_applicable' && (
+                            {cell && cell.basis.closing_reason !== 'not_applicable' && (
                               <div className="basis">
-                                <span>在仓 {cell.onhand ?? '—'}</span>
+                                <span>期初 {cell.onhand ?? '—'}</span>
                                 <span>{cell.basis.as_of}</span>
                                 <span className="chip chip--dim">未计本计划采购</span>
                               </div>
@@ -2874,8 +2981,10 @@ export function PlanGrid() {
                       <div data-testid="sum-demand">
                         <Qty v={sumUnits(block.mskus.flatMap((r) => r.cells.map((c) => c.effective_units)))} />
                       </div>
-                      {/* ★ 跨月把期末库存加起来，同一批货会被数三遍 */}
-                      <div data-testid="sum-inventory"><Qty v={INVENTORY_TOTAL} /></div>
+                      {/* ★ 存量不求和，给期末：onhand 是一条链，三个月加起来等于把同一批货数三遍 */}
+                      <div className="cell__row"><span className="k">期末</span>
+                        <span className="v" data-testid="sum-inventory">
+                          <Qty v={closingOfLast(block, model.periods)} /></span></div>
                     </td>
                   </tr>
 
@@ -2956,7 +3065,7 @@ export function PlanGrid() {
                     <div className="gr__sub"><span className="chip chip--dim">未分摊到店铺</span></div>
                   </td>
                   {model.periods.map((p) => {
-                    const t = model.pipeline.find((x) => x.sku === row.sku && x.period === p)?.in_transit ?? null;
+                    const t = model.pipeline.find((x) => x.sku === row.sku && x.period === p)?.units ?? null;
                     return (
                       <td className="cell" key={p}>
                         <span className="i-pencil">
@@ -2967,7 +3076,7 @@ export function PlanGrid() {
                   })}
                   <td className="gsum">
                     <Qty v={sumUnits(model.periods.map((p) =>
-                      model.pipeline.find((x) => x.sku === row.sku && x.period === p)?.in_transit ?? null))} />
+                      model.pipeline.find((x) => x.sku === row.sku && x.period === p)?.units ?? null))} />
                   </td>
                 </tr>
               ))}
@@ -3002,7 +3111,7 @@ sup.ext { cursor: help; }
 ```bash
 cd web && npx vitest run src/pages/PlanGrid.test.tsx
 ```
-Expected: PASS（14 个用例）。
+Expected: PASS（16 个用例）。
 
 - [ ] **Step 9: 把三条守卫各弄失败一次**
 
@@ -3017,7 +3126,7 @@ Expected: FAIL —— `★ 清空一个 msku 的输入 → 整格未知`：格�
 ```bash
 git checkout -- src/pages/PlanGrid.tsx
 # ② 「不适用」当成 0
-sed -i "s/if (cell.basis.reason === 'not_applicable') return { kind: 'na' };/if (cell.basis.reason === 'not_applicable') return { kind: 'num', value: 0 };/" src/pages/planGridModel.ts
+sed -i "s/if (cell.basis.closing_reason === 'not_applicable') return { kind: 'na' };/if (cell.basis.closing_reason === 'not_applicable') return { kind: 'num', value: 0 };/" src/pages/planGridModel.ts
 npx vitest run src/pages/planGridModel.test.ts src/pages/PlanGrid.test.tsx
 ```
 Expected: FAIL —— `★ 库存一格三种形态三个字` 与 `★ 无 FBA 的店铺：写「不适用」…`：屏上出现 0。
@@ -3042,7 +3151,7 @@ cd /home/fido/work/2026/jxd_service_group/service_supplychain
 git add web && git commit -m "$(cat <<'EOF'
 feat(web): 计划编辑网格 —— 库存按 [店铺, 货号] 画在折叠行，在途只读不分摊
 
-msku 行只有预估与输入；「不适用」「未知」「不可求和」三个字形互不相同。
+msku 行只有预估与输入；合计列的存量给「期末」不给和；「不适用」与「未知」两个字形互不相同。
 认不出的店铺、对不上的库存行、两处在途不一致全部进丢弃区点名。
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
@@ -3086,7 +3195,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import type { CatalogResult } from '../api/types';
 
 const CATALOG: CatalogResult = {
-  need_query: false, matched: 2, truncated: false, limit: 50,
+  need_query: false, truncated: false, limit: 50,
   items: [
     { sku: 'SKU-1', name: '猫爬架',
       mskus: [
@@ -3112,8 +3221,9 @@ async function renderAdd(opts: { failOn?: string } = {}) {
     ApiError,
     api: {
       searchCatalog: async (q: { q?: string }) =>
-        !q.q ? { need_query: true, matched: 0, truncated: false, limit: 50, items: [] }
-             : q.q === 'ZZZZ' ? { need_query: false, matched: 0, truncated: false, limit: 50, items: [] }
+        !q.q ? { need_query: true, truncated: false, limit: 50, items: [] }
+             // ★ 故意不带 matched：判空不许依赖这个可选字段
+             : q.q === 'ZZZZ' ? { need_query: false, truncated: false, limit: 50, items: [] }
              : JSON.parse(JSON.stringify(CATALOG)) as CatalogResult,
       claim: async (_p: number, t: { seller_sku: string }) => {
         if (t.seller_sku === opts.failOn) {
@@ -3288,12 +3398,15 @@ export function PlanAdd() {
       {result.need_query && (
         <div className="empty" data-testid="need-query"><p className="empty__title">输入货号后搜索</p></div>
       )}
-      {!result.need_query && result.matched === 0 && (
+      {/* ★ 判空只用 items.length：matched 是可选字段，缺了就会把「搜了没有」显示成「还没搜」 */}
+      {!result.need_query && result.items.length === 0 && (
         <div className="empty" data-testid="no-hit"><p className="empty__title">没有命中的货号</p></div>
       )}
 
       {result.truncated && (
-        <div className="flash flash--bad">命中 {result.matched} 条，只列前 {result.limit} 条 —— 缩小搜索条件</div>
+        <div className="flash flash--bad">
+          命中{result.matched === undefined ? '' : ` ${result.matched} 条`}，只列前 {result.limit} 条 —— 缩小搜索条件
+        </div>
       )}
 
       {unbuildable.length > 0 && (
@@ -3868,9 +3981,11 @@ const GRID: GridResponse = {
              { sku: 'SKU-1', period: '2026-12', planned_units: null }],
   inventory: ['2026-10', '2026-11', '2026-12'].map((period, n) => ({
     sku: 'SKU-1', sid: '11072', period,
-    onhand: n === 0 ? 300 : 200, inbound: null, closing: n === 0 ? 200 : null,
+    onhand: n === 0 ? 300 : 200, inbound: null as null, closing: n === 0 ? 200 : null,
     basis: { source: 'ch' as const, as_of: '2026-09-21', includes_plan_purchase: false as const,
-             reason: n === 0 ? null : ('unknown_demand' as const), sku_level_in_transit: null },
+             demand: n === 0 ? 100 : null, reason: 'no_seller_attribution' as const,
+             closing_reason: n === 0 ? null : ('unknown_demand' as const),
+             sku_level_in_transit: null, sources: [] },
   })),
   sku_pipeline: [],
 };
@@ -4059,9 +4174,9 @@ import type { GridResponse, PlanSummary, Seller, SkipReason, SubmitResult } from
           <div className="panel__body">
             {/* ★ 空版本：说出「没有占在流转位」，否则人会以为提交成功了，
                  然后奇怪为什么采购那边什么都没有 */}
-            {!report.in_flight && report.lines === 0 && (
+            {report.lines === 0 && (
               <div className="flash flash--bad" data-testid="empty-rev">
-                这一版是空的，没有占在流转位
+                这一版是空的{report.in_flight === false && '，没有占在流转位'}
               </div>
             )}
             {/* ★ 判据②：逐条列出，不静默丢 */}
@@ -4260,7 +4375,7 @@ import type { GridResponse } from '../api/types';
 
 const G = gridFixture as GridResponse;
 /** ★ 不写死后端 seed 出来的名字与数字，只从 fixture 里认形态 */
-const FIRST_INV = G.inventory.find((i) => i.basis.reason !== 'not_applicable' && i.onhand !== null)!;
+const FIRST_INV = G.inventory.find((i) => i.basis.closing_reason !== 'not_applicable' && i.onhand !== null)!;
 const SIBLINGS = G.demand.filter((d) =>
   d.sku === FIRST_INV.sku && d.sid === FIRST_INV.sid && d.period === FIRST_INV.period);
 const EDITED = SIBLINGS[0]!;
@@ -4454,15 +4569,17 @@ EOF
 |---|---|---|
 | 一稿 | `(seller_sku, sid)` + `on_hand/purchase_in_transit` | 我自己猜的，作废 |
 | 二稿 | `(seller_sku, sid, sku)` msku × 月，带 `not_applicable` 布尔与 `opening` 链 | team-lead 撤回，作废 |
-| ★ 三稿（最终） | **`(sku, sid)`** —— `02` §3.1a「可售库存[店铺, 货号]」 | 现行 |
+| 三稿 | `(sku, sid)`，但 `basis.reason` 一个字段兼管三种成因 | 与后端接口形状块不符，作废 |
+| ★ **四稿（终版）** | **`(sku, sid)`** + `basis` 里 **`reason` 与 `closing_reason` 分开** | 现行，逐字照 `2026-09-22-stage-a-backend.md` 的 `### ★★ 接口形状` |
 
-三稿带来的三处结构性变化（不是改名，是改身份）：
+四处结构性变化（不是改名，是改身份）：
 
 | # | 变化 | 为什么 |
 |---|---|---|
 | 1 | 库存**挂在块上**（`SkuBlock.inventory`），不再挂在 `MskuCell` 上 | 挂在 msku 上就会被画两遍、加两遍 —— 而 `02` §3.1a 说它的身份只有一个 |
-| 2 | 「不适用」从布尔 `not_applicable` 变成 `basis.reason === 'not_applicable'` | 三种 null 成因（不适用 / 未知 / 无店铺归属）收在一个字段里，**不许合成一个裸 null** |
-| 3 | `inbound` 从 `0` 变成 `null`；在途走 `sku_pipeline[]` 与 `basis.sku_level_in_transit` | `0` 是「有这一层但没有货」，`null` 是「这一层在阶段 A 根本不成立」。两者处置相反 |
+| 2 | ★ **`reason` 与 `closing_reason` 拆成两个字段** | `reason` 恒为 `no_seller_attribution`（解释 `inbound` 为什么 null），`closing_reason ∈ {null, not_applicable, unknown_demand}`。一个字段兼管，就会出现「这一格既未知又恒定」而只说得出一件 |
+| 3 | `inbound` 从 `0` 变成 `null`；在途走 `sku_pipeline[].units` 与 `basis.sku_level_in_transit` | `0` 是「有这一层但没有货」，`null` 是「这一层在阶段 A 根本不成立」。两者处置相反 |
+| 4 | 合计列的存量从「不可求和」改成 **「期末」** | `onhand` 是一条链（接口形状块写死：其后是上月期末）⇒ 三个月相加是把同一批货数三遍；而「期末」是一个有意义的真数 |
 
 ### A.2 仍要回头改**文档**的（后端计划也列了，两边同一份）
 
@@ -4473,13 +4590,26 @@ EOF
 | 3 | `08` §1.1 未写 `sku_pipeline` / `system_extrapolated` / `not_applicable` / `basis` 的字段级形状 | 实现已定，`08` 待补 |
 | 4 | `POST /plans/{id}/archive` 与 `/v1/plan-lines*` | ★ 后端照 `08` 实现，**阶段 A 无界面入口**（原理图没画）。我没有自己发明入口 —— 属不属于阶段 A 的界面，待负责人定 |
 
+### A.2b ★ 权威块与后端自己的实现/测试**不一致**的三处（我按什么处理的）
+
+> 规则：权威块是唯一权威；但它**是简写**，列出来的字段类型不许改，**没列到的不等于不存在**。
+> 凡后端的实现与测试里确实有、而权威块没写的，我按「保留 + 登记」处理，并在类型上标成可选。
+
+| # | 不一致 | 我怎么处理 | 若处理错了会怎样 |
+|---|---|---|---|
+| 1 | 权威块的 `demand[]` 只有 6 个键，缺 `sku` / `system_extrapolated` / `effective_units`；后端 Task 12 的实现与断言里三个都有，且 team-lead 第 2 条明确要求渲染 `system_extrapolated` 角标 | **保留**（它们是必需的：`sku` 用来分块、`system_extrapolated` 是 `14` §5 的强制标记、`effective_units` 是库存公式的入参） | 去掉 `sku` 就分不出块；去掉角标就违反 `14` §5 |
+| 2 | 权威块的 `submit` 响应是 `{rev, lines, skipped}`，后端 Task 13 的断言用 `minted` 与 `in_flight` | 字段名按权威块取 **`lines`**（team-lead 第 4 条明确裁定）；`in_flight` 标为**可选**，缺了就不渲染「没有占在流转位」那一行 | 取 `minted` 会读到 `undefined`，计数全成 NaN |
+| 3 | 权威块的 `catalog` 没有 `matched`，后端实现里有 | 标为**可选**，且**判空一律用 `items.length`** | 拿可选字段判空，缺了就会把「搜了没有」显示成「还没搜」——而这正是 P11 要分开的那两件事 |
+
 ### A.3 本计划自己定的、需要登记的两条
 
 | # | 事 | 定成什么 | 为什么不算「自己发明」 |
 |---|---|---|---|
 | 1 | 按钮「重置」的语义 | 丢弃未落盘的输入并重新拉 `GET /grid` | 原理图列了这个按钮但没定义它做什么；这里选了**唯一不产生副作用**的那种解释 |
 | 2 | `closing` 公式里的「期望销量」取哪个 | ★ 取**生效值** `effective_units`（`basis` 记来源） | 取原始 `expected_units` 的话，「采用了系统预估」的格子会被当成未知 —— 与 S-15「提交冻结取生效值并记 basis」冲突 |
-| 3 | `closing` 的**跨月口径**（累计链 vs 每月独立） | ★ 不自己定：mock 跟着 fixture 走，由 Task 2 那条测试**从 fixture 里反推规则**并断言 mock 一致；fixture 分不开两种规则时**硬失败** | 后端计划里 `inventory_projection` 是期初链，但裁定的文字只写了一条不带月份下标的公式。与其猜，不如让 fixture 当证人 —— 且证人不在场时要报错，不是默认通过 |
+| 3 | `closing` 的**跨月口径** | ★ 已定：接口形状块的 `onhand` 注释写着「首月是在仓事实，其后是上月期末」⇒ 累计链。mock 按链实现，并有一条测试盯着「本月期初 = 上月期末」，fixture 里没有「有消耗的月份」时**硬失败** | 不再是猜的 —— 出处在权威块里 |
+| 4 | 「不可求和」字形在阶段 A 无落点 | `Qty` 保留 `nosum` 分支（有单测），但**网格里一处都不用**，且有一条断言 `queryByText('不可求和') === null` 盯着 | 阶段 C 的跨货号/跨市场合计要用。★ 它现在是「不执行的东西不会失败」的一例，登记于此 |
+| 5 | `demand`/`matched`/`in_flight` 等可选字段 | `SubmitResult.in_flight` 与 `CatalogResult.matched` 标为**可选**，判空一律用 `items.length` / `lines` 而不是它们 | 权威块没列这两个字段（实现里有）。依赖一个可能缺的字段去判空，缺了就会把「搜了没有」显示成「还没搜」 |
 
 ---
 
@@ -4505,7 +4635,7 @@ EOF
 | 规格条目 | 落在 |
 |---|---|
 | ① 四屏 + 全局外壳 | Task 1（外壳）· 3（`ops`）· 4（`plan`）· 5（`plan-add`）· 6（`plan-rev`） |
-| ② 网格每格的墨与可编辑性 | Task 4 Step 7：库存画在**店铺·货号行**（`02` §3.1a），msku 行只有预估与输入；外推角标 `sup.ext` 补上了一稿漏掉的 `14` §5 |
+| ② 网格每格的墨与可编辑性 | Task 4 Step 7：库存画在**店铺·货号行**（`02` §3.1a），msku 行只有预估与输入；合计列给「期末」不给和；外推角标 `sup.ext` 补上了一稿漏掉的 `14` §5 |
 | ③ `shell.css` 的 token 与类名原样带走 | Task 1 Step 3~4（sha256 + 六个 token 逐个断言） |
 | ④ 两种人工输入 | Global Constraints 的「不做」一节：阶段 A 无 ② 类输入 ⇒ 不做抽屉，登记 B-1 |
 | ⑤ 卡开工的四条缺口 | 已被 S 组 + S-21 裁定：两表粒度（S-1/S-5）· 带预测不落库（S-10/S-19）· 不渲染够不着的态（S-20）· 库存粒度与 basis（S-21）· fixture 同源（Task 2 Step 3） |
@@ -4513,7 +4643,8 @@ EOF
 | 后端契约的 15 个端点 | 阶段 A 用到的 13 个全在 `SupplyChainApi` 里；`archive` 与 `plan-lines*` 无界面入口 → 附录 A.2 第 4 条 |
 | 判据 ①②③⑥ | Task 8 planFlow（①）· Task 7（②）· Task 5 claim 409（③）· Task 8 sameScreen（⑥）。判据 ④⑤ 是库层的事，前端测不到 |
 
-**2. 占位符扫描**：全文搜 `TBD` / `TODO` / `待补` / `类似 Task` / `适当` —— 0 命中。
+**2. 占位符扫描**：全文搜 `TBD` / `TODO` / `待补` / `类似 Task` / `适当` —— 命中的只有本行自己与
+Task 1 那句「不是 TODO」的说明。`in_transit:` 的 5 处命中全是 `sku_level_in_transit:`，不是残留的旧字段名。
 每个代码步骤都给了可直接粘贴的完整代码；Task 1 的四个页面占位明确标注「在各自 Task 里被整体替换」并给了完整占位代码。
 
 **3. 类型一致性 + 找到并修掉的问题**
@@ -4557,6 +4688,17 @@ EOF
 | 27 | ★ `closing` 的**跨月口径**在裁定文字里没有月份下标 | 不自己定：Task 2 新增一条测试**从 fixture 反推规则**再断言 mock 一致；fixture 分不开两种规则时**硬失败**（证人不在场要报错，不是默认通过）——附录 A.3 第 3 条 |
 | 28 | 折叠态**没有输入框**（输入是 msku 级的），一眼看去像功能缺失 | 不是缺失，是原理图本来的样子。写进 Task 4 的口径表并加断言 `折叠态 queryByRole('textbox') === null`，免得后来有人「顺手补上」而把人填粒度悄悄降一层 |
 
+四稿（逐字对照后端权威块 `### ★★ 接口形状`，新发现 6 条）：
+
+| # | 发现 | 改法 |
+|---|---|---|
+| 29 | ★★ **`reason` 与 `closing_reason` 是两个字段，我三稿把它们合成了一个** | 全线拆开：`inventoryAt()` / orphan 判定 / mock recompute / 三个测试文件都改看 `closing_reason`；并加两条断言盯住 `reason` **恒定**。★ 合着的时候「这一格既未知又恒定」只说得出一件 —— 而这正是后端计划 b 条点名要防的 |
+| 30 | ★ 合计列的存量三稿写「不可求和」，而权威块的 `onhand` 注释写死了「其后是**上月期末**」⇒ 它是一条链 | 改成 **「期末」**（最后一个月的 `closing`），并加断言「200 + (−30) 这种和一个字都不许出现」。★ 「不可求和」在阶段 A 从此没有落点，登记在附录 A.3 第 4 条 |
+| 31 | ★ `basis.demand` 是后端算的那份 Σ，与前端自己算的是**两个证人** | 新增 orphan `demand_disagrees`：不一致就点名。★ 两个真相不报，最后就会有人拿其中一个去对账 |
+| 32 | `sku_pipeline[]` 的字段是 `units` 不是我三稿写的 `in_transit`，且带 `sources[]` / `no_seller_attribution: true` | 全部改正；`in_transit_disagrees` 的比对对象随之改成 `units` |
+| 33 | ★ 权威块与后端自己的实现/测试**有三处不一致**（`demand[]` 缺三个键 · `submit` 的 `minted`/`lines` · `catalog` 的 `matched`） | 不自己挑：`lines` 按 team-lead 裁定取；缺的字段**保留并标可选**；★ 判空一律不依赖可选字段。三条全部登记进新增的附录 A.2b |
+| 34 | `outageCount()` 三稿被我删了，而 team-lead 要求保留 | 按「折叠行的 `closing`」重写，挂到块头显示「断货 N 个月」—— 折起来也看得见，且未知/不适用都不算断货 |
+
 ★ 三条**没修**的，记在这里而不是悄悄处理：
 
 1. **`.stale` 品类陈旧标注无处可挂** —— 后端的 `catalog` item 没有 `category` / `refreshed_at`（`08` §1.4 的 `/v1/categories` 才有）。
@@ -4564,7 +4706,9 @@ EOF
 2. **`archive` 与 `plan-lines*` 无界面入口** —— 后端照 `08` 实现了，原理图没画。不自己发明入口（附录 A.2 第 4 条）。
 3. **`unbuildable_sellers` 阶段 A 恒空** —— 渲染分支靠注入数据测（B-6），但它在生产里**一次都不会执行**。
    这是「不执行的东西不会失败」的一个已知实例，后端那边有一条盯着 `seller` 表列的测试兜底。
-4. **`basis.reason === 'no_seller_attribution'`** 在阶段 A 也不会出现（在途根本不进这一格）。
-   类型里留着它是因为后端契约里有；★ 但**没有任何前端分支渲染它** —— 真出现时会落到「未知」的 `—`。
-   这是刻意的取舍：为一个阶段 A 不可达的成因造一个屏幕形态，只会多一段没人验证的代码。
-   ⚠️ 阶段 B 接上采购在途时**必须回来补**，否则三种 null 成因会在那时合成两种。
+4. **`basis.reason` 恒为 `no_seller_attribution`，屏上没有任何地方渲染它。**
+   它解释的是 `inbound` 为什么是 null，而 `inbound` 这一层在阶段 A 根本不画。
+   ★ 不渲染是刻意的：给一个恒定值造一个屏幕形态，等于给屏幕加一句永远为真的话。
+   但它必须**被断言盯住**（`fixtures.test.ts` 与模型测试各一条断言它恒定）——
+   ⚠️ 阶段 B 接上采购在途、这个字段开始变化时，那两条断言会转红，逼人回来补渲染。
+   这是「恒定的东西也要有人守」与「不给恒定值造 UI」之间的取法。
