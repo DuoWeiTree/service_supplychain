@@ -106,8 +106,27 @@ def test_msku_without_history_is_seeded_null_and_named(client, seed):
     assert r["no_history"] == [{"seller_sku": seed.msku_nofba[0], "sid": seed.msku_nofba[1],
                                 "reason": "no_sales_history"}]
     with pg_conn() as c, c.cursor() as cur:
-        cur.execute("SELECT DISTINCT system_units FROM plan_demand_cell WHERE plan_id = %s", (p,))
-        assert cur.fetchall() == [(None,)]
+        # ★ DISTINCT 会把行数一起折叠掉：3 行全 NULL 和只种出 1 行会长得一样。
+        #   count(*) 与 count(system_units) 分开数才能证明「3 个格子都建了、且都是 NULL」。
+        cur.execute("SELECT count(*), count(system_units) FROM plan_demand_cell WHERE plan_id = %s",
+                    (p,))
+        assert cur.fetchone() == (3, 0)
+
+
+def test_two_mskus_of_the_same_sku_do_not_double_the_purchase_cells(client, seed):
+    """★ 采购格子是货号级的（PK 不含 seller_sku/sid）：同一货号的第二个 msku 认领
+    必须落在同一批格子上，不能翻倍 —— 没有 ON CONFLICT DO NOTHING 会在这里撞主键，
+    这条测试就是靠这个主键把「翻倍」和「去重」分得开的。"""
+    p = mk(client, seed)
+    client.post(f"/v1/plans/{p}/claims",
+                json={"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]}, headers=H(seed.actor))
+    client.post(f"/v1/plans/{p}/claims",
+                json={"seller_sku": seed.msku_b[0], "sid": seed.msku_b[1]}, headers=H(seed.actor))
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT count(*) FROM plan_purchase_cell WHERE plan_id = %s AND sku ="
+                    " (SELECT sku FROM msku_bridge WHERE seller_sku = %s AND sid = %s)",
+                    (p, seed.msku_a[0], seed.msku_a[1]))
+        assert cur.fetchone()[0] == 3, "★ 3 个月 × 1 个货号 = 3 行，不是 3×2 个 msku = 6 行"
 
 
 def test_second_plan_claiming_the_same_msku_is_409_and_names_the_holder(client, seed):

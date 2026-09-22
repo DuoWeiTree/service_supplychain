@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Request
 
 from api.ui.deps import actor_optional, declared, require_fresh_mirrors
 from api.ui.errors import ApiError
-from shared.pg_client import pg_conn
+from shared.pg_client import pg_conn, timed
 
 router = APIRouter(dependencies=[Depends(require_fresh_mirrors)])
 
@@ -32,7 +32,7 @@ def catalog_skus(request: Request, who: str | None = Depends(actor_optional)):
                 "items": []}
 
     like = f"%{q}%"
-    with pg_conn() as c, c.cursor() as cur:
+    with timed("catalog_skus", actor=who, q=q), pg_conn() as c, c.cursor() as cur:
         cur.execute(
             "SELECT b.sku, s.name, b.seller_sku, b.sid, se.name,"
             "       cl.plan_id, cl.claimed_by, p.title"
@@ -83,7 +83,7 @@ def catalog_skus(request: Request, who: str | None = Depends(actor_optional)):
 @router.get("/sellers")
 def sellers(request: Request, who: str | None = Depends(actor_optional)):
     declared(request)
-    with pg_conn() as c, c.cursor() as cur:
+    with timed("sellers", actor=who), pg_conn() as c, c.cursor() as cur:
         cur.execute("SELECT seller_id, name, market, has_fba, platform FROM seller"
                     " ORDER BY seller_id")
         return {"sellers": [{"seller_id": r[0], "name": r[1], "market": r[2],
