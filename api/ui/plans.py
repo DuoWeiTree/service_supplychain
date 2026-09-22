@@ -214,10 +214,14 @@ def grid(plan_id: int, request: Request, who: str | None = Depends(actor_optiona
 
     for seller_sku, sid, sku, period, sysu, extrap, expu, fba in demand:
         eff = effective_demand(sysu, expu)
-        out_demand.append({"seller_sku": seller_sku, "sid": sid, "period": _ym(period),
+        out_demand.append({"seller_sku": seller_sku, "sid": sid, "sku": sku,
+                           "period": _ym(period),
                            "system_units": sysu, "expected_units": expu, "basis": eff.basis,
                            # ★ 外推 ≠ 预估，标记必须随数走（14 §5）
-                           "system_extrapolated": extrap})
+                           "system_extrapolated": extrap,
+                           # ★ 单一来源：前端按 (sid, sku) 分块、库存公式的入参都读这一个字段，
+                           #   不许各自重算 —— effective_demand() 是唯一裁定者（rules/effective.py）
+                           "effective_units": eff.units})
         key, ym = (sku, sid), _ym(period)
         slot = demand_by_store.setdefault(key, {})
         # ★ 合计行 = 各 msku 之和（14 §1 ①）；只要有一个 msku 未知，这一格就是未知

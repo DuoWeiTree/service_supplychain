@@ -19,8 +19,14 @@ def test_grid_blocks_carry_exactly_the_ruled_keys(client, seed):
     pid = setup_plan(client, seed)
     g = client.get(f"/v1/plans/{pid}/grid", headers=H(seed.actor)).json()
     assert g["periods"] == ["2026-10", "2026-11", "2026-12"]
-    assert set(g["demand"][0]) == {"seller_sku", "sid", "period", "system_units",
-                                   "expected_units", "basis", "system_extrapolated"}
+    assert set(g["demand"][0]) == {"seller_sku", "sid", "sku", "period", "system_units",
+                                   "expected_units", "basis", "system_extrapolated",
+                                   "effective_units"}
+    # ★ effective_units 是 effective_demand() 的单一来源，不许前端自己重算一遍
+    for row in g["demand"]:
+        expected = row["expected_units"] if row["expected_units"] is not None \
+            else row["system_units"]
+        assert row["effective_units"] == expected
     assert set(g["purchase"][0]) == {"sku", "period", "planned_units"}
     assert set(g["inventory"][0]) == {"sku", "sid", "period", "onhand", "inbound",
                                       "closing", "basis"}
@@ -100,9 +106,9 @@ def test_demand_cell_keeps_system_and_human_apart(client, seed):
     pid = setup_plan(client, seed)
     g = client.get(f"/v1/plans/{pid}/grid", headers=H(seed.actor)).json()
     cell = [r for r in g["demand"] if r["period"] == "2026-10"][0]
-    assert cell == {"seller_sku": "MSKU-A", "sid": "11072", "period": "2026-10",
-                    "system_units": 100, "expected_units": None,
-                    "basis": "system", "system_extrapolated": False}
+    assert cell == {"seller_sku": "MSKU-A", "sid": "11072", "sku": "DCC1800264G1",
+                    "period": "2026-10", "system_units": 100, "expected_units": None,
+                    "basis": "system", "system_extrapolated": False, "effective_units": 100}
 
 
 def test_extrapolated_flag_travels_with_the_number(client, seed):
