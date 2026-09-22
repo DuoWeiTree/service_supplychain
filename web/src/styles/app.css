@@ -1,0 +1,21 @@
+/* web/src/styles/app.css
+   ★ 只允许放 shell.css 里没有的东西。凡 shell.css 已有的类，一律不在这里重定义
+     —— .dropped 曾在三个页面各定义一遍，改一处忘一处，屏幕上不报错。 */
+
+/* 一格三行：预估（灰）→ 库存（灰 + basis）→ 输入（蓝黑），顺序恒定 */
+.cell__stack { display: grid; gap: calc(var(--u) * 1.25); }
+.cell__lead { font-size: var(--t-xs); color: var(--pencil); text-align: right; }
+
+/* 库存预估的依据：在仓 / 采购在途 / as_of —— 数据，不是解说 */
+.basis { display: flex; justify-content: flex-end; gap: calc(var(--u) * 1.5); font-size: 10px; color: var(--pencil); }
+
+/* 首页三个计数横排。★ 不做卡片：--r 是纸张裁切，不是卡片 */
+.counts { display: flex; gap: calc(var(--u) * 10); align-items: baseline; }
+.counts .kpi { flex-direction: column; align-items: flex-start; gap: calc(var(--u) * 0.5); }
+
+/* 两栏：未提交 / 提交后又改过 */
+.twocol { display: grid; grid-template-columns: 1fr 1fr; gap: calc(var(--u) * 4); }
+@media (max-width: 860px) { .twocol { grid-template-columns: 1fr; } }
+
+/* 行展开箭头：不是装饰，它说明这一行底下还有 msku */
+.gr__toggle { background: none; border: 0; padding: 0 calc(var(--u)) 0 0; color: var(--pencil); cursor: pointer; font: inherit; }

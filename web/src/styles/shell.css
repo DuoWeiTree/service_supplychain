@@ -1,0 +1,734 @@
+/* ============================================================
+   service_supplychain 原型 —— 设计系统
+
+   ★ 论点：**把说明文字换成一套「墨迹语言」。**
+
+     这个系统里到处是「这个数是什么性质」的区分 —— 事实 / 假设 / 人的意图。
+     以前这些区分靠一段一段的说明文字写在界面上，结果说明比数据还多。
+     现在改用**墨色**说：
+
+       铅笔灰  --pencil     机器估的（系统预估、外推值）
+       蓝黑墨  --ink        人写的（期望销量、计划采购量）
+       朱批红  --vermilion  要人处理的（缺口、断货、被拒）
+       石绿    --jade       已经落地的事实（到货、已投送）
+
+     ★ 一个数用哪种墨，就说明了它是哪种数。不用再写一句话。
+
+   ★ 版面三条手法：
+     ① 说明折叠成一行（.fold）—— 信息还在，版面还给数据
+     ② 网格占满 —— 一行标题 + 一行元数据 + 一行参数，剩下全给数据
+     ③ 状态用左边条（.cell[data-state]）不用徽章 —— 徽章抢注意力又占位
+
+   纯原生 CSS，无框架无 CDN。
+   ============================================================ */
+
+:root {
+  /* ── 墨与纸 ─────────────────────────────────────────────── */
+  --paper:      #F0F1ED;   /* 冷纸：偏绿灰。不是暖奶油 */
+  --paper-hi:   #F8F9F6;   /* 抬起来的一层（输入框、弹窗） */
+  --paper-lo:   #E7E9E3;   /* 压下去的一层（表头、只读区） */
+  --rule:       #D7DBD4;   /* 格线 */
+  --rule-hard:  #B9BFB6;   /* 分区线 */
+
+  --ink:        #16293D;   /* 蓝黑墨水 —— 人写的数 */
+  --ink-soft:   #4A5C6E;   /* 次要文字 */
+  --pencil:     #8B939B;   /* 石墨 —— 机器估的数、元信息 */
+
+  --vermilion:  #C4342A;   /* 朱批 —— 缺口 / 断货 / 被拒 */
+  --vermilion-w:#F6E4E1;   /* 朱批的淡底 */
+  --jade:       #2E6B54;   /* 已落地的事实 */
+  --jade-w:     #E2EDE7;
+
+  /* ── 尺度 ───────────────────────────────────────────────── */
+  --t-xs: 11px;  --t-sm: 12.5px;  --t-md: 14px;  --t-lg: 17px;  --t-xl: 26px;
+  --lh:   1.55;
+  --u:    4px;                      /* 间距基数 */
+  --r:    3px;                      /* 圆角：纸张裁切，不是卡片 */
+
+  /* ★ CJK 系统字重不可靠（很多只有 regular/bold 两档），
+       所以层级靠**字号 + 墨色**，不靠字重。 */
+  --face: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+          "Noto Sans CJK SC", "Source Han Sans SC", system-ui, -apple-system,
+          "Segoe UI", Roboto, sans-serif;
+}
+
+/* ============================================================
+   基础
+   ============================================================ */
+
+* { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: var(--t-md)/var(--lh) var(--face);
+  /* ★ 数字对齐是功能，不是造型 —— 所以要 tabular-nums，
+       但不用等宽字体（那是把工作表打扮成终端）。 */
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--ink); text-decoration-color: var(--rule-hard); text-underline-offset: 3px; }
+a:hover { text-decoration-color: currentColor; }
+
+:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 1px;
+}
+
+code, .mono {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: .92em;
+}
+
+.wrap { max-width: 1320px; margin: 0 auto; padding: 0 calc(var(--u) * 5); }
+
+.mt  { margin-top: calc(var(--u) * 3); }
+.mt2 { margin-top: calc(var(--u) * 6); }
+
+/* ── 墨色工具类：一个数用哪种墨，就说明了它是哪种数 ────────── */
+.i-pencil { color: var(--pencil); }
+.i-ink    { color: var(--ink); }
+.i-red    { color: var(--vermilion); }
+.i-jade   { color: var(--jade); }
+.muted    { color: var(--pencil); }
+
+.num  { font-variant-numeric: tabular-nums; }
+.qty  { font-size: var(--t-lg); color: var(--ink); }
+.qty--zero { color: var(--pencil); }
+
+/* ============================================================
+   角色条（顶栏）
+   ============================================================ */
+
+.masthead {
+  position: sticky; top: 0; z-index: 40;
+  background: var(--paper-lo);
+  border-bottom: 1px solid var(--rule-hard);
+}
+.masthead__in {
+  max-width: 1320px; margin: 0 auto;
+  padding: calc(var(--u) * 2) calc(var(--u) * 5);
+  display: flex; align-items: center; gap: calc(var(--u) * 4);
+}
+.masthead__brand {
+  font-size: var(--t-sm); letter-spacing: .04em; color: var(--ink-soft);
+  white-space: nowrap;
+}
+.masthead__sub { font-size: var(--t-xs); color: var(--pencil); }
+.masthead__right { margin-left: auto; display: flex; align-items: center; gap: calc(var(--u) * 3); }
+
+/* 角色切换：不是标签页，是「我现在是谁」 */
+.roles { display: flex; gap: 1px; background: var(--rule); border: 1px solid var(--rule); border-radius: var(--r); }
+.role {
+  appearance: none; border: 0; cursor: pointer;
+  padding: calc(var(--u) * 1.5) calc(var(--u) * 3);
+  background: var(--paper-hi); color: var(--ink-soft);
+  font: var(--t-sm)/1 var(--face);
+}
+.role:first-child { border-radius: 2px 0 0 2px; }
+.role:last-child  { border-radius: 0 2px 2px 0; }
+.role[aria-pressed="true"] { background: var(--ink); color: var(--paper-hi); }
+.role__badge {
+  display: inline-block; margin-left: calc(var(--u) * 1.5);
+  min-width: 16px; padding: 0 4px; border-radius: 8px;
+  background: var(--vermilion); color: #fff; font-size: 10px; line-height: 16px;
+}
+
+/* ============================================================
+   页头：一行标题 + 一行元数据 + 主动作
+   ★ 不要「eyebrow 标签 + 大标题 + 副标题」那三层套娃
+   ============================================================ */
+
+.head {
+  display: flex; align-items: flex-end; gap: calc(var(--u) * 4);
+  padding: calc(var(--u) * 6) 0 calc(var(--u) * 3);
+}
+.head__main { min-width: 0; }
+.head h1 {
+  margin: 0; font-size: var(--t-xl); font-weight: 600; letter-spacing: -.01em;
+  line-height: 1.2;
+}
+.head__meta {
+  margin-top: calc(var(--u) * 1.5);
+  font-size: var(--t-sm); color: var(--pencil);
+  display: flex; flex-wrap: wrap; gap: calc(var(--u) * 3);
+}
+.head__meta b { font-weight: 400; color: var(--ink-soft); }
+.head__act { margin-left: auto; display: flex; gap: calc(var(--u) * 2); flex-shrink: 0; }
+
+/* ============================================================
+   ★ .fold —— 说明折叠成一行
+   这是替掉满屏说明文字的那个部件。信息一个字都没少，只是默认收起。
+   ============================================================ */
+
+.fold {
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  background: var(--paper-hi);
+  margin: calc(var(--u) * 2) 0;
+}
+.fold > summary {
+  cursor: pointer; list-style: none;
+  padding: calc(var(--u) * 2) calc(var(--u) * 3);
+  font-size: var(--t-sm); color: var(--ink-soft);
+  display: flex; align-items: center; gap: calc(var(--u) * 2);
+}
+.fold > summary::-webkit-details-marker { display: none; }
+.fold > summary::before {
+  content: "＋"; color: var(--pencil); font-size: var(--t-xs); width: 1em;
+}
+.fold[open] > summary::before { content: "－"; }
+.fold[open] > summary { border-bottom: 1px solid var(--rule); }
+.fold__body {
+  padding: calc(var(--u) * 3);
+  font-size: var(--t-sm); color: var(--ink-soft);
+}
+.fold__body p { margin: 0 0 calc(var(--u) * 2); }
+.fold__body p:last-child { margin-bottom: 0; }
+
+/* 参数条：常驻一行，不折叠（它是工具，不是说明） */
+.bar {
+  display: flex; align-items: center; flex-wrap: wrap;
+  gap: calc(var(--u) * 2) calc(var(--u) * 5);
+  padding: calc(var(--u) * 2.5) calc(var(--u) * 3);
+  border: 1px solid var(--rule); border-radius: var(--r);
+  background: var(--paper-hi);
+  font-size: var(--t-sm);
+}
+.bar__grp { display: flex; align-items: center; gap: calc(var(--u) * 2); }
+.bar__lbl { color: var(--pencil); white-space: nowrap; }
+.bar__say { color: var(--ink-soft); flex: 1 1 260px; min-width: 0; }
+.bar__say b { font-weight: 400; color: var(--ink); }
+
+/* ============================================================
+   ★ 工作表网格 —— 这个系统的核心形态
+   三个角色（运营 / 采购 / 排货）共用它，所以它必须一眼认得出。
+   ============================================================ */
+
+.sheet {
+  border: 1px solid var(--rule-hard);
+  border-radius: var(--r);
+  background: var(--paper-hi);
+  overflow: hidden;
+  margin-bottom: calc(var(--u) * 4);
+}
+.sheet__head {
+  display: flex; align-items: baseline; gap: calc(var(--u) * 3);
+  padding: calc(var(--u) * 2.5) calc(var(--u) * 3);
+  background: var(--paper-lo);
+  border-bottom: 1px solid var(--rule-hard);
+}
+.sheet__sku { font-size: var(--t-md); }
+.sheet__name { font-size: var(--t-sm); color: var(--pencil); }
+.sheet__stat { margin-left: auto; font-size: var(--t-sm); color: var(--ink-soft); display: flex; gap: calc(var(--u) * 4); }
+
+.sheet__scroll { overflow-x: auto; }
+
+table.grid { width: 100%; border-collapse: collapse; }
+
+table.grid th, table.grid td {
+  border-right: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+  padding: 0;
+  vertical-align: top;
+}
+table.grid th:last-child, table.grid td:last-child { border-right: 0; }
+table.grid tr:last-child td { border-bottom: 0; }
+
+table.grid thead th {
+  background: var(--paper-lo);
+  padding: calc(var(--u) * 1.5) calc(var(--u) * 2);
+  font-size: var(--t-xs); font-weight: 400; color: var(--pencil);
+  text-align: right; white-space: nowrap;
+}
+table.grid thead th.gh--row { text-align: left; min-width: 190px; }
+table.grid thead th.gh--sum { background: var(--paper-lo); }
+
+/* 行头：店铺 · 货号 */
+td.gr {
+  text-align: left; padding: calc(var(--u) * 2);
+  background: var(--paper-hi); min-width: 190px;
+}
+.gr__who  { font-size: var(--t-sm); }
+.gr__code { font-size: var(--t-xs); color: var(--pencil); }
+.gr__sub  { font-size: var(--t-xs); color: var(--pencil); margin-top: 2px; }
+
+/* ── ★ 单元格：状态用左边条，不用徽章 ─────────────────────── */
+.cell {
+  position: relative;
+  padding: calc(var(--u) * 2) calc(var(--u) * 2) calc(var(--u) * 2) calc(var(--u) * 2.5);
+  min-width: 118px; text-align: right;
+}
+.cell::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  background: transparent;
+}
+.cell[data-state="low"]::before  { background: color-mix(in srgb, var(--vermilion) 35%, transparent); }
+.cell[data-state="out"]::before  { background: var(--vermilion); }
+.cell[data-state="out"]          { background: var(--vermilion-w); }
+.cell[data-state="done"]::before { background: var(--jade); }
+
+/* 结论数：这一格唯一的大字 */
+.cell__close { font-size: var(--t-lg); line-height: 1.15; }
+.cell[data-state="out"] .cell__close { color: var(--vermilion); }
+.cell__unknown { font-size: var(--t-sm); color: var(--pencil); }
+
+/* 过程量：小号，墨色说明它是哪种数 */
+.cell__rows { margin-top: calc(var(--u) * 1.5); font-size: var(--t-xs); line-height: 1.5; }
+.cell__row { display: flex; justify-content: flex-end; gap: calc(var(--u) * 1.5); white-space: nowrap; }
+.cell__row .k { color: var(--pencil); }
+.cell__row .v { min-width: 34px; text-align: right; }
+
+/* 格子里的输入：默认像纸上的空位，聚焦才显形 */
+.cell input.g {
+  width: 54px; text-align: right;
+  font: var(--t-sm)/1.2 var(--face); font-variant-numeric: tabular-nums;
+  color: var(--ink); background: transparent;
+  border: 0; border-bottom: 1px solid var(--rule-hard);
+  padding: 1px 2px; border-radius: 0;
+}
+.cell input.g::placeholder { color: var(--pencil); }
+.cell input.g:hover  { background: var(--paper-lo); }
+.cell input.g:focus  { outline: 0; border-bottom: 2px solid var(--ink); background: var(--paper); }
+.cell input.g[data-touched="1"] { color: var(--ink); }
+.cell input.g:disabled { border-bottom-style: dotted; color: var(--pencil); }
+
+/* 合计列 */
+td.gsum { background: var(--paper-lo); text-align: right; padding: calc(var(--u) * 2); }
+
+/* ★ 外推标记：机器估的数走出了它的覆盖范围 */
+sup.ext { color: var(--vermilion); font-size: 9px; margin-left: 2px; }
+
+/* ── ★ 时间位移线 —— 这一版唯一的大胆之处 ───────────────────
+   填一个计划采购量，从这一格划一条线到「到货那一格」。
+   落在周期外就冲出右边缘，收成一个写着月份的桩。
+   ★ 这一个动作替掉了三段关于提前期的解释。 */
+.shift {
+  position: absolute; left: 0; right: 0; top: 0; height: 0; pointer-events: none;
+}
+.shift__line {
+  position: absolute; height: 1px; background: var(--ink);
+  opacity: 0; transform: scaleX(0); transform-origin: left center;
+  animation: shift-draw .42s cubic-bezier(.2,.7,.3,1) forwards;
+}
+.shift__cap {
+  position: absolute; transform: translate(-50%, -50%);
+  font-size: var(--t-xs); color: var(--paper-hi); background: var(--ink);
+  padding: 1px 6px; border-radius: 2px; white-space: nowrap;
+  opacity: 0; animation: shift-cap .3s .28s forwards;
+}
+.shift__cap--out { background: var(--vermilion); }
+@keyframes shift-draw { to { opacity: 1; transform: scaleX(1); } }
+@keyframes shift-cap  { to { opacity: 1; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .shift__line { animation: none; opacity: 1; transform: scaleX(1); }
+  .shift__cap  { animation: none; opacity: 1; }
+}
+
+/* ============================================================
+   列表表格（采购单列表、候选、到货明细…）
+   ============================================================ */
+
+.table-scroll { overflow-x: auto; border: 1px solid var(--rule); border-radius: var(--r); background: var(--paper-hi); }
+
+table.table { width: 100%; border-collapse: collapse; font-size: var(--t-sm); }
+table.table th {
+  background: var(--paper-lo); text-align: left; font-weight: 400; color: var(--pencil);
+  padding: calc(var(--u) * 2) calc(var(--u) * 2.5);
+  border-bottom: 1px solid var(--rule-hard); white-space: nowrap;
+  font-size: var(--t-xs);
+}
+table.table td {
+  padding: calc(var(--u) * 2) calc(var(--u) * 2.5);
+  border-bottom: 1px solid var(--rule);
+}
+table.table tbody tr:last-child td { border-bottom: 0; }
+table.table tbody tr:hover td { background: var(--paper); }
+table.table td.r, table.table th.r { text-align: right; }
+/* ★ 原来这里漏了点号，写成 `table--dense td` —— 那是**元素选择器**，永远不生效。
+   纯 CSS 不会报错，只会安静地什么都不做。 */
+.table--dense td, table.table.table--dense td { padding: calc(var(--u) * 1.5) calc(var(--u) * 2); }
+
+/* ★ 不可选的行留在表里标灰，不过滤掉 ——
+   过滤掉的话，人永远不知道「我要的那行为什么没出现」 */
+tr.off td { color: var(--pencil); background: var(--paper-lo); }
+tr.off td .why { font-size: var(--t-xs); color: var(--pencil); }
+
+/* ============================================================
+   控件
+   ============================================================ */
+
+.btn {
+  appearance: none; cursor: pointer;
+  font: var(--t-sm)/1 var(--face);
+  padding: calc(var(--u) * 2) calc(var(--u) * 3.5);
+  border: 1px solid var(--rule-hard); border-radius: var(--r);
+  background: var(--paper-hi); color: var(--ink);
+  white-space: nowrap;
+}
+.btn:hover { background: var(--paper-lo); }
+.btn:active { transform: translateY(.5px); }
+.btn:disabled { cursor: not-allowed; color: var(--pencil); background: var(--paper-lo); }
+.btn--primary { background: var(--ink); border-color: var(--ink); color: var(--paper-hi); }
+.btn--primary:hover { background: #0E1D2C; }
+.btn--danger  { background: var(--vermilion); border-color: var(--vermilion); color: #fff; }
+.btn--danger:hover { background: #A82A22; }
+.btn--ghost   { background: transparent; border-color: transparent; color: var(--ink-soft); }
+.btn--ghost:hover { background: var(--paper-lo); }
+.btn--sm { padding: calc(var(--u) * 1.25) calc(var(--u) * 2); font-size: var(--t-xs); }
+.btn-row { display: flex; flex-wrap: wrap; gap: calc(var(--u) * 2); align-items: center; }
+
+.field { display: flex; flex-direction: column; gap: calc(var(--u) * 1); }
+.lbl { font-size: var(--t-xs); color: var(--pencil); }
+.inp {
+  font: var(--t-sm)/1.3 var(--face); font-variant-numeric: tabular-nums;
+  color: var(--ink); background: var(--paper-hi);
+  border: 1px solid var(--rule-hard); border-radius: var(--r);
+  padding: calc(var(--u) * 1.75) calc(var(--u) * 2);
+  width: 92px;
+}
+.inp--text { width: 100%; min-width: 150px; }
+.inp:focus { outline: 0; border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+.inp:disabled { background: var(--paper-lo); color: var(--pencil); }
+select.inp { padding-right: calc(var(--u) * 4); }
+
+.kbd {
+  font-family: ui-monospace, Menlo, Consolas, monospace; font-size: var(--t-xs);
+  border: 1px solid var(--rule-hard); border-bottom-width: 2px; border-radius: 3px;
+  padding: 0 4px; background: var(--paper-hi);
+}
+
+/* ============================================================
+   状态与提示
+   ============================================================ */
+
+/* 一行式提示：失败/成功都只占一行，不做成大方块 */
+.flash {
+  display: flex; align-items: flex-start; gap: calc(var(--u) * 2);
+  padding: calc(var(--u) * 2) calc(var(--u) * 3);
+  border-radius: var(--r); font-size: var(--t-sm);
+  border: 1px solid var(--rule);
+  background: var(--paper-hi); color: var(--ink-soft);
+}
+.flash--bad  { border-color: var(--vermilion); background: var(--vermilion-w); color: var(--vermilion); }
+.flash--good { border-color: var(--jade); background: var(--jade-w); color: var(--jade); }
+.flash ul { margin: calc(var(--u)) 0 0; padding-left: 1.2em; }
+.flash li { margin: 2px 0; }
+
+/* 旧类名兼容：note / gate / stale 一律收敛成 flash 的样子。
+   ★ 这几个类是上一版满屏说明文字的载体 —— 页面改造时应逐步换成 .fold，
+     在此之前先把它们的视觉重量压下去，别让它们继续抢版面。 */
+.note, .gate {
+  padding: calc(var(--u) * 2) calc(var(--u) * 3);
+  border: 1px solid var(--rule); border-radius: var(--r);
+  background: var(--paper-hi); color: var(--ink-soft); font-size: var(--t-sm);
+}
+.note p, .gate p { margin: 0 0 calc(var(--u)); }
+.note p:last-child, .gate p:last-child { margin-bottom: 0; }
+.note--plain { border-style: dashed; }
+.stale { color: var(--vermilion); }
+/* .dropped 的完整定义在本文件末尾（补全过 border-width / padding）——
+   ★ 这里原来还有一条只给颜色的，两份定义在**同一个文件里**也照样会分叉。已删。 */
+
+/* 空状态：★ 是邀请，不是墓碑 */
+.empty {
+  padding: calc(var(--u) * 8) calc(var(--u) * 4);
+  text-align: center; border: 1px dashed var(--rule-hard); border-radius: var(--r);
+  background: var(--paper-hi);
+}
+.empty__title { font-size: var(--t-md); margin: 0 0 calc(var(--u) * 2); }
+.empty__body  { font-size: var(--t-sm); color: var(--pencil); margin: 0 auto; max-width: 52ch; }
+.empty__act   { margin-top: calc(var(--u) * 4); }
+.todos__empty { font-size: var(--t-sm); color: var(--pencil); padding: calc(var(--u) * 4); }
+
+/* 小标记：只用于状态，不用于装饰 */
+.chip {
+  display: inline-block; padding: 1px calc(var(--u) * 1.5); border-radius: 2px;
+  font-size: var(--t-xs); border: 1px solid var(--rule-hard); color: var(--ink-soft);
+  background: var(--paper-hi);
+}
+.chip--bad  { border-color: var(--vermilion); color: var(--vermilion); background: var(--vermilion-w); }
+.chip--good { border-color: var(--jade); color: var(--jade); background: var(--jade-w); }
+.chip--dim  { color: var(--pencil); }
+
+/* ============================================================
+   面板 / 分区（列表页用）
+   ============================================================ */
+
+.sec { margin: calc(var(--u) * 6) 0; }
+.sec__title {
+  font-size: var(--t-sm); color: var(--ink-soft);
+  padding-bottom: calc(var(--u) * 1.5);
+  border-bottom: 1px solid var(--rule-hard);
+  margin-bottom: calc(var(--u) * 3);
+  display: flex; align-items: baseline; gap: calc(var(--u) * 3);
+}
+.sec__title .muted { font-size: var(--t-xs); }
+.sec__act { margin-left: auto; }
+
+.panel { border: 1px solid var(--rule); border-radius: var(--r); background: var(--paper-hi); }
+.panel__head {
+  padding: calc(var(--u) * 2) calc(var(--u) * 3); background: var(--paper-lo);
+  border-bottom: 1px solid var(--rule); font-size: var(--t-sm);
+}
+.panel__body { padding: calc(var(--u) * 3); }
+
+/* KPI：页面级的一个大数（排货员首页的完成度） */
+.kpi { display: flex; align-items: baseline; gap: calc(var(--u) * 2); }
+.kpi__n { font-size: var(--t-xl); line-height: 1; }
+.kpi__d { font-size: var(--t-sm); color: var(--pencil); }
+.kpi__bar { height: 3px; background: var(--rule); border-radius: 2px; overflow: hidden; margin-top: calc(var(--u) * 2); }
+.kpi__fill { height: 100%; background: var(--ink); }
+
+/* ============================================================
+   弹窗
+   ============================================================ */
+
+dialog.modal, .modal {
+  border: 1px solid var(--rule-hard); border-radius: var(--r);
+  background: var(--paper-hi); color: var(--ink);
+  padding: 0; max-width: 520px; width: calc(100vw - 32px);
+  box-shadow: 0 12px 40px rgba(22, 41, 61, .18);
+}
+dialog.modal::backdrop { background: rgba(22, 41, 61, .34); }
+.modal__head {
+  padding: calc(var(--u) * 3) calc(var(--u) * 4);
+  border-bottom: 1px solid var(--rule); font-size: var(--t-md);
+}
+.modal__body { padding: calc(var(--u) * 4); display: grid; gap: calc(var(--u) * 3.5); }
+.modal__foot {
+  padding: calc(var(--u) * 3) calc(var(--u) * 4);
+  border-top: 1px solid var(--rule);
+  display: flex; gap: calc(var(--u) * 2); justify-content: flex-end;
+}
+
+/* toast：一行，右下，不遮数据 */
+.toast {
+  position: fixed; right: calc(var(--u) * 5); bottom: calc(var(--u) * 5); z-index: 60;
+  background: var(--ink); color: var(--paper-hi);
+  padding: calc(var(--u) * 2.5) calc(var(--u) * 4);
+  border-radius: var(--r); font-size: var(--t-sm);
+  max-width: 420px;
+}
+.toast--bad { background: var(--vermilion); }
+
+/* ============================================================
+   流程图式说明（index.html）—— 保留但收敛
+   ============================================================ */
+
+.flow__item {
+  display: grid; grid-template-columns: 2.2em 7em 1fr; gap: calc(var(--u) * 2);
+  padding: calc(var(--u) * 2) 0; border-bottom: 1px solid var(--rule);
+  font-size: var(--t-sm);
+}
+.flow__no  { color: var(--pencil); }
+.flow__who { color: var(--ink-soft); }
+.flow__what { color: var(--ink); }
+
+.split__title { font-size: var(--t-sm); color: var(--ink-soft); margin-bottom: calc(var(--u) * 2); }
+
+/* ============================================================
+   窄屏
+   ============================================================ */
+
+@media (max-width: 860px) {
+  .wrap { padding: 0 calc(var(--u) * 4); }
+  .head { flex-direction: column; align-items: stretch; gap: calc(var(--u) * 3); }
+  .head__act { margin-left: 0; }
+  .masthead__in { flex-wrap: wrap; gap: calc(var(--u) * 2); }
+  .masthead__right { width: 100%; margin-left: 0; }
+  .bar { gap: calc(var(--u) * 2) calc(var(--u) * 3); }
+}
+
+/* ============================================================
+   ★ shell.js 生成的部件
+
+   重写这份 CSS 时我漏了这一块 —— 结果顶栏、toast、确认弹窗、待办全是裸的。
+   ★ 教训：改样式前先把**生成方**用到的类名全列出来
+     （`grep -oE "el\('[a-z]+', *'[^']+'" assets/shell.js`），
+     否则「样式没写」和「元素没渲染」在屏幕上长得一模一样。
+   ============================================================ */
+
+/* ── 顶栏 ─────────────────────────────────────────────────── */
+.shell {
+  position: sticky; top: 0; z-index: 40;
+  background: var(--paper-lo); border-bottom: 1px solid var(--rule-hard);
+}
+.shell__bar {
+  max-width: 1320px; margin: 0 auto;
+  padding: calc(var(--u) * 2) calc(var(--u) * 5);
+  display: flex; align-items: center; gap: calc(var(--u) * 3); flex-wrap: wrap;
+}
+.shell__brand { font-size: var(--t-sm); color: var(--ink); white-space: nowrap; }
+.shell__crumb { font-size: var(--t-xs); color: var(--pencil); }
+.shell__spacer { flex: 1 1 auto; }
+.shell__roles { display: flex; gap: 1px; background: var(--rule-hard); border-radius: var(--r); overflow: hidden; }
+.shell__role {
+  appearance: none; border: 0; cursor: pointer;
+  padding: calc(var(--u) * 1.5) calc(var(--u) * 3);
+  background: var(--paper-hi); color: var(--ink-soft); font: var(--t-sm)/1.2 var(--face);
+}
+.shell__role:hover { background: var(--paper); }
+.shell__role[aria-pressed="true"], .shell__role.is-on {
+  background: var(--ink); color: var(--paper-hi);
+}
+.shell__day { display: flex; align-items: center; gap: calc(var(--u) * 2); font-size: var(--t-sm); color: var(--ink-soft); }
+.shell__daytag { color: var(--ink); }
+.sep { width: 1px; height: 16px; background: var(--rule-hard); }
+
+/* ── toast：一行，右下，不遮数据 ──────────────────────────── */
+.toasts {
+  position: fixed; right: calc(var(--u) * 5); bottom: calc(var(--u) * 5); z-index: 70;
+  display: flex; flex-direction: column; gap: calc(var(--u) * 2); align-items: flex-end;
+  pointer-events: none;
+}
+.toasts .toast { position: static; pointer-events: auto; animation: toast-in .18s ease-out; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(4px); } }
+@media (prefers-reduced-motion: reduce) { .toasts .toast { animation: none; } }
+
+/* ── 确认弹窗（shell.js 用的是 div，不是 <dialog>）────────── */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 80;
+  background: rgba(22, 41, 61, .34);
+  display: flex; align-items: center; justify-content: center;
+  padding: calc(var(--u) * 4);
+}
+.modal-backdrop > .modal {
+  border: 1px solid var(--rule-hard); border-radius: var(--r);
+  background: var(--paper-hi); max-width: 560px; width: 100%;
+  box-shadow: 0 12px 40px rgba(22, 41, 61, .22);
+  max-height: calc(100vh - 64px); display: flex; flex-direction: column;
+}
+.modal-backdrop > .modal .modal__body { overflow: auto; }
+
+/* ★ 不可逆的动作用朱批底 —— 屏幕上唯一需要让人停一下的地方 */
+.modal__warn {
+  padding: calc(var(--u) * 2.5) calc(var(--u) * 3);
+  border: 1px solid var(--vermilion); border-radius: var(--r);
+  background: var(--vermilion-w); color: var(--vermilion); font-size: var(--t-sm);
+}
+.modal__steps-title { font-size: var(--t-xs); color: var(--pencil); }
+.modal__steps { margin: 0; padding-left: 1.4em; font-size: var(--t-sm); color: var(--ink-soft); }
+.modal__steps li { margin: calc(var(--u)) 0; }
+.irreversible { color: var(--vermilion); }
+
+/* ── 投送步骤回显 ─────────────────────────────────────────── */
+.steps { display: grid; gap: calc(var(--u)); font-size: var(--t-sm); }
+.steps__mark { color: var(--pencil); margin-right: calc(var(--u) * 1.5); }
+.steps__name { color: var(--ink); }
+.steps__ref  { color: var(--pencil); font-family: ui-monospace, Menlo, Consolas, monospace; font-size: var(--t-xs); }
+
+/* ── 待办「现在该我做什么」──────────────────────────────── */
+.todos { display: grid; gap: calc(var(--u) * 2); }
+.todo {
+  display: grid; grid-template-columns: 1fr auto; align-items: center;
+  gap: calc(var(--u) * 3);
+  padding: calc(var(--u) * 2.5) calc(var(--u) * 3);
+  border: 1px solid var(--rule); border-left: 3px solid var(--rule-hard);
+  border-radius: var(--r); background: var(--paper-hi);
+}
+.todo--urgent { border-left-color: var(--vermilion); background: var(--vermilion-w); }
+.todo__title { font-size: var(--t-sm); color: var(--ink); }
+.todo__hint  { font-size: var(--t-xs); color: var(--pencil); grid-column: 1; }
+.todo__go    { grid-row: 1 / span 2; }
+
+/* ── 确认闸（排货表确认前的逐条核对）──────────────────────── */
+.gate__sum { font-size: var(--t-sm); color: var(--ink-soft); margin-bottom: calc(var(--u) * 2); }
+.gate__item {
+  display: flex; gap: calc(var(--u) * 2); align-items: baseline;
+  padding: calc(var(--u) * 1.5) 0; border-top: 1px solid var(--rule); font-size: var(--t-sm);
+}
+.gate__item--pass { color: var(--jade); }
+.gate__item--fail { color: var(--vermilion); }
+.gate__detail { color: var(--ink-soft); }
+.gate__code {
+  font-family: ui-monospace, Menlo, Consolas, monospace; font-size: var(--t-xs);
+  color: var(--pencil);
+}
+
+/* ── 量的并置显示：已排 / 总量 ─────────────────────────────── */
+.qty-of { display: inline-flex; align-items: baseline; gap: 2px; }
+.qty-of__now { color: var(--ink); }
+.qty-of__sep { color: var(--pencil); }
+.qty-of__all { color: var(--pencil); }
+
+@media (max-width: 860px) {
+  .shell__bar { padding: calc(var(--u) * 2) calc(var(--u) * 4); }
+  .toasts { left: calc(var(--u) * 4); right: calc(var(--u) * 4); align-items: stretch; }
+}
+
+
+/* ── index.html：入口页的卡片与日志 ─────────────────────── */
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: calc(var(--u) * 3); }
+.card {
+  display: block; padding: calc(var(--u) * 4);
+  border: 1px solid var(--rule); border-left: 3px solid var(--ink); border-radius: var(--r);
+  background: var(--paper-hi); text-decoration: none;
+}
+.card:hover { background: var(--paper); }
+.card__who { font-size: var(--t-xs); color: var(--pencil); }
+.card__what { font-size: var(--t-md); margin-top: calc(var(--u)); }
+
+.logs { display: grid; gap: 1px; background: var(--rule); border: 1px solid var(--rule); border-radius: var(--r); }
+.log {
+  display: grid; grid-template-columns: 5.5em 4.5em 1fr; gap: calc(var(--u) * 2);
+  padding: calc(var(--u) * 1.5) calc(var(--u) * 2.5);
+  background: var(--paper-hi); font-size: var(--t-sm);
+}
+.log__day { color: var(--pencil); font-size: var(--t-xs); }
+.log__who { color: var(--ink-soft); font-size: var(--t-xs); }
+.log__text { color: var(--ink); }
+
+/* ── chip 的全部修饰 ──────────────────────────────
+   ★ 代码里实际在用的是这七个，我只写了三个。
+     没写的那几个会退回素面 chip —— **“失败”和“通过”长得一模一样**，
+     而这正是 chip 存在的唯一理由。test_css.js 的 covered() 会因为基类存在而放行，
+     所以这一类遗漏它拓不到 —— 得靠列举修饰符本身。 */
+.chip--fail { border-color: var(--vermilion); color: var(--vermilion); background: var(--vermilion-w); }
+.chip--warn { border-color: var(--vermilion); color: var(--vermilion); background: var(--paper-hi); }
+.chip--ok   { border-color: var(--jade); color: var(--jade); background: var(--jade-w); }
+.chip--ours { border-color: var(--ink); color: var(--ink); background: var(--paper-hi); }
+.chip--ext  { border-style: dashed; color: var(--pencil); }
+
+/* ── toast 的全部修饰 ────────────────────────────
+   ★ 代码里实际在用 fail / warn / ok，而我只写了 bad。
+     漏掉的会退回素面 toast —— **「提交失败」和「已保存」长得一模一样**，
+     而那正是 toast 分色存在的唯一理由。 */
+.toast--fail { background: var(--vermilion); }
+.toast--warn { background: var(--vermilion); }
+.toast--ok   { background: var(--jade); }
+.toast--good { background: var(--jade); }
+
+/* ── 被丢掉的东西的清单 ──────────────────────────
+   缩短周期切掉的格子、周期外到货、被拒的行 —— 一行一条，朱批左边。
+   ★ 原先这个类在三个页面各定义了一遍——改一处忘一处，屏幕上不报错，
+     只会慢慢变得不一致。收编到这里。 */
+.dropline {
+  display: flex; gap: calc(var(--u) * 2); align-items: baseline;
+  padding: calc(var(--u) * 1.5) calc(var(--u) * 2.5);
+  border-left: 3px solid var(--vermilion);
+  background: var(--vermilion-w); color: var(--vermilion);
+  font-size: var(--t-sm); border-radius: 0 var(--r) var(--r) 0;
+  margin-bottom: 1px;
+}
+.dropline .k { color: var(--pencil); }
+
+/* ★ .dropped 原先只有颜色，没有 border-width / padding ——
+     直接用出来是一块裸底色。补全。 */
+.dropped {
+  border: 1px solid var(--vermilion); border-left-width: 3px;
+  background: var(--vermilion-w); color: var(--vermilion);
+  padding: calc(var(--u) * 2.5) calc(var(--u) * 3);
+  border-radius: var(--r); font-size: var(--t-sm);
+}
+
+/* ── 补齐其余修饰（由 test_css §2b 推导出来的）────────────── */
+.inp--tiny { width: 58px; padding: calc(var(--u) * 1.25) calc(var(--u) * 1.5); font-size: var(--t-xs); }
+.flow__item--tick { border-bottom-color: var(--rule-hard); }
+/* 量的并置：已排满时整组转石绿 —— 「够了」要看得出来 */
+.of--full .qty-of__now, .of--full .qty-of__all { color: var(--jade); }

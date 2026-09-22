@@ -10,3 +10,4 @@ config.toml
 .superpowers/
 docs/prototype/.stage-a-*.md
 var/
+web/.env
