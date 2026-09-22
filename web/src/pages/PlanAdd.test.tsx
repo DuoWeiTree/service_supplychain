@@ -25,7 +25,7 @@ const CATALOG: CatalogResult = {
 
 beforeEach(() => { vi.resetModules(); });
 
-async function renderAdd(opts: { failOn?: string } = {}) {
+async function renderAdd(opts: { failOn?: string; failNoHolder?: string } = {}) {
   const { ApiError } = await import('../api/client');
   vi.doMock('../api', () => ({
     ApiError,
@@ -37,8 +37,16 @@ async function renderAdd(opts: { failOn?: string } = {}) {
              : JSON.parse(JSON.stringify(CATALOG)) as CatalogResult,
       claim: async (_p: number, t: { seller_sku: string }) => {
         if (t.seller_sku === opts.failOn) {
+          // ★ 真实契约只有一种形状（api/ui/plans.py:156-160；mock.ts 自 Task 2 起也是这样抛）：
+          //   claimed_by 嵌套在 fields 里，不是打平的 title/actor
           throw new ApiError(409, 'msku_already_claimed', `${t.seller_sku} 已被占用`,
-            { plan_id: 2, title: '2026 Q3 补货计划', actor: 'ops.li' });
+            { seller_sku: t.seller_sku, sid: '11072',
+              claimed_by: { plan_id: 2, title: '2026 Q3 补货计划', actor: 'ops.li' } });
+        }
+        if (t.seller_sku === opts.failNoHolder) {
+          // ★ 负例：claimed_by 为 null 时只给 hint，不许现造一个占用方
+          throw new ApiError(409, 'msku_already_claimed', `${t.seller_sku} 已被占用`,
+            { seller_sku: t.seller_sku, sid: '11072', claimed_by: null });
         }
         return { claimed: { seller_sku: t.seller_sku, sid: '11072', sku: 'SKU-1' } };
       },
@@ -118,6 +126,19 @@ describe('批量添加', () => {
     const report = await screen.findByTestId('claim-report');
     expect(report).toHaveTextContent('成功 1');
     expect(report).toHaveTextContent('被拒 1');
+  });
+
+  it('★ 409 的 claimed_by 为 null 时只给 hint，不许现造一个占用方', async () => {
+    await renderAdd({ failNoHolder: 'MSKU-A' });
+    await search('SKU-1');
+    await userEvent.click(within(await screen.findByTestId('msku-MSKU-A')).getByRole('checkbox'));
+    await userEvent.click(screen.getByRole('button', { name: '添加' }));
+
+    const report = await screen.findByTestId('claim-report');
+    expect(report).toHaveTextContent('被拒 1');
+    expect(within(report).getByText('MSKU-A 已被占用')).toBeInTheDocument();
+    expect(within(report).queryByText('计划')).toBeNull();
+    expect(within(report).queryByText('操作人')).toBeNull();
   });
 
   // ★ Ruling 2（team-lead 2026-09-22）：没有销售历史 ≠ 预估 0（api/ui/plans.py:163-170 的

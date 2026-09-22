@@ -31,15 +31,11 @@ export function PlanAdd() {
 
   const key = (m: { seller_sku: string; sid: string }) => `${m.seller_sku}/${m.sid}`;
 
-  // ★ 真实契约（api/ui/plans.py:156-160，经 http.ts 的 {error,hint,...fields} 展开）是
-  //   fields.claimed_by 嵌套对象；兜底再认一种打平在顶层的旧形态，两种都不丢占用方
+  // ★ 契约只有一种形状（api/ui/plans.py:156-160，经 http.ts 的 {error,hint,...fields} 展开）：
+  //   fields.claimed_by 是嵌套对象或 null。不再兼容打平字段 —— 两个真相会把错的 mock 永远养着
   function holderFrom(ae: ApiError): ClaimHolder | null {
-    const nested = ae.fields['claimed_by'];
-    if (nested && typeof nested === 'object') return nested as ClaimHolder;
-    if (ae.fields['title']) {
-      return { plan_id: Number(ae.fields['plan_id'] ?? 0), title: String(ae.fields['title']), actor: String(ae.fields['actor'] ?? '') };
-    }
-    return null;
+    const claimedBy = ae.fields['claimed_by'];
+    return claimedBy && typeof claimedBy === 'object' ? (claimedBy as ClaimHolder) : null;
   }
 
   async function search() {
