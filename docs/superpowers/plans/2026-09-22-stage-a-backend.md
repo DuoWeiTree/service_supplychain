@@ -40,7 +40,7 @@
 | 时间 | `timestamptz`；事件序用 `bigserial`，**不用时间戳**（时钟回拨会乱序） |
 | 月份 | 对外一律 `"YYYY-MM"` 字符串；库里是 `date` 且必须是月初 |
 | 命名 | ★ 禁用领星词汇 `inbound` / `shipment` / `shipment_plan` / `allocation`；`order` 只给采购单，`plan` 只给销售计划 |
-| 错误形状 | `{"code": "...", "message": "...", "detail": {...}}`，★ `detail` 必须点名是哪几行（`08` §0） |
+| 错误形状 | ★ `{"error": "...", "hint": "...", …点名字段}`（team-lead 2026-09-22 裁定，前端按它写）。`08` §0 写的是 `{code,message,detail}` —— 见「要交回文档」第 4 条 |
 | 状态码 | 400 = 你写错了 · 409 = 冲突与闸（你没写错，但现在不行）· 422 = 语义不合法（非法迁移）· 503 = 镜像陈旧 |
 | 未声明查询参数 | ★ 一律 400 `unknown_query_param` |
 
@@ -100,6 +100,7 @@ service_supplychain/
 ├── jobs/__init__.py                    ★ 空包（阶段 A 无回执器）
 └── tests/
     ├── conftest.py                     scm_test 夹具 · 禁止 scm/inv · 每测试 TRUNCATE
+    ├── helpers.py                      ★ 共用造数（mint / H / prepared）—— 测试之间不互相 import
     ├── test_layering.py                ★ L1~L7 + 反空转 + 新层目录守卫
     ├── test_migrations.py              checksum · 无事务控制 · 版本表
     ├── test_ddl_001_foundation.py      约束挡得住（逐条断言 psycopg2.errors.*）
@@ -1305,7 +1306,7 @@ git commit -m "feat(db): 002 需求域迁移 —— 两张格子（msku 级期�
 
 **Files:**
 - Create: `migrations/pg/003_plan_state_machine.sql`
-- Create: `tests/test_ddl_003_state_machine.py`
+- Create: `tests/helpers.py` · `tests/test_ddl_003_state_machine.py`
 
 **Interfaces:**
 - Consumes: Task 4 的 `plan_line` / `plan_rev`
@@ -1313,22 +1314,54 @@ git commit -m "feat(db): 002 需求域迁移 —— 两张格子（msku 级期�
   - `plan_line_transition(from_state, to_state) PK, kind, needs_reason`，**12 行**（含哨兵 `('[*]','已提交')`）
   - `plan_line_event(seq bigserial PK, line_id, from_state, to_state, actor, reason, src, at)`
   - 函数 `sync_plan_line_state()` · `require_reason()` · `state_must_go_through_event()` · `assert_birth_event()` · `close_rev_if_settled(bigint, int) RETURNS void`
+  - `tests/helpers.py`: `OCT: date` · `mint(cur, actor, sku, total=100, state="已提交", birth=True) -> tuple[int, int]`（Task 10 / 16 复用）
   - 常量（后续 Task 直接引用）：终态 = `('已完结','已撤销')`；铸出态 = `'已提交'`；哨兵 = `'[*]'`
 
 - [ ] **Step 1: 写失败的状态机测试**
+
+`tests/helpers.py` —— ★ 共用的造数放这里，测试文件之间**不互相 import**：
+被 import 的那个文件里的 fixture 会被重复收集，而且哪天它改了名，另一头是在
+**收集期**炸的，报错指向的行与真正的原因隔着一层。
+（`tests/` 没有 `__init__.py`，pytest 默认把它放进 `sys.path[0]`，所以按模块名 `helpers` 导即可。）
+
+```python
+"""测试之间共用的造数。"""
+import datetime as dt
+
+OCT = dt.date(2026, 10, 1)
+
+
+def mint(cur, actor, sku, total=100, state="已提交", birth=True):
+    """铸出一条记录：行带 state 插入 + 追加铸出事件（S-2）。
+
+    ★ birth=False 是给「插了行却不记事件」那条测试用的靶子，不是正常路径。
+    """
+    cur.execute("INSERT INTO plan (title, period_start, months, owner_actor, created_by)"
+                " VALUES ('t', %s, 3, %s, %s) RETURNING plan_id", (OCT, actor, actor))
+    plan_id = cur.fetchone()[0]
+    cur.execute("INSERT INTO plan_rev (plan_id, rev, content_digest, submitted_by)"
+                " VALUES (%s, 1, 'd', %s)", (plan_id, actor))
+    cur.execute(
+        "INSERT INTO plan_line (plan_id, rev, sku, period_start, total_units,"
+        " demand_by_seller, demand_at_submit, state)"
+        " VALUES (%s, 1, %s, %s, %s, '{}'::jsonb, 0, %s) RETURNING line_id",
+        (plan_id, sku, OCT, total, state))
+    line_id = cur.fetchone()[0]
+    if birth:
+        cur.execute("INSERT INTO plan_line_event (line_id, from_state, to_state, actor, src)"
+                    " VALUES (%s, '[*]', %s, %s, 'test')", (line_id, state, actor))
+    return plan_id, line_id
+```
 
 `tests/test_ddl_003_state_machine.py`：
 
 ```python
 """状态机四件套。T1/T2/T3/T6/T21 出自 04 §9 的「必须先红一次」清单。"""
-import datetime as dt
-
 import psycopg2.errors
 import pytest
+from helpers import mint
 
 from shared.pg_client import pg_conn
-
-OCT = dt.date(2026, 10, 1)
 
 #: ★ T21 的靶子：把 04 §7.1 / 03 §3 的行表**逐字**抄在这里当断言。
 #: 没有它，「状态机是数据」只兑现一半 —— 库里是数据，文档里还是另一份手抄副本，
@@ -1347,25 +1380,6 @@ WHITELIST = [
     ("准备排货", "已撤销", "cancel", True),
     ("已排货", "已撤销", "cancel", True),
 ]
-
-
-def mint(cur, actor, sku, total=100, state="已提交", birth=True):
-    """铸出一条记录：行带 state 插入 + 追加铸出事件（S-2）。"""
-    cur.execute("INSERT INTO plan (title, period_start, months, owner_actor, created_by)"
-                " VALUES ('t', %s, 3, %s, %s) RETURNING plan_id", (OCT, actor, actor))
-    plan_id = cur.fetchone()[0]
-    cur.execute("INSERT INTO plan_rev (plan_id, rev, content_digest, submitted_by)"
-                " VALUES (%s, 1, 'd', %s)", (plan_id, actor))
-    cur.execute(
-        "INSERT INTO plan_line (plan_id, rev, sku, period_start, total_units,"
-        " demand_by_seller, demand_at_submit, state)"
-        " VALUES (%s, 1, %s, %s, %s, '{}'::jsonb, 0, %s) RETURNING line_id",
-        (plan_id, sku, OCT, total, state))
-    line_id = cur.fetchone()[0]
-    if birth:
-        cur.execute("INSERT INTO plan_line_event (line_id, from_state, to_state, actor, src)"
-                    " VALUES (%s, '[*]', %s, %s, 'test')", (line_id, state, actor))
-    return plan_id, line_id
 
 
 def test_t21_whitelist_matches_the_document_row_by_row(wipe):
@@ -1656,3 +1670,3214 @@ git commit -m "feat(db): 003 状态机四件套 —— 白名单含 [*] 哨兵 �
 ```
 
 ---
+## Task 6: `forecast/` —— 从老原型移植的两个纯函数 + 逐格对账
+
+**Files:**
+- Create: `forecast/estimate.py` · `forecast/projection.py`
+- Create: `tests/test_forecast_estimate.py` · `tests/test_forecast_projection.py`
+
+**Interfaces:**
+- Consumes: 无（纯函数，L2：只用标准库）
+- Produces:
+  - `forecast.estimate`: `MonthEstimate(units: int, extrapolated: bool)` · `monthly_estimate(history: list[tuple[date, int]], months: int) -> list[MonthEstimate]` · `InsufficientHistory` · `HistoryGap`
+  - `forecast.projection`: `InboundSource(units: int, kind: str, ref: str)` · `inventory_projection(onhand: int | None, inbound_by_month: Mapping[str, Sequence[InboundSource]], expected_by_month: Mapping[str, int | None]) -> list[dict]` · `PeriodMismatch`
+
+### ★ 移植范围：原型 `test_forecast.js` 的哪几节搬、哪几节不搬
+
+> 统计被丢掉的那一侧 —— 不列出来，「没搬」和「搬漏了」长得一模一样。
+
+| 原型节 | 内容 | 阶段 A | 出处 |
+|---|---|---|---|
+| §4 恒等式③④ | 期末 = 期初 − 期望 + 入库；期初[m] ≡ 期末[m−1] | ✅ 搬 → `test_forecast_projection.py` | `14` §1.1 |
+| §5 恒等式⑥ | 推算入库 ≡ 其构成明细之和 | ✅ 搬（对象换成「采购在途的构成明细」） | `14` §1.1 ⑥ |
+| §9 外推标记 | 超出预估范围的月份标 `extrapolated`，且**不许恒真** | ✅ 搬 → `test_forecast_estimate.py` | M-13 · `14` §5 |
+| §1 提前期参数 | `make_days` / `ship_days` 校验 | ❌ 不搬 | `00e`:44 阶段 A 不做四段管道 |
+| §2 天 → 月锚月中 | `monthAfterDays` | ❌ 不搬 | 同上：阶段 A 的入库量是 CH 现成事实，不需要把天数落回月 |
+| §6 改采购量库存要动 | 计划采购量进管道 | ❌ 不搬 | `00e`:43 阶段 A 的库存预估**不含本计划的采购** |
+| §7 切国内环境 | `ship_days=3` | ❌ 不搬 | 同 §1 |
+| §8 分配合计 ≡ 这批货 | 两遍法逐批分配 | ❌ 不搬 | `14` §3 属管道；阶段 A 无批次 |
+
+★ 因此阶段 A 的 `inventory_projection` 必须在每格的 `basis` 里带 `excludes_plan_purchase: true` ——
+**「没算进来」不能和「算进来了但是 0」长得一样**（`00e`:43「标『未计入本计划的采购』」）。
+
+- [ ] **Step 1: 写失败的 estimate 测试**
+
+`tests/test_forecast_estimate.py`：
+
+```python
+"""monthly_estimate —— 系统预估销量的 seed 值。
+
+★ 移植自老原型 store.js `rebuildCells`：预估序列**按位置**对齐到计划月份，
+  用完了就沿用最后一个值并标 extrapolated（M-13 / 14 §5）。
+"""
+import datetime as dt
+
+import pytest
+
+from forecast.estimate import HistoryGap, InsufficientHistory, monthly_estimate
+
+
+def h(*pairs):
+    return [(dt.date(y, m, 1), u) for y, m, u in pairs]
+
+
+def test_history_longer_than_plan_uses_the_most_recent_months():
+    got = monthly_estimate(h((2026, 5, 10), (2026, 6, 20), (2026, 7, 30), (2026, 8, 40)), 3)
+    assert [x.units for x in got] == [20, 30, 40]
+    assert [x.extrapolated for x in got] == [False, False, False]
+
+
+def test_beyond_the_series_carries_the_last_value_and_says_so():
+    """★ 原型 test_forecast.js §9：第 7 个月必须标外推。"""
+    got = monthly_estimate(h((2026, 7, 100), (2026, 8, 120), (2026, 9, 90)), 7)
+    assert [x.units for x in got] == [100, 120, 90, 90, 90, 90, 90]
+    assert [x.extrapolated for x in got] == [False] * 3 + [True] * 4
+
+
+def test_the_flag_is_not_always_true():
+    """★ 原型的原话：否则这个标记等于恒真，白标。"""
+    got = monthly_estimate(h((2026, 7, 100), (2026, 8, 120), (2026, 9, 90)), 3)
+    assert not any(x.extrapolated for x in got)
+
+
+def test_empty_history_is_not_zero():
+    """★ 没有历史 ≠ 预估 0。调用方要拿到一个硬失败，并把这个 msku 点名。"""
+    with pytest.raises(InsufficientHistory):
+        monthly_estimate([], 3)
+
+
+def test_a_gap_in_history_is_refused_and_named():
+    """★ 采集缺一天/缺一月是常态，把缺口当 0 会把预估压低而没有任何回声。"""
+    with pytest.raises(HistoryGap) as ei:
+        monthly_estimate(h((2026, 6, 10), (2026, 8, 20)), 3)
+    assert "2026-07" in str(ei.value)
+
+
+def test_negative_history_is_refused():
+    with pytest.raises(ValueError):
+        monthly_estimate(h((2026, 8, -1)), 1)
+
+
+def test_months_must_be_a_positive_int():
+    for bad in (0, -1, 3.5):
+        with pytest.raises(ValueError):
+            monthly_estimate(h((2026, 8, 10)), bad)
+```
+
+- [ ] **Step 2: 跑测试，确认它红**
+
+Run: `python -m pytest tests/test_forecast_estimate.py -q`
+Expected: FAIL —— `ModuleNotFoundError: No module named 'forecast.estimate'`
+
+- [ ] **Step 3: 实现 `forecast/estimate.py`**
+
+```python
+"""系统预估销量：把历史月销量序列铺到计划月份上。
+
+★ 算法照老原型 store.js `rebuildCells` 移植：序列**按位置**消费，用完沿用最后一个值
+  并标 extrapolated。换统计口径（均值 / 同比）时换的是本文件这一个函数，
+  上面那组测试的形态不变。
+"""
+from __future__ import annotations
+
+import datetime as dt
+from typing import NamedTuple
+
+
+class MonthEstimate(NamedTuple):
+    units: int
+    #: ★ 外推 ≠ 预估。这个标记必须随结果一起返回，
+    #  让界面不必回头读原始格子 —— 同一个数两个来源迟早分叉（14 §5）。
+    extrapolated: bool
+
+
+class InsufficientHistory(Exception):
+    """一条历史都没有。★ 返回 0 会让『新品没数据』和『卖了 0 件』长得一样。"""
+
+
+class HistoryGap(Exception):
+    def __init__(self, missing: list[str]):
+        self.missing = missing
+        super().__init__(f"历史销量中间缺月：{missing}。缺口不是 0，不许当 0 用。")
+
+
+def monthly_estimate(history: list[tuple[dt.date, int]], months: int) -> list[MonthEstimate]:
+    if not isinstance(months, int) or isinstance(months, bool) or months < 1:
+        raise ValueError(f"months 必须是正整数，收到 {months!r}")
+    if not history:
+        raise InsufficientHistory("没有任何历史销量")
+
+    rows = sorted(history)
+    for d, u in rows:
+        if d.day != 1:
+            raise ValueError(f"历史的月份必须是月初，收到 {d}")
+        if u < 0:
+            raise ValueError(f"历史销量为负：{d} = {u}")
+
+    missing = []
+    for prev, cur in zip(rows, rows[1:]):
+        step = (cur[0].year - prev[0].year) * 12 + cur[0].month - prev[0].month
+        for k in range(1, step):
+            m = prev[0].month + k
+            missing.append(f"{prev[0].year + (m - 1) // 12}-{(m - 1) % 12 + 1:02d}")
+    if missing:
+        raise HistoryGap(missing)
+
+    series = [u for _, u in rows][-months:]
+    out = [MonthEstimate(u, False) for u in series]
+    while len(out) < months:
+        out.append(MonthEstimate(series[-1], True))
+    return out
+```
+
+- [ ] **Step 4: 跑测试，确认它绿**
+
+Run: `python -m pytest tests/test_forecast_estimate.py -q`
+Expected: PASS（7 项）
+
+- [ ] **Step 5: 写失败的 projection 测试**
+
+`tests/test_forecast_projection.py`：
+
+```python
+"""inventory_projection —— 主公式 期末 = 期初 − 期望销量 + 当期入库（14 §0）。
+
+★ 阶段 A 的入库量只有「已确认」这一种（CH 的采购在途），
+  本计划的计划采购量**不进**这条公式，而这件事必须在每一格上说出来。
+"""
+import pytest
+
+from forecast.projection import InboundSource, PeriodMismatch, inventory_projection
+
+P = ["2026-10", "2026-11", "2026-12"]
+
+
+def src(units, ref="PO-1"):
+    return [InboundSource(units, "purchase_in_transit", ref)]
+
+
+def test_main_formula_holds_in_every_cell():
+    """★ 原型 test_forecast.js §4 第一条。"""
+    rows = inventory_projection(300, {"2026-10": src(50)}, dict(zip(P, [120, 100, 80])))
+    assert rows, "一行都没有 —— 下面的遍历是空转的"
+    for r in rows:
+        assert r["closing"] == r["opening"] - r["demand"] + r["inbound"]
+    assert [r["closing"] for r in rows] == [230, 130, 50]
+
+
+def test_opening_is_last_months_closing():
+    """★ 原型 test_forecast.js §4 第二条（恒等式④）。"""
+    rows = inventory_projection(300, {}, dict(zip(P, [120, 100, 80])))
+    for prev, cur in zip(rows, rows[1:]):
+        assert cur["opening"] == prev["closing"]
+
+
+def test_inbound_equals_the_sum_of_its_sources():
+    """★ 恒等式⑥：有结论必有依据（原型 §5）。合计由本函数求和，不靠调用方自觉。"""
+    rows = inventory_projection(0, {"2026-10": [InboundSource(30, "purchase_in_transit", "PO-1"),
+                                                InboundSource(20, "purchase_in_transit", "PO-2")]},
+                                dict(zip(P, [0, 0, 0])))
+    first = rows[0]
+    assert first["inbound"] == sum(s["units"] for s in first["basis"]["sources"]) == 50
+
+
+def test_every_cell_says_the_plan_purchase_is_not_counted():
+    """★ 「没算进来」不能和「算进来了但是 0」长得一样（00e:43）。"""
+    rows = inventory_projection(10, {}, dict(zip(P, [1, 1, 1])))
+    assert all(r["basis"]["excludes_plan_purchase"] is True for r in rows)
+
+
+def test_unknown_demand_propagates_forward_and_is_not_zero():
+    """★ M-8：留空 = 未知，向后传染，不当 0。"""
+    rows = inventory_projection(100, {}, {"2026-10": 30, "2026-11": None, "2026-12": 10})
+    assert [r["closing"] for r in rows] == [70, None, None]
+    assert [r["unknown"] for r in rows] == [False, True, True]
+    assert rows[1]["basis"]["reason"] == "unknown_demand"
+
+
+def test_not_applicable_is_a_third_state(  ):
+    """★ 三种状态必须两两分得开：0（真的没货）· 未知（人没填）· 不适用（该平台无 FBA）。"""
+    zero = inventory_projection(0, {}, {"2026-10": 0})
+    unknown = inventory_projection(100, {}, {"2026-10": None})
+    na = inventory_projection(None, {}, {"2026-10": 5})
+    assert zero[0]["closing"] == 0 and not zero[0]["unknown"] and not zero[0]["not_applicable"]
+    assert unknown[0]["closing"] is None and unknown[0]["unknown"]
+    assert na[0]["closing"] is None and na[0]["not_applicable"]
+    assert na[0]["basis"]["reason"] == "not_applicable"
+    assert not na[0]["unknown"], "不适用不是未知 —— 处置完全不同"
+
+
+def test_shortage_and_gap_are_reported():
+    rows = inventory_projection(50, {}, {"2026-10": 80})
+    assert rows[0]["closing"] == -30 and rows[0]["shortage"] and rows[0]["gap"] == 30
+
+
+def test_inbound_in_a_period_nobody_planned_is_refused():
+    """★ 被丢掉的那一侧要硬失败：入库落在期望销量没有的月份上，静默忽略就是漏货。"""
+    with pytest.raises(PeriodMismatch) as ei:
+        inventory_projection(0, {"2027-05": src(10)}, {"2026-10": 1})
+    assert "2027-05" in str(ei.value)
+```
+
+- [ ] **Step 6: 跑测试，确认它红**
+
+Run: `python -m pytest tests/test_forecast_projection.py -q`
+Expected: FAIL —— `ModuleNotFoundError: No module named 'forecast.projection'`
+
+- [ ] **Step 7: 实现 `forecast/projection.py`**
+
+```python
+"""库存推演。阶段 A 的口径（00e §1）：
+
+    期末 = 期初 − 期望销量 + 当期入库（在仓 + 采购在途，全是 CH 现成事实）
+
+★ 本计划的计划采购量**不在**加项里 —— 它要穿过四段管道才可售，而管道属阶段 B/C。
+  所以每一格都带 excludes_plan_purchase，把「没算进来」说出来。
+"""
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from typing import NamedTuple
+
+
+class InboundSource(NamedTuple):
+    units: int
+    kind: str       # 阶段 A 只有 'purchase_in_transit'
+    ref: str        # 单号等可回查的依据
+
+
+class PeriodMismatch(Exception):
+    def __init__(self, extra: list[str]):
+        super().__init__(f"入库落在没有期望销量的月份上：{extra}。静默忽略就是漏货。")
+
+
+def inventory_projection(
+    onhand: int | None,
+    inbound_by_month: Mapping[str, Sequence[InboundSource]],
+    expected_by_month: Mapping[str, int | None],
+) -> list[dict]:
+    """periods 由 expected_by_month 的键给出（每个计划月都必须有键，值可以是 None）。
+
+    ★ inbound 传的是**明细**不是合计：合计在这里求和，
+      「有结论必有依据」就不依赖调用方自觉（恒等式⑥）。
+    """
+    periods = sorted(expected_by_month)
+    extra = sorted(set(inbound_by_month) - set(periods))
+    if extra:
+        raise PeriodMismatch(extra)
+
+    rows: list[dict] = []
+    cur: int | None = onhand
+    unknown = False
+    for period in periods:
+        sources = list(inbound_by_month.get(period, ()))
+        inbound = sum(s.units for s in sources)
+        demand = expected_by_month[period]
+        basis = {
+            "opening": cur,
+            "demand": demand,
+            "inbound": inbound,
+            "sources": [{"units": s.units, "kind": s.kind, "ref": s.ref} for s in sources],
+            # ★ 00e:43 要求标出来：这条曲线里没有本计划的采购
+            "excludes_plan_purchase": True,
+        }
+        if onhand is None:
+            # ★ 该店铺没有 FBA（02 §3.1a）—— 不适用，不是 0，也不是未知
+            basis["reason"] = "not_applicable"
+            rows.append({"period": period, "opening": None, "demand": demand,
+                         "inbound": inbound, "closing": None, "shortage": False, "gap": 0,
+                         "unknown": False, "not_applicable": True, "basis": basis})
+            continue
+        if demand is None:
+            unknown = True
+        if unknown:
+            basis["reason"] = "unknown_demand"
+            rows.append({"period": period, "opening": cur, "demand": demand,
+                         "inbound": inbound, "closing": None, "shortage": False, "gap": 0,
+                         "unknown": True, "not_applicable": False, "basis": basis})
+            cur = None
+            continue
+        closing = cur - demand + inbound
+        rows.append({"period": period, "opening": cur, "demand": demand,
+                     "inbound": inbound, "closing": closing,
+                     "shortage": closing < 0, "gap": -closing if closing < 0 else 0,
+                     "unknown": False, "not_applicable": False, "basis": basis})
+        cur = closing
+    return rows
+```
+
+- [ ] **Step 8: 跑测试，确认它绿**
+
+Run: `python -m pytest tests/test_forecast_projection.py tests/test_layering.py -q`
+Expected: PASS（8 + 9 项；L2 仍绿 —— `forecast/` 只 import 了 `datetime` / `collections.abc` / `typing`）
+
+- [ ] **Step 9: 提交**
+
+```bash
+git add forecast tests/test_forecast_estimate.py tests/test_forecast_projection.py
+git commit -m "feat(forecast): 移植系统预估（含外推标记）与库存推演（主公式 + 依据回显）"
+```
+
+---
+
+## Task 7: `dim/` —— 可替换的 Source 协议 · FixtureSource · 显式未做的 ChSource
+
+**Files:**
+- Create: `dim/source.py` · `dim/fixture_source.py` · `dim/ch_source.py`
+- Create: `tests/fixtures/sales_history.csv` · `tests/fixtures/fba_onhand.csv` · `tests/fixtures/purchase_in_transit.csv`
+- Create: `tests/test_dim_fixture.py`
+
+**Interfaces:**
+- Consumes: `forecast.projection.InboundSource`（转换时用）
+- Produces:
+  - `dim.source`: `Source`（Protocol）· `InTransit(period: str, units: int, ref: str)`
+  - `Source.monthly_sales_history(seller_sku: str, sid: str, months: int) -> list[tuple[date, int]]`
+  - `Source.onhand_available(seller_sku: str, sid: str) -> int | None`（★ `None` = 不适用）
+  - `Source.purchase_in_transit(sku: str) -> list[InTransit]`
+  - `dim.fixture_source.FixtureSource(root: Path)` · `dim.ch_source.ChSource`
+
+- [ ] **Step 1: 写失败的测试与 fixture**
+
+`tests/fixtures/sales_history.csv`：
+
+```csv
+seller_sku,sid,month,units
+MSKU-A,11072,2026-07,100
+MSKU-A,11072,2026-08,120
+MSKU-A,11072,2026-09,90
+MSKU-B,11072,2026-07,10
+MSKU-B,11072,2026-08,12
+MSKU-B,11072,2026-09,9
+MSKU-C,11094,2026-08,40
+MSKU-C,11094,2026-09,44
+```
+
+`tests/fixtures/fba_onhand.csv`（★ 末行的空 units 是「不适用」，不是 0）：
+
+```csv
+seller_sku,sid,units
+MSKU-A,11072,300
+MSKU-B,11072,0
+MSKU-C,11094,25
+MSKU-W,90001,
+```
+
+`tests/fixtures/purchase_in_transit.csv`：
+
+```csv
+sku,period,units,ref
+DCC1800264G1,2026-10,50,PO-2026-0912
+DCC1800264G1,2026-10,30,PO-2026-0915
+DCC1800264G1,2026-11,120,PO-2026-0920
+```
+
+`tests/test_dim_fixture.py`：
+
+```python
+import datetime as dt
+from pathlib import Path
+
+import pytest
+
+from dim.ch_source import ChSource
+from dim.fixture_source import FixtureSource
+
+FIX = Path(__file__).parent / "fixtures"
+
+
+@pytest.fixture
+def s():
+    return FixtureSource(FIX)
+
+
+def test_history_is_month_first_dates_in_order(s):
+    assert s.monthly_sales_history("MSKU-A", "11072", 3) == [
+        (dt.date(2026, 7, 1), 100), (dt.date(2026, 8, 1), 120), (dt.date(2026, 9, 1), 90)]
+
+
+def test_history_of_an_unknown_msku_is_empty_not_zero(s):
+    """★ 没有行 ≠ 卖了 0 件。调用方要能区分，所以这里返回空列表而不是 [0,0,0]。"""
+    assert s.monthly_sales_history("MSKU-NEW", "11072", 3) == []
+
+
+def test_zero_onhand_and_not_applicable_are_different(s):
+    """★ MSKU-B 真的是 0；MSKU-W 所在的店没有 FBA —— 空串必须读成 None。"""
+    assert s.onhand_available("MSKU-B", "11072") == 0
+    assert s.onhand_available("MSKU-W", "90001") is None
+
+
+def test_in_transit_keeps_每笔的依据(s):
+    rows = s.purchase_in_transit("DCC1800264G1")
+    assert [(r.period, r.units, r.ref) for r in rows] == [
+        ("2026-10", 50, "PO-2026-0912"),
+        ("2026-10", 30, "PO-2026-0915"),
+        ("2026-11", 120, "PO-2026-0920")]
+
+
+def test_unknown_sku_has_no_in_transit_rows(s):
+    assert s.purchase_in_transit("NO-SUCH") == []
+
+
+def test_ch_source_is_explicitly_not_implemented():
+    """★ 空实现会让「该做没做」和「本来就不用做」长得一模一样（规则五）。"""
+    ch = ChSource()
+    for call in (lambda: ch.monthly_sales_history("MSKU-A", "11072", 3),
+                 lambda: ch.onhand_available("MSKU-A", "11072"),
+                 lambda: ch.purchase_in_transit("DCC1800264G1")):
+        with pytest.raises(NotImplementedError) as ei:
+            call()
+        assert "阶段" in str(ei.value)
+```
+
+- [ ] **Step 2: 跑测试，确认它红**
+
+Run: `python -m pytest tests/test_dim_fixture.py -q`
+Expected: FAIL —— `ModuleNotFoundError: No module named 'dim.ch_source'`
+
+- [ ] **Step 3: 实现三个文件**
+
+`dim/source.py`：
+
+```python
+"""取数口子。阶段 A 只有 FixtureSource 跑得起来，真 CH 实现显式未做。
+
+★ 做成协议是为了让接口层**不知道**数据从哪来 —— 阶段 B 换成 ChSource 时
+  改的只有装配那一行。
+"""
+from __future__ import annotations
+
+import datetime as dt
+from typing import NamedTuple, Protocol
+
+
+class InTransit(NamedTuple):
+    period: str     # "YYYY-MM"
+    units: int
+    ref: str        # 可回查的单号
+
+
+class Source(Protocol):
+    def monthly_sales_history(self, seller_sku: str, sid: str, months: int
+                              ) -> list[tuple[dt.date, int]]:
+        """最近若干个完整自然月的实际销量，按月升序。★ 没有行就返回空列表 —— 不补 0。"""
+
+    def onhand_available(self, seller_sku: str, sid: str) -> int | None:
+        """可售在仓。★ None = 不适用（该店铺没有 FBA），与 0 是两回事。"""
+
+    def purchase_in_transit(self, sku: str) -> list[InTransit]:
+        """采购在途（CH `quantity_receive`）。★ 返回逐笔明细，合计由调用方求和。"""
+```
+
+`dim/fixture_source.py`：
+
+```python
+"""CSV 底料。阶段 A 的唯一数据源，也是前端 mock 与真 API 同源的那一份。
+
+★ 空串读成 None，不读成 0 —— 旧项目冻结 fixture 时踩过：
+  空串被读成 0 之后，「不适用」和「真的没有」再也分不开。
+"""
+from __future__ import annotations
+
+import csv
+import datetime as dt
+from pathlib import Path
+
+from dim.source import InTransit
+
+
+def _int_or_none(s: str) -> int | None:
+    s = (s or "").strip()
+    return int(s) if s else None
+
+
+class FixtureSource:
+    def __init__(self, root: Path):
+        self.root = Path(root)
+
+    def _rows(self, name: str) -> list[dict]:
+        with open(self.root / name, newline="", encoding="utf-8") as f:
+            return list(csv.DictReader(f))
+
+    def monthly_sales_history(self, seller_sku: str, sid: str, months: int
+                              ) -> list[tuple[dt.date, int]]:
+        hit = [r for r in self._rows("sales_history.csv")
+               if r["seller_sku"] == seller_sku and r["sid"] == sid]
+        out = [(dt.date.fromisoformat(r["month"] + "-01"), int(r["units"])) for r in hit]
+        return sorted(out)[-months:]
+
+    def onhand_available(self, seller_sku: str, sid: str) -> int | None:
+        for r in self._rows("fba_onhand.csv"):
+            if r["seller_sku"] == seller_sku and r["sid"] == sid:
+                return _int_or_none(r["units"])
+        return None
+
+    def purchase_in_transit(self, sku: str) -> list[InTransit]:
+        return [InTransit(r["period"], int(r["units"]), r["ref"])
+                for r in self._rows("purchase_in_transit.csv") if r["sku"] == sku]
+```
+
+★ `onhand_available` 对「表里没有这一行」也返回 `None`，与「该店无 FBA」同一个值 ——
+这是刻意的：两者的处置相同（都不能当 0 参与推演），而**接口层会把它标成 `not_applicable`
+并把 msku 点名**（Task 12 的 `GET /grid`）。要区分成因，靠的是镜像里的 `seller.has_fba`，
+不是这里的返回值。
+
+`dim/ch_source.py`：
+
+```python
+"""真 CH 取数。★ 阶段 A 没有实现 —— 刻意抛，不给空实现。
+
+空实现会让「该做没做」和「本来就不用做」长得一模一样（01 规则五）。
+阶段 B 接上时，这三个方法各自的取数口径在 08 §2.3 与 CLAUDE.md「取数的四条铁律」里。
+"""
+from __future__ import annotations
+
+import datetime as dt
+
+from dim.source import InTransit
+
+_MSG = ("CH 取数属阶段 B：请按 08 §2.3 实现（商品目录 LEFT JOIN 快照、"
+        "msku→货号 按 as_of argMax 但 sid 不参与、日报先按 _captured_date 去重并比对覆盖面）")
+
+
+class ChSource:
+    def monthly_sales_history(self, seller_sku: str, sid: str, months: int
+                              ) -> list[tuple[dt.date, int]]:
+        raise NotImplementedError(_MSG)
+
+    def onhand_available(self, seller_sku: str, sid: str) -> int | None:
+        raise NotImplementedError(_MSG)
+
+    def purchase_in_transit(self, sku: str) -> list[InTransit]:
+        raise NotImplementedError(_MSG)
+```
+
+- [ ] **Step 4: 跑测试，确认它绿**
+
+Run: `python -m pytest tests/test_dim_fixture.py tests/test_layering.py -q`
+Expected: PASS（6 + 9 项）
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add dim tests/fixtures tests/test_dim_fixture.py
+git commit -m "feat(dim): Source 协议 + FixtureSource（空串读成 None）+ 显式未做的 ChSource"
+```
+
+---
+
+## Task 8: `rules/` —— 生效值 · 提交闸 · content_digest
+
+**Files:**
+- Create: `rules/effective.py` · `rules/submit.py` · `rules/digest.py`
+- Create: `tests/test_rules_submit.py`
+
+**Interfaces:**
+- Consumes: 无（纯判据，L1：只用标准库）
+- Produces:
+  - `rules.effective`: `Effective(units: int | None, basis: str)`（`basis ∈ {"human","system","unknown"}`）· `effective_demand(system_units, expected_units) -> Effective`
+  - `rules.submit`: `PurchaseCell(sku, period, planned_units)` · `DemandCell(seller_sku, sid, sku, period, system_units, expected_units)` · `Minted(sku, period, total_units, demand_by_seller, demand_at_submit)` · `Skipped(sku, period, reason)` · `select_submittable(purchase_cells, demand_cells, claimed) -> tuple[list[Minted], list[Skipped]]`
+  - `rules.digest`: `content_digest(purchase_cells, demand_cells) -> str`
+
+- [ ] **Step 1: 写失败的测试**
+
+`tests/test_rules_submit.py`：
+
+```python
+"""提交闸：铸出哪些、跳过哪些、冻结成什么。
+
+★ 判据② 要证的不只是「有留痕」，还要证「该跳的都跳了、不该跳的没跳」。
+"""
+import pytest
+
+from rules.digest import content_digest
+from rules.effective import effective_demand
+from rules.submit import DemandCell, PurchaseCell, select_submittable
+
+SKU = "DCC1800264G1"
+OCT, NOV = "2026-10", "2026-11"
+A, B = ("MSKU-A", "11072"), ("MSKU-C", "11094")
+
+
+def dcell(m, period, system, expected):
+    return DemandCell(m[0], m[1], SKU, period, system, expected)
+
+
+def test_effective_value_keeps_both_the_number_and_where_it_came_from():
+    """★ S-15：生效值取 COALESCE(人填, 系统)，但 basis 必须记下来 ——
+    不记的话，冻结之后再也分不清这 300 件是人写的还是采用了预估。"""
+    assert effective_demand(120, 130) == (130, "human")
+    assert effective_demand(120, None) == (120, "system")
+    assert effective_demand(None, None) == (None, "unknown")
+    assert effective_demand(None, 0) == (0, "human"), "★ 人填 0 是明确表态，不是未填"
+
+
+def test_mints_one_line_per_purchase_cell_with_units():
+    minted, skipped = select_submittable(
+        [PurchaseCell(SKU, OCT, 500)],
+        [dcell(A, OCT, 100, 120), dcell(B, OCT, 40, None)],
+        claimed={A, B})
+    assert skipped == []
+    assert len(minted) == 1
+    m = minted[0]
+    assert (m.sku, m.period, m.total_units) == (SKU, OCT, 500)
+    assert m.demand_by_seller["11072"]["units"] == 120
+    assert m.demand_by_seller["11072"]["basis"] == "human"
+    assert m.demand_by_seller["11094"]["units"] == 40
+    assert m.demand_by_seller["11094"]["basis"] == "system"
+    assert m.demand_at_submit == 160
+
+
+def test_zero_or_empty_purchase_is_skipped_with_its_reason():
+    """★ 坑①：总量 0 的记录 0 = 0 恒真，一诞生就会自动跳到「已确认」。"""
+    minted, skipped = select_submittable(
+        [PurchaseCell(SKU, OCT, 0), PurchaseCell(SKU, NOV, None)],
+        [dcell(A, OCT, 100, 120), dcell(A, NOV, 100, 120)], claimed={A})
+    assert minted == []
+    assert [(s.period, s.reason) for s in skipped] == [
+        (OCT, "zero_purchase"), (NOV, "zero_purchase")]
+
+
+def test_purchase_cell_without_any_claimed_msku_is_skipped():
+    """释放了认领之后，货号级的采购格子还在 —— 它铸不出记录，必须点名。"""
+    minted, skipped = select_submittable(
+        [PurchaseCell(SKU, OCT, 500)], [], claimed=set())
+    assert minted == []
+    assert [(s.period, s.reason) for s in skipped] == [(OCT, "no_claimed_msku")]
+
+
+def test_structural_reason_wins_over_zero():
+    """两个理由同时成立时取哪个是定死的：没有落点是结构问题，先报它。
+    不定死，同一份数据两次提交会给出两种理由，而 skipped[] 是要给人看的。"""
+    _, skipped = select_submittable([PurchaseCell(SKU, OCT, 0)], [], claimed=set())
+    assert skipped[0].reason == "no_claimed_msku"
+
+
+def test_all_unknown_demand_is_frozen_as_null_not_zero():
+    """★ 空 ≠ 0：一个都没填时，冻结值必须是 null + unknown，而不是 0。"""
+    minted, _ = select_submittable(
+        [PurchaseCell(SKU, OCT, 500)], [dcell(A, OCT, None, None)], claimed={A})
+    entry = minted[0].demand_by_seller["11072"]
+    assert entry["units"] is None and entry["basis"] == "unknown"
+    assert minted[0].demand_at_submit == 0, "合计只加得起来的那部分"
+    assert entry["mskus"] == [{"seller_sku": "MSKU-A", "units": None, "basis": "unknown"}]
+
+
+def test_a_sellers_basis_is_the_weakest_of_its_mskus():
+    """同一店铺下一个 msku 人填、一个没填 —— basis 取最弱的那档。
+    取最强的那档，会把「有一半是猜的」说成「人填的」。"""
+    minted, _ = select_submittable(
+        [PurchaseCell(SKU, OCT, 500)],
+        [dcell(A, OCT, 10, 20), dcell(("MSKU-B", "11072"), OCT, None, None)],
+        claimed={A, ("MSKU-B", "11072")})
+    entry = minted[0].demand_by_seller["11072"]
+    assert entry["basis"] == "unknown" and entry["units"] == 20
+
+
+def test_demand_of_an_unclaimed_msku_is_refused_not_silently_dropped():
+    """★ 丢东西必须有声：格子里有个 msku 不在认领集合里 —— 硬失败并点名。"""
+    with pytest.raises(ValueError) as ei:
+        select_submittable([PurchaseCell(SKU, OCT, 500)], [dcell(B, OCT, 40, 40)], claimed={A})
+    assert "MSKU-C" in str(ei.value)
+
+
+def test_digest_is_stable_under_reordering_and_moves_when_a_value_changes():
+    """★ S-13：sha256(规范化 JSON：purchase 行 + demand 行含 basis，键排序，NULL 保留为 null)。"""
+    p = [PurchaseCell(SKU, OCT, 500), PurchaseCell(SKU, NOV, None)]
+    d = [dcell(A, OCT, 100, 120), dcell(B, OCT, 40, None)]
+    base = content_digest(p, d)
+    assert base == content_digest(list(reversed(p)), list(reversed(d)))
+    assert len(base) == 64
+    assert base != content_digest(p, [dcell(A, OCT, 100, 121), dcell(B, OCT, 40, None)])
+
+
+def test_clearing_a_value_changes_the_digest():
+    """★ NULL 保留为 null，所以「把 120 删成空」是一次真实变更 ——
+    digest 不动的话，dashboard 的 changed_since_submit[] 就会漏掉这个人。"""
+    p = [PurchaseCell(SKU, OCT, 500)]
+    assert content_digest(p, [dcell(A, OCT, 100, 120)]) != \
+           content_digest(p, [dcell(A, OCT, 100, None)])
+```
+
+- [ ] **Step 2: 跑测试，确认它红**
+
+Run: `python -m pytest tests/test_rules_submit.py -q`
+Expected: FAIL —— `ModuleNotFoundError: No module named 'rules.digest'`
+
+- [ ] **Step 3: 实现三个文件**
+
+`rules/effective.py`：
+
+```python
+"""生效值：人填优先，没填就用系统预估，两者都没有就是未知。
+
+★ S-15 的两半缺一不可：COALESCE 给数，basis 给出处。
+  只给数，冻结之后「这 300 件是谁给的」永远答不出来（02 §3.1b / M-8）。
+"""
+from __future__ import annotations
+
+from typing import NamedTuple
+
+
+class Effective(NamedTuple):
+    units: int | None
+    basis: str      # human | system | unknown
+
+
+def effective_demand(system_units: int | None, expected_units: int | None) -> Effective:
+    if expected_units is not None:
+        return Effective(expected_units, "human")      # ★ 0 也是人的表态
+    if system_units is not None:
+        return Effective(system_units, "system")
+    return Effective(None, "unknown")
+```
+
+`rules/submit.py`：
+
+```python
+"""提交闸：哪些格子铸成记录、哪些被跳过、各店的期望销量冻结成什么。"""
+from __future__ import annotations
+
+from typing import NamedTuple
+
+from rules.effective import effective_demand
+
+#: basis 的强弱序。★ 一个店铺下多个 msku 时取**最弱**的那档 ——
+#  取最强的会把「有一半是猜的」说成「人填的」。
+_BASIS_RANK = {"human": 0, "system": 1, "unknown": 2}
+
+
+class PurchaseCell(NamedTuple):
+    sku: str
+    period: str
+    planned_units: int | None
+
+
+class DemandCell(NamedTuple):
+    seller_sku: str
+    sid: str
+    sku: str
+    period: str
+    system_units: int | None
+    expected_units: int | None
+
+
+class Minted(NamedTuple):
+    sku: str
+    period: str
+    total_units: int
+    demand_by_seller: dict      # {sid: {"units": int|None, "basis": str, "mskus": [...]}}
+    demand_at_submit: int
+
+
+class Skipped(NamedTuple):
+    sku: str
+    period: str
+    reason: str                 # zero_purchase | no_claimed_msku
+
+
+def select_submittable(
+    purchase_cells: list[PurchaseCell],
+    demand_cells: list[DemandCell],
+    claimed: set[tuple[str, str]],
+) -> tuple[list[Minted], list[Skipped]]:
+    """`claimed` = 该计划当前仍有效的 (seller_sku, sid) 集合。"""
+    stray = sorted({(c.seller_sku, c.sid) for c in demand_cells} - claimed)
+    if stray:
+        # ★ 过滤掉就是静默丢失：格子存在而认领没了，是数据坏了，不是「少算一点」
+        raise ValueError(f"期望销量格子指向未认领的 msku：{stray}")
+
+    skus_with_claim = {c.sku for c in demand_cells}
+    minted: list[Minted] = []
+    skipped: list[Skipped] = []
+
+    for pc in sorted(purchase_cells):
+        if pc.sku not in skus_with_claim:
+            # ★ 先判结构：没有落点比「填了 0」更早一步，两个都成立时报这个
+            skipped.append(Skipped(pc.sku, pc.period, "no_claimed_msku"))
+            continue
+        if not pc.planned_units:            # None 或 0
+            skipped.append(Skipped(pc.sku, pc.period, "zero_purchase"))
+            continue
+
+        by_sid: dict[str, dict] = {}
+        for dc in sorted(demand_cells):
+            if dc.sku != pc.sku or dc.period != pc.period:
+                continue
+            eff = effective_demand(dc.system_units, dc.expected_units)
+            slot = by_sid.setdefault(dc.sid, {"units": 0, "basis": "human", "mskus": []})
+            slot["mskus"].append({"seller_sku": dc.seller_sku,
+                                  "units": eff.units, "basis": eff.basis})
+            if eff.units is not None:
+                slot["units"] += eff.units
+            if _BASIS_RANK[eff.basis] > _BASIS_RANK[slot["basis"]]:
+                slot["basis"] = eff.basis
+        for slot in by_sid.values():
+            if all(m["units"] is None for m in slot["mskus"]):
+                slot["units"] = None        # ★ 一个都没有 → null，不是 0
+        total_demand = sum(s["units"] or 0 for s in by_sid.values())
+        minted.append(Minted(pc.sku, pc.period, pc.planned_units, by_sid, total_demand))
+
+    return minted, skipped
+```
+
+`rules/digest.py`：
+
+```python
+"""content_digest（S-13）：sha256(规范化 JSON)。
+
+★ 算法一变，历史 rev 的 digest 全部失配、dashboard 会把所有人都列进
+  changed_since_submit[] —— 所以这里的规范化规则改动等同于一次迁移。
+规则：purchase 行 + demand 行（含 basis），键排序，★ NULL 保留为 null。
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+
+from rules.effective import effective_demand
+
+
+def content_digest(purchase_cells, demand_cells) -> str:
+    payload = {
+        "purchase": sorted(
+            [{"sku": c.sku, "period": c.period, "planned_units": c.planned_units}
+             for c in purchase_cells],
+            key=lambda r: (r["sku"], r["period"])),
+        "demand": sorted(
+            [{"seller_sku": c.seller_sku, "sid": c.sid, "sku": c.sku, "period": c.period,
+              "units": effective_demand(c.system_units, c.expected_units).units,
+              "basis": effective_demand(c.system_units, c.expected_units).basis}
+             for c in demand_cells],
+            key=lambda r: (r["sku"], r["period"], r["sid"], r["seller_sku"])),
+    }
+    text = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+```
+
+- [ ] **Step 4: 跑测试，确认它绿**
+
+Run: `python -m pytest tests/test_rules_submit.py tests/test_layering.py -q`
+Expected: PASS（11 + 9 项）
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add rules tests/test_rules_submit.py
+git commit -m "feat(rules): 生效值带 basis · 提交闸的两种跳过理由 · content_digest"
+```
+
+---
+## Task 9: `api/` 骨架 —— 错误形状 · x-actor · 未声明参数 · 镜像陈旧 503 · /health
+
+**Files:**
+- Create: `api/__init__.py`（`create_app`）· `api/ui/errors.py` · `api/ui/deps.py` · `api/ui/system.py`
+- Create: `tests/test_api_system.py`
+- Modify: `tests/conftest.py`（追加 `client` 夹具）
+
+**Interfaces:**
+- Consumes: `shared.pg_client.pg_conn` / `timed` / `pg_error_fields`；`shared.config.freshness`
+- Produces:
+  - `api.create_app() -> FastAPI`
+  - `api.ui.errors`: `ApiError(status, code, message, detail=None)` · `translate(e: psycopg2.Error) -> ApiError | None` · `CONSTRAINT_ERRORS: dict[str, tuple[str, int, str]]`
+  - `api.ui.deps`: `actor(request) -> str` · `declared(request, *names) -> None` · `require_fresh_mirrors() -> None`
+  - 路由：`GET /health`（★ 不加前缀）· `GET /v1/readiness`
+  - fixture `client`：`TestClient(create_app(), raise_server_exceptions=False)`
+
+- [ ] **Step 1: 写失败的测试**
+
+`tests/test_api_system.py`：
+
+```python
+"""接口层的地基：错误形状、操作人、未声明参数、镜像陈旧。"""
+import datetime as dt
+
+from shared.pg_client import pg_conn
+
+
+def test_health_has_no_prefix(client):
+    """★ 探活目标 = base_url + health.path，不加 path_prefix（08 §0）。"""
+    assert client.get("/health").status_code == 200
+    assert client.get("/v1/health").status_code == 404
+
+
+def test_error_shape_is_code_message_detail(client, seed):
+    r = client.get("/v1/plans", headers={"x-actor": seed.actor}, params={"stat": "x"})
+    assert r.status_code == 400
+    body = r.json()
+    assert set(body) == {"code", "message", "detail"}
+    assert body["code"] == "unknown_query_param"
+    # ★ detail 必须点名是哪几个 —— 只说「参数有问题」，前端只能猜
+    assert body["detail"]["unknown"] == ["stat"]
+    assert "state" in body["detail"]["declared"]
+
+
+def test_missing_actor_header_is_400(client):
+    r = client.get("/v1/plans")
+    assert r.status_code == 400 and r.json()["error"] == "unknown_actor"
+    assert r.json()["header"] == "x-actor"
+
+
+def test_unknown_actor_is_400_and_names_it(client, seed):
+    r = client.get("/v1/plans", headers={"x-actor": "ghost"})
+    assert r.status_code == 400 and r.json()["actor"] == "ghost"
+
+
+def test_inactive_actor_is_400_and_says_it_is_inactive(client, seed):
+    """★ 「查无此人」与「这个人停用了」共用一个 code，但 detail 必须分得开 ——
+    不分开，停用的人会以为自己打错了名字。"""
+    r = client.get("/v1/plans", headers={"x-actor": seed.actor_inactive})
+    assert r.status_code == 400
+    assert r.json()["detail"] == {"actor": seed.actor_inactive, "active": False}
+
+
+def test_stale_mirror_refuses_service_with_503(client, seed):
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("UPDATE seller SET refreshed_at = now() - interval '40 hours'")
+    r = client.get("/v1/plans", headers={"x-actor": seed.actor})
+    assert r.status_code == 503 and r.json()["error"] == "mirror_stale"
+    assert r.json()["stale"][0]["mirror"] == "seller"
+
+
+def test_empty_mirror_is_stale_not_fresh(client, wipe):
+    """★ 空表的 max(refreshed_at) 是 NULL —— 当成新鲜就是拿空表在服务。"""
+    r = client.get("/v1/plans", headers={"x-actor": "anyone"})
+    assert r.status_code == 503
+    assert {m["mirror"] for m in r.json()["stale"]} == {
+        "sku_catalog", "msku_bridge", "seller", "warehouse"}
+
+
+def test_readiness_says_erp_is_not_implemented(client, seed):
+    """★ 空实现会让「该做没做」和「本来就不用做」长得一样（规则五）。"""
+    body = client.get("/v1/readiness", headers={"x-actor": seed.actor}).json()
+    assert body["erp"] == "not_implemented"
+    assert body["migrations"][-1].startswith("00")
+    assert len(body["mirrors"]) == 4
+```
+
+`tests/conftest.py` 追加：
+
+```python
+@pytest.fixture
+def client(wipe):
+    from starlette.testclient import TestClient
+
+    from api import create_app
+    return TestClient(create_app(), raise_server_exceptions=False)
+```
+
+- [ ] **Step 2: 跑测试，确认它红**
+
+Run: `python -m pytest tests/test_api_system.py -q`
+Expected: FAIL —— `ImportError: cannot import name 'create_app' from 'api'`
+
+- [ ] **Step 3: 实现错误与依赖**
+
+`api/ui/errors.py`：
+
+```python
+"""错误形状与「库层拒绝 → 错误码」的翻译。
+
+★ 形状按 08 §0：{"code","message","detail"}，detail 必须点名是哪几行。
+★ 翻译靠 constraint_name 而不是 str(e)：两种冲突的 message 都长得像一句话，
+  真凶只在 pgcode / constraint_name 里。
+"""
+from __future__ import annotations
+
+import logging
+
+import psycopg2
+
+from shared.pg_client import pg_error_fields
+
+log = logging.getLogger("scm.api")
+
+
+class ApiError(Exception):
+    def __init__(self, status: int, code: str, message: str, detail: dict | None = None):
+        self.status, self.code, self.message, self.detail = status, code, message, detail or {}
+        super().__init__(f"{status} {code}: {message}")
+
+
+#: constraint / index 名 → (code, status, message)
+CONSTRAINT_ERRORS: dict[str, tuple[str, int, str]] = {
+    "msku_claim_one_active_idx": ("msku_already_claimed", 409,
+                                  "该 msku 已被另一张尚未下单的计划占用"),
+    "plan_rev_one_in_flight_idx": ("rev_in_flight", 409, "该计划已有一版在流转"),
+    "plan_rev_pkey": ("rev_in_flight", 409, "同一版号已被并发提交占用"),
+    "plan_line_event_transition_fk": ("illegal_transition", 422, "这条状态迁移不在白名单里"),
+    "plan_months_1_24": ("bad_months", 400, "计划跨月数必须在 1~24 之间"),
+    "plan_period_start_is_month_start": ("bad_period_start", 400, "起始月必须是月初"),
+    "plan_owner_fk": ("unknown_actor", 400, "负责人不在 actor 表里"),
+    "plan_demand_cell_claim_fk": ("msku_not_claimed", 409, "没认领就没有格子"),
+    "plan_demand_cell_expected_nonneg": ("bad_units", 400, "期望销量不能为负"),
+    "plan_purchase_cell_nonneg": ("bad_units", 400, "计划采购量不能为负"),
+}
+
+
+def translate(e: psycopg2.Error) -> ApiError | None:
+    """认得出的库层拒绝翻成错误码；认不出的返回 None 让它以 500 冒出来。
+
+    ★ 不许有 else 兜底成某个笼统的 409 —— 那会让一条没人预料到的约束
+      看起来像一次正常的业务冲突。
+    """
+    f = pg_error_fields(e)
+    hit = CONSTRAINT_ERRORS.get(f["constraint"] or "")
+    if hit is None:
+        log.warning("untranslated pg error %s", f)
+        return None
+    code, status, msg = hit
+    return ApiError(status, code, msg, {"constraint": f["constraint"], "pg_detail": f["detail"]})
+```
+
+`api/ui/deps.py`：
+
+```python
+"""三样每个业务端点都要过的东西：操作人 · 未声明参数 · 镜像新鲜度。"""
+from __future__ import annotations
+
+import datetime as dt
+
+from fastapi import Request
+
+from api.ui.errors import ApiError
+from shared.config import freshness
+from shared.pg_client import pg_conn
+
+
+def declared(request: Request, *names: str) -> None:
+    """★ 未声明查询参数一律 400：拼错的参数被静默忽略时，
+    返回的是「全量」而不是报错 —— 而全量看起来完全正常。"""
+    extra = sorted(set(request.query_params) - set(names))
+    if extra:
+        raise ApiError(400, "unknown_query_param", "有未声明的查询参数",
+                       {"unknown": extra, "declared": sorted(names)})
+
+
+def require_fresh_mirrors() -> None:
+    """E-4：任一维度镜像陈旧（或为空）→ 拒绝服务。"""
+    max_age = dt.timedelta(hours=float(freshness().get("max_age_hours", 24)))
+    now = dt.datetime.now(dt.timezone.utc)
+    stale = []
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT mirror, refreshed_at FROM v_mirror_freshness ORDER BY mirror")
+        for mirror, at in cur.fetchall():
+            # ★ NULL 是「一行都没有」，不是「刚刷过」
+            if at is None or now - at > max_age:
+                stale.append({"mirror": mirror,
+                              "refreshed_at": at.isoformat() if at else None})
+    if stale:
+        raise ApiError(503, "mirror_stale", "维度镜像陈旧，拒绝服务",
+                       {"stale": stale, "max_age_hours": max_age.total_seconds() / 3600})
+
+
+def actor(request: Request) -> str:
+    """操作人来自 x-actor，必须存在且在职。
+
+    ★ 校验的是「这个人存不存在」，不是权限（权限在上层，08 §0）——
+      不校验的话，plan.owner_actor 的外键会以 500 的形态在半路炸。
+    """
+    who = (request.headers.get("x-actor") or "").strip()
+    if not who:
+        raise ApiError(400, "unknown_actor", "缺少 x-actor 头", {"header": "x-actor"})
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT active FROM actor WHERE actor_id = %s", (who,))
+        row = cur.fetchone()
+    if row is None:
+        raise ApiError(400, "unknown_actor", "x-actor 不在 actor 表里", {"actor": who})
+    if not row[0]:
+        raise ApiError(400, "unknown_actor", "该操作人已停用", {"actor": who, "active": False})
+    return who
+```
+
+`api/ui/system.py`：
+
+```python
+"""探活与就绪。★ /health 不加前缀（08 §0）。"""
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, Request
+
+from api.ui.deps import actor, declared
+from shared.pg_client import business_schema, pg_conn
+
+health_router = APIRouter()
+system_router = APIRouter()
+
+
+@health_router.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@system_router.get("/readiness")
+def readiness(request: Request, who: str = Depends(actor)):
+    declared(request)
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT mirror, refreshed_at FROM v_mirror_freshness ORDER BY mirror")
+        mirrors = [{"mirror": m, "refreshed_at": a.isoformat() if a else None}
+                   for m, a in cur.fetchall()]
+        cur.execute("SELECT version FROM schema_migration ORDER BY version")
+        versions = [r[0] for r in cur.fetchall()]
+    return {
+        "schema": business_schema(),
+        "migrations": versions,
+        "mirrors": mirrors,
+        # ★ 阶段 A 没有领星网关。写成 "ok" 或干脆不返回，都会让
+        #   「该做没做」和「本来就不用做」长得一模一样（01 规则五）。
+        "erp": "not_implemented",
+    }
+```
+
+`api/__init__.py`：
+
+```python
+"""api/ui —— 给本仓前端的 BFF。★ 随界面一起变，不进契约（01 §1.1b）。"""
+from __future__ import annotations
+
+import logging
+
+import psycopg2
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+
+from api.ui import system
+from api.ui.errors import ApiError, translate
+from shared.pg_client import business_schema, pg_conn
+
+log = logging.getLogger("scm.api")
+
+
+def _log_startup() -> None:
+    """★ 配置类问题往启动钩子放，别等第一个请求才炸 ——
+    在启动日志第一屏可见，胜过淹没在访问日志里的一片 500。"""
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT mirror, refreshed_at FROM v_mirror_freshness ORDER BY mirror")
+        for mirror, at in cur.fetchall():
+            log.info("startup mirror=%s refreshed_at=%s", mirror, at)
+        cur.execute("SELECT count(*) FROM schema_migration")
+        log.info("startup schema=%s migrations=%d", business_schema(), cur.fetchone()[0])
+
+
+def create_app() -> FastAPI:
+    app = FastAPI(title="service_supplychain · api/ui")
+
+    @app.exception_handler(ApiError)
+    async def _api_error(request: Request, exc: ApiError):
+        return JSONResponse(status_code=exc.status,
+                            content={"code": exc.code, "message": exc.message,
+                                     "detail": exc.detail})
+
+    @app.exception_handler(psycopg2.Error)
+    async def _pg_error(request: Request, exc: psycopg2.Error):
+        translated = translate(exc)
+        if translated is None:
+            raise exc     # ★ 认不出的约束不许被兜成业务错误，让它以 500 冒出来
+        return JSONResponse(status_code=translated.status,
+                            content={"code": translated.code, "message": translated.message,
+                                     "detail": translated.detail})
+
+    app.include_router(system.health_router)
+    app.include_router(system.system_router, prefix="/v1")
+    app.add_event_handler("startup", _log_startup)
+    return app
+```
+
+- [ ] **Step 4: 跑测试，确认它绿（除仍未实现的 /v1/plans 三项）**
+
+Run: `python -m pytest tests/test_api_system.py -q`
+Expected: `test_health_has_no_prefix` 与 `test_readiness_says_erp_is_not_implemented` PASS；
+其余 6 项 FAIL（`/v1/plans` 还不存在，返回 404）。★ Task 10 之后全绿。
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add api tests/test_api_system.py tests/conftest.py
+git commit -m "feat(api): 骨架 —— 错误形状按 08 §0 · x-actor 校验 · 未声明参数 400 · 镜像陈旧 503"
+```
+
+---
+
+## Task 10: `POST /v1/plans` · `GET /v1/plans` —— 含派生的整体状态
+
+**Files:**
+- Create: `migrations/pg/004_plan_overall_state.sql`
+- Create: `api/ui/plans.py`
+- Create: `tests/test_api_plans.py` · `tests/test_ddl_004_overall_state.py`
+- Modify: `api/__init__.py`（挂 `plans` 路由）
+
+**Interfaces:**
+- Consumes: Task 9 的 `actor` / `declared` / `require_fresh_mirrors` / `ApiError`
+- Produces:
+  - 表 `plan_line_state_rank(state text PK, rank int UNIQUE)`（6 行，★ 不含 `已撤销`）
+  - 视图 `v_plan_overall_state(plan_id, state_rev, overall)`
+  - `POST /v1/plans` body `{"title","period_start","months"}` → `201 {"plan_id"}`
+  - `GET /v1/plans?state=&owner=&archived=` → `{"plans":[{plan_id,title,period_start,months,owner_actor,archived_at,overall,state_rev}]}`
+  - `api.ui.plans.router`（供后续 Task 往上挂端点）
+
+- [ ] **Step 1: 写失败的测试**
+
+`tests/test_ddl_004_overall_state.py`：
+
+```python
+"""整体状态是**派生**的（04 §3），不是字段。两个边界必须显式定义。"""
+from helpers import mint
+
+from shared.pg_client import pg_conn
+
+
+def test_cancelled_is_not_in_the_rank_table(wipe):
+    """★ 已撤销是旁路终态，不参与 rank 比较（04:814-819）。
+    把它放进 rank 表，木桶会把一张「撤了一条、其余在跑」的计划算成已撤销。"""
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT state FROM plan_line_state_rank ORDER BY rank")
+        assert [r[0] for r in cur.fetchall()] == [
+            "已提交", "已确认", "已下单", "准备排货", "已排货", "已完结"]
+
+
+def test_never_submitted_plan_has_no_overall_state(wipe, seed):
+    """★ 「从未提交」不是「已撤销」—— 两者在看板上的处置相反。"""
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("INSERT INTO plan (title, period_start, months, owner_actor, created_by)"
+                    " VALUES ('空的', '2026-10-01', 3, %s, %s) RETURNING plan_id",
+                    (seed.actor, seed.actor))
+        pid = cur.fetchone()[0]
+        cur.execute("SELECT overall FROM v_plan_overall_state WHERE plan_id = %s", (pid,))
+        assert cur.fetchone()[0] is None
+
+
+def test_all_lines_cancelled_makes_the_plan_cancelled(wipe, seed):
+    with pg_conn() as c, c.cursor() as cur:
+        plan, line = mint(cur, seed.actor, seed.sku_a)
+        cur.execute("INSERT INTO plan_line_event (line_id, from_state, to_state, actor, reason)"
+                    " VALUES (%s, '已提交', '已撤销', %s, '不做了')", (line, seed.actor))
+        cur.execute("SELECT overall FROM v_plan_overall_state WHERE plan_id = %s", (plan,))
+        assert cur.fetchone()[0] == "已撤销"
+```
+
+`tests/test_api_plans.py`：
+
+```python
+import datetime as dt
+
+
+def mk(client, seed, **kw):
+    body = {"title": "10 月计划", "period_start": "2026-10-01", "months": 3} | kw
+    return client.post("/v1/plans", json=body, headers={"x-actor": seed.actor})
+
+
+def test_create_returns_the_new_plan_id(client, seed):
+    r = mk(client, seed)
+    assert r.status_code == 201 and isinstance(r.json()["plan_id"], int)
+
+
+def test_months_defaults_to_three(client, seed):
+    r = client.post("/v1/plans", json={"title": "t", "period_start": "2026-10-01"},
+                    headers={"x-actor": seed.actor})
+    pid = r.json()["plan_id"]
+    got = client.get("/v1/plans", headers={"x-actor": seed.actor}).json()["plans"]
+    assert [p for p in got if p["plan_id"] == pid][0]["months"] == 3
+
+
+def test_bad_months_and_bad_start_are_400_with_their_own_codes(client, seed):
+    assert mk(client, seed, months=25).json()["error"] == "bad_months"
+    assert mk(client, seed, period_start="2026-10-15").json()["error"] == "bad_period_start"
+
+
+def test_list_reports_derived_overall_state_not_a_column(client, seed):
+    mk(client, seed)
+    rows = client.get("/v1/plans", headers={"x-actor": seed.actor}).json()["plans"]
+    assert rows[0]["overall"] is None, "★ 从未提交 → 没有状态，不是 0、不是已撤销"
+
+
+def test_filters_are_declared_and_typos_are_400(client, seed):
+    mk(client, seed)
+    ok = client.get("/v1/plans", params={"owner": seed.actor, "archived": "false"},
+                    headers={"x-actor": seed.actor})
+    assert ok.status_code == 200
+    bad = client.get("/v1/plans", params={"owener": seed.actor}, headers={"x-actor": seed.actor})
+    assert bad.status_code == 400 and bad.json()["unknown"] == ["owener"]
+
+
+def test_archived_filter_splits_the_two_sides(client, seed):
+    """★ 过滤必须同时统计被丢掉的那一侧：默认不返回已归档的，
+    但接口要告诉你被挡掉了几张，而不是让人以为计划凭空少了。"""
+    pid = mk(client, seed).json()["plan_id"]
+    client.post(f"/v1/plans/{pid}/archive", headers={"x-actor": seed.actor})
+    body = client.get("/v1/plans", headers={"x-actor": seed.actor}).json()
+    assert body["plans"] == [] and body["excluded"] == {"archived": 1}
+```
+
+- [ ] **Step 2: 跑测试，确认它红**
+
+Run: `python -m pytest tests/test_api_plans.py tests/test_ddl_004_overall_state.py -q`
+Expected: FAIL —— `UndefinedTable: relation "plan_line_state_rank" does not exist` / `/v1/plans` 404
+
+- [ ] **Step 3: 写迁移 004**
+
+`migrations/pg/004_plan_overall_state.sql`：
+
+```sql
+-- 004 · S2 整体状态：派生，不存储（04 §3）
+-- ★ rank 做成表而不是代码里的 CASE：木桶口径有三个调用者（列表 / 看板 / 前端），
+--   写三遍必然分叉，而分叉的形态是「同一张计划在两个屏幕上状态不同」。
+
+CREATE TABLE IF NOT EXISTS plan_line_state_rank (
+    state text PRIMARY KEY,
+    rank  int  NOT NULL UNIQUE
+);
+
+INSERT INTO plan_line_state_rank VALUES
+ ('已提交',1), ('已确认',2), ('已下单',3), ('准备排货',4), ('已排货',5), ('已完结',6)
+ON CONFLICT DO NOTHING;
+-- ★ 已撤销刻意不在表里：它是旁路终态，不参与 rank 比较（04:814-819）。
+--   放进来的话，撤掉一条记录会把整张计划的木桶拉到「已撤销」。
+
+CREATE OR REPLACE VIEW v_plan_overall_state AS
+WITH pick AS (
+    -- 一张计划最多 1 版在流转（S-4）；没有在流转的就看最近一版
+    SELECT DISTINCT ON (plan_id) plan_id, rev
+      FROM plan_rev ORDER BY plan_id, in_flight DESC, rev DESC
+)
+SELECT p.plan_id,
+       pick.rev AS state_rev,
+       CASE
+         -- ★ 从未提交 → NULL。它不是「已撤销」，两者在看板上的处置相反
+         WHEN pick.rev IS NULL THEN NULL
+         -- ★ 全部撤销、以及一条记录都没有的空计划单 → 已撤销（04 §3.1）
+         --   不显式定义，MIN() 会返回 NULL，而 NULL 在下游每一处表现都不一样
+         WHEN agg.live = 0 THEN '已撤销'
+         ELSE agg.min_state
+       END AS overall
+  FROM plan p
+  LEFT JOIN pick ON pick.plan_id = p.plan_id
+  LEFT JOIN LATERAL (
+      SELECT count(*) FILTER (WHERE l.state <> '已撤销') AS live,
+             (SELECT l2.state
+                FROM plan_line l2 JOIN plan_line_state_rank r ON r.state = l2.state
+               WHERE l2.plan_id = p.plan_id AND l2.rev = pick.rev
+               ORDER BY r.rank LIMIT 1) AS min_state
+        FROM plan_line l
+       WHERE l.plan_id = p.plan_id AND l.rev = pick.rev
+  ) agg ON true;
+```
+
+- [ ] **Step 4: 实现 `api/ui/plans.py` 的建与列**
+
+```python
+"""计划：建 · 列 · 认领 · 网格 · 两种量 · 归档。"""
+from __future__ import annotations
+
+import datetime as dt
+
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse
+
+from api.ui.deps import actor, declared, require_fresh_mirrors
+from api.ui.errors import ApiError
+from shared.pg_client import pg_conn, timed
+
+router = APIRouter(dependencies=[Depends(require_fresh_mirrors)])
+
+
+def _date(s: str, field: str) -> dt.date:
+    try:
+        return dt.date.fromisoformat(s)
+    except (TypeError, ValueError):
+        raise ApiError(400, "bad_date", f"{field} 不是 YYYY-MM-DD", {"field": field,
+                                                                     "got": s}) from None
+
+
+@router.post("/plans")
+def create_plan(request: Request, body: dict, who: str = Depends(actor)):
+    title = (body.get("title") or "").strip()
+    if not title:
+        raise ApiError(400, "title_required", "标题必填", {"field": "title"})
+    start = _date(body.get("period_start"), "period_start")
+    months = body.get("months", 3)          # ★ M-10：默认 3，范围 1~24 由库层 CHECK 裁决
+    with timed("create_plan", actor=who), pg_conn() as c, c.cursor() as cur:
+        cur.execute("INSERT INTO plan (title, period_start, months, owner_actor, created_by)"
+                    " VALUES (%s, %s, %s, %s, %s) RETURNING plan_id",
+                    (title, start, months, body.get("owner_actor", who), who))
+        plan_id = cur.fetchone()[0]
+    return JSONResponse(status_code=201, content={"plan_id": plan_id})
+
+
+@router.get("/plans")
+def list_plans(request: Request, who: str = Depends(actor)):
+    declared(request, "state", "owner", "archived")
+    q = request.query_params
+    want_archived = q.get("archived", "false").lower() == "true"
+    where, args = ["(%s OR p.archived_at IS NULL)"], [want_archived]
+    if q.get("owner"):
+        where.append("p.owner_actor = %s")
+        args.append(q["owner"])
+    if q.get("state"):
+        where.append("v.overall = %s")
+        args.append(q["state"])
+    sql = ("SELECT p.plan_id, p.title, p.period_start, p.months, p.owner_actor,"
+           " p.archived_at, v.overall, v.state_rev"
+           " FROM plan p JOIN v_plan_overall_state v USING (plan_id)"
+           f" WHERE {' AND '.join(where)} ORDER BY p.plan_id DESC")
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute(sql, args)
+        plans = [{"plan_id": r[0], "title": r[1], "period_start": r[2].isoformat(),
+                  "months": r[3], "owner_actor": r[4],
+                  "archived_at": r[5].isoformat() if r[5] else None,
+                  "overall": r[6], "state_rev": r[7]} for r in cur.fetchall()]
+        # ★ 统计被丢掉的那一侧：不说「挡掉了几张」，人只会觉得计划凭空少了
+        cur.execute("SELECT count(*) FROM plan WHERE archived_at IS NOT NULL")
+        archived = 0 if want_archived else cur.fetchone()[0]
+    return {"plans": plans, "excluded": {"archived": archived}}
+```
+
+`api/__init__.py` 里追加：
+
+```python
+from api.ui import plans
+...
+    app.include_router(plans.router, prefix="/v1")
+```
+
+★ `POST /v1/plans/{plan_id}/archive` 在 Task 13 与「同一事务释放全部占用」一起实现；
+`test_archived_filter_splits_the_two_sides` 在那之前会红 —— 这是刻意的，它是 Task 13 的靶子。
+
+- [ ] **Step 5: 跑测试**
+
+Run: `python -m pytest tests/test_api_plans.py tests/test_ddl_004_overall_state.py tests/test_api_system.py -q`
+Expected: `test_archived_filter_splits_the_two_sides` 以外全绿（6 + 3 + 8 − 1 = 16 项 PASS，1 项 FAIL 等 Task 13）
+
+- [ ] **Step 6: 提交**
+
+```bash
+git add migrations/pg/004_plan_overall_state.sql api/ui/plans.py api/__init__.py tests/test_api_plans.py tests/test_ddl_004_overall_state.py
+git commit -m "feat(api): 建计划与计划列表；整体状态由 rank 表 + 视图派生，从未提交与已撤销分得开"
+```
+
+---
+
+## Task 11: `GET /v1/catalog/skus` · 认领与释放（判据③）
+
+**Files:**
+- Create: `api/ui/catalog.py`
+- Modify: `api/ui/plans.py`（认领 / 释放）· `api/__init__.py`
+- Create: `tests/test_api_claims.py`
+
+**Interfaces:**
+- Consumes: Task 10 的 `router`；`forecast.estimate.monthly_estimate`；`dim.fixture_source.FixtureSource`
+- Produces:
+  - `GET /v1/catalog/skus?q=&limit=` → `{"need_query":bool,"matched":int,"truncated":bool,"rows":[{sku,name,mskus:[{seller_sku,sid,seller_name,selectable,claimed_by:{plan_id,actor}|null}]}]}`
+  - `POST /v1/plans/{plan_id}/claims` body `{"seller_sku","sid"}` → `{"claimed":…,"seeded":{"demand_cells":n,"purchase_cells":m},"no_history":[…]}`；409 `msku_already_claimed` 点名占用方
+  - `DELETE /v1/plans/{plan_id}/claims/{seller_sku}/{sid}` → `{"released":…,"dropped_cells":[…]}`
+  - `api.ui.plans.SOURCE`：模块级 `Source` 实例（阶段 A = `FixtureSource(tests/fixtures)`），Task 12 复用
+
+- [ ] **Step 1: 写失败的测试**
+
+`tests/test_api_claims.py`：
+
+```python
+import threading
+
+import psycopg2.errors
+import pytest
+
+from shared.pg_client import pg_conn
+
+
+def H(a):
+    return {"x-actor": a}
+
+
+def mk(client, seed, title="10 月计划"):
+    return client.post("/v1/plans", json={"title": title, "period_start": "2026-10-01",
+                                          "months": 3}, headers=H(seed.actor)).json()["plan_id"]
+
+
+def test_catalog_without_a_query_deliberately_returns_nothing(client, seed):
+    """★ P11：不给条件 → 故意不返回，且必须与「查不到」长得不一样。"""
+    r = client.get("/v1/catalog/skus", headers=H(seed.actor)).json()
+    assert r["need_query"] is True and r["rows"] == [] and r["matched"] == 0
+    miss = client.get("/v1/catalog/skus", params={"q": "ZZZ"}, headers=H(seed.actor)).json()
+    assert miss["need_query"] is False and miss["rows"] == [] and miss["matched"] == 0
+
+
+def test_claimed_rows_stay_in_the_table_marked(client, seed):
+    """★ P11：被占用的行留在表里标出来，不过滤 ——
+    过滤掉，人永远不知道「我要的那个为什么没出现」。"""
+    p1 = mk(client, seed)
+    client.post(f"/v1/plans/{p1}/claims",
+                json={"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]}, headers=H(seed.actor))
+    rows = client.get("/v1/catalog/skus", params={"q": seed.sku_a},
+                      headers=H(seed.actor)).json()["rows"]
+    m = [x for x in rows[0]["mskus"] if x["seller_sku"] == seed.msku_a[0]][0]
+    assert m["selectable"] is False and m["claimed_by"]["plan_id"] == p1
+
+
+def test_truncation_is_reported(client, seed):
+    r = client.get("/v1/catalog/skus", params={"q": "", "limit": 1}, headers=H(seed.actor))
+    assert r.status_code == 200
+    body = client.get("/v1/catalog/skus", params={"q": "MSKU", "limit": 1},
+                      headers=H(seed.actor)).json()
+    assert body["truncated"] is True and len(body["rows"]) == 1
+
+
+def test_claim_seeds_both_grids_and_names_mskus_without_history(client, seed):
+    p = mk(client, seed)
+    r = client.post(f"/v1/plans/{p}/claims",
+                    json={"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]},
+                    headers=H(seed.actor)).json()
+    assert r["seeded"] == {"demand_cells": 3, "purchase_cells": 3}
+    assert r["no_history"] == []
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT period_start, system_units, system_extrapolated, expected_units"
+                    " FROM plan_demand_cell WHERE plan_id = %s ORDER BY period_start", (p,))
+        rows = cur.fetchall()
+    # fixture 里 MSKU-A 的历史是 100/120/90，计划 3 个月 → 不外推
+    assert [r[1] for r in rows] == [100, 120, 90]
+    assert [r[2] for r in rows] == [False, False, False]
+    assert [r[3] for r in rows] == [None, None, None], "★ 人填列留空 = 未知，不预填"
+
+
+def test_msku_without_history_is_seeded_null_and_named(client, seed):
+    """★ 没有历史 ≠ 预估 0。格子照建，system_units 留 NULL，并在返回里点名。"""
+    p = mk(client, seed)
+    r = client.post(f"/v1/plans/{p}/claims",
+                    json={"seller_sku": seed.msku_nofba[0], "sid": seed.msku_nofba[1]},
+                    headers=H(seed.actor)).json()
+    assert r["no_history"] == [{"seller_sku": seed.msku_nofba[0], "sid": seed.msku_nofba[1],
+                                "reason": "no_sales_history"}]
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT DISTINCT system_units FROM plan_demand_cell WHERE plan_id = %s", (p,))
+        assert cur.fetchall() == [(None,)]
+
+
+def test_second_plan_claiming_the_same_msku_is_409_and_names_the_holder(client, seed):
+    """★ 判据③ 的接口那一半。"""
+    p1, p2 = mk(client, seed), mk(client, seed, title="另一张")
+    body = {"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]}
+    assert client.post(f"/v1/plans/{p1}/claims", json=body, headers=H(seed.actor)).status_code == 200
+    r = client.post(f"/v1/plans/{p2}/claims", json=body, headers=H(seed.actor))
+    assert r.status_code == 409 and r.json()["error"] == "msku_already_claimed"
+    assert r.json()["claimed_by"] == {"plan_id": p1, "actor": seed.actor}
+
+
+def test_two_connections_racing_for_the_same_msku(client, seed):
+    """★ 判据③ 的库层那一半：先查后写挡不住并发，部分唯一索引能。
+
+    B 在 A 未提交时插同一把键 → 必须**阻塞**；A 提交后 B 收到唯一冲突。
+    只跑「A 提交完 B 再插」的话，证明的是「重复插入被拒」，不是竞态。
+    """
+    p1, p2 = mk(client, seed), mk(client, seed, title="另一张")
+    err, started = [], threading.Event()
+
+    def other():
+        started.set()
+        try:
+            with pg_conn() as c, c.cursor() as cur:
+                cur.execute("INSERT INTO msku_claim (plan_id, seller_sku, sid, claimed_by)"
+                            " VALUES (%s, %s, %s, %s)", (p2, *seed.msku_a, seed.actor))
+        except psycopg2.errors.UniqueViolation as e:
+            err.append(e)
+
+    conn = psycopg2.connect  # noqa: F841  （用 pg_conn 拿一条独立连接）
+    with pg_conn() as a, a.cursor() as cur:
+        cur.execute("INSERT INTO msku_claim (plan_id, seller_sku, sid, claimed_by)"
+                    " VALUES (%s, %s, %s, %s)", (p1, *seed.msku_a, seed.actor))
+        t = threading.Thread(target=other)
+        t.start()
+        started.wait(1)
+        t.join(timeout=0.5)
+        assert t.is_alive(), "★ B 没有被挡住 —— 唯一索引没生效，或它根本没走到插入"
+        # 退出 with → A 提交 → B 被唤醒并撞上唯一索引
+    t.join(timeout=5)
+    assert not t.is_alive() and len(err) == 1
+
+
+def test_release_keeps_the_row_and_names_the_cells_it_drops(client, seed):
+    """★ 释放不删行；而被一起删掉的期望销量格子必须逐条点名 ——
+    「少了几个数」在界面上是看不出来的。"""
+    p = mk(client, seed)
+    body = {"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]}
+    client.post(f"/v1/plans/{p}/claims", json=body, headers=H(seed.actor))
+    client.put(f"/v1/plans/{p}/demand/{seed.msku_a[0]}/{seed.msku_a[1]}/2026-10",
+               json={"expected_units": 130}, headers=H(seed.actor))
+    r = client.delete(f"/v1/plans/{p}/claims/{seed.msku_a[0]}/{seed.msku_a[1]}",
+                      headers=H(seed.actor)).json()
+    assert {"period": "2026-10", "expected_units": 130} in r["dropped_cells"]
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT released_at IS NOT NULL FROM msku_claim WHERE plan_id = %s", (p,))
+        assert cur.fetchone()[0] is True
+
+
+def test_reclaiming_in_the_same_plan_revives_the_row(client, seed):
+    p = mk(client, seed)
+    body = {"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]}
+    client.post(f"/v1/plans/{p}/claims", json=body, headers=H(seed.actor))
+    client.delete(f"/v1/plans/{p}/claims/{seed.msku_a[0]}/{seed.msku_a[1]}", headers=H(seed.actor))
+    assert client.post(f"/v1/plans/{p}/claims", json=body, headers=H(seed.actor)).status_code == 200
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT count(*) FROM msku_claim WHERE plan_id = %s", (p,))
+        assert cur.fetchone()[0] == 1, "★ 复认领是复活那一行，不是新插一行（主键就在那）"
+```
+
+- [ ] **Step 2: 跑测试，确认它红**
+
+Run: `python -m pytest tests/test_api_claims.py -q`
+Expected: FAIL —— `/v1/catalog/skus` 404（10 项全红）
+
+- [ ] **Step 3: 实现目录**
+
+`api/ui/catalog.py`：
+
+```python
+"""选货号这一步（UC-O2 / P11）。
+
+★ 真实库成百上千个货号，全列出来让人挑从第一天就是错的 ——
+  所以不给条件时**故意不返回**，而且这件事要与「查不到」长得不一样。
+"""
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, Request
+
+from api.ui.deps import actor, declared, require_fresh_mirrors
+from api.ui.errors import ApiError
+from shared.pg_client import pg_conn
+
+router = APIRouter(dependencies=[Depends(require_fresh_mirrors)])
+
+#: ★ 设计取值 · 未实测。文档没给过上限；超出就报 truncated 让人细化条件。
+DEFAULT_LIMIT, MAX_LIMIT = 200, 500
+
+
+@router.get("/catalog/skus")
+def catalog_skus(request: Request, who: str = Depends(actor)):
+    declared(request, "q", "limit")
+    q = (request.query_params.get("q") or "").strip()
+    try:
+        limit = min(int(request.query_params.get("limit", DEFAULT_LIMIT)), MAX_LIMIT)
+    except ValueError:
+        raise ApiError(400, "bad_limit", "limit 不是整数",
+                       {"got": request.query_params.get("limit")}) from None
+    if not q:
+        # ★ 与「查不到」分得开：need_query=true，前端据此提示输入条件
+        return {"need_query": False if q else True, "matched": 0, "truncated": False, "rows": []}
+
+    like = f"%{q}%"
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute(
+            "SELECT b.sku, s.name, b.seller_sku, b.sid, se.name,"
+            "       cl.plan_id, cl.claimed_by"
+            "  FROM msku_bridge b"
+            "  JOIN sku_catalog s ON s.sku = b.sku"
+            "  JOIN seller se ON se.seller_id = b.sid"
+            "  LEFT JOIN msku_claim cl"
+            "    ON cl.seller_sku = b.seller_sku AND cl.sid = b.sid"
+            "   AND cl.released_at IS NULL AND NOT cl.plan_ordered"
+            " WHERE b.sku ILIKE %s OR s.name ILIKE %s OR b.seller_sku ILIKE %s"
+            " ORDER BY b.sku, b.seller_sku, b.sid", (like, like, like))
+        rows = cur.fetchall()
+
+    by_sku: dict[str, dict] = {}
+    for sku, sku_name, seller_sku, sid, seller_name, plan_id, claimed_by in rows:
+        entry = by_sku.setdefault(sku, {"sku": sku, "name": sku_name, "mskus": []})
+        entry["mskus"].append({
+            "seller_sku": seller_sku, "sid": sid, "seller_name": seller_name,
+            # ★ 被占用的行留在表里标出来，不过滤
+            "selectable": plan_id is None,
+            "claimed_by": None if plan_id is None
+            else {"plan_id": plan_id, "actor": claimed_by},
+        })
+    out = list(by_sku.values())
+    return {"need_query": False, "matched": len(out), "truncated": len(out) > limit,
+            "rows": out[:limit]}
+```
+
+- [ ] **Step 4: 实现认领与释放**（追加进 `api/ui/plans.py`）
+
+```python
+from dim.fixture_source import FixtureSource
+from forecast.estimate import InsufficientHistory, monthly_estimate
+
+#: 阶段 A 的取数源。★ 阶段 B 换成 ChSource 时改的只有这一行（dim/source.py 的协议不变）。
+SOURCE = FixtureSource(Path(__file__).resolve().parents[2] / "tests" / "fixtures")
+
+
+def _periods(cur, plan_id: int) -> list[dt.date]:
+    cur.execute("SELECT period_start, months FROM plan WHERE plan_id = %s", (plan_id,))
+    row = cur.fetchone()
+    if row is None:
+        raise ApiError(404, "plan_not_found", "计划不存在", {"plan_id": plan_id})
+    start, months = row
+    return [dt.date(start.year + (start.month - 1 + i) // 12,
+                    (start.month - 1 + i) % 12 + 1, 1) for i in range(months)]
+
+
+@router.post("/plans/{plan_id}/claims")
+def claim(plan_id: int, body: dict, who: str = Depends(actor)):
+    seller_sku, sid = body.get("seller_sku"), body.get("sid")
+    if not seller_sku or not sid:
+        raise ApiError(400, "bad_request", "seller_sku 与 sid 必填",
+                       {"got": {"seller_sku": seller_sku, "sid": sid}})
+    with timed("claim", actor=who, plan_id=plan_id), pg_conn() as c, c.cursor() as cur:
+        periods = _periods(cur, plan_id)
+        cur.execute("SELECT sku FROM msku_bridge WHERE seller_sku = %s AND sid = %s",
+                    (seller_sku, sid))
+        row = cur.fetchone()
+        if row is None:
+            raise ApiError(404, "unknown_msku", "msku 不在桥表里",
+                           {"seller_sku": seller_sku, "sid": sid})
+        sku = row[0]
+
+        # ★ 先查后写挡不住并发，所以这里不查 —— 直接插，让部分唯一索引裁决；
+        #   撞上了再回头查是谁占的，只为把 409 的 detail 点到名。
+        try:
+            cur.execute(
+                "INSERT INTO msku_claim (plan_id, seller_sku, sid, claimed_by)"
+                " VALUES (%s, %s, %s, %s)"
+                " ON CONFLICT (plan_id, seller_sku, sid) DO UPDATE"
+                "    SET released_at = NULL, released_by = NULL,"
+                "        claimed_by = EXCLUDED.claimed_by, claimed_at = now()",
+                (plan_id, seller_sku, sid, who))
+        except psycopg2.errors.UniqueViolation:
+            c.rollback()
+            with pg_conn() as c2, c2.cursor() as cur2:
+                cur2.execute("SELECT plan_id, claimed_by FROM msku_claim"
+                             " WHERE seller_sku = %s AND sid = %s"
+                             "   AND released_at IS NULL AND NOT plan_ordered",
+                             (seller_sku, sid))
+                holder = cur2.fetchone()
+            raise ApiError(409, "msku_already_claimed", "该 msku 已被另一张尚未下单的计划占用",
+                           {"seller_sku": seller_sku, "sid": sid,
+                            "claimed_by": {"plan_id": holder[0], "actor": holder[1]}
+                            if holder else None}) from None
+
+        no_history = []
+        try:
+            est = monthly_estimate(SOURCE.monthly_sales_history(seller_sku, sid, len(periods)),
+                                   len(periods))
+        except InsufficientHistory:
+            # ★ 没有历史 ≠ 预估 0：格子照建（人还要在上面填），system_units 留 NULL 并点名
+            est = None
+            no_history.append({"seller_sku": seller_sku, "sid": sid,
+                               "reason": "no_sales_history"})
+        for i, period in enumerate(periods):
+            cur.execute(
+                "INSERT INTO plan_demand_cell (plan_id, seller_sku, sid, period_start,"
+                " system_units, system_extrapolated, updated_by)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s)"
+                " ON CONFLICT (plan_id, seller_sku, sid, period_start) DO UPDATE"
+                "    SET system_units = EXCLUDED.system_units,"
+                "        system_extrapolated = EXCLUDED.system_extrapolated",
+                (plan_id, seller_sku, sid, period,
+                 est[i].units if est else None, bool(est and est[i].extrapolated), who))
+        for period in periods:
+            # ★ 货号级采购格子必须先长出来：没有行和填了 0 不能长得一样，
+            #   否则提交时它连一条 skipped 都留不下（判据②）
+            cur.execute("INSERT INTO plan_purchase_cell (plan_id, sku, period_start, updated_by)"
+                        " VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                        (plan_id, sku, period, who))
+    return {"claimed": {"seller_sku": seller_sku, "sid": sid, "sku": sku},
+            "seeded": {"demand_cells": len(periods), "purchase_cells": len(periods)},
+            "no_history": no_history}
+
+
+@router.delete("/plans/{plan_id}/claims/{seller_sku}/{sid}")
+def release(plan_id: int, seller_sku: str, sid: str, who: str = Depends(actor)):
+    with timed("release_claim", actor=who, plan_id=plan_id), pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT period_start, expected_units FROM plan_demand_cell"
+                    " WHERE plan_id = %s AND seller_sku = %s AND sid = %s ORDER BY period_start",
+                    (plan_id, seller_sku, sid))
+        dropped = [{"period": p.strftime("%Y-%m"), "expected_units": u} for p, u in cur.fetchall()]
+        cur.execute("DELETE FROM plan_demand_cell"
+                    " WHERE plan_id = %s AND seller_sku = %s AND sid = %s",
+                    (plan_id, seller_sku, sid))
+        cur.execute("UPDATE msku_claim SET released_at = now(), released_by = %s"
+                    " WHERE plan_id = %s AND seller_sku = %s AND sid = %s AND released_at IS NULL"
+                    " RETURNING plan_id", (who, plan_id, seller_sku, sid))
+        if cur.fetchone() is None:
+            raise ApiError(404, "claim_not_found", "没有这条在占用中的认领",
+                           {"plan_id": plan_id, "seller_sku": seller_sku, "sid": sid})
+    # ★ 丢东西必须有声：删掉的格子逐条回给界面，包括人填过的数
+    return {"released": {"seller_sku": seller_sku, "sid": sid}, "dropped_cells": dropped}
+```
+
+`api/__init__.py` 追加 `app.include_router(catalog.router, prefix="/v1")`。
+
+- [ ] **Step 5: 跑测试，确认它绿**
+
+Run: `python -m pytest tests/test_api_claims.py -q`
+Expected: 9 项 PASS，`test_release_keeps_the_row_and_names_the_cells_it_drops` 依赖 Task 12 的
+`PUT /demand/...` → 仍红。★ Task 12 之后全绿。
+
+- [ ] **Step 6: 提交**
+
+```bash
+git add api/ui/catalog.py api/ui/plans.py api/__init__.py tests/test_api_claims.py
+git commit -m "feat(api): 目录搜索（需条件/截断/占用标记）· 认领由部分唯一索引裁决并点名占用方"
+```
+
+---
+## Task 12: `GET /grid` 与两种量的 PUT
+
+**Files:**
+- Modify: `api/ui/plans.py`
+- Create: `tests/test_api_grid.py`
+
+**Interfaces:**
+- Consumes: `forecast.projection.inventory_projection` / `InboundSource`；`api.ui.plans.SOURCE`
+- Produces:
+  - `GET /v1/plans/{plan_id}/grid` → 见下方形状（Task 15 会把它原样固化成前端 mock 的 fixture）
+  - `PUT /v1/plans/{plan_id}/demand/{seller_sku}/{sid}/{period}` body `{"expected_units": int|null}`
+  - `PUT /v1/plans/{plan_id}/purchase/{sku}/{period}` body `{"planned_units": int|null}`
+
+### ★ 一处必须说清的层级问题（影响 `grid` 的形状）
+
+`00e`:43 写「库存预估 = 在仓 + **采购在途** − 期望销量」，但两者**层级不同**：
+
+```
+在仓（FBA）      msku × 月     ← 有店铺
+采购在途          货号 × 月     ← ★ 无店铺（14 §1：排货这条线以下没有店铺）
+```
+
+把货号级的在途加进每一个 msku 的期末，等于**每个店都以为这批货是自己的** ——
+三个 msku 就凭空多出两份货。所以 `grid` 分两块返回，并在每一格标出**没算进来的是什么**：
+
+| 块 | 粒度 | 内容 |
+|---|---|---|
+| `inventory[]` | msku × 月 | 期初 / 期望销量 / 期末 + `basis`（含 `excludes_plan_purchase` 与 `excludes_sku_level_in_transit`） |
+| `sku_pipeline[]` | 货号 × 月 | 采购在途逐笔，★ `no_seller_attribution: true` |
+
+★ 阶段 A 的 msku 级入库恒为空（「货运中 / 已发未到」属阶段 C，没有数据源）——
+这件事写在 `basis.msku_inbound` 里说出来，而不是让它长成一个 0。
+
+- [ ] **Step 1: 写失败的测试**
+
+`tests/test_api_grid.py`：
+
+```python
+from shared.pg_client import pg_conn
+
+
+def H(a):
+    return {"x-actor": a}
+
+
+def setup_plan(client, seed, mskus=(("MSKU-A", "11072"),)):
+    pid = client.post("/v1/plans", json={"title": "10 月计划", "period_start": "2026-10-01",
+                                         "months": 3}, headers=H(seed.actor)).json()["plan_id"]
+    for ms in mskus:
+        client.post(f"/v1/plans/{pid}/claims", json={"seller_sku": ms[0], "sid": ms[1]},
+                    headers=H(seed.actor))
+    return pid
+
+
+def test_grid_returns_three_blocks_with_their_own_granularity(client, seed):
+    pid = setup_plan(client, seed)
+    g = client.get(f"/v1/plans/{pid}/grid", headers=H(seed.actor)).json()
+    assert g["periods"] == ["2026-10", "2026-11", "2026-12"]
+    assert {r["seller_sku"] for r in g["demand"]} == {"MSKU-A"}
+    assert {r["sku"] for r in g["purchase"]} == {seed.sku_a}
+    assert all("sid" in r for r in g["inventory"])
+    assert all(r["no_seller_attribution"] is True for r in g["sku_pipeline"])
+
+
+def test_inventory_follows_the_main_formula_and_says_what_is_excluded(client, seed):
+    pid = setup_plan(client, seed)
+    client.put(f"/v1/plans/{pid}/demand/MSKU-A/11072/2026-10",
+               json={"expected_units": 100}, headers=H(seed.actor))
+    g = client.get(f"/v1/plans/{pid}/grid", headers=H(seed.actor)).json()
+    oct_row = [r for r in g["inventory"] if r["period"] == "2026-10"][0]
+    assert oct_row["opening"] == 300 and oct_row["demand"] == 100 and oct_row["closing"] == 200
+    assert oct_row["basis"]["excludes_plan_purchase"] is True
+    assert oct_row["basis"]["excludes_sku_level_in_transit"] is True
+    assert oct_row["basis"]["msku_inbound"] == "阶段 C 才有数据源（货运中 / 已发未到）"
+
+
+def test_in_transit_is_not_added_into_each_msku(client, seed):
+    """★ 货号级的在途加进每个 msku，三个 msku 就凭空多出两份货（14 §1）。"""
+    pid = setup_plan(client, seed, mskus=(("MSKU-A", "11072"), ("MSKU-C", "11094")))
+    g = client.get(f"/v1/plans/{pid}/grid", headers=H(seed.actor)).json()
+    assert all(r["inbound"] == 0 for r in g["inventory"])
+    oct_pipe = [r for r in g["sku_pipeline"] if r["period"] == "2026-10"][0]
+    assert oct_pipe["units"] == 80 and len(oct_pipe["sources"]) == 2
+
+
+def test_demand_cell_keeps_system_and_human_apart(client, seed):
+    pid = setup_plan(client, seed)
+    g = client.get(f"/v1/plans/{pid}/grid", headers=H(seed.actor)).json()
+    cell = [r for r in g["demand"] if r["period"] == "2026-10"][0]
+    assert cell == {"seller_sku": "MSKU-A", "sid": "11072", "sku": seed.sku_a,
+                    "period": "2026-10", "system_units": 100, "system_extrapolated": False,
+                    "expected_units": None, "effective_units": 100, "basis": "system"}
+
+
+def test_extrapolated_flag_travels_with_the_number(client, seed):
+    """★ 14 §5：标记必须随结果一起返回，不能让界面回头读原始格子。"""
+    pid = client.post("/v1/plans", json={"title": "长周期", "period_start": "2026-10-01",
+                                         "months": 7}, headers=H(seed.actor)).json()["plan_id"]
+    client.post(f"/v1/plans/{pid}/claims", json={"seller_sku": "MSKU-A", "sid": "11072"},
+                headers=H(seed.actor))
+    g = client.get(f"/v1/plans/{pid}/grid", headers=H(seed.actor)).json()
+    flags = [r["system_extrapolated"] for r in sorted(g["demand"], key=lambda r: r["period"])]
+    assert flags == [False, False, False, True, True, True, True]
+    assert not all(flags), "★ 恒真的标记等于白标"
+
+
+def test_no_fba_seller_is_not_applicable_not_zero(client, seed):
+    """★ 02 §3.1a：无 FBA 的平台显示「不适用」，不是 0。"""
+    pid = setup_plan(client, seed, mskus=(("MSKU-W", "90001"),))
+    g = client.get(f"/v1/plans/{pid}/grid", headers=H(seed.actor)).json()
+    row = g["inventory"][0]
+    assert row["not_applicable"] is True and row["closing"] is None
+    assert row["basis"]["reason"] == "not_applicable"
+
+
+def test_unknown_demand_propagates(client, seed):
+    pid = setup_plan(client, seed)
+    client.put(f"/v1/plans/{pid}/demand/MSKU-A/11072/2026-10",
+               json={"expected_units": None}, headers=H(seed.actor))
+    with pg_conn() as c, c.cursor() as cur:   # 把系统预估也清掉 → 这一格真的是未知
+        cur.execute("UPDATE plan_demand_cell SET system_units = NULL"
+                    " WHERE plan_id = %s AND period_start = '2026-10-01'", (pid,))
+    g = client.get(f"/v1/plans/{pid}/grid", headers=H(seed.actor)).json()
+    closings = [r["closing"] for r in sorted(g["inventory"], key=lambda r: r["period"])]
+    assert closings == [None, None, None]
+
+
+def test_put_demand_and_purchase_are_one_cell_one_transaction(client, seed):
+    pid = setup_plan(client, seed)
+    r1 = client.put(f"/v1/plans/{pid}/demand/MSKU-A/11072/2026-11",
+                    json={"expected_units": 130}, headers=H(seed.actor))
+    assert r1.status_code == 200 and r1.json()["cell"]["effective_units"] == 130
+    assert r1.json()["cell"]["basis"] == "human"
+    r2 = client.put(f"/v1/plans/{pid}/purchase/{seed.sku_a}/2026-11",
+                    json={"planned_units": 500}, headers=H(seed.actor))
+    assert r2.status_code == 200 and r2.json()["cell"]["planned_units"] == 500
+
+
+def test_put_on_a_cell_that_was_never_seeded_is_404(client, seed):
+    """★ 只能改已经长出来的格子 —— 凭空插一行会绕过「没认领就没格子」。"""
+    pid = setup_plan(client, seed)
+    r = client.put(f"/v1/plans/{pid}/demand/MSKU-A/11072/2027-05",
+                   json={"expected_units": 1}, headers=H(seed.actor))
+    assert r.status_code == 404 and r.json()["error"] == "cell_not_found"
+
+
+def test_negative_units_are_400(client, seed):
+    pid = setup_plan(client, seed)
+    r = client.put(f"/v1/plans/{pid}/purchase/{seed.sku_a}/2026-10",
+                   json={"planned_units": -1}, headers=H(seed.actor))
+    assert r.status_code == 400 and r.json()["error"] == "bad_units"
+```
+
+- [ ] **Step 2: 跑测试，确认它红**
+
+Run: `python -m pytest tests/test_api_grid.py -q`
+Expected: FAIL —— `/v1/plans/{id}/grid` 404（10 项全红）
+
+- [ ] **Step 3: 实现**（追加进 `api/ui/plans.py`）
+
+```python
+from forecast.projection import InboundSource, inventory_projection
+from rules.effective import effective_demand
+
+
+def _ym(d: dt.date) -> str:
+    return d.strftime("%Y-%m")
+
+
+def _load_grid(cur, plan_id: int):
+    periods = _periods(cur, plan_id)
+    cur.execute(
+        "SELECT d.seller_sku, d.sid, b.sku, d.period_start, d.system_units,"
+        "       d.system_extrapolated, d.expected_units, s.has_fba"
+        "  FROM plan_demand_cell d"
+        "  JOIN msku_bridge b ON b.seller_sku = d.seller_sku AND b.sid = d.sid"
+        "  JOIN seller s ON s.seller_id = d.sid"
+        " WHERE d.plan_id = %s ORDER BY b.sku, d.seller_sku, d.sid, d.period_start", (plan_id,))
+    demand = cur.fetchall()
+    cur.execute("SELECT sku, period_start, planned_units FROM plan_purchase_cell"
+                " WHERE plan_id = %s ORDER BY sku, period_start", (plan_id,))
+    purchase = cur.fetchall()
+    return periods, demand, purchase
+
+
+@router.get("/plans/{plan_id}/grid")
+def grid(plan_id: int, request: Request, who: str = Depends(actor)):
+    declared(request)
+    with pg_conn() as c, c.cursor() as cur:
+        periods, demand, purchase = _load_grid(cur, plan_id)
+
+    out_demand, expected_by_msku, has_fba, sku_of = [], {}, {}, {}
+    for seller_sku, sid, sku, period, sysu, extrap, expu, fba in demand:
+        eff = effective_demand(sysu, expu)
+        out_demand.append({"seller_sku": seller_sku, "sid": sid, "sku": sku,
+                           "period": _ym(period), "system_units": sysu,
+                           "system_extrapolated": extrap, "expected_units": expu,
+                           "effective_units": eff.units, "basis": eff.basis})
+        expected_by_msku.setdefault((seller_sku, sid), {})[_ym(period)] = eff.units
+        has_fba[(seller_sku, sid)] = fba
+        sku_of[(seller_sku, sid)] = sku
+
+    inventory = []
+    for key, by_month in expected_by_msku.items():
+        seller_sku, sid = key
+        # ★ 该店铺没有 FBA → onhand 是「不适用」，不是 0（02 §3.1a）
+        onhand = SOURCE.onhand_available(seller_sku, sid) if has_fba[key] else None
+        for row in inventory_projection(onhand, {}, by_month):
+            row["basis"]["excludes_sku_level_in_transit"] = True
+            row["basis"]["msku_inbound"] = "阶段 C 才有数据源（货运中 / 已发未到）"
+            inventory.append({"seller_sku": seller_sku, "sid": sid,
+                              "sku": sku_of[key], **row})
+
+    pipeline: dict[tuple[str, str], dict] = {}
+    for sku in sorted({r[0] for r in purchase}):
+        for t in SOURCE.purchase_in_transit(sku):
+            slot = pipeline.setdefault((sku, t.period),
+                                       {"sku": sku, "period": t.period, "units": 0,
+                                        "sources": [], "no_seller_attribution": True})
+            slot["units"] += t.units
+            slot["sources"].append({"units": t.units, "kind": "purchase_in_transit", "ref": t.ref})
+
+    return {
+        "plan_id": plan_id,
+        "periods": [_ym(p) for p in periods],
+        "demand": out_demand,
+        "purchase": [{"sku": s, "period": _ym(p), "planned_units": u} for s, p, u in purchase],
+        "inventory": inventory,
+        "sku_pipeline": [pipeline[k] for k in sorted(pipeline)],
+    }
+
+
+def _units(body: dict, field: str) -> int | None:
+    v = body.get(field, None)
+    if v is None:
+        return None                       # ★ 留空 = 未知（M-8），是合法输入
+    if not isinstance(v, int) or isinstance(v, bool) or v < 0:
+        raise ApiError(400, "bad_units", f"{field} 必须是 ≥0 的整数或 null",
+                       {"field": field, "got": v})
+    return v
+
+
+@router.put("/plans/{plan_id}/demand/{seller_sku}/{sid}/{period}")
+def put_demand(plan_id: int, seller_sku: str, sid: str, period: str, body: dict,
+               who: str = Depends(actor)):
+    units = _units(body, "expected_units")
+    # ★ 一格一事务：重算（预测）放在事务外 —— 预测慢，不该把行锁攥着（01 §5）
+    with timed("put_demand", actor=who, plan_id=plan_id), pg_conn() as c, c.cursor() as cur:
+        cur.execute("UPDATE plan_demand_cell SET expected_units = %s, updated_by = %s,"
+                    " updated_at = now()"
+                    " WHERE plan_id = %s AND seller_sku = %s AND sid = %s AND period_start = %s"
+                    " RETURNING system_units, system_extrapolated",
+                    (units, who, plan_id, seller_sku, sid, _date(period + "-01", "period")))
+        row = cur.fetchone()
+    if row is None:
+        raise ApiError(404, "cell_not_found", "这一格还没长出来（先认领这个 msku）",
+                       {"plan_id": plan_id, "seller_sku": seller_sku, "sid": sid,
+                        "period": period})
+    eff = effective_demand(row[0], units)
+    return {"cell": {"seller_sku": seller_sku, "sid": sid, "period": period,
+                     "system_units": row[0], "system_extrapolated": row[1],
+                     "expected_units": units,
+                     "effective_units": eff.units, "basis": eff.basis}}
+
+
+@router.put("/plans/{plan_id}/purchase/{sku}/{period}")
+def put_purchase(plan_id: int, sku: str, period: str, body: dict, who: str = Depends(actor)):
+    units = _units(body, "planned_units")
+    with timed("put_purchase", actor=who, plan_id=plan_id), pg_conn() as c, c.cursor() as cur:
+        cur.execute("UPDATE plan_purchase_cell SET planned_units = %s, updated_by = %s,"
+                    " updated_at = now()"
+                    " WHERE plan_id = %s AND sku = %s AND period_start = %s RETURNING 1",
+                    (units, who, plan_id, sku, _date(period + "-01", "period")))
+        hit = cur.fetchone()
+    if hit is None:
+        raise ApiError(404, "cell_not_found", "这一格还没长出来（先认领该货号下的 msku）",
+                       {"plan_id": plan_id, "sku": sku, "period": period})
+    return {"cell": {"sku": sku, "period": period, "planned_units": units}}
+```
+
+- [ ] **Step 4: 跑测试，确认它绿**
+
+Run: `python -m pytest tests/test_api_grid.py tests/test_api_claims.py -q`
+Expected: PASS（10 + 10 项 —— Task 11 那条等 `PUT /demand` 的也转绿了）
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add api/ui/plans.py tests/test_api_grid.py
+git commit -m "feat(api): 网格三块（msku 级期望/库存 · 货号级采购 · 货号级在途不并入 msku）与两种量的 PUT"
+```
+
+---
+
+## Task 13: 提交 · 版本 · 当前使用 · 差异 · 归档 · 整版撤销（判据①②④）
+
+**Files:**
+- Create: `api/ui/submit.py`
+- Modify: `api/ui/plans.py`（archive）· `api/__init__.py` · `tests/helpers.py`（追加 `H` / `prepared`）
+- Create: `tests/test_api_submit.py`
+
+**Interfaces:**
+- Consumes: `rules.submit.select_submittable` / `PurchaseCell` / `DemandCell`；`rules.digest.content_digest`
+- Produces:
+  - `POST /v1/plans/{plan_id}/submit` → `{"rev":int,"minted":int,"skipped":[{sku,period,reason}],"in_flight":bool,"content_digest":str}`；409 `rev_in_flight` 点名旧版
+  - `GET /v1/plans/{plan_id}/revs` → `{"revs":[…],"in_flight_rev":int|None,"current_rev":int|None}`
+  - `POST /v1/plans/{plan_id}/revs/{rev}/current` → `{"current_rev":int}`
+  - `GET /v1/plans/{plan_id}/diff?from=&to=` → `{"added":[],"removed":[],"changed":[]}`
+  - `POST /v1/plans/{plan_id}/revs/{rev}/cancel` body `{"reason"}` → `{"cancelled":[line_id…]}`
+  - `POST /v1/plans/{plan_id}/archive` → `{"archived_at":str,"released":int}`
+
+- [ ] **Step 1: 写失败的测试**
+
+`tests/helpers.py` 追加（Task 14 与 16 都要用；测试文件之间仍然不互相 import）：
+
+```python
+def H(actor: str) -> dict:
+    return {"x-actor": actor}
+
+
+def prepared(client, seed, purchase=500, expected=120):
+    """一张填好两种量的计划：MSKU-A（11072）· MSKU-C（11094）同属 sku_a。
+
+    ★ 两个店铺是刻意的：单店的话 demand_by_seller 只有一把键，
+      「按店冻结」这件事等于没被测到。
+    """
+    pid = client.post("/v1/plans", json={"title": "10 月计划", "period_start": "2026-10-01",
+                                         "months": 3}, headers=H(seed.actor)).json()["plan_id"]
+    for ms in (seed.msku_a, seed.msku_c):
+        client.post(f"/v1/plans/{pid}/claims", json={"seller_sku": ms[0], "sid": ms[1]},
+                    headers=H(seed.actor))
+        if expected is not None:
+            client.put(f"/v1/plans/{pid}/demand/{ms[0]}/{ms[1]}/2026-10",
+                       json={"expected_units": expected}, headers=H(seed.actor))
+    if purchase is not None:
+        client.put(f"/v1/plans/{pid}/purchase/{seed.sku_a}/2026-10",
+                   json={"planned_units": purchase}, headers=H(seed.actor))
+    return pid
+```
+
+`tests/test_api_submit.py`：
+
+```python
+from helpers import H, prepared
+
+from shared.pg_client import pg_conn
+
+
+def test_submit_mints_lines_and_lists_every_skipped_cell(client, seed):
+    """★ 判据①②：铸出 rev，且被跳过的两个月逐条列出。"""
+    pid = prepared(client, seed)
+    r = client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor)).json()
+    assert r["rev"] == 1 and r["minted"] == 1
+    assert [(s["period"], s["reason"]) for s in r["skipped"]] == [
+        ("2026-11", "zero_purchase"), ("2026-12", "zero_purchase")]
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT sku, total_units, demand_at_submit, demand_by_seller, state"
+                    " FROM plan_line WHERE plan_id = %s", (pid,))
+        sku, total, dsum, by_seller, state = cur.fetchone()
+    assert (total, dsum, state) == (500, 240, "已提交")
+    assert set(by_seller) == {"11072", "11094"}
+    assert by_seller["11072"]["basis"] == "human"
+
+
+def test_every_minted_line_has_its_birth_event(client, seed):
+    """★ S-2：事件链的第一行不许缺，否则事件表不是完整履历。"""
+    pid = prepared(client, seed)
+    client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT count(*) FROM plan_line l"
+                    " WHERE l.plan_id = %s AND NOT EXISTS (SELECT 1 FROM plan_line_event e"
+                    "   WHERE e.line_id = l.line_id AND e.from_state = '[*]')", (pid,))
+        assert cur.fetchone()[0] == 0
+
+
+def test_second_submit_while_one_is_in_flight_is_409_naming_the_old_rev(client, seed):
+    """★ 判据④ / S-4：改了只能出新 rev，而旧版还在流转就拒 —— 点名旧版。"""
+    pid = prepared(client, seed)
+    client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
+    r = client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
+    assert r.status_code == 409 and r.json()["error"] == "rev_in_flight"
+    assert r.json()["in_flight_rev"] == 1
+
+
+def test_an_empty_rev_does_not_hold_the_in_flight_slot(client, seed):
+    """★ T20：全部格子被跳过 → 空计划单 → 整体已撤销，且**不许占着在流转位**。
+    占着的话，这张计划从此再也提交不了，而错误信息会说「有一版在流转」——
+    人去找那一版，找到的是一张空的。"""
+    pid = prepared(client, seed, purchase=None)
+    r = client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor)).json()
+    assert r["minted"] == 0 and r["in_flight"] is False and len(r["skipped"]) == 3
+    rows = client.get("/v1/plans", headers=H(seed.actor)).json()["plans"]
+    assert rows[0]["overall"] == "已撤销"
+    assert client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor)).status_code == 200
+
+
+def test_skip_rows_are_persisted_and_append_only(client, seed):
+    pid = prepared(client, seed)
+    client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT count(*) FROM plan_submit_skip WHERE plan_id = %s", (pid,))
+        assert cur.fetchone()[0] == 2
+
+
+def test_revs_report_in_flight_and_current(client, seed):
+    pid = prepared(client, seed)
+    client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
+    body = client.get(f"/v1/plans/{pid}/revs", headers=H(seed.actor)).json()
+    assert body["in_flight_rev"] == 1 and body["current_rev"] is None
+    client.post(f"/v1/plans/{pid}/revs/1/current", headers=H(seed.actor))
+    body = client.get(f"/v1/plans/{pid}/revs", headers=H(seed.actor)).json()
+    assert body["current_rev"] == 1 and body["revs"][0]["lines"] == 1
+
+
+def test_cancelling_a_rev_cancels_every_live_line_with_one_reason(client, seed):
+    """★ A-8：一个理由记在每条上。理由不填 → 400。"""
+    pid = prepared(client, seed)
+    client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
+    bad = client.post(f"/v1/plans/{pid}/revs/1/cancel", json={}, headers=H(seed.actor))
+    assert bad.status_code == 400 and bad.json()["error"] == "reason_required"
+    ok = client.post(f"/v1/plans/{pid}/revs/1/cancel", json={"reason": "供应商断供"},
+                     headers=H(seed.actor)).json()
+    assert len(ok["cancelled"]) == 1
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT reason FROM plan_line_event WHERE to_state = '已撤销'")
+        assert [r[0] for r in cur.fetchall()] == ["供应商断供"]
+
+
+def test_a_new_rev_is_allowed_after_the_old_one_settles(client, seed):
+    """★ 判据④ 的另一半：内容不可变 —— 要改就出新 rev。"""
+    pid = prepared(client, seed)
+    client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
+    client.post(f"/v1/plans/{pid}/revs/1/cancel", json={"reason": "重来"}, headers=H(seed.actor))
+    client.put(f"/v1/plans/{pid}/purchase/{seed.sku_a}/2026-10",
+               json={"planned_units": 600}, headers=H(seed.actor))
+    r2 = client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor)).json()
+    assert r2["rev"] == 2
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT rev, total_units FROM plan_line WHERE plan_id = %s ORDER BY rev",
+                    (pid,))
+        assert cur.fetchall() == [(1, 500), (2, 600)], "★ 旧版的数一个字节都没变"
+
+
+def test_digest_changes_only_when_content_changes(client, seed):
+    pid = prepared(client, seed)
+    d1 = client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor)).json()["content_digest"]
+    client.post(f"/v1/plans/{pid}/revs/1/cancel", json={"reason": "重来"}, headers=H(seed.actor))
+    d2 = client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor)).json()["content_digest"]
+    assert d1 == d2
+    client.put(f"/v1/plans/{pid}/purchase/{seed.sku_a}/2026-10",
+               json={"planned_units": 600}, headers=H(seed.actor))
+    client.post(f"/v1/plans/{pid}/revs/2/cancel", json={"reason": "再来"}, headers=H(seed.actor))
+    d3 = client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor)).json()["content_digest"]
+    assert d3 != d1
+
+
+def test_diff_between_revs_names_what_moved(client, seed):
+    pid = prepared(client, seed)
+    client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
+    client.post(f"/v1/plans/{pid}/revs/1/cancel", json={"reason": "重来"}, headers=H(seed.actor))
+    client.put(f"/v1/plans/{pid}/purchase/{seed.sku_a}/2026-10",
+               json={"planned_units": 600}, headers=H(seed.actor))
+    client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
+    d = client.get(f"/v1/plans/{pid}/diff", params={"from": 1, "to": 2},
+                   headers=H(seed.actor)).json()
+    assert d["changed"] == [{"sku": seed.sku_a, "period": "2026-10",
+                             "total_units": {"from": 500, "to": 600},
+                             "demand_at_submit": {"from": 240, "to": 240}}]
+    assert d["added"] == [] and d["removed"] == []
+
+
+def test_archive_releases_every_claim_in_the_same_transaction(client, seed):
+    pid = prepared(client, seed)
+    r = client.post(f"/v1/plans/{pid}/archive", headers=H(seed.actor)).json()
+    assert r["released"] == 2
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT count(*) FROM msku_claim"
+                    " WHERE plan_id = %s AND released_at IS NULL", (pid,))
+        assert cur.fetchone()[0] == 0
+    # ★ 归档后这两个 msku 必须能被别的计划认领，否则「归档」等于永久扣着不放
+    p2 = client.post("/v1/plans", json={"title": "下一张", "period_start": "2026-11-01"},
+                     headers=H(seed.actor)).json()["plan_id"]
+    assert client.post(f"/v1/plans/{p2}/claims",
+                       json={"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]},
+                       headers=H(seed.actor)).status_code == 200
+```
+
+- [ ] **Step 2: 跑测试，确认它红**
+
+Run: `python -m pytest tests/test_api_submit.py -q`
+Expected: FAIL —— `/v1/plans/{id}/submit` 404（11 项全红）
+
+- [ ] **Step 3: 实现 `api/ui/submit.py`**
+
+```python
+"""提交与版本。★ 提交是**一个事务**铸出全部记录 —— 半铸的计划单无法解释（01 §5）。"""
+from __future__ import annotations
+
+import datetime as dt
+import json
+
+import psycopg2
+from fastapi import APIRouter, Depends, Request
+
+from api.ui.deps import actor, declared, require_fresh_mirrors
+from api.ui.errors import ApiError
+from rules.digest import content_digest
+from rules.submit import DemandCell, PurchaseCell, select_submittable
+from shared.pg_client import pg_conn, timed
+
+router = APIRouter(dependencies=[Depends(require_fresh_mirrors)])
+
+TERMINAL = ("已完结", "已撤销")
+
+
+def _cells(cur, plan_id: int):
+    cur.execute("SELECT sku, period_start, planned_units FROM plan_purchase_cell"
+                " WHERE plan_id = %s", (plan_id,))
+    purchase = [PurchaseCell(s, p.strftime("%Y-%m"), u) for s, p, u in cur.fetchall()]
+    cur.execute(
+        "SELECT d.seller_sku, d.sid, b.sku, d.period_start, d.system_units, d.expected_units"
+        "  FROM plan_demand_cell d"
+        "  JOIN msku_bridge b ON b.seller_sku = d.seller_sku AND b.sid = d.sid"
+        "  JOIN msku_claim cl ON cl.plan_id = d.plan_id AND cl.seller_sku = d.seller_sku"
+        "   AND cl.sid = d.sid AND cl.released_at IS NULL"
+        " WHERE d.plan_id = %s", (plan_id,))
+    demand = [DemandCell(ss, sid, sku, p.strftime("%Y-%m"), sy, ex)
+              for ss, sid, sku, p, sy, ex in cur.fetchall()]
+    cur.execute("SELECT seller_sku, sid FROM msku_claim"
+                " WHERE plan_id = %s AND released_at IS NULL", (plan_id,))
+    claimed = {(r[0], r[1]) for r in cur.fetchall()}
+    return purchase, demand, claimed
+
+
+@router.post("/plans/{plan_id}/submit")
+def submit(plan_id: int, request: Request, who: str = Depends(actor)):
+    declared(request)
+    with timed("submit", actor=who, plan_id=plan_id), pg_conn() as c, c.cursor() as cur:
+        purchase, demand, claimed = _cells(cur, plan_id)
+        minted, skipped = select_submittable(purchase, demand, claimed)
+        digest = content_digest(purchase, demand)
+
+        cur.execute("SELECT coalesce(max(rev), 0) + 1 FROM plan_rev WHERE plan_id = %s",
+                    (plan_id,))
+        rev = cur.fetchone()[0]
+        try:
+            cur.execute("INSERT INTO plan_rev (plan_id, rev, content_digest, submitted_by)"
+                        " VALUES (%s, %s, %s, %s)", (plan_id, rev, digest, who))
+        except psycopg2.errors.UniqueViolation:
+            # ★ 撞的是「同一计划只许 1 版在流转」那条部分唯一索引（S-4）。
+            #   回滚后另起一条连接去查是哪一版 —— 只说「有一版在流转」，人得自己去翻。
+            c.rollback()
+            with pg_conn() as c2, c2.cursor() as cur2:
+                cur2.execute("SELECT rev, submitted_by, submitted_at FROM plan_rev"
+                             " WHERE plan_id = %s AND in_flight", (plan_id,))
+                old = cur2.fetchone()
+            raise ApiError(409, "rev_in_flight", "该计划已有一版在流转",
+                           {"plan_id": plan_id,
+                            "in_flight_rev": old[0] if old else None,
+                            "submitted_by": old[1] if old else None,
+                            "submitted_at": old[2].isoformat() if old else None}) from None
+
+        for m in minted:
+            period = dt.date.fromisoformat(m.period + "-01")
+            cur.execute(
+                "INSERT INTO plan_line (plan_id, rev, sku, period_start, total_units,"
+                " demand_by_seller, demand_at_submit, state)"
+                " VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, '已提交') RETURNING line_id",
+                (plan_id, rev, m.sku, period, m.total_units,
+                 json.dumps(m.demand_by_seller, ensure_ascii=False), m.demand_at_submit))
+            line_id = cur.fetchone()[0]
+            # ★ 铸出也留痕：没有这一行，事件表就不是完整履历（S-2；库层还有延迟约束兜底）
+            cur.execute("INSERT INTO plan_line_event (line_id, from_state, to_state, actor, src)"
+                        " VALUES (%s, '[*]', '已提交', %s, %s)",
+                        (line_id, who, f"submit:{plan_id}#{rev}"))
+        for s in skipped:
+            cur.execute("INSERT INTO plan_submit_skip (plan_id, rev, sku, period_start, reason)"
+                        " VALUES (%s, %s, %s, %s, %s)",
+                        (plan_id, rev, s.sku, dt.date.fromisoformat(s.period + "-01"), s.reason))
+
+        # ★ 铸出 0 条记录的空版本没有任何行能触发 t_rev_in_flight，
+        #   不在这里收一次，它会永远占着「唯一在流转」那个位子（04 §3.1 的空计划单）
+        cur.execute("SELECT close_rev_if_settled(%s, %s)", (plan_id, rev))
+        cur.execute("SELECT in_flight FROM plan_rev WHERE plan_id = %s AND rev = %s",
+                    (plan_id, rev))
+        in_flight = cur.fetchone()[0]
+
+    return {"rev": rev, "minted": len(minted), "in_flight": in_flight,
+            "content_digest": digest,
+            "skipped": [{"sku": s.sku, "period": s.period, "reason": s.reason}
+                        for s in sorted(skipped)]}
+
+
+@router.get("/plans/{plan_id}/revs")
+def revs(plan_id: int, request: Request, who: str = Depends(actor)):
+    declared(request)
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute(
+            "SELECT r.rev, r.content_digest, r.is_current, r.in_flight, r.submitted_by,"
+            "       r.submitted_at, count(l.line_id)"
+            "  FROM plan_rev r LEFT JOIN plan_line l ON l.plan_id = r.plan_id AND l.rev = r.rev"
+            " WHERE r.plan_id = %s GROUP BY r.rev, r.content_digest, r.is_current, r.in_flight,"
+            "       r.submitted_by, r.submitted_at ORDER BY r.rev DESC", (plan_id,))
+        rows = cur.fetchall()
+    revs_out = [{"rev": r[0], "content_digest": r[1], "is_current": r[2], "in_flight": r[3],
+                 "submitted_by": r[4], "submitted_at": r[5].isoformat(), "lines": r[6]}
+                for r in rows]
+    return {"revs": revs_out,
+            "in_flight_rev": next((r["rev"] for r in revs_out if r["in_flight"]), None),
+            "current_rev": next((r["rev"] for r in revs_out if r["is_current"]), None)}
+
+
+@router.post("/plans/{plan_id}/revs/{rev}/current")
+def mark_current(plan_id: int, rev: int, who: str = Depends(actor)):
+    with pg_conn() as c, c.cursor() as cur:
+        # 先清后立：部分唯一索引不可延迟，同一语句里换不过来
+        cur.execute("UPDATE plan_rev SET is_current = false WHERE plan_id = %s AND is_current",
+                    (plan_id,))
+        cur.execute("UPDATE plan_rev SET is_current = true WHERE plan_id = %s AND rev = %s"
+                    " RETURNING rev", (plan_id, rev))
+        if cur.fetchone() is None:
+            raise ApiError(404, "rev_not_found", "没有这一版",
+                           {"plan_id": plan_id, "rev": rev})
+    return {"current_rev": rev}
+
+
+@router.get("/plans/{plan_id}/diff")
+def diff(plan_id: int, request: Request, who: str = Depends(actor)):
+    declared(request, "from", "to")
+    try:
+        a, b = int(request.query_params["from"]), int(request.query_params["to"])
+    except (KeyError, ValueError):
+        raise ApiError(400, "bad_request", "from 与 to 必须是版本号",
+                       {"got": dict(request.query_params)}) from None
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT rev, sku, period_start, total_units, demand_at_submit"
+                    " FROM plan_line WHERE plan_id = %s AND rev IN (%s, %s)", (plan_id, a, b))
+        rows = cur.fetchall()
+    left = {(r[1], r[2]): r for r in rows if r[0] == a}
+    right = {(r[1], r[2]): r for r in rows if r[0] == b}
+    changed = [{"sku": k[0], "period": k[1].strftime("%Y-%m"),
+                "total_units": {"from": left[k][3], "to": right[k][3]},
+                "demand_at_submit": {"from": left[k][4], "to": right[k][4]}}
+               for k in sorted(left.keys() & right.keys())
+               if left[k][3:] != right[k][3:]]
+    fmt = (lambda k, m: {"sku": k[0], "period": k[1].strftime("%Y-%m"),
+                         "total_units": m[k][3]})
+    return {"added": [fmt(k, right) for k in sorted(right.keys() - left.keys())],
+            "removed": [fmt(k, left) for k in sorted(left.keys() - right.keys())],
+            "changed": changed}
+
+
+@router.post("/plans/{plan_id}/revs/{rev}/cancel")
+def cancel_rev(plan_id: int, rev: int, body: dict, who: str = Depends(actor)):
+    reason = (body.get("reason") or "").strip()
+    if not reason:
+        # ★ 库层的 require_reason() 也会拦，但那会以 500 的形态出去；
+        #   这里给的是能让人改表单的 400（08 §0.1：400 = 你写错了）
+        raise ApiError(400, "reason_required", "撤销必须填理由", {"field": "reason"})
+    with timed("cancel_rev", actor=who, plan_id=plan_id), pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT line_id, state FROM plan_line"
+                    " WHERE plan_id = %s AND rev = %s AND state NOT IN %s FOR UPDATE",
+                    (plan_id, rev, TERMINAL))
+        lines = cur.fetchall()
+        for line_id, state in lines:
+            # ★ A-8：一个理由记在每条上 —— 记在版本上，逐条查历史时就看不到它
+            cur.execute("INSERT INTO plan_line_event"
+                        " (line_id, from_state, to_state, actor, reason, src)"
+                        " VALUES (%s, %s, '已撤销', %s, %s, %s)",
+                        (line_id, state, who, reason, f"cancel_rev:{plan_id}#{rev}"))
+    return {"cancelled": [line_id for line_id, _ in lines], "reason": reason}
+```
+
+★ `demand_by_seller` 用 `json.dumps(..., ensure_ascii=False)` + SQL 里的 `%s::jsonb` 明写，
+不用 `psycopg2.extras.Json`：这一列的内容是**冻结证据**，序列化形态直接决定它长什么样，
+藏在适配器里将来没人知道是谁写成那样的。
+
+- [ ] **Step 4: 实现归档**（追加进 `api/ui/plans.py`）
+
+```python
+@router.post("/plans/{plan_id}/archive")
+def archive(plan_id: int, who: str = Depends(actor)):
+    """★ 同一事务释放全部占用：分两次做，中间挂掉就会留下一张归档了却还扣着货的计划。"""
+    with timed("archive", actor=who, plan_id=plan_id), pg_conn() as c, c.cursor() as cur:
+        cur.execute("UPDATE msku_claim SET released_at = now(), released_by = %s"
+                    " WHERE plan_id = %s AND released_at IS NULL RETURNING seller_sku, sid",
+                    (who, plan_id))
+        released = cur.fetchall()
+        cur.execute("UPDATE plan SET archived_at = now() WHERE plan_id = %s"
+                    " RETURNING archived_at", (plan_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise ApiError(404, "plan_not_found", "计划不存在", {"plan_id": plan_id})
+    return {"archived_at": row[0].isoformat(), "released": len(released),
+            "released_mskus": [{"seller_sku": s, "sid": i} for s, i in released]}
+```
+
+`api/__init__.py` 追加 `app.include_router(submit.router, prefix="/v1")`。
+
+- [ ] **Step 5: 跑测试，确认它绿**
+
+Run: `python -m pytest tests/test_api_submit.py tests/test_api_plans.py -q`
+Expected: PASS（11 + 6 项 —— Task 10 那条等 `archive` 的也转绿了）
+
+- [ ] **Step 6: 提交**
+
+```bash
+git add api/ui/submit.py api/ui/plans.py api/__init__.py tests/test_api_submit.py
+git commit -m "feat(api): 提交铸出 rev（含铸出事件与 skipped 留痕）· 版本 · 差异 · 整版撤销 · 归档同事务释放占用"
+```
+
+---
+## Task 14: `GET /v1/plan-lines` · 单条撤销 · 两个看板
+
+**Files:**
+- Create: `api/ui/lines.py` · `api/ui/dashboard.py`
+- Modify: `api/__init__.py`
+- Create: `tests/test_api_lines.py` · `tests/test_api_dashboard.py`
+
+**Interfaces:**
+- Consumes: Task 13 的 `submit` 端点（测试要先造出记录）；`v_plan_overall_state`
+- Produces:
+  - `GET /v1/plan-lines?plan_ids=&state=&sku=&category=&period=&group_by=` → `{"lines":[…],"groups":{…},"excluded":{…}}`
+  - `POST /v1/plan-lines/{line_id}/cancel` body `{"reason"}` → `{"line_id","state":"已撤销"}`；400 `reason_required` · 422 `illegal_transition`（回显 `allowed[]`）· 422 `terminal_state`
+  - `GET /v1/dashboard/plans` → `{"counts":{…},"scope_note":…}`
+  - `GET /v1/dashboard/unsubmitted` → `{"never_submitted":[…],"changed_since_submit":[…]}`
+
+- [ ] **Step 1: 写失败的测试**
+
+`tests/test_api_lines.py`：
+
+```python
+from helpers import H, prepared
+
+
+def submitted(client, seed):
+    pid = prepared(client, seed)
+    client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
+    line = client.get("/v1/plan-lines", params={"plan_ids": pid},
+                      headers=H(seed.actor)).json()["lines"][0]
+    return pid, line["line_id"]
+
+
+def test_lines_can_be_viewed_across_several_plans(client, seed):
+    """★ G3：勾选多份联合查看。"""
+    p1, _ = submitted(client, seed)
+    p2, _ = submitted(client, seed)
+    body = client.get("/v1/plan-lines", params={"plan_ids": f"{p1},{p2}"},
+                      headers=H(seed.actor)).json()
+    assert {r["plan_id"] for r in body["lines"]} == {p1, p2}
+
+
+def test_group_by_sku_and_period(client, seed):
+    p1, _ = submitted(client, seed)
+    body = client.get("/v1/plan-lines", params={"plan_ids": p1, "group_by": "sku"},
+                      headers=H(seed.actor)).json()
+    assert body["groups"][seed.sku_a]["total_units"] == 500
+
+
+def test_category_is_refused_loudly_not_ignored(client, seed):
+    """★ 阶段 A 没有品类镜像（A-1 属另一条线）。静默忽略这个参数，
+    返回的是「全量」而不是报错 —— 而全量看起来完全正常。"""
+    p1, _ = submitted(client, seed)
+    r = client.get("/v1/plan-lines", params={"plan_ids": p1, "group_by": "category"},
+                   headers=H(seed.actor))
+    assert r.status_code == 400 and r.json()["error"] == "category_not_available"
+
+
+def test_cancel_one_line_requires_a_reason(client, seed):
+    _, line = submitted(client, seed)
+    r = client.post(f"/v1/plan-lines/{line}/cancel", json={}, headers=H(seed.actor))
+    assert r.status_code == 400 and r.json()["error"] == "reason_required"
+
+
+def test_cancel_one_line_records_the_reason_on_it(client, seed):
+    _, line = submitted(client, seed)
+    r = client.post(f"/v1/plan-lines/{line}/cancel", json={"reason": "改方案"},
+                    headers=H(seed.actor))
+    assert r.status_code == 200 and r.json()["state"] == "已撤销"
+
+
+def test_cancelling_a_terminal_line_is_422_terminal_state(client, seed):
+    _, line = submitted(client, seed)
+    client.post(f"/v1/plan-lines/{line}/cancel", json={"reason": "改方案"}, headers=H(seed.actor))
+    r = client.post(f"/v1/plan-lines/{line}/cancel", json={"reason": "再撤一次"},
+                    headers=H(seed.actor))
+    assert r.status_code == 422 and r.json()["error"] == "terminal_state"
+    assert r.json()["state"] == "已撤销"
+
+
+def test_illegal_transition_echoes_where_it_could_go(client, seed):
+    """★ 只说「不许」而不说「那能去哪」，前端只能猜（04 §1.4）。"""
+    _, line = submitted(client, seed)
+    r = client.post(f"/v1/plan-lines/{line}/transition",
+                    json={"to_state": "已排货"}, headers=H(seed.actor))
+    assert r.status_code == 422 and r.json()["error"] == "illegal_transition"
+    assert r.json()["allowed"] == ["已确认", "已撤销"]
+
+
+def test_unknown_state_value_is_400(client, seed):
+    _, line = submitted(client, seed)
+    r = client.post(f"/v1/plan-lines/{line}/transition", json={"to_state": "飞了"},
+                    headers=H(seed.actor))
+    assert r.status_code == 400 and r.json()["error"] == "unknown_state"
+```
+
+`tests/test_api_dashboard.py`：
+
+```python
+from helpers import H, prepared
+
+
+def test_plan_counts_return_the_full_set_even_where_stage_a_cannot_reach(client, seed):
+    """★ S-20：接口返回全集（诚实），前端按阶段不渲染够不着的态。
+    接口自己把它们抹成 0，「没有」和「还没做」就长得一样了。"""
+    pid = prepared(client, seed)
+    client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
+    body = client.get("/v1/dashboard/plans", headers=H(seed.actor)).json()
+    assert set(body["counts"]) == {"进行中", "已提交", "已提交未确认", "已下单",
+                                   "准备排货", "已排货"}
+    assert body["counts"]["已提交"] == 1 and body["counts"]["已排货"] == 0
+    assert body["scope_note"]["unreachable_in_stage_a"] == ["已下单", "准备排货", "已排货"]
+
+
+def test_unsubmitted_has_two_columns(client, seed):
+    """★ 两栏：从未提交 vs 提交后又改过 —— 催的是两种人，合成一栏就催错人。"""
+    never = client.post("/v1/plans", json={"title": "没提交过", "period_start": "2026-10-01"},
+                        headers=H(seed.actor)).json()["plan_id"]
+    changed = prepared(client, seed)
+    client.post(f"/v1/plans/{changed}/submit", headers=H(seed.actor))
+    client.put(f"/v1/plans/{changed}/purchase/{seed.sku_a}/2026-11",
+               json={"planned_units": 90}, headers=H(seed.actor))
+    body = client.get("/v1/dashboard/unsubmitted", headers=H(seed.actor)).json()
+    assert [p["plan_id"] for p in body["never_submitted"]] == [never]
+    assert [p["plan_id"] for p in body["changed_since_submit"]] == [changed]
+
+
+def test_a_plan_that_did_not_change_is_in_neither_column(client, seed):
+    pid = prepared(client, seed)
+    client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
+    body = client.get("/v1/dashboard/unsubmitted", headers=H(seed.actor)).json()
+    assert body["never_submitted"] == [] and body["changed_since_submit"] == []
+```
+
+- [ ] **Step 2: 跑测试，确认它红**
+
+Run: `python -m pytest tests/test_api_lines.py tests/test_api_dashboard.py -q`
+Expected: FAIL —— `/v1/plan-lines` 404（11 项全红）
+
+- [ ] **Step 3: 实现 `api/ui/lines.py`**
+
+```python
+"""计划单记录的查询与状态动作。"""
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, Request
+
+from api.ui.deps import actor, declared, require_fresh_mirrors
+from api.ui.errors import ApiError
+from shared.pg_client import pg_conn, timed
+
+router = APIRouter(dependencies=[Depends(require_fresh_mirrors)])
+
+TERMINAL = ("已完结", "已撤销")
+
+
+def _allowed_next(cur, state: str) -> list[str]:
+    cur.execute("SELECT to_state FROM plan_line_transition WHERE from_state = %s ORDER BY to_state",
+                (state,))
+    return [r[0] for r in cur.fetchall()]
+
+
+@router.get("/plan-lines")
+def list_lines(request: Request, who: str = Depends(actor)):
+    declared(request, "plan_ids", "state", "sku", "category", "period", "group_by")
+    q = request.query_params
+    if q.get("category") or q.get("group_by") == "category":
+        # ★ 品类镜像（sku_category / A-1）不在阶段 A 的表里。默默忽略这个参数，
+        #   返回的会是「全量」而不是报错 —— 而全量看起来完全正常。
+        raise ApiError(400, "category_not_available", "阶段 A 还没有品类镜像",
+                       {"depends_on": "sku_category（A-1）"})
+    group_by = q.get("group_by")
+    if group_by and group_by not in ("sku", "period"):
+        raise ApiError(400, "bad_group_by", "group_by 只支持 sku | period",
+                       {"got": group_by, "allowed": ["sku", "period"]})
+
+    where, args = ["true"], []
+    if q.get("plan_ids"):
+        try:
+            ids = [int(x) for x in q["plan_ids"].split(",") if x]
+        except ValueError:
+            raise ApiError(400, "bad_plan_ids", "plan_ids 必须是逗号分隔的整数",
+                           {"got": q["plan_ids"]}) from None
+        where.append("l.plan_id = ANY(%s)")
+        args.append(ids)
+    for col, key in (("l.state", "state"), ("l.sku", "sku")):
+        if q.get(key):
+            where.append(f"{col} = %s")
+            args.append(q[key])
+    if q.get("period"):
+        where.append("l.period_start = %s")
+        args.append(q["period"] + "-01")
+
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT l.line_id, l.plan_id, l.rev, l.sku, l.period_start, l.total_units,"
+                    " l.demand_at_submit, l.demand_by_seller, l.state"
+                    f" FROM plan_line l WHERE {' AND '.join(where)}"
+                    " ORDER BY l.plan_id, l.rev, l.sku, l.period_start", args)
+        lines = [{"line_id": r[0], "plan_id": r[1], "rev": r[2], "sku": r[3],
+                  "period": r[4].strftime("%Y-%m"), "total_units": r[5],
+                  "demand_at_submit": r[6], "demand_by_seller": r[7], "state": r[8]}
+                 for r in cur.fetchall()]
+        cur.execute("SELECT count(*) FROM plan_line")
+        total = cur.fetchone()[0]
+
+    groups: dict[str, dict] = {}
+    if group_by:
+        key = "sku" if group_by == "sku" else "period"
+        for row in lines:
+            slot = groups.setdefault(row[key], {"lines": 0, "total_units": 0,
+                                                "demand_at_submit": 0})
+            slot["lines"] += 1
+            slot["total_units"] += row["total_units"]
+            slot["demand_at_submit"] += row["demand_at_submit"]
+    # ★ 过滤必须同时统计被丢掉的那一侧
+    return {"lines": lines, "groups": groups,
+            "excluded": {"filtered_out": total - len(lines)}}
+
+
+def _transition(line_id: int, to_state: str, reason: str, who: str, src: str):
+    with timed("plan_line_transition", actor=who, line_id=line_id), \
+            pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT state FROM plan_line WHERE line_id = %s FOR UPDATE", (line_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise ApiError(404, "line_not_found", "没有这条记录", {"line_id": line_id})
+        state = row[0]
+        cur.execute("SELECT count(*) FROM plan_line_transition WHERE to_state = %s", (to_state,))
+        if cur.fetchone()[0] == 0:
+            raise ApiError(400, "unknown_state", "没有这个状态值",
+                           {"got": to_state,
+                            "known": _allowed_next(cur, state)})
+        if state in TERMINAL:
+            raise ApiError(422, "terminal_state", "这条记录已在终态，离不开",
+                           {"line_id": line_id, "state": state})
+        allowed = _allowed_next(cur, state)
+        if to_state not in allowed:
+            # ★ allowed[] 必须回显（04 §1.4）
+            raise ApiError(422, "illegal_transition", "这条状态迁移不在白名单里",
+                           {"line_id": line_id, "from": state, "to": to_state,
+                            "allowed": allowed})
+        cur.execute("INSERT INTO plan_line_event"
+                    " (line_id, from_state, to_state, actor, reason, src)"
+                    " VALUES (%s, %s, %s, %s, %s, %s)",
+                    (line_id, state, to_state, who, reason or None, src))
+    return {"line_id": line_id, "state": to_state}
+
+
+@router.post("/plan-lines/{line_id}/cancel")
+def cancel_line(line_id: int, body: dict, who: str = Depends(actor)):
+    reason = (body.get("reason") or "").strip()
+    if not reason:
+        raise ApiError(400, "reason_required", "撤销必须填理由", {"field": "reason"})
+    return _transition(line_id, "已撤销", reason, who, f"cancel_line:{line_id}")
+
+
+@router.post("/plan-lines/{line_id}/transition")
+def move_line(line_id: int, body: dict, who: str = Depends(actor)):
+    """★ 阶段 A 里唯一走得通的目标是「已撤销」（C 类，人做的）。
+
+    其余目标态全是 A 类 —— 由承重墙①②的量推出来，属阶段 B/C。
+    这个端点**不替它们提前开路**：非法就 422 并回显 allowed[]，
+    让「阶段 A 还没有这条路」看起来就是「现在不行」，而不是一个默默成功的动作。
+    """
+    to_state = (body.get("to_state") or "").strip()
+    return _transition(line_id, to_state, (body.get("reason") or "").strip(), who,
+                       f"transition:{line_id}")
+```
+
+- [ ] **Step 4: 实现 `api/ui/dashboard.py`**
+
+```python
+"""两个看板。★ 计划的状态是记录状态的木桶派生，不是独立字段（08 §1.1）。"""
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, Request
+
+from api.ui.deps import actor, declared, require_fresh_mirrors
+from rules.digest import content_digest
+from rules.submit import DemandCell, PurchaseCell
+from shared.pg_client import pg_conn
+
+router = APIRouter(dependencies=[Depends(require_fresh_mirrors)])
+
+COUNTED = ["进行中", "已提交", "已提交未确认", "已下单", "准备排货", "已排货"]
+#: 阶段 A 铸不出这几个态（要承重墙①②）。★ 接口照样返回它们（诚实），
+#  由前端按阶段不渲染 —— 接口自己抹成 0，「没有」和「还没做」就长得一样了（S-20）。
+UNREACHABLE_IN_STAGE_A = ["已下单", "准备排货", "已排货"]
+
+
+@router.get("/dashboard/plans")
+def dashboard_plans(request: Request, who: str = Depends(actor)):
+    declared(request)
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT v.overall, count(*) FROM v_plan_overall_state v"
+                    " JOIN plan p USING (plan_id) WHERE p.archived_at IS NULL"
+                    " GROUP BY v.overall")
+        by_state = {k: n for k, n in cur.fetchall()}
+    counts = {k: 0 for k in COUNTED}
+    for state, n in by_state.items():
+        if state in counts:
+            counts[state] += n
+        if state not in (None, "已完结", "已撤销"):
+            counts["进行中"] += n
+        if state == "已提交":
+            counts["已提交未确认"] += n
+    return {"counts": counts,
+            "scope_note": {"unreachable_in_stage_a": UNREACHABLE_IN_STAGE_A,
+                           "never_submitted_excluded": by_state.get(None, 0)}}
+
+
+@router.get("/dashboard/unsubmitted")
+def dashboard_unsubmitted(request: Request, who: str = Depends(actor)):
+    declared(request)
+    never, changed = [], []
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT p.plan_id, p.title, r.rev, r.content_digest"
+                    "  FROM plan p"
+                    "  LEFT JOIN LATERAL (SELECT rev, content_digest FROM plan_rev"
+                    "     WHERE plan_id = p.plan_id ORDER BY rev DESC LIMIT 1) r ON true"
+                    " WHERE p.archived_at IS NULL ORDER BY p.plan_id")
+        plans = cur.fetchall()
+        for plan_id, title, rev, digest in plans:
+            if rev is None:
+                never.append({"plan_id": plan_id, "title": title})
+                continue
+            cur.execute("SELECT sku, period_start, planned_units FROM plan_purchase_cell"
+                        " WHERE plan_id = %s", (plan_id,))
+            purchase = [PurchaseCell(s, p.strftime("%Y-%m"), u) for s, p, u in cur.fetchall()]
+            cur.execute(
+                "SELECT d.seller_sku, d.sid, b.sku, d.period_start, d.system_units,"
+                "       d.expected_units"
+                "  FROM plan_demand_cell d"
+                "  JOIN msku_bridge b ON b.seller_sku = d.seller_sku AND b.sid = d.sid"
+                "  JOIN msku_claim cl ON cl.plan_id = d.plan_id"
+                "   AND cl.seller_sku = d.seller_sku AND cl.sid = d.sid"
+                "   AND cl.released_at IS NULL"
+                " WHERE d.plan_id = %s", (plan_id,))
+            demand = [DemandCell(ss, sid, sku, p.strftime("%Y-%m"), sy, ex)
+                      for ss, sid, sku, p, sy, ex in cur.fetchall()]
+            if content_digest(purchase, demand) != digest:
+                changed.append({"plan_id": plan_id, "title": title, "since_rev": rev})
+    # ★ 两栏分开：从未提交要人去提交，改过要人去重新提交 —— 催的是两种动作
+    return {"never_submitted": never, "changed_since_submit": changed}
+```
+
+`api/__init__.py` 追加两行 `include_router(..., prefix="/v1")`。
+
+- [ ] **Step 5: 跑测试，确认它绿**
+
+Run: `python -m pytest tests/test_api_lines.py tests/test_api_dashboard.py -q`
+Expected: PASS（8 + 3 项）
+
+- [ ] **Step 6: 提交**
+
+```bash
+git add api/ui/lines.py api/ui/dashboard.py api/__init__.py tests/test_api_lines.py tests/test_api_dashboard.py
+git commit -m "feat(api): 记录联合查看与撤销（回显 allowed[]）· 看板返回全集并标出阶段 A 够不着的态"
+```
+
+---
+
+## Task 15: 把 `GET /grid` 的响应固化成前端 mock 的同源 fixture（判据⑥ 的后端一半）
+
+**Files:**
+- Create: `tests/fixtures/grid_response.json`（由测试生成）
+- Create: `tests/test_grid_fixture.py`
+
+**Interfaces:**
+- Consumes: Task 12 的 `GET /v1/plans/{plan_id}/grid`
+- Produces: `tests/fixtures/grid_response.json` —— 前端 `web/src/api/mock` 直接读这一份；
+  以及重生成命令 `UPDATE_GRID_FIXTURE=1 python -m pytest tests/test_grid_fixture.py`
+
+- [ ] **Step 1: 写失败的测试**
+
+`tests/test_grid_fixture.py`：
+
+```python
+"""★ 判据⑥ 的后端一半：mock 与真 API 必须是**同一份数据**，不是两份长得像的。
+
+两份各自维护的话，前端跑 mock 全绿、切 api 才发现字段名不一样 ——
+而那时候界面已经照着 mock 写完了。
+"""
+import json
+import os
+from pathlib import Path
+
+FIXTURE = Path(__file__).parent / "fixtures" / "grid_response.json"
+
+
+def _build(client, seed):
+    pid = client.post("/v1/plans", json={"title": "10 月计划", "period_start": "2026-10-01",
+                                         "months": 3},
+                      headers={"x-actor": seed.actor}).json()["plan_id"]
+    # ★ 刻意覆盖三种形态：人填 / 采用系统预估 / 该平台无 FBA
+    for ms in (seed.msku_a, seed.msku_c, seed.msku_nofba):
+        client.post(f"/v1/plans/{pid}/claims", json={"seller_sku": ms[0], "sid": ms[1]},
+                    headers={"x-actor": seed.actor})
+    client.put(f"/v1/plans/{pid}/demand/{seed.msku_a[0]}/{seed.msku_a[1]}/2026-10",
+               json={"expected_units": 130}, headers={"x-actor": seed.actor})
+    client.put(f"/v1/plans/{pid}/purchase/{seed.sku_a}/2026-10",
+               json={"planned_units": 500}, headers={"x-actor": seed.actor})
+    body = client.get(f"/v1/plans/{pid}/grid", headers={"x-actor": seed.actor}).json()
+    body["plan_id"] = 1        # ★ 固化前抹掉自增主键，否则 fixture 每轮都在变
+    return body
+
+
+def test_grid_fixture_matches_the_live_api(client, seed):
+    live = _build(client, seed)
+    if os.environ.get("UPDATE_GRID_FIXTURE"):
+        # ★ 整份重写，不合并 —— 合并会把删掉的字段永远留在 fixture 里
+        FIXTURE.write_text(json.dumps(live, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                           encoding="utf-8")
+    saved = json.loads(FIXTURE.read_text("utf-8"))
+    assert saved == live, ("grid 的形状变了。确认是有意改动后，用 "
+                           "UPDATE_GRID_FIXTURE=1 重跑本测试重新固化，"
+                           "并告诉前端这一版的差异。")
+
+
+def test_the_fixture_covers_the_three_shapes_that_look_alike(client, seed):
+    """★ fixture 若只有「正常」那一种形态，前端就永远不会画出另外两种。"""
+    saved = json.loads(FIXTURE.read_text("utf-8"))
+    bases = {r["basis"] for r in saved["demand"]}
+    assert {"human", "system"} <= bases
+    assert any(r["not_applicable"] for r in saved["inventory"]), "缺「不适用」那一种"
+    assert any(r["no_seller_attribution"] for r in saved["sku_pipeline"])
+```
+
+- [ ] **Step 2: 跑测试，确认它红**
+
+Run: `python -m pytest tests/test_grid_fixture.py -q`
+Expected: FAIL —— `FileNotFoundError: tests/fixtures/grid_response.json`
+
+- [ ] **Step 3: 生成 fixture**
+
+Run: `UPDATE_GRID_FIXTURE=1 python -m pytest tests/test_grid_fixture.py -q`
+（生成后**人工读一遍** `tests/fixtures/grid_response.json`：三种形态各在不在，字段名与 `08` §1.1 对不对得上。）
+
+- [ ] **Step 4: 不带环境变量再跑一次，确认它绿且稳定**
+
+Run: `python -m pytest tests/test_grid_fixture.py -q`
+Expected: PASS（2 项）；再跑一次仍 PASS（★ 若两次不同，说明响应里有时间戳或自增 id 漏抹）
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add tests/fixtures/grid_response.json tests/test_grid_fixture.py
+git commit -m "test(api): 固化 GET /grid 响应为前端 mock 的同源 fixture（含不适用/外推/无归属三种形态）"
+```
+
+---
+
+## Task 16: 六条校验判据的端到端证明
+
+**Files:**
+- Create: `tests/test_stage_a_criteria.py`
+- Create: `README.md`（只写怎么跑，不复述设计 —— 论证在 `docs/`）
+
+**Interfaces:**
+- Consumes: 前面全部 Task
+- Produces: 判据 ①~⑤ 各一条可指认的测试；判据⑥ 的后端一半由 Task 15 兑现
+
+- [ ] **Step 1: 写测试**
+
+`tests/test_stage_a_criteria.py`：
+
+```python
+"""00e §1 阶段 A 的六条校验判据，每条一个可指认的测试。
+
+★ 判据⑥（前端 mock 与真 API 跑出同一屏）的后端一半在 tests/test_grid_fixture.py；
+  前端那一半在 web/ 的计划里。这里不假装它已经全过。
+"""
+import psycopg2.errors
+import pytest
+
+from shared.pg_client import pg_conn
+from helpers import H, prepared
+
+
+def test_criterion_1_build_claim_fill_submit_mint(client, seed):
+    """① 建 → 认领 → 填两种量 → 提交 → 铸出 rev，全程可复现。"""
+    pid = client.post("/v1/plans", json={"title": "判据一", "period_start": "2026-10-01",
+                                         "months": 3}, headers=H(seed.actor)).json()["plan_id"]
+    assert client.post(f"/v1/plans/{pid}/claims",
+                       json={"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]},
+                       headers=H(seed.actor)).status_code == 200
+    assert client.put(f"/v1/plans/{pid}/demand/{seed.msku_a[0]}/{seed.msku_a[1]}/2026-10",
+                      json={"expected_units": 120}, headers=H(seed.actor)).status_code == 200
+    assert client.put(f"/v1/plans/{pid}/purchase/{seed.sku_a}/2026-10",
+                      json={"planned_units": 400}, headers=H(seed.actor)).status_code == 200
+    r = client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor)).json()
+    assert r["rev"] == 1 and r["minted"] == 1
+    lines = client.get("/v1/plan-lines", params={"plan_ids": pid},
+                       headers=H(seed.actor)).json()["lines"]
+    assert lines[0]["total_units"] == 400 and lines[0]["demand_at_submit"] == 120
+    assert lines[0]["state"] == "已提交"
+
+
+def test_criterion_2_every_skipped_cell_is_listed_with_a_reason(client, seed):
+    """② 提交时被跳过的格子逐条列出，不静默丢。"""
+    pid = prepared(client, seed, purchase=None)
+    r = client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor)).json()
+    assert {s["reason"] for s in r["skipped"]} == {"zero_purchase"}
+    assert len(r["skipped"]) == 3
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT count(*) FROM plan_submit_skip WHERE plan_id = %s", (pid,))
+        assert cur.fetchone()[0] == 3, "★ 返回体说了，库里也要有 —— 它是留痕不是提示"
+
+
+def test_criterion_3_one_msku_cannot_belong_to_two_unordered_plans(client, seed):
+    """③ 同一 msku 不能同时归两个「未下单」计划 —— 库层裁决 + 接口点名。"""
+    p1 = prepared(client, seed)
+    p2 = client.post("/v1/plans", json={"title": "另一张", "period_start": "2026-10-01"},
+                     headers=H(seed.actor)).json()["plan_id"]
+    r = client.post(f"/v1/plans/{p2}/claims",
+                    json={"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]},
+                    headers=H(seed.actor))
+    assert r.status_code == 409 and r.json()["claimed_by"]["plan_id"] == p1
+
+
+def test_criterion_4_content_is_immutable_changes_become_a_new_rev(client, seed):
+    """④ 计划单记录内容不可变：改了只能出新 rev，旧版一个字节不动。"""
+    pid = prepared(client, seed)
+    client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT line_id FROM plan_line WHERE plan_id = %s", (pid,))
+        line = cur.fetchone()[0]
+        with pytest.raises(psycopg2.errors.RaiseException):
+            cur.execute("UPDATE plan_line SET state = '已确认' WHERE line_id = %s", (line,))
+    client.post(f"/v1/plans/{pid}/revs/1/cancel", json={"reason": "重来"}, headers=H(seed.actor))
+    client.put(f"/v1/plans/{pid}/purchase/{seed.sku_a}/2026-10",
+               json={"planned_units": 999}, headers=H(seed.actor))
+    assert client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor)).json()["rev"] == 2
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT rev, total_units FROM plan_line WHERE plan_id = %s ORDER BY rev",
+                    (pid,))
+        assert cur.fetchall() == [(1, 500), (2, 999)]
+
+
+def test_criterion_5_the_back_edge_exists_and_terminal_states_are_sealed(client, seed):
+    """⑤ 阶段 A 的形态（S-11）：白名单建对 + 非法迁移被外键拒 + 终态不可离开。
+
+    ★ 退回边的**触发源**（撤组单）属阶段 B —— 这里证的是这条边存在且走得通，
+      不是「阶段 A 能自己走一遍」。两者不要混。
+    """
+    pid = prepared(client, seed)
+    client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT line_id FROM plan_line WHERE plan_id = %s", (pid,))
+        line = cur.fetchone()[0]
+        # 库层直插：已提交 → 已确认 → 已提交（唯一的一条退回边）
+        cur.execute("INSERT INTO plan_line_event (line_id, from_state, to_state, actor)"
+                    " VALUES (%s, '已提交', '已确认', %s)", (line, seed.actor))
+        cur.execute("INSERT INTO plan_line_event (line_id, from_state, to_state, actor)"
+                    " VALUES (%s, '已确认', '已提交', %s)", (line, seed.actor))
+        cur.execute("SELECT state FROM plan_line WHERE line_id = %s", (line,))
+        assert cur.fetchone()[0] == "已提交"
+    r = client.post(f"/v1/plan-lines/{line}/transition", json={"to_state": "已完结"},
+                    headers=H(seed.actor))
+    assert r.status_code == 422 and r.json()["allowed"] == ["已确认", "已撤销"]
+```
+
+`README.md`：
+
+```markdown
+# service_supplychain
+
+供应链后端服务。设计与论证在 `docs/`，这里只写怎么跑。
+
+## 跑起来
+
+    uv sync
+    cp config.example.toml config.toml     # 填 PG / CH 口令
+    python -m migrations.pg.apply          # 应用迁移到 config.toml 里的 schema
+    uvicorn --factory api:create_app --port 8090
+
+## 测试
+
+    python -m pytest -q                    # 全部（需要能连到 PG 192.168.66.210）
+    python -m pytest tests/test_layering.py tests/test_forecast_*.py tests/test_rules_*.py -q
+                                           # 离线可跑的那部分（纯层）
+
+测试跑在 schema `scm_test` 上，跑完整个 DROP；`scm` 与 `inv` 被夹具硬拦。
+```
+
+- [ ] **Step 2: 跑全量**
+
+Run: `python -m pytest -q`
+Expected: PASS —— 合计 **126 项**
+（9 分层 + 6 迁移 + 6 + 12 + 14 DDL + 3 整体状态 + 7 + 8 预测 + 6 dim + 11 rules
++ 8 系统 + 6 计划 + 10 认领 + 10 网格 + 11 提交 + 8 记录 + 3 看板 + 2 fixture + 5 判据）
+
+- [ ] **Step 3: 确认纯层真的离线可跑**
+
+Run: `JXD_SCM_CONFIG=/nonexistent python -m pytest tests/test_layering.py tests/test_forecast_estimate.py tests/test_forecast_projection.py tests/test_rules_submit.py tests/test_dim_fixture.py -q`
+Expected: PASS（41 项）★ 配置文件都读不到还能全绿，才叫「判据离线可测」。
+
+- [ ] **Step 4: 提交**
+
+```bash
+git add tests/test_stage_a_criteria.py README.md
+git commit -m "test(stage-a): 六条校验判据各一条端到端，判据⑤ 按 S-11 的阶段 A 形态证明"
+```
+
+---
+
+## 附：阶段 A 交付后要交回文档的三件事
+
+> 实现过程中发现的文档问题，按 CLAUDE.md「指不到出处的记进 00」处理，**不在代码里自己定**。
+
+| # | 发现 | 建议落点 |
+|---|---|---|
+| 1 | `08` §3 错误码总表写 `another_rev_in_flight`，而 §1.1 与 S-4 写 `rev_in_flight` | 统一成 `rev_in_flight`（本计划按 §1.1 实现），改 `08` §3 |
+| 2 | `00e`:43「库存预估 = 在仓 + 采购在途 − 期望销量」两项层级不同（`14` §1：在途在「排货」那条横线以下、无店铺），合并会让每个 msku 都以为这批货是自己的 | `00e` §1 阶段 A 那一格补一句「两层分开渲染」；实现见 Task 12 |
+| 3 | `04` §1.4 写非法迁移 409，`08`:280 与 S-18 写 422 | 按 S-18 统一 422，改 `04` §1.4 |
+
+---
+
+## Self-Review
+
+### 1. 规格覆盖
+
+| 规格项 | 落点 |
+|---|---|
+| `00e` 阶段 A 九张表 + 地基 | Task 3 / 4 / 5（`plan_cell` / `plan_cell_msku` 按 S-1 拆成 `plan_demand_cell` / `plan_purchase_cell`） |
+| 判据 ①②③④⑤ | Task 16 各一条；③ 的竞态在 Task 11、④ 的不可变在 Task 13 |
+| 判据⑥ | Task 15（后端一半：同源 fixture）；前端一半属 `web/` 的计划 |
+| `08` §1.1 阶段 A 端点 | catalog Task 11 · plans Task 10 · claims Task 11 · grid + 两 PUT Task 12 · submit/revs/current/diff/archive Task 13 · plan-lines/cancel/dashboard Task 14 · health/readiness Task 9 |
+| `08` §1.1 未实现的一项 | `GET /plan-lines/{id}/trace` —— 已在「阶段 A 明确不做」表里列出并给出处 |
+| `03` §3 状态机四件套 | Task 5（含 S-2 哨兵与铸出事件、S-17 只追加触发器） |
+| `04` S1 / S2 | Task 5（S1）· Task 10（S2 派生视图，两个边界显式定义） |
+| `01` §3.1 L1~L10 | Task 1：L1~L7 落地；L8~L10 属 `web/`，由守卫测试逼它们不被忘掉 |
+| `14` §0/§1/§5 | Task 6（主公式、恒等式③④⑥、外推标记） |
+| S 组 20 条裁定 | S-1..S-20 逐条在对应 Task 的注释与测试里点名（S-5 = S-1；S-11 见 Task 16 判据⑤） |
+
+**gap**：`14` §2 四段管道、`03` §7 预测落库、`erp/` 出站写 —— 三项都不属阶段 A，已在「明确不做」表里带出处列出。
+
+### 2. 占位符扫描
+
+扫 TBD / TODO / 「类似 Task N」/「加适当校验」/ 无代码的步骤 —— **修掉 1 处**：
+Task 13 的 `plan_line` 插入一度写成 `psycopg2.extras.Json(...) if False else __import__("json")...` 的三元式（是占位噪声，不是能抄的代码），已改成 `import json` + `json.dumps(..., ensure_ascii=False)` 并补上「为什么不用适配器」的理由。
+
+### 3. 类型一致性
+
+逐个核对过跨 Task 引用的名字与类型，**修掉 3 处**：
+
+1. `msku_claim` 与 `plan_demand_cell` 的建表顺序 —— 外键 `plan_demand_cell_claim_fk` 指向 `msku_claim`，而 `03` §2 的行文里格子在前。迁移 002 里改成 `plan → msku_claim → 两张格子`，否则第一条迁移就跑不过。
+2. `close_rev_if_settled(plan_id, rev)` 的**第二个调用者** —— 只挂触发器的话，铸出 0 条记录的空版本没有任何行能触发它，`plan_rev_one_in_flight_idx` 会把这张计划的后续提交永久挡住。Task 13 的提交路径显式调一次，Task 13 的 `test_an_empty_rev_does_not_hold_the_in_flight_slot` 是它的靶子。
+3. 错误码 `rev_in_flight`（`08` §1.1 / S-4）与 `another_rev_in_flight`（`08` §3）不一致 —— 全计划统一用 `rev_in_flight`，并记进上面「要交回文档的三件事」。
+4. 四处测试原本写成 `from tests.test_xxx import …` —— `tests/` 没有 `__init__.py`，这条 import 在收集期就会炸，而报错指向的行与真正的原因隔着一层。共用造数改放 `tests/helpers.py`（Task 5 建、Task 13 追加），四处统一 `from helpers import …`。
+
+另两处刻意的偏离，一并记在这里：
+
+- `monthly_estimate` 的返回类型是 `list[MonthEstimate]` 而不是 `list[int]`：外推标记必须随数一起走（`14` §5 / M-13），返回裸 `int` 会把它丢在函数里。
+- `inventory_projection` 的 `inbound_by_month` 收的是**逐笔明细**而不是合计：合计在函数内部求和，恒等式⑥「推算入库 ≡ 其构成明细之和」才不依赖调用方自觉。
