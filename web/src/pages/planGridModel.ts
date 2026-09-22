@@ -18,14 +18,21 @@ export interface SkuBlock {
   mskus: MskuRow[]; inventory: InventoryCell[];
 }
 export interface PurchaseRow { sku: string; cells: { period: Period; planned_units: number | null }[] }
+/** ★ 货号级在途的权威读数：来自 `inventory[].basis.sku_level_in_transit`（每月必有），
+ *  `sku_pipeline` 只是交叉校验 —— 见 `buildGridModel` 里的判据（F6 裁定） */
+export interface TransitCell { period: Period; units: number | null }
+export interface TransitRow { sku: string; cells: TransitCell[] }
 export interface Orphan {
   kind: 'unknown_seller' | 'inventory_without_demand' | 'demand_without_inventory'
-      | 'na_disagrees_with_seller' | 'in_transit_disagrees' | 'demand_disagrees';
+      | 'na_disagrees_with_seller' | 'in_transit_disagrees' | 'demand_disagrees' | 'chain_broken';
   key: string;
 }
 export interface GridModel {
   periods: Period[]; blocks: SkuBlock[]; purchase: PurchaseRow[];
-  pipeline: SkuPipelineRow[]; orphans: Orphan[];
+  /** ★ 原样透传，仅供交叉校验/调试；页面渲染改用 `transit`（F6/F8 裁定） */
+  pipeline: SkuPipelineRow[];
+  transit: TransitRow[];
+  orphans: Orphan[];
 }
 
 /** ★ 任何一项未知 ⇒ 和未知。空数组也是未知：没有数不等于 0 */
@@ -57,6 +64,19 @@ export function closingOfLast(block: SkuBlock, periods: Period[]): QtyValue {
 export function outageCount(block: SkuBlock): number {
   return block.inventory.filter((i) =>
     i.basis.closing_reason !== 'not_applicable' && i.closing !== null && i.closing <= 0).length;
+}
+
+/** ★ F1/F2 裁定：两种人工输入共用同一套解析——空串 = 未知 ⇒ null；
+ *  否则必须是非负整数，拒绝 NaN / 小数 / 负数，且带上能直接展示的理由。 */
+export type ParsedUnits = { ok: true; value: number | null } | { ok: false; why: string };
+export function parseUnits(raw: string): ParsedUnits {
+  const trimmed = raw.trim();
+  if (trimmed === '') return { ok: true, value: null };
+  const n = Number(trimmed);
+  if (Number.isNaN(n) || !Number.isInteger(n) || n < 0) {
+    return { ok: false, why: `${raw} 不是非负整数` };
+  }
+  return { ok: true, value: n };
 }
 
 export function buildGridModel(grid: GridResponse, sellers: Seller[]): GridModel {
@@ -115,16 +135,47 @@ export function buildGridModel(grid: GridResponse, sellers: Seller[]): GridModel
     if (!usedInv.has(k)) orphans.push({ kind: 'inventory_without_demand', key: `${cell.sku}/${cell.sid}/${cell.period}` });
   }
 
-  // ★ 同一个在途数字有两处来源（basis 与 sku_pipeline）；不一致要报，不许挑一个显示
-  for (const p of grid.sku_pipeline) {
-    for (const cell of grid.inventory.filter((i) => i.sku === p.sku && i.period === p.period)) {
-      if (cell.basis.closing_reason === 'not_applicable') continue;
-      if (cell.basis.sku_level_in_transit !== p.units) {
-        orphans.push({ kind: 'in_transit_disagrees', key: `${p.sku}/${p.period}` });
-        break;
+  // ★ F9 裁定：月链是恒等式（14 §1.1 ④），必须由代码强制。只在两端都是具体数字时比较——
+  //   缺格/未知/不适用不算「断」，它们是另一类问题，各自已有别的 orphan kind 覆盖。
+  for (const block of blocks.values()) {
+    for (let idx = 1; idx < grid.periods.length; idx++) {
+      const prevP = grid.periods[idx - 1]!;
+      const curP = grid.periods[idx]!;
+      const prev = block.inventory.find((i) => i.period === prevP);
+      const cur = block.inventory.find((i) => i.period === curP);
+      if (!prev || !cur) continue;
+      if (prev.closing !== null && cur.onhand !== null && prev.closing !== cur.onhand) {
+        orphans.push({ kind: 'chain_broken', key: `${block.sku}/${block.sid}/${curP}` });
       }
     }
   }
+
+  // ★ F6/F8 裁定：在途的权威来源是 inventory[].basis.sku_level_in_transit（逐行都有，
+  //   同一 sku 不同 sid 上应当一致）；sku_pipeline 只是交叉校验，不是权威。
+  //   两处不一致（同 sku 不同 sid 的 basis 互相矛盾 / pipeline 与 basis 矛盾）都要点名，
+  //   不许挑一个信。没有 pipeline 行的月份照样显示 basis 给出的数字（哪怕是 0），不许落成「未知」。
+  const transitSkus = new Set<string>([
+    ...[...blocks.values()].map((b) => b.sku),
+    ...grid.purchase.map((p) => p.sku),
+    ...grid.sku_pipeline.map((p) => p.sku),
+  ]);
+  const transit: TransitRow[] = [...transitSkus].map((sku) => ({
+    sku,
+    cells: grid.periods.map((period) => {
+      const rows = grid.inventory.filter((i) => i.sku === sku && i.period === period);
+      const nonNull = [...new Set(rows.map((r) => r.basis.sku_level_in_transit).filter((v): v is number => v !== null))];
+      if (nonNull.length > 1) {
+        orphans.push({ kind: 'in_transit_disagrees', key: `${sku}/${period}` });
+      }
+      const basisVal = rows.find((r) => r.basis.sku_level_in_transit !== null)?.basis.sku_level_in_transit ?? null;
+      const pipelineRow = grid.sku_pipeline.find((p) => p.sku === sku && p.period === period);
+      if (pipelineRow && pipelineRow.units !== basisVal && nonNull.length <= 1) {
+        // ★ 两 sid 已经互相矛盾时不再重复报第二条同 key 的 orphan
+        orphans.push({ kind: 'in_transit_disagrees', key: `${sku}/${period}` });
+      }
+      return { period, units: basisVal };
+    }),
+  }));
 
   const skus = [...new Set(grid.purchase.map((p) => p.sku))];
   const purchase: PurchaseRow[] = skus.map((sku) => ({
@@ -135,6 +186,8 @@ export function buildGridModel(grid: GridResponse, sellers: Seller[]): GridModel
     })),
   }));
 
-  // ★ pipeline 原样带过来，**不与 inventory 相加** —— 层级不同，加起来是每个店各多一份货
-  return { periods: grid.periods, blocks: [...blocks.values()], purchase, pipeline: grid.sku_pipeline, orphans };
+  return {
+    periods: grid.periods, blocks: [...blocks.values()], purchase,
+    pipeline: grid.sku_pipeline, transit, orphans,
+  };
 }

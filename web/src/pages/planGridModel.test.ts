@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
-  buildGridModel, closingOfLast, demandAt, inventoryAt, outageCount, sumUnits,
+  buildGridModel, closingOfLast, demandAt, inventoryAt, outageCount, parseUnits, sumUnits,
 } from './planGridModel';
 import type { ClosingReason, DemandCell, GridResponse, InventoryCell, Seller } from '../api/types';
+import realGrid from '../api/fixtures/grid-1.json';
+import realSellersFixture from '../api/fixtures/sellers.json';
 
 const P = ['2026-10', '2026-11', '2026-12'];
 
@@ -141,5 +143,106 @@ describe('网格模型', () => {
     const m = buildGridModel(makeGrid(), sellers);
     const all = m.blocks.flatMap((b) => b.inventory.map((i) => i.basis.reason));
     expect(new Set(all)).toEqual(new Set(['no_seller_attribution']));
+  });
+});
+
+describe('parseUnits（F1/F2 裁定：两种人工输入共用同一套解析）', () => {
+  it('空串 = 未知 ⇒ null，不是 0', () => {
+    expect(parseUnits('')).toEqual({ ok: true, value: null });
+    expect(parseUnits('   ')).toEqual({ ok: true, value: null });
+  });
+  it('非负整数直接收', () => {
+    expect(parseUnits('0')).toEqual({ ok: true, value: 0 });
+    expect(parseUnits('300')).toEqual({ ok: true, value: 300 });
+  });
+  it('★ 非数字（如「5oo」）拒收，且不落回 0', () => {
+    const r = parseUnits('5oo');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.why).toContain('5oo');
+  });
+  it('★ 负数拒收 —— 客户端不能把这类值交给后端去兜', () => {
+    const r = parseUnits('-5');
+    expect(r.ok).toBe(false);
+  });
+  it('★ 小数拒收', () => {
+    expect(parseUnits('1.5').ok).toBe(false);
+  });
+});
+
+describe('★ F9 裁定：月链 onhand(N+1) ≡ closing(N) 必须由代码强制', () => {
+  it('链断了要点名', () => {
+    const g = makeGrid();
+    // 10 月 closing=200，11 月 onhand 却是 150（不是 200）—— 链断在 11 月
+    g.inventory[1] = inv('11072', P[1]!, 150, 140, null);
+    const m = buildGridModel(g, sellers);
+    expect(m.orphans).toContainEqual({ kind: 'chain_broken', key: 'SKU-1/11072/2026-11' });
+  });
+
+  it('链完好不许误报', () => {
+    const solid = buildGridModel({ ...makeGrid(), inventory: [
+      inv('11072', P[0]!, 420, 200), inv('11072', P[1]!, 200, 150), inv('11072', P[2]!, 150, 100),
+      inv('90001', P[0]!, null, null, 'not_applicable', null),
+      inv('90001', P[1]!, null, null, 'not_applicable', null),
+      inv('90001', P[2]!, null, null, 'not_applicable', null),
+    ] }, sellers);
+    expect(solid.orphans.filter((o) => o.kind === 'chain_broken')).toEqual([]);
+  });
+
+  it('缺格/未知的两端不算「断」——那是另一类问题，各自已有 orphan kind 覆盖', () => {
+    // makeGrid() 本身 10→11 月 closing 是 null（unknown_demand），不该被当成链断
+    const m = buildGridModel(makeGrid(), sellers);
+    expect(m.orphans.filter((o) => o.kind === 'chain_broken')).toEqual([]);
+  });
+
+  it('★ 后端那份真 fixture：链条完好，零 chain_broken', () => {
+    const realSellers = (realSellersFixture as { sellers: Seller[] }).sellers;
+    const m = buildGridModel(realGrid as unknown as GridResponse, realSellers);
+    expect(m.orphans.filter((o) => o.kind === 'chain_broken')).toEqual([]);
+  });
+});
+
+describe('★ F6/F8 裁定：在途以 basis.sku_level_in_transit 为权威，sku_pipeline 只是交叉校验', () => {
+  it('没有 pipeline 行的月份照样显示 basis 给出的数字（哪怕是 0），不许落成未知', () => {
+    const g = makeGrid();
+    // 11 月 basis 在两个 sid 上一致给 0；sku_pipeline 完全没有 11 月这一行
+    g.inventory[1] = inv('11072', P[1]!, 200, null, 'unknown_demand', 0);
+    g.inventory[4] = inv('90001', P[1]!, null, null, 'not_applicable', 0);
+    const m = buildGridModel(g, sellers);
+    const nov = m.transit.find((t) => t.sku === 'SKU-1')!.cells.find((c) => c.period === P[1]!)!;
+    expect(nov.units).toBe(0);
+  });
+
+  it('同一 sku 两个 sid 的 basis 互相矛盾 —— 即便没有 pipeline 行也要点名', () => {
+    const g = makeGrid();
+    g.inventory[0] = inv('11072', P[0]!, 420, 200, null, 80);
+    g.inventory[3] = inv('90001', P[0]!, null, null, 'not_applicable', 999);
+    const m = buildGridModel(g, sellers);
+    expect(m.orphans).toContainEqual({ kind: 'in_transit_disagrees', key: 'SKU-1/2026-10' });
+  });
+
+  it('货号级在途行按 blocks ∪ purchase ∪ sku_pipeline 的并集铺，不按 purchase 单独铺', () => {
+    const g = makeGrid();
+    // 追加一个只出现在 sku_pipeline、既不在 purchase 也不在任何块里的货号
+    g.sku_pipeline.push({ sku: 'GHOST-SKU', period: P[0]!, units: 12, sources: [], no_seller_attribution: true });
+    const m = buildGridModel(g, sellers);
+    expect(m.transit.map((t) => t.sku)).toContain('GHOST-SKU');
+  });
+
+  it('★ 后端那份真 fixture：3 行 pipeline 与对应 basis 逐行相等，零 in_transit_disagrees', () => {
+    const realSellers = (realSellersFixture as { sellers: Seller[] }).sellers;
+    const m = buildGridModel(realGrid as unknown as GridResponse, realSellers);
+    expect(m.orphans.filter((o) => o.kind === 'in_transit_disagrees')).toEqual([]);
+    // 两个货号都要在 transit 里出现，且 10 月都有确定数字（不是 —）
+    const oct = m.transit.map((t) => t.cells.find((c) => c.period === '2026-10')?.units);
+    expect(oct.every((v) => typeof v === 'number')).toBe(true);
+  });
+});
+
+describe('★ 后端那份真 fixture：orphans 应当为空（团队裁定的验收基线）', () => {
+  it('4 块、零丢弃', () => {
+    const realSellers = (realSellersFixture as { sellers: Seller[] }).sellers;
+    const m = buildGridModel(realGrid as unknown as GridResponse, realSellers);
+    expect(m.blocks).toHaveLength(4);
+    expect(m.orphans).toEqual([]);
   });
 });
