@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { AppShell } from '../shell/AppShell';
 import { pushToast } from '../shell/toastStore';
 import { useInFlight } from '../shell/useInFlight';
@@ -80,7 +80,9 @@ export function PlanRevs() {
     <AppShell crumb="版本">
       <div className="head">
         <div className="head__main"><h1>版本</h1></div>
-        <div className="head__act"><a className="btn btn--ghost" href={`/plans/${planId}`}>返回网格</a></div>
+        {/* ★ parked（M10）：本页内部导航一律走 Router 的 Link，不用 <a> —— 整页刷新
+            会把在飞的护栏、未看完的错误、刚填的输入一起冲掉 */}
+        <div className="head__act"><Link className="btn btn--ghost" to={`/plans/${planId}`}>返回网格</Link></div>
       </div>
 
       <div className="table-scroll">
