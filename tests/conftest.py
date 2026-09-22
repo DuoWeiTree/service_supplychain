@@ -5,6 +5,7 @@
 """
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -72,9 +73,51 @@ def business_db(tmp_path_factory):
 
 @pytest.fixture
 def wipe(business_db):
-    """★ TRUNCATE 不触发 BEFORE DELETE 触发器，所以只追加表也清得掉。"""
+    """★ TRUNCATE 不触发 BEFORE DELETE 触发器，所以只追加表也清得掉。
+
+    ★ DATA_TABLES 是阶段 A 终态的全表单，各表随 Task 3~5 的迁移逐个落地 ——
+      过滤到「当前 schema 里已存在」的那些，否则在只应用了部分迁移的阶段，
+      TRUNCATE 会先炸在还没创建的表上，而不是炸在测试真正要验的地方。
+    """
     assert_not_production_schema()
     from shared.pg_client import pg_conn
     with pg_conn() as c, c.cursor() as cur:
-        cur.execute(f"TRUNCATE {', '.join(DATA_TABLES)} RESTART IDENTITY CASCADE")
+        cur.execute("SELECT tablename FROM pg_tables WHERE schemaname = current_schema()")
+        existing = {r[0] for r in cur.fetchall()}
+        tables = [t for t in DATA_TABLES if t in existing]
+        if tables:
+            cur.execute(f"TRUNCATE {', '.join(tables)} RESTART IDENTITY CASCADE")
     return business_db
+
+
+@pytest.fixture
+def seed(wipe):
+    """维度与操作人的最小一组。
+
+    ★ 刻意包含两种「长得像 0 其实不是」的形态：
+      · actor `bob` 停用 —— 与「不存在」分得开
+      · seller `WM-1` has_fba=false —— 它的 FBA 在仓是「不适用」，不是 0（02 §3.1a）
+    """
+    from shared.pg_client import pg_conn
+    ns = SimpleNamespace(
+        actor="alice", actor_inactive="bob",
+        seller_a="11072", seller_b="11094", seller_nofba="90001",
+        sku_a="DCC1800264G1", sku_b="A4P-TOY-002",
+        msku_a=("MSKU-A", "11072"), msku_b=("MSKU-B", "11072"),
+        msku_c=("MSKU-C", "11094"), msku_nofba=("MSKU-W", "90001"),
+    )
+    with pg_conn() as c, c.cursor() as cur:
+        cur.executemany("INSERT INTO actor (actor_id, name, active) VALUES (%s, %s, %s)",
+                        [(ns.actor, "爱丽丝", True), (ns.actor_inactive, "鲍勃", False)])
+        cur.executemany(
+            "INSERT INTO seller (seller_id, name, market, has_fba, platform, refreshed_at)"
+            " VALUES (%s, %s, %s, %s, %s, now())",
+            [(ns.seller_a, "A4Pet-US", "US", True, "amazon"),
+             (ns.seller_b, "A4Pet-BS-UK", "UK", True, "amazon"),
+             (ns.seller_nofba, "A4Pet-WM", "US", False, "walmart")])
+        cur.executemany("INSERT INTO sku_catalog (sku, name, refreshed_at) VALUES (%s, %s, now())",
+                        [(ns.sku_a, "猫爬架"), (ns.sku_b, "逗猫棒")])
+        cur.executemany("INSERT INTO msku_bridge VALUES (%s, %s, %s, now())",
+                        [(*ns.msku_a, ns.sku_a), (*ns.msku_b, ns.sku_a),
+                         (*ns.msku_c, ns.sku_a), (*ns.msku_nofba, ns.sku_b)])
+    return ns
