@@ -87,6 +87,13 @@
 // 5. GET /v1/sellers      每项 {"seller_id","name","market","has_fba","platform"}
 // 6. 写请求读 x-actor；不在 actor 表或 active=false → 400 {"error":"unknown_actor","hint":"..."}
 // 7. POST /v1/plans/{id}/archive 与 /v1/plan-lines* —— 阶段 A 无界面入口，后端照 08 实现
+// 8. PUT …/demand/{seller_sku}/{sid}/{period} → {"cell": <与 grid.demand[] 同形的九键行>}
+//    ★ 一种行形状：前端拿回来直接替换那一行，不自己算 effective_units（rules/effective.py 单一来源）
+// 9. POST …/claims 冲突 → 409 {"error":"msku_already_claimed","hint":…,"seller_sku","sid",
+//    "claimed_by": {"plan_id","title","actor"} | null}   ★ 与 catalog 的 claimed_by 同形（多 actor）
+//    成功 → {"claimed":{seller_sku,sid,sku}, "seeded":{demand_cells,purchase_cells}, "no_history":[…]}
+//    DELETE …/claims/... → {"released":{…}, "dropped_cells":[{period,expected_units}], "stranded_purchase_cells":[{sku,period}]}
+//    POST …/revs/{rev}/cancel → {"cancelled":[line_id…], "skipped_terminal": n}
 ```
 
 ★ **错误形状为什么不按 `08` §0**：`08` §0 写 `{code,message,detail}`，而上面第 2/6 条裁定的是
