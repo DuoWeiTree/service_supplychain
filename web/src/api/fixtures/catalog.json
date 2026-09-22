@@ -1,0 +1,17 @@
+{ "need_query": false, "matched": 2, "truncated": false, "limit": 50, "items": [
+  { "sku": "DCC1800264G1", "name": "猫爬架",
+    "mskus": [
+      { "seller_sku": "MSKU-A", "sid": "11072", "seller_name": "A4Pet-US", "selectable": true, "claimed_by": null },
+      { "seller_sku": "MSKU-C", "sid": "11094", "seller_name": "A4Pet-BS-UK", "selectable": false,
+        "claimed_by": { "plan_id": 2, "title": "2026 Q3 补货计划", "actor": "ops.li" } },
+      { "seller_sku": "MSKU-W", "sid": "90001", "seller_name": "A4Pet-WM", "selectable": true, "claimed_by": null }
+    ],
+    "unbuildable_sellers": [],
+    "claimed_by": { "plan_id": 2, "title": "2026 Q3 补货计划" },
+    "claimed_by_plans": [{ "plan_id": 2, "title": "2026 Q3 补货计划" }] },
+  { "sku": "A4P-TOY-002", "name": "逗猫棒",
+    "mskus": [
+      { "seller_sku": "MSKU-B", "sid": "11072", "seller_name": "A4Pet-US", "selectable": true, "claimed_by": null }
+    ],
+    "unbuildable_sellers": [], "claimed_by": null, "claimed_by_plans": [] }
+] }

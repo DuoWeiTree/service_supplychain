@@ -1,0 +1,131 @@
+import { beforeEach, describe, expect, it } from 'vitest';
+import { createMockApi } from './mock';
+import { ApiError } from './client';
+
+let api = createMockApi();
+beforeEach(() => { api = createMockApi(); });
+
+const firstMsku = async () => (await api.getGrid(1)).demand[0]!;
+
+describe('mock 数据源', () => {
+  it('月份一律 "YYYY-MM"，不是月初日期', async () => {
+    const g = await api.getGrid(1);
+    expect(g.periods.every((p) => /^\d{4}-\d{2}$/.test(p))).toBe(true);
+  });
+
+  it('putDemand(null) 存进去的是 null，不是 0；basis 退回 unknown 或 system', async () => {
+    const d = await firstMsku();
+    const cell = await api.putDemand(1, d.seller_sku, d.sid, d.period, null);
+    expect(cell.expected_units).toBeNull();
+    expect(['system', 'unknown']).toContain(cell.basis);
+    const back = (await api.getGrid(1)).demand
+      .find((x) => x.seller_sku === d.seller_sku && x.period === d.period)!;
+    expect(back.expected_units).toBeNull();
+  });
+
+  it('★ 库存的身份是「店铺 × 货号」—— 一格对应多个 msku，不是每个 msku 一格', async () => {
+    const g = await api.getGrid(1);
+    expect(g.inventory.every((i) => 'sku' in i && 'sid' in i && !('seller_sku' in i))).toBe(true);
+    const keys = new Set(g.inventory.map((i) => `${i.sku}/${i.sid}/${i.period}`));
+    expect(keys.size).toBe(g.inventory.length);           // ★ 每个 (货号,店铺,月) 只有一行
+  });
+
+  it('★ 任何一个 msku 未知 → 整格未知（不是把它当 0 再把别的 msku 加进来）', async () => {
+    // ★ 与 brief 原文不同：不用 firstMsku()（demand[0] = A4P-TOY-002/11072 的 MSKU-D，
+    //   system_units=7，清空后按契约退回系统预估 7，格子仍是「已知」，测不出这条判据）。
+    //   改用 DCC1800264G1/11072/2026-10 —— 它天生挂两个 msku：MSKU-A（人填 130，系统 100）
+    //   与 MSKU-B（系统也是 null，本就未知）。清空 MSKU-A 后落回系统 100（不是 null），
+    //   但整格必须仍是未知 —— 若实现把 MSKU-B 的 null 当 0 跳过、只加 MSKU-A 的 100，
+    //   这条断言才会抓到。
+    const g0 = await api.getGrid(1);
+    const known = g0.demand.find(
+      (d) => d.sku === 'DCC1800264G1' && d.sid === '11072' && d.period === '2026-10',
+    )!;
+    expect(known.seller_sku).toBe('MSKU-A');
+    await api.putDemand(1, known.seller_sku, known.sid, known.period, null);
+    const g = await api.getGrid(1);
+    const cell = g.inventory.find((i) => i.sku === 'DCC1800264G1' && i.sid === '11072' && i.period === '2026-10')!;
+    expect(cell.closing).toBeNull();
+    expect(cell.basis.closing_reason).toBe('unknown_demand');
+    // ★ reason 是另一件事，不许被顺手改掉 —— 改了就把「在途没归属」这条信息抹掉了
+    expect(cell.basis.reason).toBe('no_seller_attribution');
+  });
+
+  it('★ inbound 恒 null（不是 0）；在途总量只在 basis 与 sku_pipeline 里出现', async () => {
+    const g = await api.getGrid(1);
+    expect(g.inventory.every((i) => i.inbound === null)).toBe(true);
+    expect(g.inventory.every((i) => i.basis.includes_plan_purchase === false)).toBe(true);
+    expect(g.sku_pipeline.every((r) => r.no_seller_attribution === true)).toBe(true);
+    // ★ 在途一件都没有并进任何一格库存
+    for (const i of g.inventory) {
+      const t = i.basis.sku_level_in_transit;
+      if (t !== null && i.onhand !== null && i.closing !== null) expect(i.closing).not.toBe(i.onhand + t);
+    }
+  });
+
+  it('★ 跨月是一条链：本月期初 = 上月期末（不是同一个在仓快照抄三遍）', async () => {
+    const g0 = await api.getGrid(1);
+    const groups = new Map<string, typeof g0.inventory>();
+    for (const i of g0.inventory) {
+      const k = `${i.sku}/${i.sid}`;
+      groups.set(k, [...(groups.get(k) ?? []), i]);
+    }
+    const chain = [...groups.values()]
+      .map((rows) => rows.sort((a, b) => a.period.localeCompare(b.period)))
+      .find((rows) => rows.length >= 2 && rows[0]!.closing !== null
+                      && rows[0]!.closing !== rows[0]!.onhand);   // ★ 有消耗，两种口径才分得开
+    // ★ fixture 里没有一个「有消耗」的月份时必须硬失败：那说明这条门禁什么都没测
+    expect(chain, 'fixture 里没有 closing ≠ onhand 的月份，链式口径无法证伪，请让后端补一个').toBeDefined();
+    expect(chain![1]!.onhand).toBe(chain![0]!.closing);
+  });
+
+  it('★ basis.demand 与前端自己算的 Σ 是两个证人，必须一致', async () => {
+    const g = await api.getGrid(1);
+    for (const i of g.inventory) {
+      if (i.basis.closing_reason === 'not_applicable') continue;
+      const mine = g.demand.filter((d) => d.sku === i.sku && d.sid === i.sid && d.period === i.period);
+      const sum = mine.length === 0 || mine.some((d) => d.effective_units === null)
+        ? null : mine.reduce((a, d) => a + (d.effective_units as number), 0);
+      expect(i.basis.demand).toBe(sum);
+    }
+  });
+
+  it('★ 占用撞了抛 409 并点名占用方（点名字段在顶层，不在 detail 里）', async () => {
+    const err = await api.claim(1, { seller_sku: 'MSKU-C', sid: '11094' }).catch((e) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).status).toBe(409);
+    expect((err as ApiError).error).toBe('msku_already_claimed');
+    expect((err as ApiError).fields).toMatchObject({ plan_id: 2, title: '2026 Q3 补货计划' });
+  });
+
+  it('★ 提交逐条列 skipped[]，理由取 S-14 的两个值；铸出与跳过两个数都给', async () => {
+    const r = await api.submit(1);
+    expect(r.rev).toBe(1);
+    expect(r.skipped.map((s) => s.reason)).toContain('zero_purchase');
+    // ★ 被丢掉的那一侧要对得上：铸出 + 跳过 = 参与评估的（货号 × 月）格子数
+    const g = await api.getGrid(1);
+    expect(r.lines + r.skipped.length).toBe(g.purchase.length);
+  });
+
+  it('★ 已有在流转的版本 → 再提交 409 rev_in_flight，点名旧版号', async () => {
+    const err = await api.submit(2).catch((e) => e);
+    expect((err as ApiError).status).toBe(409);
+    expect((err as ApiError).error).toBe('rev_in_flight');
+    expect((err as ApiError).fields).toMatchObject({ in_flight_rev: 2 });
+  });
+
+  it('搜索目录：不给条件 → need_query=true 且 items 为空，与「查不到」不同形', async () => {
+    const none = await api.searchCatalog({});
+    expect(none.need_query).toBe(true);
+    expect(none.items).toEqual([]);
+    const miss = await api.searchCatalog({ q: 'ZZZZ' });
+    expect(miss.need_query).toBe(false);
+    expect(miss.matched).toBe(0);
+  });
+
+  it('撤销版本不填理由 → 400 reason_required', async () => {
+    const err = await api.cancelRev(2, 2, '   ').catch((e) => e);
+    expect((err as ApiError).status).toBe(400);
+    expect((err as ApiError).error).toBe('reason_required');
+  });
+});

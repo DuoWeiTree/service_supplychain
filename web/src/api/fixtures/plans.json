@@ -1,0 +1,10 @@
+{ "plans": [
+  { "plan_id": 1, "title": "2026 Q4 销售计划", "period_start": "2026-10-01", "months": 3,
+    "owner_actor": "ops.zhang", "archived_at": null, "state": null, "state_rev": null },
+  { "plan_id": 2, "title": "2026 Q3 补货计划", "period_start": "2026-07-01", "months": 3,
+    "owner_actor": "ops.zhang", "archived_at": null, "state": "已提交", "state_rev": 2 },
+  { "plan_id": 3, "title": "2026 Q2 清库计划", "period_start": "2026-04-01", "months": 3,
+    "owner_actor": "ops.li", "archived_at": null, "state": "已撤销", "state_rev": 1 },
+  { "plan_id": 4, "title": "2026 Q1 首发计划", "period_start": "2026-01-01", "months": 3,
+    "owner_actor": "ops.li", "archived_at": null, "state": "已完结", "state_rev": 3 }
+], "excluded": { "archived": 2 } }
