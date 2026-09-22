@@ -52,9 +52,11 @@
 ```jsonc
 // 1. GET /v1/plans/{id}/grid
 {
-  "demand":   [{"seller_sku": "", "sid": "", "period": "YYYY-MM",
+  "demand":   [{"seller_sku": "", "sid": "", "sku": "", "period": "YYYY-MM",
                 "system_units": 0, "system_extrapolated": false, "expected_units": null,
-                "basis": "human|system|unknown"}],                       // S-15
+                "effective_units": 0, "basis": "human|system|unknown"}], // S-15
+                // ★ sku：前端按 (sid, sku) 分块，响应里没有别的 msku→货号映射
+                // ★ effective_units：rules/effective.py 单一来源（人填 ?? 系统 ?? null）
   "purchase": [{"sku": "", "period": "YYYY-MM", "planned_units": null}],
   // ★ 键是 (sku, sid)：可售库存的粒度是[店铺, 货号]（02 §3.1a）
   "inventory":[{"sku": "", "sid": "", "period": "YYYY-MM",
