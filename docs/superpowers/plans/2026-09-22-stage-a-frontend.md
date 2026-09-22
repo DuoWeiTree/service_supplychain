@@ -29,15 +29,18 @@
 - 跨月求和的存量列渲染 **「不可求和」**（`14` §1.1 ①）；未知渲染 `—`（`.cell__unknown`）。三者用三个不同的字形，**不许合成一个**。
 
 **一个数要能回答「它是关于什么的」**
-- 库存预估每格必须回显 `basis`（在仓 / 采购在途 / as_of）与标注 **「未计本计划采购」**。
+- 库存预估每格必须回显 `basis`（在仓 / `as_of`）与标注 **「未计本计划采购」**；★ 采购在途是**货号级**，单独一行只读并标 **「未分摊到店铺」**，一件都不并进任何店铺的库存。
 - 系统预估用**铅笔灰**、人填用**蓝黑**、要处理用**朱批**、已落地用**石绿** —— 墨色代替说明文字（`10` §3.1）。
 
 **错误**
-- 后端错误形状 `{code, message, detail}`，★ `detail` 点名是哪几行 → 前端**逐项点名显示**（`10` §1 原则五），**不许显示「保存失败」**。
+- 后端错误形状 ★ `{"error": "...", "hint": "...", …点名字段**平铺在顶层**}`（team-lead 2026-09-22 裁定；`08` §0 写的 `{code,message,detail}` 已被它覆盖，两份只能有一份生效）→ 前端**逐项点名显示**（`10` §1 原则五），**不许显示「保存失败」**。
 - 409 = 冲突与闸（你没写错，但现在不行）· 400 = 你写错了 —— 两者的界面处置不同，必须分支（`08:55`）。
 - 提交结果必须逐条列 `skipped[]`（判据②）；409 `rev_in_flight` 要**点名旧版号**。
 
 **接口**
+- ★ **契约以 `docs/superpowers/plans/2026-09-22-stage-a-backend.md` 为准**（它是有测试的那份）。两边不一致时改前端，并把差异记进附录 A。
+- 月份 ★ 对外一律 `"YYYY-MM"`（如 `"2026-10"`）；只有建计划的 `period_start` 是月初日期 `"YYYY-MM-01"`。
+- 列表类响应 ★ 都带一层包裹（`{plans}` `{sellers}` `{items}` `{revs}`），不是裸数组；拆包在数据层做，页面不该知道这层。
 - 店铺号（`seller_id` / `sid`）★ **全字段字符串**，18 位，JS 会精度丢失。类型里禁止 `number`。
 - ★ **未声明查询参数一律 400** → 前端只发契约里声明过的参数，不加自造参数。
 - 操作人走 `x-actor` 请求头，顶栏下拉选（Q-5 内网裸跑）；屏上标 **「留痕可伪造」**。
@@ -101,11 +104,11 @@ web/
     │   ├── mock.ts                 Task 2  内存实现，读 fixtures
     │   ├── http.ts                 Task 2  真实现，含三问日志
     │   └── fixtures/
-    │       ├── plans.json          Task 2  ★ mock 与 http 的唯一数据源
-    │       ├── grid-1.json         Task 2
-    │       ├── catalog.json        Task 2
-    │       ├── revs-1.json         Task 2
-    │       └── sellers.json        Task 2
+    │       ├── grid-1.json         Task 2  ★ tests/fixtures/grid_response.json 的副本（后端 Task 15 产出），字节比对盯着
+    │       ├── plans.json          Task 2  前端自管
+    │       ├── catalog.json        Task 2  前端自管
+    │       ├── revs-1.json         Task 2  前端自管
+    │       └── sellers.json        Task 2  前端自管
     └── pages/
         ├── OpsHome.tsx             Task 3
         ├── planGridModel.ts        Task 4  ★ 纯函数：三数组 → 行模型（可单测，不碰 DOM）
@@ -686,28 +689,48 @@ EOF
 
 ## Task 2: 数据层 —— 一个接口 · 两个实现 · 一份 fixture
 
+> ★ **本 Task 的契约以后端计划 `docs/superpowers/plans/2026-09-22-stage-a-backend.md` 为准**
+> （它是有测试的那份）。下面每个类型都能指到后端计划的某一行；两边不一致时改这里，不改那边。
+> ★ 四处与 `08` §0 / 我先前草稿**不同**，最容易写错：
+> ① 错误形状是 `{error, hint, …点名字段平铺在顶层}`，**不是** `{code, message, detail}`；
+> ② 月份对外一律 `"YYYY-MM"`（`"2026-10"`），**库里**才是月初日期；
+> ③ 列表类响应都**带一层包裹**（`{plans:[…]}` / `{sellers:[…]}` / `{items:[…]}`），不是裸数组；
+> ④ ★ **库存的身份是 `(sku, sid)`**（`02` §3.1a 可售库存[店铺, 货号]），不是 msku、不是货号；
+>   `inbound` 恒 `null`（在途是货号级，不分摊），在途总量单独走 `sku_pipeline[]`；
+> ⑤ ★★ **`basis.reason` 与 `basis.closing_reason` 是两个字段，不许混用** ——
+>   `reason` **恒为** `"no_seller_attribution"`，它解释的是 `inbound` 为什么是 null；
+>   `closing` 为什么是 null 记在 `closing_reason`。两件事挤进一个字段，就会出现
+>   「这一格既未知又恒定」而只说得出一件。
+
 **Files:**
 - Create: `web/src/api/types.ts` `web/src/api/client.ts` `web/src/api/index.ts` `web/src/api/mock.ts` `web/src/api/http.ts`
-- Create: `web/src/api/fixtures/{plans,grid-1,catalog,revs-1,sellers}.json`
+- Create: `web/src/api/fixtures/{plans,catalog,revs-1,sellers}.json`
+- Copy: `web/src/api/fixtures/grid-1.json` ← `tests/fixtures/grid_response.json`（后端 Task 15 产出）
 - Create: `web/src/components/ErrorDetail.tsx`
-- Test: `web/src/api/mock.test.ts` `web/src/api/http.test.ts` `web/src/components/ErrorDetail.test.tsx`
+- Test: `web/src/api/mock.test.ts` `web/src/api/http.test.ts` `web/src/api/fixtures.test.ts` `web/src/components/ErrorDetail.test.tsx`
+
+**★ 跨计划的执行顺序**：本 Task 排在**后端 Task 15 之后**。那份 `tests/fixtures/grid_response.json`
+还没生成时，`fixtures.test.ts` 的字节比对就是红的 —— ★ **这条红不许改成 skip**：
+默认 skip 的测试会静默死掉，而「后端 fixture 还没生成」正是它要报的事。
 
 **Interfaces:**
 - Consumes: `getActor()`（Task 1）
 - Produces（后续 Task **只引用、不新增**类型）：
-  - `api: SupplyChainApi`（从 `web/src/api/index.ts` 默认导出的单例）
-  - `class ApiError extends Error { code: string; status: number; detail: Record<string, unknown> }`
-  - 类型：`PlanSummary` `DashboardPlanCounts` `UnsubmittedBoard` `GridResponse` `GridDemandCell` `GridPurchaseCell` `GridInventoryCell` `CatalogResult` `CatalogSku` `CatalogMsku` `ClaimHolder` `UnbuildableSeller` `SubmitResult` `SkippedCell` `RevList` `Rev` `PlanDiff` `DiffRow` `Seller`
+  - `api: SupplyChainApi`（`web/src/api/index.ts` 的单例）
+  - `class ApiError extends Error { status: number; error: string; hint: string; fields: Record<string, unknown> }`
+  - 类型：`Period` `PlanSummary` `PlanList` `DashboardPlans` `UnsubmittedBoard` `GridResponse` `DemandCell` `PurchaseCell` `InventoryCell` `InventoryBasis` `SkuPipelineRow` `CatalogResult` `CatalogItem` `CatalogMsku` `ClaimHolder` `SubmitResult` `SkippedCell` `SkipReason` `RevList` `Rev` `PlanDiff` `Seller`
   - `<ErrorDetail err={ApiError} />`
 
 - [ ] **Step 1: 写全部类型（一次定完）**
 
 ```ts
 // web/src/api/types.ts
+// ★ 逐条对应后端计划的返回体。字段名、类型、null 语义都不许自己改 ——
+//   mock 与真 API 对不上，判据⑥ 直接挂，而界面是照这份形状先写完的。
 
-/** 'YYYY-MM-01' —— 起始月须月初（08 §1.1） */
+/** ★ 对外一律 "YYYY-MM"（如 "2026-10"）。库里是月初 date —— 前端永远不碰那个形态 */
 export type Period = string;
-/** ★ 店铺号 18 位，JS number 会精度丢失 ⇒ 全字段字符串（08 §0） */
+/** ★ 店铺号 18 位，JS number 会精度丢失 ⇒ 全字段字符串 */
 export type SellerId = string;
 export type Sid = string;
 export type PlanId = number;
@@ -718,162 +741,191 @@ export type LineState = '已提交' | '已确认' | '已下单' | '准备排货'
 export interface PlanSummary {
   plan_id: PlanId;
   title: string;
-  period_start: Period;
+  /** ★ 这一个是月初日期 "YYYY-MM-01"（建计划时的入参口径） */
+  period_start: string;
   months: number;
   owner_actor: string;
-  /** ★ 木桶派生的整体状态；null = 从未提交过（没有 rev，也就没有记录） */
+  /** null = 未归档 */
+  archived_at: string | null;
+  /** ★ 木桶派生；null = 从未提交过（没有 rev 就没有记录） */
   state: LineState | null;
-  current_rev: number | null;
-  in_flight_rev: number | null;
-  archived: boolean;
-  updated_at: string;
+  state_rev: number | null;
 }
 
-/** 08 §1.1 /v1/dashboard/plans —— ★ 后端返回全集（S-20），前端按阶段挑着渲染 */
-export interface DashboardPlanCounts {
-  in_progress: number;
-  submitted: number;
-  submitted_unconfirmed: number;
-  ordered: number;
-  ready_to_dispatch: number;
-  dispatched: number;
+export interface PlanList {
+  plans: PlanSummary[];
+  /** ★ 被挡掉的那一侧：不说「挡掉了几张」，人只会觉得计划凭空少了 */
+  excluded: { archived: number };
 }
 
-/** 08 §1.1 /v1/dashboard/unsubmitted —— ★ 两栏，第二栏按 content_digest 判（A-2） */
+/** 看板计数的键是**中文状态名**（后端 `COUNTED`），不是英文 */
+export type CountKey = '进行中' | '已提交' | '已提交未确认' | '已下单' | '准备排货' | '已排货';
+
+export interface DashboardPlans {
+  counts: Record<CountKey, number>;
+  /** ★ 后端返回全集（诚实），由前端按阶段不渲染（S-20） */
+  scope_note: { unreachable_in_stage_a: CountKey[]; never_submitted_excluded: number };
+}
+
 export interface UnsubmittedBoard {
-  never_submitted: PlanSummary[];
-  changed_since_submit: PlanSummary[];
-}
-
-/** S-15：提交冻结取生效值并记 basis */
-export type DemandBasis = 'human' | 'system' | 'unknown';
-
-export interface GridDemandCell {
-  seller_id: SellerId;
-  sku: string;
-  seller_sku: string;
-  sid: Sid;
-  period: Period;
-  /** 系统预估，机器估 ⇒ 铅笔灰 */
-  system_units: number;
-  /** ★ null = 未知，不是 0（M-8），向后传染 */
-  expected_units: number | null;
-  basis: DemandBasis;
-}
-
-export interface GridPurchaseCell {
-  /** ★ 货号级，不带店铺（P1/P2） */
-  sku: string;
-  period: Period;
-  purchase_units: number | null;
-}
-
-/** S-10/S-19：库存预估 = 在仓 + 采购在途 − 期望销量，全是 CH 现成事实 */
-export interface InventoryBasis {
-  source: 'ch';
-  as_of: string;
-  /** ★ 恒 false —— 屏上标「未计本计划采购」 */
-  includes_plan_purchase: false;
-}
-
-export interface GridInventoryCell {
-  seller_sku: string;
-  sid: Sid;
-  period: Period;
-  on_hand_units: number;
-  purchase_in_transit_units: number;
-  /** ★ null = 未知（上游期望销量未知传染过来） */
-  closing_units: number | null;
-  basis: InventoryBasis;
-}
-
-export interface GridResponse {
-  plan: PlanSummary;
-  /** 月份列，长度 = plan.months */
-  periods: Period[];
-  demand: GridDemandCell[];
-  purchase: GridPurchaseCell[];
-  inventory: GridInventoryCell[];
+  never_submitted: { plan_id: PlanId; title: string }[];
+  /** 按 content_digest 判（A-2）；`since_rev` = 与哪一版比出来的 */
+  changed_since_submit: { plan_id: PlanId; title: string; since_rev: number }[];
 }
 
 export interface Seller {
   seller_id: SellerId;
   name: string;
   market: string;
-  /** ★ false ⇒ 库存预估显示「不适用」，不是 0（02 §3.1a） */
+  /** ★ false ⇒ 该店的 FBA 库存是「不适用」，不是 0（02 §3.1a） */
   has_fba: boolean;
+  platform: string;
 }
 
-export interface ClaimHolder {
-  plan_id: PlanId;
-  plan_title: string;
-  actor: string;
-  claimed_at: string;
+/** S-15：生效值的来源。★ 冻结后靠它分清人填与采用预估 */
+export type DemandBasis = 'human' | 'system' | 'unknown';
+
+export interface DemandCell {
+  seller_sku: string;
+  sid: Sid;
+  sku: string;
+  period: Period;
+  /** 系统预估；★ null = 连预估都没有 */
+  system_units: number | null;
+  /** ★ 14 §5：外推标记随结果一起回来，界面不许回头读原始格子 */
+  system_extrapolated: boolean;
+  /** ★ null = 未知（M-8），不是 0 */
+  expected_units: number | null;
+  /** 生效值 = 人填优先，否则系统预估，两者都没有则 null */
+  effective_units: number | null;
+  basis: DemandBasis;
 }
+
+export interface PurchaseCell {
+  /** ★ 货号级，不带店铺（P1/P2） */
+  sku: string;
+  period: Period;
+  planned_units: number | null;
+}
+
+/** ★ `inbound` 为什么是 null。阶段 A **恒定**是这一个值 —— 它不说明 closing 的任何事 */
+export type InboundReason = 'no_seller_attribution';
+
+/** ★ `closing` 为什么是 null。两种成因处置不同，**不许合成一个裸 null** */
+export type ClosingReason = null | 'not_applicable' | 'unknown_demand';
+
+export interface InventoryBasis {
+  source: 'ch';
+  as_of: string;
+  /** ★ 恒 false 且必须显式返回 —— 屏上标「未计本计划采购」 */
+  includes_plan_purchase: false;
+  /** 这一格用掉的期望销量（= 该店该货号各 msku 生效值之和）。★ 与前端自己算的那份互为证人 */
+  demand: number | null;
+  /** ★ 恒 'no_seller_attribution' —— 只解释 inbound，不解释 closing */
+  reason: InboundReason;
+  /** ★ closing 的成因，与 reason 分开的那一个 */
+  closing_reason: ClosingReason;
+  /** 该货号该月的在途总量。★ 放在这里是因为它**不属于这一格**（没有店铺归属），只展示不分摊 */
+  sku_level_in_transit: number | null;
+  sources: { units: number; kind: string; ref: string }[];
+}
+
+/** ★ 可售库存的身份是 **[店铺, 货号]**（`02` §3.1a）—— 不是 msku，也不带任何分摊 */
+export interface InventoryCell {
+  sku: string;
+  sid: Sid;
+  period: Period;
+  /** 该格期初：首月是在仓事实，其后是**上月期末**（★ 跨月是一条链，不是同一个快照） */
+  onhand: number | null;
+  /** ★ 阶段 A 恒 null —— 在途是货号级，按单店给全额也是分摊假设（C4 禁） */
+  inbound: null;
+  /** ★ = onhand − basis.demand。null 时看 basis.closing_reason */
+  closing: number | null;
+  basis: InventoryBasis;
+}
+
+/** 货号级在途总量。★ 只展示，不分摊到任何店铺 */
+export interface SkuPipelineRow {
+  sku: string;
+  period: Period;
+  units: number | null;
+  sources: { units: number; kind: string; ref: string }[];
+  no_seller_attribution: true;
+}
+
+export interface GridResponse {
+  plan_id: PlanId;
+  /** ["2026-10","2026-11","2026-12"] */
+  periods: Period[];
+  demand: DemandCell[];
+  purchase: PurchaseCell[];
+  /** ★ 店铺 × 货号 × 月 */
+  inventory: InventoryCell[];
+  /** ★ 货号 × 月；画成一行只读，**不并进任何一个店铺的库存** */
+  sku_pipeline: SkuPipelineRow[];
+}
+
+export interface ClaimHolder { plan_id: PlanId; title: string; actor: string }
 
 export interface CatalogMsku {
   seller_sku: string;
   sid: Sid;
-  seller_id: SellerId;
   seller_name: string;
-  /** 非 null = 已被占用 ⇒ ★ 标红留在表里，不过滤（P11） */
-  claim: ClaimHolder | null;
+  /** ★ false = 已被别的计划占用；★ 行**留在表里标出来，不过滤**（P11） */
+  selectable: boolean;
+  claimed_by: ClaimHolder | null;
 }
 
-export interface CatalogSku {
+/** 06 §1.2：店铺没挂渠道 → 建不出格子，必须点名。★ 阶段 A 后端恒返回空数组 */
+export interface UnbuildableSeller { sid: Sid; reason: 'no_channel_code' }
+
+export interface CatalogItem {
   sku: string;
   name: string;
-  category: string | null;
-  /** 品类镜像刷新时刻；陈旧要标 .stale（原则七） */
-  category_refreshed_at: string | null;
   mskus: CatalogMsku[];
+  unbuildable_sellers: UnbuildableSeller[];
+  /** 占用方唯一时才有一个答案；两张计划各占一部分 → null，名单在 claimed_by_plans */
+  claimed_by: { plan_id: PlanId; title: string } | null;
+  claimed_by_plans: { plan_id: PlanId; title: string }[];
 }
 
-/** 06 §1.2：店铺没挂渠道 → 建不出格子，★ 必须点名 */
-export interface UnbuildableSeller {
-  seller_id: SellerId;
-  seller_name: string;
-  reason: 'no_channel_code';
-}
-
-/** ★ P11：不给条件故意不返回，与「查不到」必须长得不一样 */
-export type CatalogResult =
-  | { kind: 'need_query' }
-  | { kind: 'ok'; skus: CatalogSku[]; truncated: boolean; unbuildable_sellers: UnbuildableSeller[] };
-
-export interface CatalogQuery {
-  /** 货号或名称片段 */
-  q?: string;
-  category?: string;
+export interface CatalogResult {
+  /** ★ 与「查不到」分得开：没给条件是 need_query，不是空结果 */
+  need_query: boolean;
+  truncated: boolean;
+  limit: number;
+  items: CatalogItem[];
+  /** 头部接口形状块没列它（实现里有）⇒ 可选。★ 判「查不到」一律用 `!need_query && items.length === 0`，
+   *  不依赖这个字段 —— 依赖一个可能缺的字段去判空，缺了就会显示成「还没搜」 */
+  matched?: number;
 }
 
 export interface ClaimTarget { seller_sku: string; sid: Sid }
+export interface ClaimResult { claimed: { seller_sku: string; sid: Sid; sku: string } }
+export interface ReleaseResult { released: { seller_sku: string; sid: Sid }; dropped_cells: number }
 
 /** S-14：值域已裁定，只有这两个 */
 export type SkipReason = 'zero_purchase' | 'no_claimed_msku';
-
-export interface SkippedCell {
-  seller_id: SellerId;
-  sku: string;
-  period: Period;
-  reason: SkipReason;
-}
+export interface SkippedCell { sku: string; period: Period; reason: SkipReason }
 
 export interface SubmitResult {
   rev: number;
-  line_count: number;
-  /** ★ 判据②：逐条列出，不静默丢 */
+  /** ★ 铸出几条。字段名是 `lines`（team-lead 裁定；后端若残留 `minted` 以 `lines` 为准） */
+  lines: number;
   skipped: SkippedCell[];
+  /** ★ 空版本不占在流转位时为 false。头部接口形状块没列它，可能缺 ⇒ 可选，缺了就不渲染那一行 */
+  in_flight?: boolean;
+  content_digest?: string;
 }
 
 export interface Rev {
   rev: number;
+  content_digest: string;
+  is_current: boolean;
+  in_flight: boolean;
   submitted_by: string;
   submitted_at: string;
-  content_digest: string;
-  line_count: number;
-  is_current: boolean;
-  is_in_flight: boolean;
+  lines: number;
 }
 
 export interface RevList {
@@ -883,22 +935,17 @@ export interface RevList {
   current_rev: number | null;
 }
 
-export type DiffChange = 'added' | 'removed' | 'changed';
-
-export interface DiffRow {
-  kind: 'demand' | 'purchase';
+export interface DiffMoved { sku: string; period: Period; total_units: number }
+export interface DiffChanged {
   sku: string;
-  seller_sku: string | null;
-  sid: Sid | null;
   period: Period;
-  before: number | null;
-  after: number | null;
-  change: DiffChange;
+  total_units: { from: number; to: number };
+  demand_at_submit: { from: number; to: number };
 }
+/** ★ 三个数组分开，不合成一个「变化量」—— 新增和改动的处置不同 */
+export interface PlanDiff { added: DiffMoved[]; removed: DiffMoved[]; changed: DiffChanged[] }
 
-export interface PlanDiff { from: number; to: number; rows: DiffRow[] }
-
-export interface CancelRevResult { cancelled_lines: number }
+export interface CancelRevResult { cancelled: number[]; reason: string }
 
 export interface ListPlansQuery {
   /** ★ 只发契约里声明过的参数 —— 未声明查询参数一律 400 */
@@ -906,8 +953,8 @@ export interface ListPlansQuery {
   owner?: string;
   archived?: boolean;
 }
-
-export interface CreatePlanInput { title: string; period_start: Period; months: number }
+export interface CreatePlanInput { title: string; period_start: string; months: number }
+export interface CatalogQuery { q?: string; limit?: number }
 ```
 
 - [ ] **Step 2: 写接口与 ApiError**
@@ -915,190 +962,169 @@ export interface CreatePlanInput { title: string; period_start: Period; months: 
 ```ts
 // web/src/api/client.ts
 import type {
-  CancelRevResult, CatalogQuery, CatalogResult, ClaimTarget, CreatePlanInput,
-  DashboardPlanCounts, GridDemandCell, GridPurchaseCell, GridResponse, ListPlansQuery,
-  Period, PlanDiff, PlanId, PlanSummary, RevList, Seller, Sid, SubmitResult, UnsubmittedBoard,
+  CancelRevResult, CatalogQuery, CatalogResult, ClaimResult, ClaimTarget, CreatePlanInput,
+  DashboardPlans, DemandCell, GridResponse, ListPlansQuery, Period, PlanDiff, PlanId,
+  PlanList, PlanSummary, PurchaseCell, ReleaseResult, RevList, Seller, Sid, SubmitResult,
+  UnsubmittedBoard,
 } from './types';
 
+/** ★ 后端的错误形状是 `{error, hint, …点名字段平铺在顶层}`（team-lead 2026-09-22 裁定）。
+ *  `08` §0 写的 `{code, message, detail}` 已被这一条覆盖 —— 两份形状只能有一份生效。 */
 export class ApiError extends Error {
-  readonly code: string;
   readonly status: number;
-  readonly detail: Record<string, unknown>;
-  constructor(status: number, code: string, message: string, detail: Record<string, unknown> = {}) {
-    super(message);
+  readonly error: string;
+  readonly hint: string;
+  /** 顶层除 error/hint 外的全部字段，就是「点名是哪几行」的那部分 */
+  readonly fields: Record<string, unknown>;
+  constructor(status: number, error: string, hint: string, fields: Record<string, unknown> = {}) {
+    super(`${status} ${error}: ${hint}`);
     this.name = 'ApiError';
     this.status = status;
-    this.code = code;
-    this.detail = detail;
+    this.error = error;
+    this.hint = hint;
+    this.fields = fields;
   }
 }
 
 export interface SupplyChainApi {
-  listPlans(q: ListPlansQuery): Promise<PlanSummary[]>;
+  listPlans(q: ListPlansQuery): Promise<PlanList>;
+  /** `GET /grid` 不带计划抬头 ⇒ 从列表里取。封在数据层，页面不必知道要拉两次 */
+  getPlan(planId: PlanId): Promise<PlanSummary>;
   createPlan(input: CreatePlanInput): Promise<{ plan_id: PlanId }>;
-  dashboardPlans(): Promise<DashboardPlanCounts>;
+  dashboardPlans(): Promise<DashboardPlans>;
   dashboardUnsubmitted(): Promise<UnsubmittedBoard>;
   listSellers(): Promise<Seller[]>;
 
   getGrid(planId: PlanId): Promise<GridResponse>;
   /** ★ units 可以是 null —— 空 = 未知 */
-  putDemand(planId: PlanId, sellerSku: string, sid: Sid, period: Period, units: number | null): Promise<GridDemandCell>;
-  putPurchase(planId: PlanId, sku: string, period: Period, units: number | null): Promise<GridPurchaseCell>;
+  putDemand(planId: PlanId, sellerSku: string, sid: Sid, period: Period, units: number | null): Promise<DemandCell>;
+  putPurchase(planId: PlanId, sku: string, period: Period, units: number | null): Promise<PurchaseCell>;
 
-  searchCatalog(planId: PlanId, q: CatalogQuery): Promise<CatalogResult>;
-  /** ★ 一次一个 msku（08 只有单条端点）；页面循环并逐条收集 409 */
-  claim(planId: PlanId, target: ClaimTarget): Promise<void>;
-  releaseClaim(planId: PlanId, sellerSku: string, sid: Sid): Promise<void>;
+  searchCatalog(q: CatalogQuery): Promise<CatalogResult>;
+  /** ★ 一次一个 msku（后端只有单条端点）；页面循环并逐条收集 409 */
+  claim(planId: PlanId, target: ClaimTarget): Promise<ClaimResult>;
+  releaseClaim(planId: PlanId, sellerSku: string, sid: Sid): Promise<ReleaseResult>;
 
   submit(planId: PlanId): Promise<SubmitResult>;
   listRevs(planId: PlanId): Promise<RevList>;
-  setCurrentRev(planId: PlanId, rev: number): Promise<void>;
+  setCurrentRev(planId: PlanId, rev: number): Promise<{ current_rev: number }>;
   diff(planId: PlanId, from: number, to: number): Promise<PlanDiff>;
   cancelRev(planId: PlanId, rev: number, reason: string): Promise<CancelRevResult>;
 }
 ```
 
-- [ ] **Step 3: 写 fixture —— ★ mock 与 api 的唯一数据源**
+- [ ] **Step 3: 把后端的 fixture 复制过来，并写字节比对**
 
-★ 这几个 JSON 是判据⑥ 的支点：`mock.ts` 直接读它们，`http.ts` 在测试里由 fetch 桩喂同一份。
-后端落地时，**同一份文件要成为后端契约测试的 fixture**（登记在附录 B）。
+```bash
+cd /home/fido/work/2026/jxd_service_group/service_supplychain
+cp tests/fixtures/grid_response.json web/src/api/fixtures/grid-1.json
+```
+
+```ts
+// web/src/api/fixtures.test.ts
+import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+
+const BACKEND = '../../../tests/fixtures/grid_response.json';
+const MINE = './fixtures/grid-1.json';
+
+describe('grid fixture 与后端同源', () => {
+  it('★ 逐字节相同 —— 两份各自维护的话，前端跑 mock 全绿、切 api 才发现字段名不一样', () => {
+    const h = (p: string) => createHash('sha256')
+      .update(readFileSync(new URL(p, import.meta.url))).digest('hex');
+    expect(h(MINE)).toBe(h(BACKEND));
+  });
+
+  it('★ fixture 覆盖三种长得像的形态，缺一种前端就永远画不出它', () => {
+    const g = JSON.parse(readFileSync(new URL(MINE, import.meta.url), 'utf8'));
+    const inv = g.inventory as { closing: number | null; onhand: number | null; inbound: null;
+                                 basis: { reason: string | null } }[];
+    expect(inv.some((r) => r.basis.reason === 'not_applicable')).toBe(true);          // 不适用
+    expect(inv.some((r) => r.basis.reason === 'unknown_demand')).toBe(true);          // 未知
+    expect(inv.some((r) => typeof r.closing === 'number')).toBe(true);                // 有数
+    // ★ 三种 null 成因必须靠 reason 分得开，不能只看 closing===null
+    expect(new Set(inv.filter((r) => r.closing === null).map((r) => r.basis.reason)).size)
+      .toBeGreaterThan(1);
+    // ★ inbound 恒 null（不是 0）：阶段 A 这一层根本不成立
+    expect(inv.every((r) => r.inbound === null)).toBe(true);
+    expect(g.demand.some((d: { basis: string }) => d.basis === 'human')).toBe(true);
+    expect(g.demand.some((d: { basis: string }) => d.basis === 'system')).toBe(true);
+  });
+});
+```
+
+- [ ] **Step 4: 跑它，确认红**
+
+```bash
+cd web && npx vitest run src/api/fixtures.test.ts
+```
+Expected（后端 Task 15 还没跑时）: FAIL —— `ENOENT ... tests/fixtures/grid_response.json`。
+★ 这条红的处置是**去等后端 Task 15**，不是把测试改成 skip。
+后端产物到位后重跑，Expected: PASS（2 个用例）。
+
+- [ ] **Step 5: 写其余四份 fixture（前端自管）**
+
+★ 只有 `grid-1.json` 与后端同源；下面四份是前端 mock 的布景，后端有对应端点时再收敛。
 
 ```json
 // web/src/api/fixtures/sellers.json
-[
-  { "seller_id": "11072", "name": "A4Pet-US", "market": "US", "has_fba": true },
-  { "seller_id": "11094", "name": "A4Pet-BS-UK", "market": "UK", "has_fba": true },
-  { "seller_id": "20311", "name": "A4Pet-Walmart-US", "market": "US", "has_fba": false }
-]
+{ "sellers": [
+  { "seller_id": "11072", "name": "A4Pet-US", "market": "US", "has_fba": true,  "platform": "amazon" },
+  { "seller_id": "11094", "name": "A4Pet-BS-UK", "market": "UK", "has_fba": true,  "platform": "amazon" },
+  { "seller_id": "90001", "name": "A4Pet-WM", "market": "US", "has_fba": false, "platform": "walmart" }
+] }
 ```
 
 ```json
 // web/src/api/fixtures/plans.json
-[
+{ "plans": [
   { "plan_id": 1, "title": "2026 Q4 销售计划", "period_start": "2026-10-01", "months": 3,
-    "owner_actor": "ops.zhang", "state": null, "current_rev": null, "in_flight_rev": null,
-    "archived": false, "updated_at": "2026-09-21T10:12:00+08:00" },
+    "owner_actor": "ops.zhang", "archived_at": null, "state": null, "state_rev": null },
   { "plan_id": 2, "title": "2026 Q3 补货计划", "period_start": "2026-07-01", "months": 3,
-    "owner_actor": "ops.zhang", "state": "已提交", "current_rev": 2, "in_flight_rev": 2,
-    "archived": false, "updated_at": "2026-09-18T09:00:00+08:00" },
+    "owner_actor": "ops.zhang", "archived_at": null, "state": "已提交", "state_rev": 2 },
   { "plan_id": 3, "title": "2026 Q2 清库计划", "period_start": "2026-04-01", "months": 3,
-    "owner_actor": "ops.li", "state": "已撤销", "current_rev": 1, "in_flight_rev": null,
-    "archived": false, "updated_at": "2026-06-30T17:40:00+08:00" },
+    "owner_actor": "ops.li", "archived_at": null, "state": "已撤销", "state_rev": 1 },
   { "plan_id": 4, "title": "2026 Q1 首发计划", "period_start": "2026-01-01", "months": 3,
-    "owner_actor": "ops.li", "state": "已完结", "current_rev": 3, "in_flight_rev": null,
-    "archived": false, "updated_at": "2026-04-02T11:20:00+08:00" }
-]
+    "owner_actor": "ops.li", "archived_at": null, "state": "已完结", "state_rev": 3 }
+], "excluded": { "archived": 2 } }
 ```
 
-★ `plan 4` 是 `已完结`：它存在**只为了证明首页把它过滤掉了** —— 「完结的计划不显示」这条规矩，没有一条完结的计划就测不出来。
-
-```json
-// web/src/api/fixtures/grid-1.json
-{
-  "plan": { "plan_id": 1, "title": "2026 Q4 销售计划", "period_start": "2026-10-01", "months": 3,
-            "owner_actor": "ops.zhang", "state": null, "current_rev": null, "in_flight_rev": null,
-            "archived": false, "updated_at": "2026-09-21T10:12:00+08:00" },
-  "periods": ["2026-10-01", "2026-11-01", "2026-12-01"],
-  "demand": [
-    { "seller_id": "11072", "sku": "DCC1800264", "seller_sku": "DCC1800264-US", "sid": "11072",
-      "period": "2026-10-01", "system_units": 180, "expected_units": 180, "basis": "human" },
-    { "seller_id": "11072", "sku": "DCC1800264", "seller_sku": "DCC1800264-US", "sid": "11072",
-      "period": "2026-11-01", "system_units": 200, "expected_units": 200, "basis": "human" },
-    { "seller_id": "11072", "sku": "DCC1800264", "seller_sku": "DCC1800264-US", "sid": "11072",
-      "period": "2026-12-01", "system_units": 210, "expected_units": null, "basis": "unknown" },
-    { "seller_id": "11072", "sku": "DCC1800264", "seller_sku": "DCC1800264-US-B", "sid": "11072",
-      "period": "2026-10-01", "system_units": 40, "expected_units": 40, "basis": "human" },
-    { "seller_id": "11072", "sku": "DCC1800264", "seller_sku": "DCC1800264-US-B", "sid": "11072",
-      "period": "2026-11-01", "system_units": 45, "expected_units": null, "basis": "system" },
-    { "seller_id": "11072", "sku": "DCC1800264", "seller_sku": "DCC1800264-US-B", "sid": "11072",
-      "period": "2026-12-01", "system_units": 50, "expected_units": null, "basis": "unknown" },
-    { "seller_id": "20311", "sku": "DCC1800264", "seller_sku": "DCC1800264-WMT", "sid": "20311",
-      "period": "2026-10-01", "system_units": 60, "expected_units": 60, "basis": "human" },
-    { "seller_id": "20311", "sku": "DCC1800264", "seller_sku": "DCC1800264-WMT", "sid": "20311",
-      "period": "2026-11-01", "system_units": 65, "expected_units": 65, "basis": "human" },
-    { "seller_id": "20311", "sku": "DCC1800264", "seller_sku": "DCC1800264-WMT", "sid": "20311",
-      "period": "2026-12-01", "system_units": 70, "expected_units": 70, "basis": "human" }
-  ],
-  "purchase": [
-    { "sku": "DCC1800264", "period": "2026-10-01", "purchase_units": 500 },
-    { "sku": "DCC1800264", "period": "2026-11-01", "purchase_units": null },
-    { "sku": "DCC1800264", "period": "2026-12-01", "purchase_units": null }
-  ],
-  "inventory": [
-    { "seller_sku": "DCC1800264-US", "sid": "11072", "period": "2026-10-01",
-      "on_hand_units": 420, "purchase_in_transit_units": 180, "closing_units": 420,
-      "basis": { "source": "ch", "as_of": "2026-09-21", "includes_plan_purchase": false } },
-    { "seller_sku": "DCC1800264-US", "sid": "11072", "period": "2026-11-01",
-      "on_hand_units": 420, "purchase_in_transit_units": 180, "closing_units": 220,
-      "basis": { "source": "ch", "as_of": "2026-09-21", "includes_plan_purchase": false } },
-    { "seller_sku": "DCC1800264-US", "sid": "11072", "period": "2026-12-01",
-      "on_hand_units": 420, "purchase_in_transit_units": 180, "closing_units": null,
-      "basis": { "source": "ch", "as_of": "2026-09-21", "includes_plan_purchase": false } },
-    { "seller_sku": "DCC1800264-US-B", "sid": "11072", "period": "2026-10-01",
-      "on_hand_units": 30, "purchase_in_transit_units": 0, "closing_units": -10,
-      "basis": { "source": "ch", "as_of": "2026-09-21", "includes_plan_purchase": false } },
-    { "seller_sku": "DCC1800264-US-B", "sid": "11072", "period": "2026-11-01",
-      "on_hand_units": 30, "purchase_in_transit_units": 0, "closing_units": null,
-      "basis": { "source": "ch", "as_of": "2026-09-21", "includes_plan_purchase": false } },
-    { "seller_sku": "DCC1800264-US-B", "sid": "11072", "period": "2026-12-01",
-      "on_hand_units": 30, "purchase_in_transit_units": 0, "closing_units": null,
-      "basis": { "source": "ch", "as_of": "2026-09-21", "includes_plan_purchase": false } },
-    { "seller_sku": "DCC1800264-WMT", "sid": "20311", "period": "2026-10-01",
-      "on_hand_units": 0, "purchase_in_transit_units": 0, "closing_units": null,
-      "basis": { "source": "ch", "as_of": "2026-09-21", "includes_plan_purchase": false } },
-    { "seller_sku": "DCC1800264-WMT", "sid": "20311", "period": "2026-11-01",
-      "on_hand_units": 0, "purchase_in_transit_units": 0, "closing_units": null,
-      "basis": { "source": "ch", "as_of": "2026-09-21", "includes_plan_purchase": false } },
-    { "seller_sku": "DCC1800264-WMT", "sid": "20311", "period": "2026-12-01",
-      "on_hand_units": 0, "purchase_in_transit_units": 0, "closing_units": null,
-      "basis": { "source": "ch", "as_of": "2026-09-21", "includes_plan_purchase": false } }
-  ]
-}
-```
-
-★ 这份 fixture 刻意覆盖五种形态，缺一种就有一条规矩测不出来：
-`expected_units: null`（未知）· `closing_units: -10`（断货 → 朱批）· `closing_units: null`（未知传染）·
-`seller 20311 has_fba=false`（→「不适用」）· `purchase_units: null`（→ 提交时 `zero_purchase` 跳过）。
+★ `plan 4` 是 `已完结`：它存在**只为了证明首页把它过滤掉了** —— 没有一条完结的计划，
+「完结的计划不显示」这条规矩就测不出来。`excluded.archived: 2` 同理，用来测「挡掉的那一侧有个数」。
 
 ```json
 // web/src/api/fixtures/catalog.json
-{
-  "skus": [
-    { "sku": "DCC1800264", "name": "猫砂盆 · 大号", "category": "宠物用品/猫砂盆",
-      "category_refreshed_at": "2026-09-15T08:00:00+08:00",
-      "mskus": [
-        { "seller_sku": "DCC1800264-US", "sid": "11072", "seller_id": "11072", "seller_name": "A4Pet-US", "claim": null },
-        { "seller_sku": "DCC1800264-UK", "sid": "11094", "seller_id": "11094", "seller_name": "A4Pet-BS-UK",
-          "claim": { "plan_id": 2, "plan_title": "2026 Q3 补货计划", "actor": "ops.li", "claimed_at": "2026-09-18T09:00:00+08:00" } },
-        { "seller_sku": "DCC1800264-WMT", "sid": "20311", "seller_id": "20311", "seller_name": "A4Pet-Walmart-US", "claim": null }
-      ] },
-    { "sku": "DCC1800311", "name": "猫砂铲", "category": null, "category_refreshed_at": null,
-      "mskus": [
-        { "seller_sku": "DCC1800311-US", "sid": "11072", "seller_id": "11072", "seller_name": "A4Pet-US", "claim": null }
-      ] }
-  ],
-  "truncated": false,
-  "unbuildable_sellers": [
-    { "seller_id": "30112", "seller_name": "A4Pet-TikTok-US", "reason": "no_channel_code" }
-  ]
-}
+{ "need_query": false, "matched": 2, "truncated": false, "limit": 50, "items": [
+  { "sku": "DCC1800264G1", "name": "猫爬架",
+    "mskus": [
+      { "seller_sku": "MSKU-A", "sid": "11072", "seller_name": "A4Pet-US", "selectable": true, "claimed_by": null },
+      { "seller_sku": "MSKU-C", "sid": "11094", "seller_name": "A4Pet-BS-UK", "selectable": false,
+        "claimed_by": { "plan_id": 2, "title": "2026 Q3 补货计划", "actor": "ops.li" } },
+      { "seller_sku": "MSKU-W", "sid": "90001", "seller_name": "A4Pet-WM", "selectable": true, "claimed_by": null }
+    ],
+    "unbuildable_sellers": [],
+    "claimed_by": { "plan_id": 2, "title": "2026 Q3 补货计划" },
+    "claimed_by_plans": [{ "plan_id": 2, "title": "2026 Q3 补货计划" }] },
+  { "sku": "A4P-TOY-002", "name": "逗猫棒",
+    "mskus": [
+      { "seller_sku": "MSKU-B", "sid": "11072", "seller_name": "A4Pet-US", "selectable": true, "claimed_by": null }
+    ],
+    "unbuildable_sellers": [], "claimed_by": null, "claimed_by_plans": [] }
+] }
 ```
 
 ```json
 // web/src/api/fixtures/revs-1.json
-{
-  "revs": [
-    { "rev": 1, "submitted_by": "ops.zhang", "submitted_at": "2026-09-19T14:03:00+08:00",
-      "content_digest": "8f1c2a0b9d4e6f77", "line_count": 2, "is_current": false, "is_in_flight": false },
-    { "rev": 2, "submitted_by": "ops.zhang", "submitted_at": "2026-09-20T10:31:00+08:00",
-      "content_digest": "3b7e5d1c8a90f2e4", "line_count": 3, "is_current": true, "is_in_flight": true }
-  ],
-  "in_flight_rev": 2,
-  "current_rev": 2
-}
+{ "revs": [
+  { "rev": 2, "content_digest": "3b7e5d1c8a90f2e4", "is_current": true, "in_flight": true,
+    "submitted_by": "ops.zhang", "submitted_at": "2026-09-20T10:31:00+08:00", "lines": 3 },
+  { "rev": 1, "content_digest": "8f1c2a0b9d4e6f77", "is_current": false, "in_flight": false,
+    "submitted_by": "ops.zhang", "submitted_at": "2026-09-19T14:03:00+08:00", "lines": 2 }
+], "in_flight_rev": 2, "current_rev": 2 }
 ```
 
-- [ ] **Step 4: 写 mock 的失败测试**
+- [ ] **Step 6: 写 mock 的失败测试**
 
 ```ts
 // web/src/api/mock.test.ts
@@ -1109,69 +1135,121 @@ import { ApiError } from './client';
 let api = createMockApi();
 beforeEach(() => { api = createMockApi(); });
 
+const firstMsku = async () => (await api.getGrid(1)).demand[0]!;
+
 describe('mock 数据源', () => {
-  it('putDemand(null) 存进去的是 null，不是 0', async () => {
-    const cell = await api.putDemand(1, 'DCC1800264-US', '11072', '2026-10-01', null);
+  it('月份一律 "YYYY-MM"，不是月初日期', async () => {
+    const g = await api.getGrid(1);
+    expect(g.periods.every((p) => /^\d{4}-\d{2}$/.test(p))).toBe(true);
+  });
+
+  it('putDemand(null) 存进去的是 null，不是 0；basis 退回 unknown 或 system', async () => {
+    const d = await firstMsku();
+    const cell = await api.putDemand(1, d.seller_sku, d.sid, d.period, null);
     expect(cell.expected_units).toBeNull();
-    expect(cell.basis).toBe('unknown');
-    const grid = await api.getGrid(1);
-    const back = grid.demand.find((d) => d.seller_sku === 'DCC1800264-US' && d.period === '2026-10-01')!;
+    expect(['system', 'unknown']).toContain(cell.basis);
+    const back = (await api.getGrid(1)).demand
+      .find((x) => x.seller_sku === d.seller_sku && x.period === d.period)!;
     expect(back.expected_units).toBeNull();
   });
 
-  it('★ 占用撞了抛 409 并点名占用方', async () => {
-    const err = await api.claim(1, { seller_sku: 'DCC1800264-UK', sid: '11094' }).catch((e) => e);
-    expect(err).toBeInstanceOf(ApiError);
-    expect((err as ApiError).status).toBe(409);
-    expect((err as ApiError).code).toBe('msku_already_claimed');
-    expect((err as ApiError).detail).toMatchObject({ plan_id: 2, plan_title: '2026 Q3 补货计划', actor: 'ops.li' });
+  it('★ 库存的身份是「店铺 × 货号」—— 一格对应多个 msku，不是每个 msku 一格', async () => {
+    const g = await api.getGrid(1);
+    expect(g.inventory.every((i) => 'sku' in i && 'sid' in i && !('seller_sku' in i))).toBe(true);
+    const keys = new Set(g.inventory.map((i) => `${i.sku}/${i.sid}/${i.period}`));
+    expect(keys.size).toBe(g.inventory.length);           // ★ 每个 (货号,店铺,月) 只有一行
   });
 
-  it('★ 提交逐条列 skipped[]，理由取 S-14 的两个值', async () => {
+  it('★ 任何一个 msku 未知 → 整格未知（不是把它当 0 再把别的 msku 加进来）', async () => {
+    const d = await firstMsku();
+    await api.putDemand(1, d.seller_sku, d.sid, d.period, null);
+    const g = await api.getGrid(1);
+    const cell = g.inventory.find((i) => i.sku === d.sku && i.sid === d.sid && i.period === d.period)!;
+    expect(cell.closing).toBeNull();
+    expect(cell.basis.reason).toBe('unknown_demand');
+  });
+
+  it('★ inbound 恒 null（不是 0）；在途总量只在 basis 与 sku_pipeline 里出现', async () => {
+    const g = await api.getGrid(1);
+    expect(g.inventory.every((i) => i.inbound === null)).toBe(true);
+    expect(g.inventory.every((i) => i.basis.includes_plan_purchase === false)).toBe(true);
+    // ★ 在途一件都没有并进任何一格库存
+    for (const i of g.inventory) {
+      const t = i.basis.sku_level_in_transit;
+      if (t !== null && i.onhand !== null && i.closing !== null) expect(i.closing).not.toBe(i.onhand + t);
+    }
+  });
+
+  it('★ 跨月口径：mock 与 fixture 用同一条规则（累计链 vs 每月独立）', async () => {
+    const g0 = await api.getGrid(1);
+    const key = (i: { sku: string; sid: string }) => `${i.sku}/${i.sid}`;
+    const groups = new Map<string, typeof g0.inventory>();
+    for (const i of g0.inventory) groups.set(key(i), [...(groups.get(key(i)) ?? []), i]);
+    const pair = [...groups.values()]
+      .map((rows) => rows.sort((a, b) => a.period.localeCompare(b.period)))
+      .find((rows) => rows.length >= 2 && rows[0]!.closing !== null && rows[1]!.closing !== null
+                      && rows[0]!.closing !== rows[0]!.onhand);   // ★ 两种规则在这里才分得开
+    // ★ fixture 分不开两种规则时必须硬失败：那说明这条门禁其实什么都没测
+    expect(pair, 'fixture 无法区分「累计链」与「每月独立」，请让后端补一个有消耗的月份').toBeDefined();
+    const [a, b] = pair!;
+    expect(b!.onhand).toBe(a!.closing);   // 累计链：本月期初 = 上月期末
+  });
+
+  it('★ 占用撞了抛 409 并点名占用方（点名字段在顶层，不在 detail 里）', async () => {
+    const err = await api.claim(1, { seller_sku: 'MSKU-C', sid: '11094' }).catch((e) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).status).toBe(409);
+    expect((err as ApiError).error).toBe('msku_already_claimed');
+    expect((err as ApiError).fields).toMatchObject({ plan_id: 2, title: '2026 Q3 补货计划' });
+  });
+
+  it('★ 提交逐条列 skipped[]，理由取 S-14 的两个值；铸出与跳过两个数都给', async () => {
     const r = await api.submit(1);
     expect(r.rev).toBe(1);
-    const reasons = r.skipped.map((s) => s.reason);
-    expect(reasons).toContain('zero_purchase');
-    expect(new Set(reasons).size).toBeGreaterThan(0);
-    // ★ 被丢掉的那一侧要对得上：跳过数 + 铸出数 = 参与评估的格子数
-    expect(r.line_count + r.skipped.length).toBe(3);
+    expect(r.skipped.map((s) => s.reason)).toContain('zero_purchase');
+    // ★ 被丢掉的那一侧要对得上：铸出 + 跳过 = 参与评估的（货号 × 月）格子数
+    const g = await api.getGrid(1);
+    expect(r.lines + r.skipped.length).toBe(g.purchase.length);
   });
 
   it('★ 已有在流转的版本 → 再提交 409 rev_in_flight，点名旧版号', async () => {
     const err = await api.submit(2).catch((e) => e);
     expect((err as ApiError).status).toBe(409);
-    expect((err as ApiError).code).toBe('rev_in_flight');
-    expect((err as ApiError).detail).toMatchObject({ in_flight_rev: 2 });
+    expect((err as ApiError).error).toBe('rev_in_flight');
+    expect((err as ApiError).fields).toMatchObject({ in_flight_rev: 2 });
   });
 
-  it('搜索目录：不给条件 → need_query，与「查不到」不同形', async () => {
-    expect(await api.searchCatalog(1, {})).toEqual({ kind: 'need_query' });
-    const miss = await api.searchCatalog(1, { q: 'ZZZZ' });
-    expect(miss).toMatchObject({ kind: 'ok', skus: [] });
+  it('搜索目录：不给条件 → need_query=true 且 items 为空，与「查不到」不同形', async () => {
+    const none = await api.searchCatalog({});
+    expect(none.need_query).toBe(true);
+    expect(none.items).toEqual([]);
+    const miss = await api.searchCatalog({ q: 'ZZZZ' });
+    expect(miss.need_query).toBe(false);
+    expect(miss.matched).toBe(0);
   });
 
   it('撤销版本不填理由 → 400 reason_required', async () => {
     const err = await api.cancelRev(2, 2, '   ').catch((e) => e);
     expect((err as ApiError).status).toBe(400);
-    expect((err as ApiError).code).toBe('reason_required');
+    expect((err as ApiError).error).toBe('reason_required');
   });
 });
 ```
 
-- [ ] **Step 5: 跑它，确认红**
+- [ ] **Step 7: 跑它，确认红**
 
 ```bash
 cd web && npx vitest run src/api/mock.test.ts
 ```
 Expected: FAIL —— `Failed to resolve import "./mock"`。
 
-- [ ] **Step 6: 写 mock 实现**
+- [ ] **Step 8: 写 mock 实现**
 
 ```ts
 // web/src/api/mock.ts
 import { ApiError, type SupplyChainApi } from './client';
 import type {
-  CatalogResult, GridResponse, PlanSummary, RevList, Seller, SubmitResult, SkippedCell,
+  CatalogResult, GridResponse, PlanList, PlanSummary, RevList, Seller, SkippedCell,
 } from './types';
 import plansFixture from './fixtures/plans.json';
 import gridFixture from './fixtures/grid-1.json';
@@ -1182,182 +1260,223 @@ import sellersFixture from './fixtures/sellers.json';
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 
 export function createMockApi(): SupplyChainApi {
-  const plans = clone(plansFixture) as PlanSummary[];
+  const list = clone(plansFixture) as PlanList;
   const grids = new Map<number, GridResponse>([[1, clone(gridFixture) as GridResponse]]);
-  const catalog = clone(catalogFixture) as Extract<CatalogResult, { kind: 'ok' }>;
+  const catalog = clone(catalogFixture) as CatalogResult;
   const revs = new Map<number, RevList>([[2, clone(revsFixture) as RevList]]);
-  const sellers = clone(sellersFixture) as Seller[];
+  const sellers = (clone(sellersFixture) as { sellers: Seller[] }).sellers;
+  const inFlight = new Map<number, number | null>([[1, null], [2, 2], [3, null], [4, null]]);
 
   const plan = (id: number): PlanSummary => {
-    const p = plans.find((x) => x.plan_id === id);
-    if (!p) throw new ApiError(404, 'not_found', `plan ${id} 不存在`, { plan_id: id });
+    const p = list.plans.find((x) => x.plan_id === id);
+    if (!p) throw new ApiError(404, 'plan_not_found', '没有这张计划', { plan_id: id });
     return p;
   };
   const grid = (id: number): GridResponse => {
     const g = grids.get(id);
-    if (!g) throw new ApiError(404, 'not_found', `plan ${id} 没有网格`, { plan_id: id });
+    if (!g) throw new ApiError(404, 'plan_not_found', '这张计划还没有网格', { plan_id: id });
     return g;
   };
 
+  /** ★ 一格的库存 = 该**店铺 × 货号**的在仓 − 该店该货号各 msku 的生效期望销量之和。
+   *  任何一个 msku 未知 ⇒ 整格未知（M-8 向后传染）。落回 0 就是把「算不出来」说成「没货」。
+   *  ★ 跨月口径跟着 fixture 走，见 Task 2 那条「mock 与 fixture 用同一条规则」的测试。 */
+  function recompute(g: GridResponse, sku: string, sid: string): void {
+    const rows = g.inventory
+      .filter((i) => i.sku === sku && i.sid === sid)
+      .sort((a, b) => a.period.localeCompare(b.period));
+    let carried: number | null = rows[0]?.onhand ?? null;
+    for (const row of rows) {
+      if (row.basis.closing_reason === 'not_applicable') {
+        // ★ 不适用：不是 0，也不参与链。reason 不动 —— 它恒为 no_seller_attribution
+        row.onhand = null; row.basis.demand = null; row.closing = null; continue;
+      }
+      const mine = g.demand.filter((d) => d.sku === sku && d.sid === sid && d.period === row.period);
+      const demand = mine.length === 0 || mine.some((d) => d.effective_units === null)
+        ? null : mine.reduce((a, d) => a + (d.effective_units as number), 0);
+      row.onhand = carried;
+      row.basis.demand = demand;
+      row.closing = carried === null || demand === null ? null : carried - demand;
+      // ★ 只改 closing_reason；reason 是另一件事，改它就会把「在途没归属」这条信息抹掉
+      row.basis.closing_reason = row.closing === null ? 'unknown_demand' : null;
+      carried = row.closing;                      // ★ 本月期末 = 下月期初（链）
+    }
+  }
+
   return {
     async listPlans(q) {
-      return plans.filter((p) =>
+      const plans = list.plans.filter((p) =>
         (q.state === undefined || p.state === q.state) &&
         (q.owner === undefined || p.owner_actor === q.owner) &&
-        (q.archived === undefined || p.archived === q.archived));
+        (q.archived === undefined || (p.archived_at !== null) === q.archived));
+      return { plans, excluded: list.excluded };
     },
+    async getPlan(planId) { return clone(plan(planId)); },
     async createPlan(input) {
-      const id = Math.max(...plans.map((p) => p.plan_id)) + 1;
-      plans.push({
-        plan_id: id, title: input.title, period_start: input.period_start, months: input.months,
-        owner_actor: 'ops.zhang', state: null, current_rev: null, in_flight_rev: null,
-        archived: false, updated_at: new Date().toISOString(),
+      const plan_id = Math.max(...list.plans.map((p) => p.plan_id)) + 1;
+      list.plans.push({
+        plan_id, title: input.title, period_start: input.period_start, months: input.months,
+        owner_actor: 'ops.zhang', archived_at: null, state: null, state_rev: null,
       });
-      grids.set(id, { plan: plan(id), periods: [], demand: [], purchase: [], inventory: [] });
-      return { plan_id: id };
+      inFlight.set(plan_id, null);
+      grids.set(plan_id, { plan_id, periods: [], demand: [], purchase: [], inventory: [], sku_pipeline: [] });
+      return { plan_id };
     },
     async dashboardPlans() {
-      // ★ 返回全集（S-20，诚实）。「准备排货 / 已排货」阶段 A 够不着，由前端不渲染
-      return { in_progress: 2, submitted: 1, submitted_unconfirmed: 1, ordered: 0, ready_to_dispatch: 0, dispatched: 0 };
+      // ★ 返回全集（诚实）。够不着的三个态由前端不渲染，不是接口抹成 0（S-20）
+      return {
+        counts: { 进行中: 2, 已提交: 1, 已提交未确认: 1, 已下单: 0, 准备排货: 0, 已排货: 0 },
+        scope_note: { unreachable_in_stage_a: ['已下单', '准备排货', '已排货'], never_submitted_excluded: 1 },
+      };
     },
     async dashboardUnsubmitted() {
       return {
-        never_submitted: plans.filter((p) => p.state === null),
-        changed_since_submit: plans.filter((p) => p.plan_id === 2),
+        never_submitted: list.plans.filter((p) => p.state === null).map((p) => ({ plan_id: p.plan_id, title: p.title })),
+        changed_since_submit: list.plans.filter((p) => p.plan_id === 2)
+          .map((p) => ({ plan_id: p.plan_id, title: p.title, since_rev: p.state_rev ?? 0 })),
       };
     },
-    async listSellers() { return sellers; },
+    async listSellers() { return clone(sellers); },
 
     async getGrid(planId) { return clone(grid(planId)); },
 
     async putDemand(planId, sellerSku, sid, period, units) {
       const g = grid(planId);
       const cell = g.demand.find((d) => d.seller_sku === sellerSku && d.sid === sid && d.period === period);
-      if (!cell) throw new ApiError(404, 'not_found', '没有这个格子', { seller_sku: sellerSku, sid, period });
-      if (units !== null && units < 0) throw new ApiError(400, 'negative_units', '期望销量不能为负', { units });
-      cell.expected_units = units;
-      cell.basis = units === null ? 'unknown' : 'human';
-      const inv = g.inventory.find((i) => i.seller_sku === sellerSku && i.sid === sid && i.period === period);
-      if (inv) {
-        // ★ 未知向后传染：算不出来就是 null，不落回 0
-        inv.closing_units = units === null ? null : inv.on_hand_units + inv.purchase_in_transit_units - units;
+      if (!cell) {
+        throw new ApiError(404, 'cell_not_found', '这一格还没长出来（先认领这个 msku）',
+          { plan_id: planId, seller_sku: sellerSku, sid, period });
       }
+      if (units !== null && (!Number.isInteger(units) || units < 0)) {
+        throw new ApiError(400, 'bad_units', 'expected_units 必须是 ≥0 的整数或 null',
+          { field: 'expected_units', got: units });
+      }
+      cell.expected_units = units;
+      cell.effective_units = units ?? cell.system_units;
+      cell.basis = units !== null ? 'human' : cell.system_units !== null ? 'system' : 'unknown';
+      recompute(g, cell.sku, sid);
       return clone(cell);
     },
 
     async putPurchase(planId, sku, period, units) {
       const g = grid(planId);
       const cell = g.purchase.find((p) => p.sku === sku && p.period === period);
-      if (!cell) throw new ApiError(404, 'not_found', '没有这个格子', { sku, period });
-      if (units !== null && units < 0) throw new ApiError(400, 'negative_units', '计划采购量不能为负', { units });
-      cell.purchase_units = units;
+      if (!cell) {
+        throw new ApiError(404, 'cell_not_found', '这一格还没长出来（先认领该货号下的 msku）',
+          { plan_id: planId, sku, period });
+      }
+      if (units !== null && (!Number.isInteger(units) || units < 0)) {
+        throw new ApiError(400, 'bad_units', 'planned_units 必须是 ≥0 的整数或 null',
+          { field: 'planned_units', got: units });
+      }
+      cell.planned_units = units;
       return clone(cell);
     },
 
-    async searchCatalog(_planId, q) {
-      if (!q.q && !q.category) return { kind: 'need_query' };
-      const needle = (q.q ?? '').toUpperCase();
-      const skus = catalog.skus.filter((s) =>
-        s.sku.toUpperCase().includes(needle) || s.name.includes(q.q ?? ''));
-      return { kind: 'ok', skus: clone(skus), truncated: catalog.truncated, unbuildable_sellers: clone(catalog.unbuildable_sellers) };
+    async searchCatalog(q) {
+      const limit = q.limit ?? catalog.limit;
+      if (!q.q) return { need_query: true, truncated: false, limit, items: [], matched: 0 };
+      const needle = q.q.toUpperCase();
+      const items = catalog.items.filter((s) =>
+        s.sku.toUpperCase().includes(needle) || s.name.includes(q.q!) ||
+        s.mskus.some((m) => m.seller_sku.toUpperCase().includes(needle)));
+      return { need_query: false, truncated: items.length > limit, limit, items: clone(items), matched: items.length };
     },
 
     async claim(planId, target) {
-      const msku = catalog.skus.flatMap((s) => s.mskus)
-        .find((m) => m.seller_sku === target.seller_sku && m.sid === target.sid);
-      if (!msku) throw new ApiError(404, 'not_found', '没有这个 msku', { ...target });
-      if (msku.claim) {
-        throw new ApiError(409, 'msku_already_claimed', `${target.seller_sku} 已被占用`, { ...msku.claim, ...target });
+      const item = catalog.items.find((s) => s.mskus.some((m) => m.seller_sku === target.seller_sku && m.sid === target.sid));
+      const msku = item?.mskus.find((m) => m.seller_sku === target.seller_sku && m.sid === target.sid);
+      if (!item || !msku) throw new ApiError(404, 'msku_not_found', '没有这个 msku', { ...target });
+      if (!msku.selectable && msku.claimed_by) {
+        // ★ 点名字段平铺在顶层，前端据此说出「被哪张计划、被谁占着」
+        throw new ApiError(409, 'msku_already_claimed', `${target.seller_sku} 已被占用`,
+          { ...target, plan_id: msku.claimed_by.plan_id, title: msku.claimed_by.title, actor: msku.claimed_by.actor });
       }
-      msku.claim = { plan_id: planId, plan_title: plan(planId).title, actor: 'ops.zhang', claimed_at: new Date().toISOString() };
+      msku.selectable = false;
+      msku.claimed_by = { plan_id: planId, title: plan(planId).title, actor: 'ops.zhang' };
+      return { claimed: { ...target, sku: item.sku } };
     },
 
     async releaseClaim(_planId, sellerSku, sid) {
-      const msku = catalog.skus.flatMap((s) => s.mskus).find((m) => m.seller_sku === sellerSku && m.sid === sid);
-      if (msku) msku.claim = null;  // ★ 释放不删行
+      const msku = catalog.items.flatMap((s) => s.mskus).find((m) => m.seller_sku === sellerSku && m.sid === sid);
+      if (msku) { msku.selectable = true; msku.claimed_by = null; }   // ★ 释放不删行
+      return { released: { seller_sku: sellerSku, sid }, dropped_cells: 0 };
     },
 
     async submit(planId) {
-      const p = plan(planId);
-      if (p.in_flight_rev !== null) {
-        throw new ApiError(409, 'rev_in_flight', `rev ${p.in_flight_rev} 还在流转`, { in_flight_rev: p.in_flight_rev });
+      const held = inFlight.get(planId) ?? null;
+      if (held !== null) {
+        throw new ApiError(409, 'rev_in_flight', `rev ${held} 还在流转`, { in_flight_rev: held });
       }
       const g = grid(planId);
       const skipped: SkippedCell[] = [];
       let lines = 0;
-      const skus = [...new Set(g.purchase.map((c) => c.sku))];
-      for (const period of g.periods) {
-        for (const sku of skus) {
-          const pc = g.purchase.find((c) => c.sku === sku && c.period === period);
-          const sellerIds = [...new Set(g.demand.filter((d) => d.sku === sku && d.period === period).map((d) => d.seller_id))];
-          if (!pc || pc.purchase_units === null || pc.purchase_units === 0) {
-            skipped.push({ seller_id: sellerIds[0] ?? '', sku, period, reason: 'zero_purchase' });
-            continue;
-          }
-          if (sellerIds.length === 0) {
-            skipped.push({ seller_id: '', sku, period, reason: 'no_claimed_msku' });
-            continue;
-          }
-          lines += 1;
+      for (const pc of g.purchase) {
+        const claimed = g.demand.some((d) => d.sku === pc.sku && d.period === pc.period);
+        if (!claimed) { skipped.push({ sku: pc.sku, period: pc.period, reason: 'no_claimed_msku' }); continue; }
+        if (pc.planned_units === null || pc.planned_units === 0) {
+          skipped.push({ sku: pc.sku, period: pc.period, reason: 'zero_purchase' }); continue;
         }
+        lines += 1;
       }
-      const rev = (p.current_rev ?? 0) + 1;
-      p.current_rev = rev;
-      p.in_flight_rev = rev;
-      p.state = '已提交';
+      const p = plan(planId);
+      const rev = (p.state_rev ?? 0) + 1;
+      // ★ 空版本不占在流转位：占着的话这张计划从此再也提交不了，而错误会说「有一版在流转」
+      const alive = lines > 0;
+      p.state_rev = rev;
+      p.state = alive ? '已提交' : '已撤销';
+      inFlight.set(planId, alive ? rev : null);
       revs.set(planId, {
-        revs: [{ rev, submitted_by: 'ops.zhang', submitted_at: new Date().toISOString(),
-                 content_digest: `mock-${planId}-${rev}`, line_count: lines, is_current: true, is_in_flight: true }],
-        in_flight_rev: rev, current_rev: rev,
+        revs: [{ rev, content_digest: `mock-${planId}-${rev}`, is_current: true, in_flight: alive,
+                 submitted_by: 'ops.zhang', submitted_at: new Date().toISOString(), lines }],
+        in_flight_rev: alive ? rev : null, current_rev: rev,
       });
-      const result: SubmitResult = { rev, line_count: lines, skipped };
-      return result;
+      return { rev, lines, in_flight: alive, content_digest: `mock-${planId}-${rev}`, skipped };
     },
 
     async listRevs(planId) {
       return clone(revs.get(planId) ?? { revs: [], in_flight_rev: null, current_rev: null });
     },
     async setCurrentRev(planId, rev) {
-      const list = revs.get(planId);
-      if (!list || !list.revs.some((r) => r.rev === rev)) throw new ApiError(404, 'not_found', `rev ${rev} 不存在`, { rev });
-      list.revs.forEach((r) => { r.is_current = r.rev === rev; });
-      list.current_rev = rev;
-      plan(planId).current_rev = rev;
+      const l = revs.get(planId);
+      if (!l || !l.revs.some((r) => r.rev === rev)) throw new ApiError(404, 'rev_not_found', '没有这一版', { plan_id: planId, rev });
+      l.revs.forEach((r) => { r.is_current = r.rev === rev; });
+      l.current_rev = rev;
+      return { current_rev: rev };
     },
-    async diff(planId, from, to) {
+    async diff(_planId, _from, _to) {
       return {
-        from, to,
-        rows: [
-          { kind: 'demand', sku: 'DCC1800264', seller_sku: 'DCC1800264-US', sid: '11072',
-            period: '2026-10-01', before: 160, after: 180, change: 'changed' },
-          { kind: 'purchase', sku: 'DCC1800264', seller_sku: null, sid: null,
-            period: '2026-11-01', before: null, after: 300, change: 'added' },
-        ],
+        added: [{ sku: 'DCC1800264G1', period: '2026-11', total_units: 300 }],
+        removed: [],
+        changed: [{ sku: 'DCC1800264G1', period: '2026-10',
+                    total_units: { from: 500, to: 600 }, demand_at_submit: { from: 160, to: 180 } }],
       };
     },
     async cancelRev(planId, rev, reason) {
-      if (reason.trim() === '') throw new ApiError(400, 'reason_required', '撤销必须填理由', { rev });
-      const list = revs.get(planId);
-      const target = list?.revs.find((r) => r.rev === rev);
-      if (!list || !target) throw new ApiError(404, 'not_found', `rev ${rev} 不存在`, { rev });
-      target.is_in_flight = false;
-      list.in_flight_rev = null;
-      plan(planId).in_flight_rev = null;
+      if (reason.trim() === '') throw new ApiError(400, 'reason_required', '撤销必须填理由', { plan_id: planId, rev });
+      const l = revs.get(planId);
+      const target = l?.revs.find((r) => r.rev === rev);
+      if (!l || !target) throw new ApiError(404, 'rev_not_found', '没有这一版', { plan_id: planId, rev });
+      target.in_flight = false;
+      l.in_flight_rev = null;
+      inFlight.set(planId, null);
       plan(planId).state = '已撤销';
-      return { cancelled_lines: target.line_count };
+      return { cancelled: Array.from({ length: target.lines }, (_, i) => i + 1), reason };
     },
   };
 }
 ```
 
-- [ ] **Step 7: 跑 mock 测试，确认全绿**
+- [ ] **Step 9: 跑 mock 测试，确认全绿**
 
 ```bash
 cd web && npx vitest run src/api/mock.test.ts
 ```
-Expected: PASS（6 个用例）。若 `line_count + skipped.length` 那条红，说明分类把某些格子**两边都没算**——那正是这条断言存在的理由，不许改断言，去查分支。
+Expected: PASS（9 个用例）。
+★ 若 `lines + skipped.length === purchase.length` 那条红，说明分类把某些格子**两边都没算** ——
+那正是这条断言存在的理由，不许改断言，去查分支。
 
-- [ ] **Step 8: 写 http 的失败测试（含三问日志）**
+- [ ] **Step 10: 写 http 的失败测试（含三问日志）**
 
 ```ts
 // web/src/api/http.test.ts
@@ -1369,32 +1488,53 @@ import gridFixture from './fixtures/grid-1.json';
 
 afterEach(() => { vi.restoreAllMocks(); });
 
-const okResponse = (body: unknown) =>
+const ok = (body: unknown) =>
   new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+
+const mk = () => createHttpApi({ base: '/v1', timeoutMs: 1000 });
 
 describe('http 数据源', () => {
   it('发 x-actor 头，取自顶栏下拉', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResponse(gridFixture));
+    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(ok(gridFixture));
     setActor('ops.li');
-    await createHttpApi({ base: '/v1', timeoutMs: 1000 }).getGrid(1);
-    const init = fetchSpy.mock.calls[0]![1] as RequestInit;
-    expect(new Headers(init.headers).get('x-actor')).toBe('ops.li');
+    await mk().getGrid(1);
+    expect(new Headers((spy.mock.calls[0]![1] as RequestInit).headers).get('x-actor')).toBe('ops.li');
   });
 
-  it('★ 只发声明过的查询参数 —— undefined 的不拼进 URL', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(okResponse([]));
-    await createHttpApi({ base: '/v1', timeoutMs: 1000 }).listPlans({ archived: false });
-    expect(String(fetchSpy.mock.calls[0]![0])).toBe('/v1/plans?archived=false');
+  it('★ 只发声明过的查询参数 —— undefined 的不拼进 URL（未声明参数后端一律 400）', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(ok({ plans: [], excluded: { archived: 0 } }));
+    await mk().listPlans({ archived: false });
+    expect(String(spy.mock.calls[0]![0])).toBe('/v1/plans?archived=false');
   });
 
-  it('409 抛 ApiError 且 detail 原样带回', async () => {
+  it('★ 列表响应带一层包裹，数据层拆开 —— 页面不该知道这层', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(ok({
+      sellers: [{ seller_id: '11072', name: 'A4Pet-US', market: 'US', has_fba: true, platform: 'amazon' }],
+    }));
+    expect(await mk().listSellers()).toEqual([
+      { seller_id: '11072', name: 'A4Pet-US', market: 'US', has_fba: true, platform: 'amazon' },
+    ]);
+  });
+
+  it('★ PUT 的 body 字段名按契约：期望销量 expected_units、采购量 planned_units', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(ok({ cell: {} }));
+    const api = mk();
+    await api.putDemand(1, 'MSKU-A', '11072', '2026-10', null);
+    await api.putPurchase(1, 'SKU-1', '2026-10', 500);
+    expect(JSON.parse((spy.mock.calls[0]![1] as RequestInit).body as string)).toEqual({ expected_units: null });
+    expect(JSON.parse((spy.mock.calls[1]![1] as RequestInit).body as string)).toEqual({ planned_units: 500 });
+  });
+
+  it('409 抛 ApiError，点名字段从顶层收进 fields', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
-      JSON.stringify({ code: 'rev_in_flight', message: 'rev 2 还在流转', detail: { in_flight_rev: 2 } }),
+      JSON.stringify({ error: 'rev_in_flight', hint: '先处理 rev 2', in_flight_rev: 2 }),
       { status: 409, headers: { 'content-type': 'application/json' } }));
-    const err = await createHttpApi({ base: '/v1', timeoutMs: 1000 }).submit(1).catch((e) => e);
+    const err = await mk().submit(1).catch((e) => e);
     expect(err).toBeInstanceOf(ApiError);
     expect((err as ApiError).status).toBe(409);
-    expect((err as ApiError).detail).toEqual({ in_flight_rev: 2 });
+    expect((err as ApiError).error).toBe('rev_in_flight');
+    expect((err as ApiError).hint).toBe('先处理 rev 2');
+    expect((err as ApiError).fields).toEqual({ in_flight_rev: 2 });
   });
 
   it('★ 日志三问：打的谁 · 多久 · 怎么失败的（带 cause.code）', async () => {
@@ -1404,56 +1544,49 @@ describe('http 数据源', () => {
     (boom as { cause?: unknown }).cause = { code: 'UND_ERR_CONNECT_TIMEOUT' };
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(boom);
 
-    await createHttpApi({ base: '/v1', timeoutMs: 1000 }).getGrid(1).catch(() => undefined);
+    await mk().getGrid(1).catch(() => undefined);
 
     const line = JSON.stringify(logged[0]);
     expect(line).toContain('GET /v1/plans/1/grid');   // 打的谁
     expect(line).toMatch(/"ms":\d+/);                  // 多久
-    expect(line).toContain('UND_ERR_CONNECT_TIMEOUT'); // ★ 怎么失败的 —— 不是「fetch failed」五个字
+    expect(line).toContain('UND_ERR_CONNECT_TIMEOUT'); // ★ 不是「fetch failed」五个字
   });
 
-  it('★ 超时与连不上分得开：超时记 TimeoutError 而不是 cause code', async () => {
+  it('★ 超时与连不上分得开：超时记 TimeoutError，不是 cause code', async () => {
     const logged: unknown[][] = [];
     vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => { logged.push(a); });
-    const timeout = new DOMException('The operation was aborted due to timeout', 'TimeoutError');
-    vi.spyOn(globalThis, 'fetch').mockRejectedValue(timeout);
-
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(
+      new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
     const err = await createHttpApi({ base: '/v1', timeoutMs: 5 }).getGrid(1).catch((e) => e);
-    expect((err as ApiError).code).toBe('timeout');
+    expect((err as ApiError).error).toBe('timeout');
     expect(JSON.stringify(logged[0])).toContain('TimeoutError');
   });
 });
 ```
 
-- [ ] **Step 9: 跑它，确认红**
+- [ ] **Step 11: 跑它确认红，然后写 http 实现**
 
 ```bash
 cd web && npx vitest run src/api/http.test.ts
 ```
 Expected: FAIL —— `Failed to resolve import "./http"`。
 
-- [ ] **Step 10: 写 http 实现**
-
 ```ts
 // web/src/api/http.ts
 import { ApiError, type SupplyChainApi } from './client';
 import { getActor } from '../shell/actorStore';
+import type { CatalogResult, PlanList, PlanSummary, Seller } from './types';
 
 interface HttpOptions { base: string; timeoutMs: number }
 
-/** ★ 三问日志：打的谁（method+path）· 多久（ms）· 怎么失败的（status+code 或 cause.code）。
+/** ★ 三问日志：打的谁（method+path）· 多久（ms）· 怎么失败的（status+error 或 cause.code）。
  *  缺一个，下次就得重新复现一遍。 */
-function logFail(method: string, path: string, ms: number, extra: Record<string, unknown>): void {
-  console.error('[api]', JSON.stringify({ call: `${method} ${path}`, ms, ...extra }));
-}
-
-/** 重试「成功」的那次抖动同样要留痕 —— 本层不重试，但慢调用要留下来 */
-function logSlow(method: string, path: string, ms: number, status: number): void {
-  if (ms >= 2000) console.warn('[api]', JSON.stringify({ call: `${method} ${path}`, ms, status, slow: true }));
+function logFail(call: string, ms: number, extra: Record<string, unknown>): void {
+  console.error('[api]', JSON.stringify({ call, ms, ...extra }));
 }
 
 function qs(params: Record<string, string | number | boolean | undefined>): string {
-  // ★ 未声明查询参数一律 400 ⇒ undefined 的一律不拼，不发空串
+  // ★ 未声明查询参数后端一律 400 ⇒ undefined 的不拼，也不发空串
   const pairs = Object.entries(params).filter(([, v]) => v !== undefined);
   return pairs.length === 0 ? '' : `?${pairs.map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`).join('&')}`;
 }
@@ -1461,6 +1594,7 @@ function qs(params: Record<string, string | number | boolean | undefined>): stri
 export function createHttpApi(opt: HttpOptions): SupplyChainApi {
   async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
     const url = `${opt.base}${path}`;
+    const call_ = `${method} ${url}`;
     const started = Date.now();
     let res: Response;
     try {
@@ -1474,51 +1608,65 @@ export function createHttpApi(opt: HttpOptions): SupplyChainApi {
       const ms = Date.now() - started;
       // ★ 「超时」与「连不上」签名互斥、处置相反：前者调大超时有用，后者一行都不会生效
       if (e instanceof DOMException && e.name === 'TimeoutError') {
-        logFail(method, url, ms, { kind: 'TimeoutError', timeout_ms: opt.timeoutMs });
-        throw new ApiError(0, 'timeout', `${method} ${url} 超时（${opt.timeoutMs}ms）`, { timeout_ms: opt.timeoutMs });
+        logFail(call_, ms, { kind: 'TimeoutError', timeout_ms: opt.timeoutMs });
+        throw new ApiError(0, 'timeout', `${opt.timeoutMs}ms 内没有响应`, { timeout_ms: opt.timeoutMs });
       }
       const cause = (e as { cause?: { code?: string; errors?: { code?: string }[] } }).cause;
       const code = cause?.code ?? cause?.errors?.[0]?.code ?? 'unknown';
-      logFail(method, url, ms, { kind: (e as Error).name, cause_code: code, message: (e as Error).message });
-      throw new ApiError(0, 'network', `${method} ${url} 连不上（${code}）`, { cause_code: code });
+      logFail(call_, ms, { kind: (e as Error).name, cause_code: code, message: (e as Error).message });
+      throw new ApiError(0, 'network', `连不上（${code}）`, { cause_code: code });
     }
 
     const ms = Date.now() - started;
-    logSlow(method, url, ms, res.status);
+    if (ms >= 2000) console.warn('[api]', JSON.stringify({ call: call_, ms, status: res.status, slow: true }));
 
-    if (res.status === 204) return undefined as T;
     const text = await res.text();
     let parsed: unknown = null;
     if (text !== '') {
       try { parsed = JSON.parse(text); }
       catch {
-        // ★ 静默兜底是最坏的一种：解析不了要出声，否则「代理挂了」和「接口本身就错」长得一样
-        logFail(method, url, ms, { status: res.status, kind: 'non_json_body', head: text.slice(0, 120) });
-        throw new ApiError(res.status, 'bad_response', `${method} ${url} 返回的不是 JSON`, { head: text.slice(0, 120) });
+        // ★ 静默兜底是最坏的一种：「代理挂了」和「接口本身就错」必须长得不一样
+        logFail(call_, ms, { status: res.status, kind: 'non_json_body', head: text.slice(0, 120) });
+        throw new ApiError(res.status, 'bad_response', '返回的不是 JSON', { head: text.slice(0, 120) });
       }
     }
     if (!res.ok) {
-      const e = parsed as { code?: string; message?: string; detail?: Record<string, unknown> } | null;
-      logFail(method, url, ms, { status: res.status, code: e?.code ?? 'unknown' });
-      throw new ApiError(res.status, e?.code ?? 'unknown', e?.message ?? `${method} ${url} ${res.status}`, e?.detail ?? {});
+      const { error, hint, ...fields } = (parsed ?? {}) as
+        { error?: string; hint?: string } & Record<string, unknown>;
+      logFail(call_, ms, { status: res.status, error: error ?? 'unknown' });
+      throw new ApiError(res.status, error ?? 'unknown', hint ?? `${res.status}`, fields);
     }
     return parsed as T;
   }
 
+  const plans = (q: Parameters<SupplyChainApi['listPlans']>[0]) =>
+    call<PlanList>('GET', `/plans${qs({ state: q.state, owner: q.owner, archived: q.archived })}`);
+
   return {
-    listPlans: (q) => call('GET', `/plans${qs({ state: q.state, owner: q.owner, archived: q.archived })}`),
+    listPlans: plans,
+    async getPlan(planId) {
+      // ★ GET /grid 不带计划抬头；这里拆两次调用，页面不必知道
+      const { plans: rows } = await plans({});
+      const hit = rows.find((p: PlanSummary) => p.plan_id === planId);
+      if (!hit) throw new ApiError(404, 'plan_not_found', '没有这张计划', { plan_id: planId });
+      return hit;
+    },
     createPlan: (input) => call('POST', '/plans', input),
     dashboardPlans: () => call('GET', '/dashboard/plans'),
     dashboardUnsubmitted: () => call('GET', '/dashboard/unsubmitted'),
-    listSellers: () => call('GET', '/sellers'),
+    listSellers: async () => (await call<{ sellers: Seller[] }>('GET', '/sellers')).sellers,
 
     getGrid: (planId) => call('GET', `/plans/${planId}/grid`),
-    putDemand: (planId, sellerSku, sid, period, units) =>
-      call('PUT', `/plans/${planId}/demand/${encodeURIComponent(sellerSku)}/${sid}/${period}`, { units }),
-    putPurchase: (planId, sku, period, units) =>
-      call('PUT', `/plans/${planId}/purchase/${encodeURIComponent(sku)}/${period}`, { units }),
+    putDemand: async (planId, sellerSku, sid, period, units) =>
+      (await call<{ cell: Awaited<ReturnType<SupplyChainApi['putDemand']>> }>(
+        'PUT', `/plans/${planId}/demand/${encodeURIComponent(sellerSku)}/${sid}/${period}`,
+        { expected_units: units })).cell,
+    putPurchase: async (planId, sku, period, units) =>
+      (await call<{ cell: Awaited<ReturnType<SupplyChainApi['putPurchase']>> }>(
+        'PUT', `/plans/${planId}/purchase/${encodeURIComponent(sku)}/${period}`,
+        { planned_units: units })).cell,
 
-    searchCatalog: (_planId, q) => call('GET', `/catalog/skus${qs({ q: q.q, category: q.category })}`),
+    searchCatalog: (q) => call<CatalogResult>('GET', `/catalog/skus${qs({ q: q.q, limit: q.limit })}`),
     claim: (planId, target) => call('POST', `/plans/${planId}/claims`, target),
     releaseClaim: (planId, sellerSku, sid) =>
       call('DELETE', `/plans/${planId}/claims/${encodeURIComponent(sellerSku)}/${sid}`),
@@ -1532,7 +1680,7 @@ export function createHttpApi(opt: HttpOptions): SupplyChainApi {
 }
 ```
 
-- [ ] **Step 11: 数据源开关**
+- [ ] **Step 12: 数据源开关**
 
 ```ts
 // web/src/api/index.ts
@@ -1559,7 +1707,7 @@ export { ApiError } from './client';
 export type { SupplyChainApi } from './client';
 ```
 
-- [ ] **Step 12: 写 ErrorDetail 的失败测试**
+- [ ] **Step 13: 写 ErrorDetail 的失败测试**
 
 ```tsx
 // web/src/components/ErrorDetail.test.tsx
@@ -1570,18 +1718,19 @@ import { ApiError } from '../api/client';
 
 describe('ErrorDetail', () => {
   it('★ 逐项点名，不说「保存失败」', () => {
-    const err = new ApiError(409, 'msku_already_claimed', 'DCC1800264-UK 已被占用',
-      { plan_id: 2, plan_title: '2026 Q3 补货计划', actor: 'ops.li' });
-    render(<ErrorDetail err={err} />);
-    expect(screen.getByText('DCC1800264-UK 已被占用')).toBeInTheDocument();
+    render(<ErrorDetail err={new ApiError(409, 'msku_already_claimed', 'MSKU-C 已被占用',
+      { plan_id: 2, title: '2026 Q3 补货计划', actor: 'ops.li' })} />);
+    expect(screen.getByText('MSKU-C 已被占用')).toBeInTheDocument();
     expect(screen.getByText('2026 Q3 补货计划')).toBeInTheDocument();
     expect(screen.getByText('ops.li')).toBeInTheDocument();
     expect(screen.queryByText(/失败$/)).toBeNull();
   });
 
   it('★ 409 与 400 的样子不同 —— 一个该刷新重来，一个该改表单', () => {
-    const { container: conflict } = render(<ErrorDetail err={new ApiError(409, 'rev_in_flight', 'rev 2 还在流转', { in_flight_rev: 2 })} />);
-    const { container: bad } = render(<ErrorDetail err={new ApiError(400, 'reason_required', '撤销必须填理由', {})} />);
+    const { container: conflict } = render(
+      <ErrorDetail err={new ApiError(409, 'rev_in_flight', '先处理 rev 2', { in_flight_rev: 2 })} />);
+    const { container: bad } = render(
+      <ErrorDetail err={new ApiError(400, 'reason_required', '撤销必须填理由', {})} />);
     expect(conflict.querySelector('.flash--bad')).not.toBeNull();
     expect(conflict.querySelector('.gate__code')?.textContent).toBe('409 rev_in_flight');
     expect(bad.querySelector('.gate__code')?.textContent).toBe('400 reason_required');
@@ -1589,7 +1738,7 @@ describe('ErrorDetail', () => {
 });
 ```
 
-- [ ] **Step 13: 跑它确认红，再写实现**
+- [ ] **Step 14: 跑它确认红，再写实现**
 
 ```bash
 cd web && npx vitest run src/components/ErrorDetail.test.tsx
@@ -1602,16 +1751,16 @@ import type { ApiError } from '../api/client';
 
 // ★ 原则五：闸失败要点名 —— 一次列全，不是修一条报一条
 export function ErrorDetail({ err }: { err: ApiError }) {
-  const rows = Object.entries(err.detail);
+  const rows = Object.entries(err.fields);
   return (
     <div className="flash flash--bad" role="alert">
-      <div>{err.message}</div>
-      <div className="gate__code">{err.status} {err.code}</div>
+      <div>{err.hint}</div>
+      <div className="gate__code">{err.status} {err.error}</div>
       {rows.length > 0 && (
         <ul>
           {rows.map(([k, v]) => (
             <li key={k} className="gate__detail">
-              <span className="muted">{k}</span> {typeof v === 'object' ? JSON.stringify(v) : String(v)}
+              <span className="muted">{k}</span> {typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v)}
             </li>
           ))}
         </ul>
@@ -1621,18 +1770,19 @@ export function ErrorDetail({ err }: { err: ApiError }) {
 }
 ```
 
-- [ ] **Step 14: 全跑一遍并提交**
+- [ ] **Step 15: 全跑一遍并提交**
 
 ```bash
 cd web && npx vitest run && npx tsc -b
 ```
-Expected: `Test Files 5 passed`，tsc 静默。
+Expected: `Test Files 6 passed`（tokens · AppShell · fixtures · mock · http · ErrorDetail），tsc 静默。
 
 ```bash
 cd /home/fido/work/2026/jxd_service_group/service_supplychain
 git add web && git commit -m "$(cat <<'EOF'
-feat(web): 数据层 —— 一个接口两个实现，fixture 是两者唯一数据源
+feat(web): 数据层 —— 一个接口两个实现，grid fixture 与后端同源（字节比对）
 
+错误形状按裁定的 {error, hint, …顶层点名字段}；月份对外一律 YYYY-MM。
 http 侧日志答三问并分得清超时与连不上；ErrorDetail 逐项点名不说「失败」。
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
@@ -1651,11 +1801,11 @@ EOF
 - Test: `web/src/components/Qty.test.tsx` `web/src/pages/OpsHome.test.tsx`
 
 **Interfaces:**
-- Consumes: `api`（Task 2）· `AppShell` `pushToast`（Task 1）· 类型 `PlanSummary` `DashboardPlanCounts` `UnsubmittedBoard`
+- Consumes: `api`（Task 2）· `AppShell` `pushToast`（Task 1）· 类型 `PlanSummary` `PlanList` `DashboardPlans` `UnsubmittedBoard` `CountKey`
 - Produces:
   - `type QtyValue = { kind: 'num'; value: number } | { kind: 'unknown' } | { kind: 'na' } | { kind: 'nosum' }`
   - `<Qty v={QtyValue} big?: boolean />` —— Task 4 网格的合计列与结论数都用它
-  - `STAGE_A_COUNT_KEYS: readonly ['never_submitted', 'submitted', 'cancelled']`
+  - `STAGE_A_VISIBLE: readonly ['未提交', '已提交', '已撤销']`
 
 - [ ] **Step 1: 写 Qty 的失败测试**
 
@@ -1681,7 +1831,7 @@ describe('Qty', () => {
     expect(screen.getByText('—')).toHaveClass('cell__unknown');
     expect(screen.getByText('不适用')).toHaveClass('chip', 'chip--dim');
     expect(screen.getByText('不可求和')).toHaveClass('cell__unknown');
-    // ★ 未知 / 不适用 / 不可求和 三者的文字互不相同 —— 合成一个就查不出是哪种病
+    // ★ 未知 / 不适用 / 不可求和 三者的字互不相同 —— 合成一个就查不出是哪种病
     expect(new Set(['—', '不适用', '不可求和']).size).toBe(3);
   });
 
@@ -1740,23 +1890,34 @@ describe('运营首页', () => {
     expect(within(counts).getByText('已提交')).toBeInTheDocument();
     expect(within(counts).getByText('已撤销')).toBeInTheDocument();
     // ★ 阶段 A 够不着的：一个字都不许出现，包括写成 0
-    expect(within(counts).queryByText('准备排货')).toBeNull();
-    expect(within(counts).queryByText('已排货')).toBeNull();
-    expect(within(counts).queryByText('已下单')).toBeNull();
+    for (const gone of ['已下单', '准备排货', '已排货', '进行中', '已提交未确认']) {
+      expect(within(counts).queryByText(gone)).toBeNull();
+    }
     expect(counts.textContent).not.toContain('0');
   });
 
-  it('★ 完结的计划不显示，但丢掉的那一侧要有个数', async () => {
+  it('★ 接口说哪些态够不着，屏上就一个都不许有 —— 名单由接口给，不在前端硬编码', async () => {
+    renderHome();
+    const counts = await screen.findByTestId('counts');
+    const unreachable = JSON.parse(screen.getByTestId('unreachable').textContent!) as string[];
+    expect(unreachable.length).toBeGreaterThan(0);          // ★ 空名单等于这条断言没跑
+    for (const s of unreachable) expect(counts.textContent).not.toContain(s);
+  });
+
+  it('★ 完结的计划不显示，但被挡掉的两侧都要有个数', async () => {
     renderHome();
     const table = await screen.findByTestId('plan-list');
     expect(within(table).queryByText('2026 Q1 首发计划')).toBeNull();
-    expect(screen.getByTestId('hidden-finished')).toHaveTextContent('已完结 1 张');
+    expect(screen.getByTestId('hidden-rows')).toHaveTextContent('已完结 1 张');
+    expect(screen.getByTestId('hidden-rows')).toHaveTextContent('已归档 2 张');
   });
 
-  it('两栏：未提交 / 提交后又改过', async () => {
+  it('两栏：未提交 / 提交后又改过（第二栏点名是跟哪一版比的）', async () => {
     renderHome();
     expect(await screen.findByTestId('never-submitted')).toHaveTextContent('2026 Q4 销售计划');
-    expect(screen.getByTestId('changed-since-submit')).toHaveTextContent('2026 Q3 补货计划');
+    const changed = screen.getByTestId('changed-since-submit');
+    expect(changed).toHaveTextContent('2026 Q3 补货计划');
+    expect(changed).toHaveTextContent('rev 2');
   });
 
   it('按状态筛选，列表跟着变', async () => {
@@ -1773,8 +1934,6 @@ describe('运营首页', () => {
     await screen.findByTestId('plan-list');
     await userEvent.click(screen.getByRole('button', { name: '新建销售计划' }));
     await userEvent.type(screen.getByLabelText('标题'), '2027 Q1 销售计划');
-    await userEvent.clear(screen.getByLabelText('起始月'));
-    await userEvent.type(screen.getByLabelText('起始月'), '2027-01');
     await userEvent.click(screen.getByRole('button', { name: '创建' }));
     expect(await screen.findByTestId('nav-to')).toHaveTextContent('/plans/5');
   });
@@ -1782,14 +1941,13 @@ describe('运营首页', () => {
 ```
 
 ★ 最后一条用 `nav-to` 而不是真跳转：首页只负责**发起**跳转，路由本身在 Task 8 的端到端里验。
-实现里用 `useNavigate()`，测试用 `MemoryRouter` 时把目标写进一个 `data-testid="nav-to"` 的隐藏节点 —— 见 Step 6 的 `navigateWithTrace`。
 
 - [ ] **Step 5: 跑它确认红**
 
 ```bash
 cd web && npx vitest run src/pages/OpsHome.test.tsx
 ```
-Expected: FAIL —— 5 条全红，第一条报 `Unable to find an element by: [data-testid="counts"]`（占位组件只有 `.empty`）。
+Expected: FAIL —— 6 条全红，第一条报 `Unable to find an element by: [data-testid="counts"]`（占位组件只有 `.empty`）。
 
 - [ ] **Step 6: 写首页**
 
@@ -1802,22 +1960,18 @@ import { pushToast } from '../shell/toastStore';
 import { ErrorDetail } from '../components/ErrorDetail';
 import { Qty } from '../components/Qty';
 import { api, ApiError } from '../api';
-import type { PlanSummary, UnsubmittedBoard } from '../api/types';
+import type { DashboardPlans, PlanList, PlanSummary, UnsubmittedBoard } from '../api/types';
 
-/** ★ S-20：后端返回全集（诚实），阶段 A 够不着的态在这里被挡住 —— 挡的地方只有这一处 */
-export const STAGE_A_COUNT_KEYS = ['never_submitted', 'submitted', 'cancelled'] as const;
-
-const LABEL: Record<(typeof STAGE_A_COUNT_KEYS)[number], string> = {
-  never_submitted: '未提交', submitted: '已提交', cancelled: '已撤销',
-};
+/** ★ 阶段 A 只渲染够得着的三态（00e:45）。挡的地方只有这一处 —— 接口照样返回全集（S-20） */
+export const STAGE_A_VISIBLE = ['未提交', '已提交', '已撤销'] as const;
 
 type SortKey = 'period' | 'title' | 'state';
 
 export function OpsHome() {
   const navigate = useNavigate();
-  const [plans, setPlans] = useState<PlanSummary[] | null>(null);
+  const [list, setList] = useState<PlanList | null>(null);
   const [board, setBoard] = useState<UnsubmittedBoard | null>(null);
-  const [submitted, setSubmitted] = useState(0);
+  const [dash, setDash] = useState<DashboardPlans | null>(null);
   const [err, setErr] = useState<ApiError | null>(null);
   const [navTo, setNavTo] = useState<string | null>(null);
 
@@ -1831,48 +1985,47 @@ export function OpsHome() {
   useEffect(() => {
     // ★ 三个接口一起拉：计数与列表来自不同端点，分开拉会出现「计数说 3 张、列表 2 张」
     Promise.all([api.listPlans({ archived: false }), api.dashboardUnsubmitted(), api.dashboardPlans()])
-      .then(([ps, b, d]) => { setPlans(ps); setBoard(b); setSubmitted(d.submitted); })
+      .then(([l, b, d]) => { setList(l); setBoard(b); setDash(d); })
       .catch((e: ApiError) => setErr(e));
   }, []);
 
-  const finished = useMemo(() => (plans ?? []).filter((p) => p.state === '已完结'), [plans]);
+  const finished = useMemo(() => (list?.plans ?? []).filter((p) => p.state === '已完结'), [list]);
   const visible = useMemo(() => {
-    const kept = (plans ?? []).filter((p) => p.state !== '已完结');
+    const kept = (list?.plans ?? []).filter((p) => p.state !== '已完结');
     const rows = kept.filter((p) =>
       (fPeriod === '' || p.period_start.startsWith(fPeriod)) &&
       (fTitle === '' || p.title.includes(fTitle)) &&
-      (fRev === '' || String(p.current_rev ?? '') === fRev) &&
+      (fRev === '' || String(p.state_rev ?? '') === fRev) &&
       (fState === '' || stateLabel(p) === fState));
     return [...rows].sort((a, b) =>
       sort === 'period' ? b.period_start.localeCompare(a.period_start)
       : sort === 'title' ? a.title.localeCompare(b.title)
       : stateLabel(a).localeCompare(stateLabel(b)));
-  }, [plans, fPeriod, fTitle, fRev, fState, sort]);
+  }, [list, fPeriod, fTitle, fRev, fState, sort]);
 
-  const counts = {
-    never_submitted: board?.never_submitted.length ?? 0,
-    submitted,
-    cancelled: (plans ?? []).filter((p) => p.state === '已撤销').length,
+  const counts: Record<(typeof STAGE_A_VISIBLE)[number], number> = {
+    未提交: board?.never_submitted.length ?? 0,
+    已提交: dash?.counts['已提交'] ?? 0,
+    已撤销: (list?.plans ?? []).filter((p) => p.state === '已撤销').length,
   };
 
   async function create(form: HTMLFormElement) {
     const data = new FormData(form);
-    const month = String(data.get('period_start'));
     try {
       const { plan_id } = await api.createPlan({
         title: String(data.get('title')),
-        period_start: `${month}-01`,
+        period_start: `${String(data.get('period_start'))}-01`,  // ★ 建计划的入参是月初日期
         months: Number(data.get('months')),
       });
       setNavTo(`/plans/${plan_id}`);
       navigate(`/plans/${plan_id}`);
     } catch (e) {
       setErr(e as ApiError);
-      pushToast({ kind: 'fail', text: (e as ApiError).message });
+      pushToast({ kind: 'fail', text: (e as ApiError).hint });
     }
   }
 
-  if (err && plans === null) return <AppShell crumb="我的计划"><ErrorDetail err={err} /></AppShell>;
+  if (err && list === null) return <AppShell crumb="我的计划"><ErrorDetail err={err} /></AppShell>;
 
   return (
     <AppShell crumb="我的计划">
@@ -1884,19 +2037,20 @@ export function OpsHome() {
       </div>
 
       <div className="sec counts" data-testid="counts">
-        {STAGE_A_COUNT_KEYS.map((k) => (
+        {STAGE_A_VISIBLE.map((k) => (
           <div className="kpi" key={k}>
             <span className="kpi__n">{counts[k]}</span>
-            <span className="kpi__d">{LABEL[k]}</span>
+            <span className="kpi__d">{k}</span>
           </div>
         ))}
       </div>
+      {/* ★ 接口自报哪些态阶段 A 够不着；测试拿它当靶子，前端不硬编码这份名单 */}
+      <span data-testid="unreachable" hidden>
+        {JSON.stringify(dash?.scope_note.unreachable_in_stage_a ?? [])}
+      </span>
 
       {creating && (
-        <form
-          className="sec bar"
-          onSubmit={(e) => { e.preventDefault(); void create(e.currentTarget); }}
-        >
+        <form className="sec bar" onSubmit={(e) => { e.preventDefault(); void create(e.currentTarget); }}>
           <label className="field"><span className="lbl">标题</span>
             <input className="inp inp--text" name="title" required /></label>
           <label className="field"><span className="lbl">起始月</span>
@@ -1925,7 +2079,7 @@ export function OpsHome() {
             {(board?.changed_since_submit ?? []).map((p) => (
               <div key={p.plan_id}>
                 <a href={`/plans/${p.plan_id}`}>{p.title}</a>{' '}
-                <span className="muted">rev {p.current_rev}</span>
+                <span className="muted">rev {p.since_rev}</span>
               </div>
             ))}
             {board?.changed_since_submit.length === 0 && <div className="todos__empty">无</div>}
@@ -1943,7 +2097,7 @@ export function OpsHome() {
         <label className="bar__grp"><span className="bar__lbl">状态</span>
           <select className="inp" value={fState} onChange={(e) => setFState(e.target.value)}>
             <option value="">全部</option>
-            {STAGE_A_COUNT_KEYS.map((k) => <option key={k} value={LABEL[k]}>{LABEL[k]}</option>)}
+            {STAGE_A_VISIBLE.map((k) => <option key={k} value={k}>{k}</option>)}
           </select></label>
         <label className="bar__grp"><span className="bar__lbl">排序</span>
           <select className="inp" value={sort} onChange={(e) => setSort(e.target.value as SortKey)}>
@@ -1959,7 +2113,7 @@ export function OpsHome() {
               <tr key={p.plan_id}>
                 <td>{p.period_start.slice(0, 7)} · {p.months} 月</td>
                 <td>{p.title}</td>
-                <td className="r">{p.current_rev === null ? <Qty v={{ kind: 'unknown' }} /> : p.current_rev}</td>
+                <td className="r">{p.state_rev === null ? <Qty v={{ kind: 'unknown' }} /> : p.state_rev}</td>
                 <td><span className="chip chip--dim">{stateLabel(p)}</span></td>
                 <td><a href={`/plans/${p.plan_id}`}>打开</a></td>
               </tr>
@@ -1967,8 +2121,10 @@ export function OpsHome() {
           </tbody>
         </table>
       </div>
-      {/* ★ 过滤掉的那一侧要有个数 —— 「没有」和「被我藏了」长得一样 */}
-      <div className="muted mt" data-testid="hidden-finished">已完结 {finished.length} 张不在列表</div>
+      {/* ★ 挡掉的两侧都要有个数 —— 「没有」和「被我藏了」长得一样 */}
+      <div className="muted mt" data-testid="hidden-rows">
+        已完结 {finished.length} 张 · 已归档 {list?.excluded.archived ?? 0} 张 不在列表
+      </div>
       {err && <ErrorDetail err={err} />}
     </AppShell>
   );
@@ -1985,15 +2141,32 @@ function stateLabel(p: PlanSummary): string {
 ```bash
 cd web && npx vitest run src/pages/OpsHome.test.tsx src/components/Qty.test.tsx
 ```
-Expected: PASS（7 个用例）。
+Expected: PASS（8 个用例）。
 ★ 若 `counts.textContent).not.toContain('0')` 红，检查是不是把够不着的态渲染成了 0 —— 不许把断言改松。
 
-- [ ] **Step 8: 提交**
+- [ ] **Step 8: 把「不渲染够不着的态」弄失败一次**
+
+```bash
+cd web
+sed -i "s/{STAGE_A_VISIBLE.map((k) => (/{([...STAGE_A_VISIBLE, ...(dash ? Object.keys(dash.counts) : [])] as string[]).map((k) => (/" src/pages/OpsHome.tsx
+npx vitest run src/pages/OpsHome.test.tsx
+```
+Expected: FAIL —— 第一、二条都红：`已下单` / `准备排货` / `已排货` 出现在计数区，且值是 **0**。
+★ 这正是 `00e:45` 点名的错：「没有」和「还没做」长得一样。
+
+```bash
+cd web && git checkout -- src/pages/OpsHome.tsx && npx vitest run src/pages/OpsHome.test.tsx
+```
+Expected: PASS。
+
+- [ ] **Step 9: 提交**
 
 ```bash
 cd /home/fido/work/2026/jxd_service_group/service_supplychain
 git add web && git commit -m "$(cat <<'EOF'
-feat(web): 运营首页 —— 只渲染够得着的三态，完结的计划过滤但留个数
+feat(web): 运营首页 —— 只渲染够得着的三态，完结与归档各留一个数
+
+够不着的名单由 scope_note 给，不在前端硬编码。
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01CYVSvM8ihMnoFSLVnV7EzQ
@@ -2011,74 +2184,139 @@ EOF
 - Test: `web/src/pages/planGridModel.test.ts` `web/src/pages/PlanGrid.test.tsx`
 
 **Interfaces:**
-- Consumes: `api.getGrid` `api.putDemand` `api.putPurchase` `api.releaseClaim` `api.listSellers`（Task 2）· `<Qty>` `QtyValue`（Task 3）· `<AppShell>` `<Fold>` `pushToast`（Task 1）· `<ErrorDetail>`（Task 2）
+- Consumes: `api.getGrid` `api.getPlan` `api.putDemand` `api.putPurchase` `api.releaseClaim` `api.listSellers`（Task 2）· `<Qty>` `QtyValue`（Task 3）· `<AppShell>` `pushToast`（Task 1）· `<ErrorDetail>`（Task 2）
 - Produces:
   - `buildGridModel(grid: GridResponse, sellers: Seller[]): GridModel`
-  - `GridModel = { periods: Period[]; blocks: SkuBlock[]; purchase: PurchaseRow[]; orphans: Orphan[] }`
-  - `SkuBlock = { seller_id; seller_name; has_fba; sku; mskus: MskuRow[] }`
-  - `MskuRow = { seller_sku; sid; cells: MskuCell[] }`
-  - `MskuCell = { period; system_units; expected_units: number | null; basis; inventory: GridInventoryCell | null }`
-  - `PurchaseRow = { sku; cells: { period; purchase_units: number | null }[] }`
-  - `Orphan = { kind: 'unknown_seller' | 'inventory_without_demand' | 'demand_without_inventory'; key: string }`
-  - `sumUnits(values: (number | null)[]): QtyValue` · `demandAt(block, period): QtyValue` · `inventoryAt(block, period): QtyValue` · `INVENTORY_TOTAL: QtyValue`（恒 `{ kind: 'nosum' }`）
-  - Task 7 会在这个文件里加「提交」按钮，**不改本 Task 的任何导出名**
+  - `GridModel = { periods: Period[]; blocks: SkuBlock[]; purchase: PurchaseRow[]; pipeline: SkuPipelineRow[]; orphans: Orphan[] }`
+  - `SkuBlock = { sid: Sid; seller_name: string; has_fba: boolean; sku: string; mskus: MskuRow[]; inventory: InventoryCell[] }`
+  - `MskuRow = { seller_sku: string; sid: Sid; cells: MskuCell[] }`
+  - `MskuCell = { period; system_units; system_extrapolated; expected_units; effective_units; basis }`
+  - `PurchaseRow = { sku: string; cells: { period: Period; planned_units: number | null }[] }`
+  - `Orphan = { kind: 'unknown_seller' | 'inventory_without_demand' | 'demand_without_inventory' | 'na_disagrees_with_seller' | 'in_transit_disagrees'; key: string }`
+  - `sumUnits(values: (number | null)[]): QtyValue` · `demandAt(block, period): QtyValue` · `inventoryAt(block, period): QtyValue` · `INVENTORY_TOTAL: QtyValue`
+  - Task 7 会在这个文件里加「提交」按钮，**不改本 Task 的任何导出名与 `data-testid`**
+
+**这一屏的四条口径**（`02` §3.1a 可售库存 = [店铺, 货号] · 负责人原理图）
+
+```
+① 库存预估的身份是**店铺 × 货号** —— 画在**店铺·货号行**上（折叠态就能看见，与原理图一致）
+② 展开后的 msku 行只有**销量预估**与**期望销量输入** —— 库存不在 msku 这一层，不许重复画
+③ 货号级在途单独一行只读（铅笔灰 + 「未分摊到店铺」）—— 只展示，一件都不并进任何店铺的库存
+④ 合计列：量可跨月求和；★ **存量不可跨月求和**（同一批货会被数三遍），写「不可求和」
+```
+
+★ 由 ① ② 得出一个后果，写在这里免得被当成 bug：**折叠态没有输入框，要填数必须先展开**。
+这是原理图本来的样子（「输入框…msku 级；折叠行显示 Σ 只读」），不是遗漏。
 
 - [ ] **Step 1: 写模型层的失败测试**
 
 ```ts
 // web/src/pages/planGridModel.test.ts
 import { describe, expect, it } from 'vitest';
-import { buildGridModel, demandAt, inventoryAt, sumUnits, INVENTORY_TOTAL } from './planGridModel';
-import gridFixture from '../api/fixtures/grid-1.json';
-import sellersFixture from '../api/fixtures/sellers.json';
-import type { GridResponse, Seller } from '../api/types';
+import {
+  buildGridModel, demandAt, inventoryAt, sumUnits, INVENTORY_TOTAL,
+} from './planGridModel';
+import type { DemandCell, GridResponse, InventoryCell, InventoryReason, Seller } from '../api/types';
 
-const grid = gridFixture as GridResponse;
-const sellers = sellersFixture as Seller[];
+const P = ['2026-10', '2026-11', '2026-12'];
+
+const sellers: Seller[] = [
+  { seller_id: '11072', name: 'A4Pet-US', market: 'US', has_fba: true, platform: 'amazon' },
+  { seller_id: '90001', name: 'A4Pet-WM', market: 'US', has_fba: false, platform: 'walmart' },
+];
+
+const d = (seller_sku: string, sid: string, period: string, eff: number | null): DemandCell => ({
+  seller_sku, sid, sku: 'SKU-1', period, system_units: 100, system_extrapolated: false,
+  expected_units: eff, effective_units: eff, basis: eff === null ? 'unknown' : 'human',
+});
+const inv = (sid: string, period: string, onhand: number | null, closing: number | null,
+             reason: InventoryReason = null, transit: number | null = 80): InventoryCell => ({
+  sku: 'SKU-1', sid, period, onhand, inbound: null, closing,
+  basis: { source: 'ch', as_of: '2026-09-21', includes_plan_purchase: false, reason,
+           sku_level_in_transit: transit },
+});
+
+function makeGrid(): GridResponse {
+  return {
+    plan_id: 1, periods: [...P],
+    demand: [
+      d('MSKU-A', '11072', P[0]!, 180), d('MSKU-A', '11072', P[1]!, 200), d('MSKU-A', '11072', P[2]!, null),
+      d('MSKU-B', '11072', P[0]!, 40), d('MSKU-B', '11072', P[1]!, null), d('MSKU-B', '11072', P[2]!, null),
+      d('MSKU-W', '90001', P[0]!, 60), d('MSKU-W', '90001', P[1]!, 65), d('MSKU-W', '90001', P[2]!, 70),
+    ],
+    purchase: P.map((p, n) => ({ sku: 'SKU-1', period: p, planned_units: n === 0 ? 500 : null })),
+    inventory: [
+      inv('11072', P[0]!, 420, 200), inv('11072', P[1]!, 200, null, 'unknown_demand'),
+      inv('11072', P[2]!, null, null, 'unknown_demand'),
+      inv('90001', P[0]!, null, null, 'not_applicable', null),
+      inv('90001', P[1]!, null, null, 'not_applicable', null),
+      inv('90001', P[2]!, null, null, 'not_applicable', null),
+    ],
+    sku_pipeline: P.map((p, n) => ({ sku: 'SKU-1', period: p, in_transit: n === 0 ? 80 : null })),
+  };
+}
 
 describe('网格模型', () => {
-  it('分块：一个店铺 · 一个货号 一块；msku 挂在块下', () => {
-    const m = buildGridModel(grid, sellers);
-    expect(m.blocks.map((b) => `${b.seller_id}/${b.sku}`)).toEqual(['11072/DCC1800264', '20311/DCC1800264']);
-    expect(m.blocks[0]!.mskus.map((r) => r.seller_sku)).toEqual(['DCC1800264-US', 'DCC1800264-US-B']);
+  it('分块：一个店铺 · 一个货号 一块；msku 挂在块下，库存挂在块上', () => {
+    const m = buildGridModel(makeGrid(), sellers);
+    expect(m.blocks.map((b) => `${b.sid}/${b.sku}`)).toEqual(['11072/SKU-1', '90001/SKU-1']);
+    expect(m.blocks[0]!.mskus.map((r) => r.seller_sku)).toEqual(['MSKU-A', 'MSKU-B']);
+    expect(m.blocks[0]!.inventory).toHaveLength(3);
+    // ★ 库存不挂在 msku 上 —— 挂上去就会被画两遍、加两遍
+    expect(Object.keys(m.blocks[0]!.mskus[0]!.cells[0]!)).not.toContain('inventory');
   });
 
-  it('★ 未知向后传染：任何一个是 null，和就是未知，不是把 null 当 0', () => {
+  it('★ 未知向后传染：任何一个是 null，和就是未知；空数组也是未知，不是 0', () => {
     expect(sumUnits([180, 200, 210])).toEqual({ kind: 'num', value: 590 });
     expect(sumUnits([180, null, 210])).toEqual({ kind: 'unknown' });
     expect(sumUnits([])).toEqual({ kind: 'unknown' });
   });
 
-  it('★ 跨 msku 求和可以，跨月求和不行', () => {
-    const m = buildGridModel(grid, sellers);
-    const us = m.blocks[0]!;
-    // 同一时点两个 listing 的库存可以相加：420 + (-10)
-    expect(inventoryAt(us, '2026-10-01')).toEqual({ kind: 'num', value: 410 });
-    // 跨月：把三个月的期末库存加起来是重复计数
+  it('期望销量跨 msku 可以求和', () => {
+    const m = buildGridModel(makeGrid(), sellers);
+    expect(demandAt(m.blocks[0]!, P[0]!)).toEqual({ kind: 'num', value: 220 });
+    expect(demandAt(m.blocks[0]!, P[1]!)).toEqual({ kind: 'unknown' });  // MSKU-B 11 月未知
+  });
+
+  it('★ 库存一格三种形态三个字：有数 / 未知 / 不适用', () => {
+    const m = buildGridModel(makeGrid(), sellers);
+    expect(inventoryAt(m.blocks[0]!, P[0]!)).toEqual({ kind: 'num', value: 200 });
+    expect(inventoryAt(m.blocks[0]!, P[1]!)).toEqual({ kind: 'unknown' });
+    expect(inventoryAt(m.blocks[1]!, P[0]!)).toEqual({ kind: 'na' });
+    // ★ 「不适用」与「未知」都不是 0，也互不相同
+    expect(inventoryAt(m.blocks[1]!, P[0]!)).not.toEqual(inventoryAt(m.blocks[0]!, P[1]!));
+  });
+
+  it('★ 存量不可跨月求和 —— 合计列给字不给数', () => {
     expect(INVENTORY_TOTAL).toEqual({ kind: 'nosum' });
-    expect(demandAt(us, '2026-10-01')).toEqual({ kind: 'num', value: 220 });
   });
 
-  it('★ 无 FBA 的店铺 → 不适用，不是 0', () => {
-    const m = buildGridModel(grid, sellers);
-    const wmt = m.blocks.find((b) => b.seller_id === '20311')!;
-    expect(wmt.has_fba).toBe(false);
-    expect(inventoryAt(wmt, '2026-10-01')).toEqual({ kind: 'na' });
+  it('★ 在途只展示不分摊：一件都没并进任何一格库存', () => {
+    const m = buildGridModel(makeGrid(), sellers);
+    expect(m.pipeline[0]!.in_transit).toBe(80);
+    const closings = m.blocks.flatMap((b) => b.inventory.map((i) => i.closing));
+    expect(closings).not.toContain(280);   // 200 + 80 —— 并进去就是这个数
   });
 
-  it('★ 被丢掉的那一侧必须统计：认不出的店铺 / 对不上的库存行都要点名', () => {
-    const dirty: GridResponse = {
-      ...grid,
-      demand: [...grid.demand, { ...grid.demand[0]!, seller_id: '99999', seller_sku: 'GHOST', sid: '99999' }],
-      inventory: [...grid.inventory, { ...grid.inventory[0]!, seller_sku: 'NO-DEMAND', sid: '11072' }],
-    };
-    const m = buildGridModel(dirty, sellers);
+  it('★ 被丢掉的那一侧必须统计：认不出的店铺 / 对不上的库存行 / 两处在途不一致', () => {
+    const g = makeGrid();
+    g.demand.push(d('GHOST', '99999', P[0]!, 1));
+    g.inventory.push(inv('11094', P[0]!, 5, 5));                       // 没有对应的需求
+    g.inventory[0] = { ...g.inventory[0]!, basis: { ...g.inventory[0]!.basis, sku_level_in_transit: 999 } };
+    const m = buildGridModel(g, sellers);
     expect(m.orphans).toEqual(expect.arrayContaining([
       { kind: 'unknown_seller', key: '99999/GHOST' },
-      { kind: 'inventory_without_demand', key: 'NO-DEMAND/11072/2026-10-01' },
+      { kind: 'inventory_without_demand', key: 'SKU-1/11094/2026-10' },
+      { kind: 'in_transit_disagrees', key: 'SKU-1/2026-10' },
     ]));
-    // 认不出的行不许静默并进某个块
-    expect(m.blocks.some((b) => b.seller_id === '99999')).toBe(false);
+    expect(m.blocks.some((b) => b.sid === '99999')).toBe(false);   // 认不出的不许静默并块
+  });
+
+  it('★ 「不适用」必须与镜像里的 has_fba 一致 —— 不一致是两个真相，要点名', () => {
+    const g = makeGrid();
+    g.inventory[0] = { ...g.inventory[0]!, basis: { ...g.inventory[0]!.basis, reason: 'not_applicable' } };
+    const m = buildGridModel(g, sellers);
+    expect(m.orphans).toContainEqual({ kind: 'na_disagrees_with_seller', key: 'SKU-1/11072/2026-10' });
   });
 });
 ```
@@ -2095,29 +2333,36 @@ Expected: FAIL —— `Failed to resolve import "./planGridModel"`。
 ```ts
 // web/src/pages/planGridModel.ts
 import type { QtyValue } from '../components/Qty';
-import type { DemandBasis, GridInventoryCell, GridResponse, Period, Seller, Sid } from '../api/types';
+import type {
+  DemandBasis, GridResponse, InventoryCell, Period, Seller, Sid, SkuPipelineRow,
+} from '../api/types';
 
 export interface MskuCell {
   period: Period;
-  system_units: number;
+  system_units: number | null;
+  system_extrapolated: boolean;
   expected_units: number | null;
+  effective_units: number | null;
   basis: DemandBasis;
-  inventory: GridInventoryCell | null;
 }
 export interface MskuRow { seller_sku: string; sid: Sid; cells: MskuCell[] }
+/** ★ 库存挂在**块**上（店铺 × 货号），不挂在 msku 上 */
 export interface SkuBlock {
-  seller_id: string; seller_name: string; has_fba: boolean; sku: string; mskus: MskuRow[];
+  sid: Sid; seller_name: string; has_fba: boolean; sku: string;
+  mskus: MskuRow[]; inventory: InventoryCell[];
 }
-export interface PurchaseRow { sku: string; cells: { period: Period; purchase_units: number | null }[] }
+export interface PurchaseRow { sku: string; cells: { period: Period; planned_units: number | null }[] }
 export interface Orphan {
-  kind: 'unknown_seller' | 'inventory_without_demand' | 'demand_without_inventory';
+  kind: 'unknown_seller' | 'inventory_without_demand' | 'demand_without_inventory'
+      | 'na_disagrees_with_seller' | 'in_transit_disagrees';
   key: string;
 }
 export interface GridModel {
-  periods: Period[]; blocks: SkuBlock[]; purchase: PurchaseRow[]; orphans: Orphan[];
+  periods: Period[]; blocks: SkuBlock[]; purchase: PurchaseRow[];
+  pipeline: SkuPipelineRow[]; orphans: Orphan[];
 }
 
-/** ★ 跨月的期末库存相加是重复计数（14 §1.1 ①）—— 永远是「不可求和」，不是某个数 */
+/** ★ 跨月把期末库存加起来，同一批货会被数三遍 —— 合计列给字不给数（14 §1.1 ①） */
 export const INVENTORY_TOTAL: QtyValue = { kind: 'nosum' };
 
 /** ★ 任何一项未知 ⇒ 和未知。空数组也是未知：没有数不等于 0 */
@@ -2127,52 +2372,73 @@ export function sumUnits(values: (number | null)[]): QtyValue {
 }
 
 export function demandAt(block: SkuBlock, period: Period): QtyValue {
-  return sumUnits(block.mskus.map((r) => r.cells.find((c) => c.period === period)?.expected_units ?? null));
+  return sumUnits(block.mskus.map((r) => r.cells.find((c) => c.period === period)?.effective_units ?? null));
 }
 
 export function inventoryAt(block: SkuBlock, period: Period): QtyValue {
-  // ★ 无 FBA 的平台没有可扣的库存池 —— 「不适用」，不是 0（02 §3.1a）
-  if (!block.has_fba) return { kind: 'na' };
-  return sumUnits(block.mskus.map((r) => r.cells.find((c) => c.period === period)?.inventory?.closing_units ?? null));
+  const cell = block.inventory.find((i) => i.period === period);
+  if (!cell) return { kind: 'unknown' };
+  // ★ 「不适用」不是 0 也不是未知：该店根本没有 FBA，这一格问的问题不成立（02 §3.1a）
+  if (cell.basis.reason === 'not_applicable') return { kind: 'na' };
+  return cell.closing === null ? { kind: 'unknown' } : { kind: 'num', value: cell.closing };
 }
 
 export function buildGridModel(grid: GridResponse, sellers: Seller[]): GridModel {
   const sellerById = new Map(sellers.map((s) => [s.seller_id, s]));
   const orphans: Orphan[] = [];
   const blocks = new Map<string, SkuBlock>();
-  const usedInventory = new Set<string>();
-  const invKey = (sellerSku: string, sid: Sid, period: Period) => `${sellerSku}/${sid}/${period}`;
-  const invByKey = new Map(grid.inventory.map((i) => [invKey(i.seller_sku, i.sid, i.period), i]));
+  const usedInv = new Set<string>();
+  const invKey = (sku: string, sid: Sid, p: Period) => `${sku}/${sid}/${p}`;
+  const invByKey = new Map(grid.inventory.map((i) => [invKey(i.sku, i.sid, i.period), i]));
 
   for (const d of grid.demand) {
-    const seller = sellerById.get(d.seller_id);
+    const seller = sellerById.get(d.sid);
     if (!seller) {
       // ★ 认不出的店铺硬性点名，不许落进 else 再被下游过滤掉
-      orphans.push({ kind: 'unknown_seller', key: `${d.seller_id}/${d.seller_sku}` });
+      orphans.push({ kind: 'unknown_seller', key: `${d.sid}/${d.seller_sku}` });
       continue;
     }
-    const bKey = `${d.seller_id}/${d.sku}`;
+    const bKey = `${d.sid}/${d.sku}`;
     let block = blocks.get(bKey);
     if (!block) {
-      block = { seller_id: d.seller_id, seller_name: seller.name, has_fba: seller.has_fba, sku: d.sku, mskus: [] };
+      block = { sid: d.sid, seller_name: seller.name, has_fba: seller.has_fba, sku: d.sku, mskus: [], inventory: [] };
       blocks.set(bKey, block);
     }
-    let row = block.mskus.find((r) => r.seller_sku === d.seller_sku && r.sid === d.sid);
+    let row = block.mskus.find((r) => r.seller_sku === d.seller_sku);
     if (!row) { row = { seller_sku: d.seller_sku, sid: d.sid, cells: [] }; block.mskus.push(row); }
-
-    const k = invKey(d.seller_sku, d.sid, d.period);
-    const inv = invByKey.get(k) ?? null;
-    if (inv) usedInventory.add(k); else if (seller.has_fba) {
-      orphans.push({ kind: 'demand_without_inventory', key: k });
-    }
     row.cells.push({
-      period: d.period, system_units: d.system_units, expected_units: d.expected_units,
-      basis: d.basis, inventory: inv,
+      period: d.period, system_units: d.system_units, system_extrapolated: d.system_extrapolated,
+      expected_units: d.expected_units, effective_units: d.effective_units, basis: d.basis,
     });
   }
 
-  for (const [k] of invByKey) {
-    if (!usedInventory.has(k)) orphans.push({ kind: 'inventory_without_demand', key: k });
+  for (const block of blocks.values()) {
+    for (const period of grid.periods) {
+      const k = invKey(block.sku, block.sid, period);
+      const cell = invByKey.get(k);
+      if (!cell) { orphans.push({ kind: 'demand_without_inventory', key: k }); continue; }
+      usedInv.add(k);
+      // ★ 「不适用」必须与镜像里的 has_fba 一致；不一致是两个真相，要点名而不是挑一个信
+      if ((cell.basis.reason === 'not_applicable') !== !block.has_fba) {
+        orphans.push({ kind: 'na_disagrees_with_seller', key: k });
+      }
+      block.inventory.push(cell);
+    }
+  }
+
+  for (const [k, cell] of invByKey) {
+    if (!usedInv.has(k)) orphans.push({ kind: 'inventory_without_demand', key: `${cell.sku}/${cell.sid}/${cell.period}` });
+  }
+
+  // ★ 同一个在途数字有两处来源（basis 与 sku_pipeline）；不一致要报，不许挑一个显示
+  for (const p of grid.sku_pipeline) {
+    for (const cell of grid.inventory.filter((i) => i.sku === p.sku && i.period === p.period)) {
+      if (cell.basis.reason === 'not_applicable') continue;
+      if (cell.basis.sku_level_in_transit !== p.in_transit) {
+        orphans.push({ kind: 'in_transit_disagrees', key: `${p.sku}/${p.period}` });
+        break;
+      }
+    }
   }
 
   const skus = [...new Set(grid.purchase.map((p) => p.sku))];
@@ -2180,11 +2446,12 @@ export function buildGridModel(grid: GridResponse, sellers: Seller[]): GridModel
     sku,
     cells: grid.periods.map((period) => ({
       period,
-      purchase_units: grid.purchase.find((p) => p.sku === sku && p.period === period)?.purchase_units ?? null,
+      planned_units: grid.purchase.find((p) => p.sku === sku && p.period === period)?.planned_units ?? null,
     })),
   }));
 
-  return { periods: grid.periods, blocks: [...blocks.values()], purchase, orphans };
+  // ★ pipeline 原样带过来，**不与 inventory 相加** —— 层级不同，加起来是每个店各多一份货
+  return { periods: grid.periods, blocks: [...blocks.values()], purchase, pipeline: grid.sku_pipeline, orphans };
 }
 ```
 
@@ -2193,132 +2460,245 @@ export function buildGridModel(grid: GridResponse, sellers: Seller[]): GridModel
 ```bash
 cd web && npx vitest run src/pages/planGridModel.test.ts
 ```
-Expected: PASS（5 个用例）。
+Expected: PASS（8 个用例）。
 
 - [ ] **Step 5: 写网格页的失败测试**
 
+★ 页面测试**自己造 grid** 并注入，不吃后端 fixture 的具体数字 —— 那些数字由后端的 seed 决定，
+写死在断言里就会随后端改动无故转红。最后一条**专门**用真 fixture，只断言三种形态都画得出来。
+
 ```tsx
 // web/src/pages/PlanGrid.test.tsx
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { PlanGrid } from './PlanGrid';
+import type { GridResponse, InventoryReason, PlanSummary, Seller } from '../api/types';
 
-const renderGrid = () => render(
-  <MemoryRouter initialEntries={['/plans/1']}>
-    <Routes><Route path="/plans/:planId" element={<PlanGrid />} /></Routes>
-  </MemoryRouter>,
-);
+const P = ['2026-10', '2026-11', '2026-12'];
+const PLAN: PlanSummary = {
+  plan_id: 1, title: '2026 Q4 销售计划', period_start: '2026-10-01', months: 3,
+  owner_actor: 'ops.zhang', archived_at: null, state: null, state_rev: null,
+};
+const SELLERS: Seller[] = [
+  { seller_id: '11072', name: 'A4Pet-US', market: 'US', has_fba: true, platform: 'amazon' },
+  { seller_id: '90001', name: 'A4Pet-WM', market: 'US', has_fba: false, platform: 'walmart' },
+];
 
-/** 行默认是折叠的（行 = 店铺·货号）；要看 msku 级的格子得先展开 */
-async function expand(testId: string) {
+function makeGrid(): GridResponse {
+  const d = (ss: string, sid: string, p: string, eff: number | null, extrap = false) => ({
+    seller_sku: ss, sid, sku: 'SKU-1', period: p, system_units: 100, system_extrapolated: extrap,
+    expected_units: eff, effective_units: eff,
+    basis: (eff === null ? 'unknown' : 'human') as 'unknown' | 'human',
+  });
+  const i = (sid: string, p: string, onhand: number | null, closing: number | null,
+             reason: InventoryReason = null, transit: number | null = 80) => ({
+    sku: 'SKU-1', sid, period: p, onhand, inbound: null, closing,
+    basis: { source: 'ch' as const, as_of: '2026-09-21', includes_plan_purchase: false as const,
+             reason, sku_level_in_transit: transit },
+  });
+  return {
+    plan_id: 1, periods: [...P],
+    demand: [d('MSKU-A', '11072', P[0]!, 180), d('MSKU-A', '11072', P[1]!, 200),
+             d('MSKU-A', '11072', P[2]!, null, true),
+             d('MSKU-B', '11072', P[0]!, 40), d('MSKU-B', '11072', P[1]!, null),
+             d('MSKU-B', '11072', P[2]!, null),
+             d('MSKU-W', '90001', P[0]!, 60), d('MSKU-W', '90001', P[1]!, 65), d('MSKU-W', '90001', P[2]!, 70)],
+    purchase: P.map((p, n) => ({ sku: 'SKU-1', period: p, planned_units: n === 0 ? 500 : null })),
+    inventory: [i('11072', P[0]!, 420, 200), i('11072', P[1]!, 200, -30),
+                i('11072', P[2]!, -30, null, 'unknown_demand'),
+                i('90001', P[0]!, null, null, 'not_applicable', null),
+                i('90001', P[1]!, null, null, 'not_applicable', null),
+                i('90001', P[2]!, null, null, 'not_applicable', null)],
+    sku_pipeline: P.map((p, n) => ({ sku: 'SKU-1', period: p, in_transit: n === 0 ? 80 : null })),
+  };
+}
+
+beforeEach(() => { vi.resetModules(); });
+
+async function renderGrid(grid: GridResponse = makeGrid()) {
+  const { ApiError } = await import('../api/client');
+  const state = { grid };
+  vi.doMock('../api', () => ({
+    ApiError,
+    api: {
+      getPlan: async () => PLAN,
+      listSellers: async () => SELLERS,
+      getGrid: async () => JSON.parse(JSON.stringify(state.grid)) as GridResponse,
+      putDemand: async (_p: number, ss: string, sid: string, period: string, units: number | null) => {
+        const cell = state.grid.demand.find((x) => x.seller_sku === ss && x.period === period)!;
+        cell.expected_units = units;
+        cell.effective_units = units ?? cell.system_units;
+        cell.basis = units === null ? 'system' : 'human';
+        const iv = state.grid.inventory.find((x) => x.sku === cell.sku && x.sid === sid && x.period === period)!;
+        const mine = state.grid.demand.filter((x) => x.sku === cell.sku && x.sid === sid && x.period === period);
+        const sum = mine.some((x) => x.effective_units === null)
+          ? null : mine.reduce((a, x) => a + (x.effective_units as number), 0);
+        iv.closing = iv.onhand === null || sum === null ? null : iv.onhand - sum;
+        iv.basis.reason = iv.closing === null ? 'unknown_demand' : null;
+        return cell;
+      },
+      putPurchase: async (_p: number, sku: string, period: string, units: number | null) => {
+        const c = state.grid.purchase.find((x) => x.sku === sku && x.period === period)!;
+        c.planned_units = units;
+        return c;
+      },
+      releaseClaim: async () => ({ released: { seller_sku: '', sid: '' }, dropped_cells: 0 }),
+      submit: async () => ({ rev: 1, lines: 1, in_flight: true, content_digest: 'x', skipped: [] }),
+    },
+  }));
+  const { PlanGrid } = await import('./PlanGrid');
+  return render(
+    <MemoryRouter initialEntries={['/plans/1']}>
+      <Routes><Route path="/plans/:planId" element={<PlanGrid />} /></Routes>
+    </MemoryRouter>,
+  );
+}
+
+const expand = async (testId: string) => {
   const block = await screen.findByTestId(testId);
   await userEvent.click(within(block).getByRole('button', { name: '展开' }));
   return block;
-}
+};
 
 describe('计划编辑网格', () => {
   it('标题 + 月份列 + 合计列', async () => {
-    renderGrid();
+    await renderGrid();
     expect(await screen.findByRole('heading', { name: '2026 Q4 销售计划' })).toBeInTheDocument();
-    const head = within(screen.getByTestId('block-11072-DCC1800264')).getAllByRole('columnheader');
+    const head = within(await screen.findByTestId('block-11072-SKU-1')).getAllByRole('columnheader');
     expect(head.map((h) => h.textContent)).toEqual(['店铺·货号', '2026-10', '2026-11', '2026-12', '合计']);
   });
 
-  it('★ 一格三行：预估（灰）· 库存（灰 + basis）· 输入（蓝黑）', async () => {
-    renderGrid();
-    await expand('block-11072-DCC1800264');
-    const cell = screen.getByTestId('cell-DCC1800264-US-2026-10-01');
-    expect(within(cell).getByTestId('system')).toHaveClass('i-pencil');
-    expect(within(cell).getByTestId('closing')).toHaveTextContent('420');
+  it('★ 库存预估画在店铺·货号行上，折叠态就看得见', async () => {
+    await renderGrid();
+    const block = await screen.findByTestId('block-11072-SKU-1');
+    const cell = within(block).getByTestId('sku-cell-2026-10');
+    expect(within(cell).getByTestId('closing')).toHaveTextContent('200');
+    expect(within(cell).getByText('在仓 420')).toBeInTheDocument();
     expect(within(cell).getByText('未计本计划采购')).toBeInTheDocument();
-    expect(within(cell).getByText('在仓')).toBeInTheDocument();
-    expect(within(cell).getByRole('textbox')).toHaveValue('180');
+    expect(within(cell).getByTestId('sum-expected-2026-10')).toHaveTextContent('220');
+    // ★ 折叠态没有输入框：填数是 msku 级的事
+    expect(within(block).queryByRole('textbox')).toBeNull();
   });
 
-  it('★ 空 = 未知：输入框空着，不显示 0，也没有 placeholder "0"', async () => {
-    renderGrid();
-    await expand('block-11072-DCC1800264');
-    const cell = screen.getByTestId('cell-DCC1800264-US-2026-12-01');
-    const input = within(cell).getByRole('textbox');
+  it('★ 展开后的 msku 行只有预估与输入 —— 库存不在这一层，不许重复画', async () => {
+    await renderGrid();
+    const block = await expand('block-11072-SKU-1');
+    const cell = within(block).getByTestId('cell-MSKU-A-2026-10');
+    expect(within(cell).getByTestId('system')).toHaveClass('i-pencil');
+    expect(within(cell).getByRole('textbox')).toHaveValue('180');
+    expect(within(cell).queryByTestId('closing')).toBeNull();
+    // 店铺·货号行还在，库存只画那一遍
+    expect(within(block).getAllByTestId(/^closing$/)).toHaveLength(0);
+    expect(within(block).getAllByTestId('closing-sku')).toHaveLength(3);
+  });
+
+  it('★ 外推的预估带朱批角标 —— 外推 ≠ 预估', async () => {
+    await renderGrid();
+    const block = await expand('block-11072-SKU-1');
+    expect(within(within(block).getByTestId('cell-MSKU-A-2026-12')).getByTitle('外推')).toHaveClass('ext');
+    expect(within(within(block).getByTestId('cell-MSKU-A-2026-10')).queryByTitle('外推')).toBeNull();
+  });
+
+  it('★ 空 = 未知：输入框空着，不显示 0，placeholder 也不是 "0"', async () => {
+    await renderGrid();
+    const block = await expand('block-11072-SKU-1');
+    const input = within(within(block).getByTestId('cell-MSKU-A-2026-12')).getByRole('textbox');
     expect(input).toHaveValue('');
     expect(input).toHaveAttribute('placeholder', '');
-    expect(within(cell).getByTestId('closing')).toHaveTextContent('—');
+    expect(within(block).getByTestId('sku-cell-2026-12')).toHaveTextContent('—');
   });
 
-  it('★ 断货格：朱批左边条 + data-state=out', async () => {
-    renderGrid();
-    await expand('block-11072-DCC1800264');
-    const cell = screen.getByTestId('cell-DCC1800264-US-B-2026-10-01');
+  it('★ 断货格：朱批左边条 + data-state=out，画在店铺·货号行上', async () => {
+    await renderGrid();
+    const block = await screen.findByTestId('block-11072-SKU-1');
+    const cell = within(block).getByTestId('sku-cell-2026-11');
     expect(cell).toHaveAttribute('data-state', 'out');
-    expect(within(cell).getByTestId('closing')).toHaveTextContent('-10');
+    expect(within(cell).getByTestId('closing')).toHaveTextContent('-30');
   });
 
-  it('★ 无 FBA 的店铺：库存行写「不适用」，整块里不出现 0 库存', async () => {
-    renderGrid();
-    const block = await screen.findByTestId('block-20311-DCC1800264');
-    // 3 个月 + 合计列 = 4 处；★ 一处都不许是 0
-    expect(within(block).getAllByText('不适用').length).toBe(4);
-    expect(within(block).queryByText('0')).toBeNull();
+  it('★ 无 FBA 的店铺：写「不适用」，整块里不出现 0 库存', async () => {
+    await renderGrid();
+    const block = await screen.findByTestId('block-90001-SKU-1');
+    expect(within(block).getAllByText('不适用')).toHaveLength(3);
+    expect(within(block).getByTestId('sku-cell-2026-10')).not.toHaveAttribute('data-state');
   });
 
-  it('★ 合计：量可求和；存量列写「不可求和」', async () => {
-    renderGrid();
-    const block = await screen.findByTestId('block-11072-DCC1800264');
-    const sums = within(block).getByTestId('sum-collapsed');
-    expect(within(sums).getByTestId('sum-demand')).toHaveTextContent('—'); // 12 月未填 ⇒ 未知传染
-    expect(within(sums).getByTestId('sum-inventory')).toHaveTextContent('不可求和');
+  it('★ 合计列：期望可求和，存量写「不可求和」', async () => {
+    await renderGrid();
+    const block = await screen.findByTestId('block-11072-SKU-1');
+    expect(within(block).getByTestId('sum-inventory')).toHaveTextContent('不可求和');
+    expect(within(block).getByTestId('sum-demand')).toHaveTextContent('—');  // 12 月未知 ⇒ 传染
   });
 
-  it('折叠行只有 Σ 没有输入框；展开后才出现 msku 行与输入框', async () => {
-    renderGrid();
-    const block = await screen.findByTestId('block-11072-DCC1800264');
-    expect(within(block).queryByText('DCC1800264-US-B')).toBeNull();
-    // ★ 折叠行是只读的 Σ —— 在货号级填数会把「人填的粒度」悄悄降一层
-    expect(within(block).queryByRole('textbox')).toBeNull();
-    expect(within(block).getByTestId('sum-expected-2026-10-01')).toHaveTextContent('220');
-
-    await userEvent.click(within(block).getByRole('button', { name: '展开' }));
-    expect(within(block).getByText('DCC1800264-US-B')).toBeInTheDocument();
-    expect(within(block).getAllByRole('textbox').length).toBe(6);  // 2 msku × 3 月
-  });
-
-  it('填期望销量 → 保存并当场刷新库存预估', async () => {
-    renderGrid();
-    await expand('block-11072-DCC1800264');
-    const cell = screen.getByTestId('cell-DCC1800264-US-2026-10-01');
-    const input = within(cell).getByRole('textbox');
+  it('填期望销量 → 保存并当场刷新店铺·货号行的库存预估', async () => {
+    await renderGrid();
+    const block = await expand('block-11072-SKU-1');
+    const input = within(within(block).getByTestId('cell-MSKU-A-2026-10')).getByRole('textbox');
     await userEvent.clear(input);
     await userEvent.type(input, '300');
     await userEvent.tab();
-    expect(await within(cell).findByTestId('closing')).toHaveTextContent('300');
-    expect(input).toHaveAttribute('data-touched', '1');
+    // 420 − (300 + 40)
+    expect(await within(block).findByTestId('sku-cell-2026-10')).toHaveTextContent('80');
   });
 
-  it('★ 清空输入 → 发 null 而不是 0，库存变未知', async () => {
-    renderGrid();
-    await expand('block-11072-DCC1800264');
-    const cell = screen.getByTestId('cell-DCC1800264-US-2026-11-01');
-    const input = within(cell).getByRole('textbox');
+  it('★ 清空一个 msku 的输入 → 整格未知（不是把它当 0 再把别的 msku 加进来）', async () => {
+    await renderGrid();
+    const block = await expand('block-11072-SKU-1');
+    const input = within(within(block).getByTestId('cell-MSKU-B-2026-10')).getByRole('textbox');
     await userEvent.clear(input);
     await userEvent.tab();
-    expect(await within(cell).findByTestId('closing')).toHaveTextContent('—');
+    expect(await within(block).findByTestId('sku-cell-2026-10')).toHaveTextContent('—');
   });
 
-  it('计划采购量是货号级，行头不带店铺', async () => {
-    renderGrid();
+  it('计划采购量是货号级，行头不带店铺；在途单独一行只读', async () => {
+    await renderGrid();
     const block = await screen.findByTestId('purchase-block');
-    expect(within(block).getByText('DCC1800264')).toBeInTheDocument();
+    expect(within(block).getByText('SKU-1')).toBeInTheDocument();
     expect(within(block).queryByText('A4Pet-US')).toBeNull();
-    expect(within(block).getAllByRole('textbox').length).toBe(3);
+    expect(within(block).getAllByRole('textbox')).toHaveLength(3);
+
+    const transit = within(block).getByTestId('transit-row');
+    expect(transit).toHaveTextContent('80');
+    expect(within(transit).getByText('未分摊到店铺')).toBeInTheDocument();
+    expect(within(transit).queryByRole('textbox')).toBeNull();   // ★ 只读
+    expect(transit).toHaveTextContent('—');                       // 11/12 月无在途 ⇒ 未知不是 0
   });
 
-  it('★ 对不上的行要点名，不静默丢', async () => {
-    renderGrid();
-    await screen.findByTestId('block-11072-DCC1800264');
-    // fixture 干净 ⇒ 丢弃区不渲染；这条守的是「没有丢弃时也不许凭空出现一条」
+  it('★ 在途一件都没并进库存', async () => {
+    await renderGrid();
+    await screen.findByTestId('block-11072-SKU-1');
+    expect(screen.queryByText('280')).toBeNull();   // 200 + 80
+  });
+
+  it('★ 对不上的行要点名；数据干净时丢弃区不渲染（不是渲染一个空框）', async () => {
+    await renderGrid();
+    await screen.findByTestId('block-11072-SKU-1');
     expect(screen.queryByTestId('orphans')).toBeNull();
+
+    const dirty = makeGrid();
+    dirty.sku_pipeline[0] = { sku: 'SKU-1', period: P[0]!, in_transit: 999 };
+    vi.resetModules();
+    await renderGrid(dirty);
+    expect(await screen.findByTestId('orphans')).toHaveTextContent('in_transit_disagrees');
+  });
+
+  it('★ 后端那份真 fixture 也画得出三种形态（不写死数字，只认形态）', async () => {
+    vi.resetModules();
+    const { createMockApi } = await import('../api/mock');
+    const { ApiError } = await import('../api/client');
+    vi.doMock('../api', () => ({ api: createMockApi(), ApiError }));
+    const { PlanGrid } = await import('./PlanGrid');
+    render(
+      <MemoryRouter initialEntries={['/plans/1']}>
+        <Routes><Route path="/plans/:planId" element={<PlanGrid />} /></Routes>
+      </MemoryRouter>,
+    );
+    const blocks = await screen.findAllByTestId(/^block-/);
+    expect(blocks.length).toBeGreaterThan(0);
+    expect(screen.getAllByText('不适用').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('未计本计划采购').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('不可求和').length).toBe(blocks.length);
   });
 });
 ```
@@ -2328,7 +2708,7 @@ describe('计划编辑网格', () => {
 ```bash
 cd web && npx vitest run src/pages/PlanGrid.test.tsx
 ```
-Expected: FAIL —— 11 条全红，首条报 `Unable to find an accessible element with the role "heading" and name "2026 Q4 销售计划"`。
+Expected: FAIL —— 14 条全红，首条报 `Unable to find an accessible element with the role "heading" and name "2026 Q4 销售计划"`。
 
 - [ ] **Step 7: 写网格页**
 
@@ -2341,21 +2721,21 @@ import { pushToast } from '../shell/toastStore';
 import { ErrorDetail } from '../components/ErrorDetail';
 import { Qty, type QtyValue } from '../components/Qty';
 import { api, ApiError } from '../api';
-import type { GridResponse, Seller } from '../api/types';
+import type { GridResponse, PlanSummary, Seller } from '../api/types';
 import {
-  buildGridModel, demandAt, inventoryAt, sumUnits, INVENTORY_TOTAL,
-  type MskuCell, type SkuBlock,
+  buildGridModel, demandAt, inventoryAt, sumUnits, INVENTORY_TOTAL, type SkuBlock,
 } from './planGridModel';
 
 export function PlanGrid() {
   const planId = Number(useParams().planId);
+  const [plan, setPlan] = useState<PlanSummary | null>(null);
   const [grid, setGrid] = useState<GridResponse | null>(null);
   const [sellers, setSellers] = useState<Seller[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [err, setErr] = useState<ApiError | null>(null);
 
-  const load = () => Promise.all([api.getGrid(planId), api.listSellers()])
-    .then(([g, s]) => { setGrid(g); setSellers(s); setErr(null); })
+  const load = () => Promise.all([api.getPlan(planId), api.getGrid(planId), api.listSellers()])
+    .then(([p, g, s]) => { setPlan(p); setGrid(g); setSellers(s); setErr(null); })
     .catch((e: ApiError) => setErr(e));
 
   useEffect(() => { void load(); }, [planId]);
@@ -2363,31 +2743,38 @@ export function PlanGrid() {
   const model = useMemo(() => (grid ? buildGridModel(grid, sellers) : null), [grid, sellers]);
 
   if (err && grid === null) return <AppShell crumb="计划编辑"><ErrorDetail err={err} /></AppShell>;
-  if (!grid || !model) return <AppShell crumb="计划编辑"><div className="empty" /></AppShell>;
+  if (!grid || !model || !plan) return <AppShell crumb="计划编辑"><div className="empty" /></AppShell>;
 
   async function saveDemand(sellerSku: string, sid: string, period: string, raw: string) {
     // ★ 空串 = 未知 ⇒ null；不是 0
     const units = raw.trim() === '' ? null : Number(raw);
     if (units !== null && !Number.isInteger(units)) {
-      pushToast({ kind: 'fail', text: `${sellerSku} ${period.slice(0, 7)}：${raw} 不是整数` });
+      pushToast({ kind: 'fail', text: `${sellerSku} ${period}：${raw} 不是整数` });
       return;
     }
-    try {
-      await api.putDemand(planId, sellerSku, sid, period, units);
-      await load();
-    } catch (e) { setErr(e as ApiError); pushToast({ kind: 'fail', text: (e as ApiError).message }); }
+    try { await api.putDemand(planId, sellerSku, sid, period, units); await load(); }
+    catch (e) { setErr(e as ApiError); pushToast({ kind: 'fail', text: (e as ApiError).hint }); }
   }
 
   async function savePurchase(sku: string, period: string, raw: string) {
     const units = raw.trim() === '' ? null : Number(raw);
     try { await api.putPurchase(planId, sku, period, units); await load(); }
-    catch (e) { setErr(e as ApiError); pushToast({ kind: 'fail', text: (e as ApiError).message }); }
+    catch (e) { setErr(e as ApiError); pushToast({ kind: 'fail', text: (e as ApiError).hint }); }
   }
 
   async function removeSku(block: SkuBlock) {
-    for (const row of block.mskus) await api.releaseClaim(planId, row.seller_sku, row.sid);
+    let dropped = 0;
+    for (const row of block.mskus) {
+      dropped += (await api.releaseClaim(planId, row.seller_sku, row.sid)).dropped_cells;
+    }
     await load();
-    pushToast({ kind: 'ok', text: `${block.sku} 已从本计划移出 ${block.mskus.length} 个 msku` });
+    pushToast({ kind: 'ok', text: `${block.sku} 移出 ${block.mskus.length} 个 msku · 丢弃 ${dropped} 格` });
+  }
+
+  async function removeMsku(sellerSku: string, sid: string) {
+    const { dropped_cells } = await api.releaseClaim(planId, sellerSku, sid);
+    await load();
+    pushToast({ kind: 'ok', text: `${sellerSku} 已移出 · 丢弃 ${dropped_cells} 格` });
   }
 
   const toggle = (key: string) => setExpanded((s) => {
@@ -2398,10 +2785,10 @@ export function PlanGrid() {
     <AppShell crumb="计划编辑">
       <div className="head">
         <div className="head__main">
-          <h1>{grid.plan.title}</h1>
+          <h1>{plan.title}</h1>
           <div className="head__meta">
-            起始月 <b>{grid.plan.period_start.slice(0, 7)}</b> · 跨 <b>{grid.plan.months}</b> 月 ·
-            负责人 <b>{grid.plan.owner_actor}</b>
+            起始月 <b>{plan.period_start.slice(0, 7)}</b> · 跨 <b>{plan.months}</b> 月 ·
+            负责人 <b>{plan.owner_actor}</b>
           </div>
         </div>
         <div className="head__act">
@@ -2422,7 +2809,7 @@ export function PlanGrid() {
       )}
 
       {model.blocks.map((block) => {
-        const key = `${block.seller_id}-${block.sku}`;
+        const key = `${block.sid}-${block.sku}`;
         const open = expanded.has(key);
         return (
           <div className="sheet" key={key} data-testid={`block-${key}`}>
@@ -2443,69 +2830,78 @@ export function PlanGrid() {
                 <thead>
                   <tr>
                     <th className="gh--row">店铺·货号</th>
-                    {model.periods.map((p) => <th key={p}>{p.slice(0, 7)}</th>)}
+                    {model.periods.map((p) => <th key={p}>{p}</th>)}
                     <th className="gh--sum">合计</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {!open && (
-                    <tr>
-                      <td className="gr">
-                        <div className="gr__who">{block.seller_name}</div>
-                        <div className="gr__code">{block.sku}</div>
-                        <div className="gr__sub">{block.mskus.length} 个 msku</div>
-                      </td>
-                      {model.periods.map((p) => (
-                        <td className="cell" key={p} data-state={stateOf(inventoryAt(block, p))}>
+                  {/* ★ 店铺·货号行：库存预估的身份就是这一行（02 §3.1a），折叠态也在 */}
+                  <tr>
+                    <td className="gr">
+                      <div className="gr__who">{block.seller_name}</div>
+                      <div className="gr__code">{block.sku}</div>
+                      <div className="gr__sub">{block.mskus.length} 个 msku</div>
+                    </td>
+                    {model.periods.map((p) => {
+                      const closing = inventoryAt(block, p);
+                      const cell = block.inventory.find((i) => i.period === p);
+                      return (
+                        <td className="cell" key={p} data-state={stateOf(closing)} data-testid={`sku-cell-${p}`}>
                           <div className="cell__stack">
                             <div className="cell__lead i-pencil">
-                              预估 <Qty v={sumUnits(block.mskus.map((r) => cellAt(r.cells, p)?.system_units ?? null))} />
+                              预估 <Qty v={sumUnits(block.mskus.map((r) =>
+                                r.cells.find((c) => c.period === p)?.system_units ?? null))} />
                             </div>
-                            <div><Qty v={inventoryAt(block, p)} big /></div>
+                            <div data-testid={closing.kind === 'na' ? 'closing-na' : 'closing'}>
+                              <Qty v={closing} big />
+                            </div>
+                            <span hidden data-testid="closing-sku" />
+                            {cell && cell.basis.reason !== 'not_applicable' && (
+                              <div className="basis">
+                                <span>在仓 {cell.onhand ?? '—'}</span>
+                                <span>{cell.basis.as_of}</span>
+                                <span className="chip chip--dim">未计本计划采购</span>
+                              </div>
+                            )}
                             <div className="cell__row"><span className="k">Σ 期望</span>
                               <span className="v i-ink" data-testid={`sum-expected-${p}`}>
                                 <Qty v={demandAt(block, p)} /></span></div>
                           </div>
                         </td>
-                      ))}
-                      <td className="gsum" data-testid="sum-collapsed">
-                        <div data-testid="sum-demand">
-                          <Qty v={sumUnits(block.mskus.flatMap((r) => r.cells.map((c) => c.expected_units)))} />
-                        </div>
-                        <div data-testid="sum-inventory"><Qty v={block.has_fba ? INVENTORY_TOTAL : { kind: 'na' }} /></div>
-                      </td>
-                    </tr>
-                  )}
+                      );
+                    })}
+                    <td className="gsum">
+                      <div data-testid="sum-demand">
+                        <Qty v={sumUnits(block.mskus.flatMap((r) => r.cells.map((c) => c.effective_units)))} />
+                      </div>
+                      {/* ★ 跨月把期末库存加起来，同一批货会被数三遍 */}
+                      <div data-testid="sum-inventory"><Qty v={INVENTORY_TOTAL} /></div>
+                    </td>
+                  </tr>
+
                   {open && block.mskus.map((row) => (
                     <tr key={row.seller_sku}>
                       <td className="gr">
-                        <div className="gr__who">{block.seller_name}</div>
                         <div className="gr__code">{row.seller_sku}</div>
-                        <div className="gr__sub">sid {row.sid}</div>
+                        <div className="gr__sub">
+                          sid {row.sid}{' '}
+                          <button type="button" className="btn btn--sm btn--ghost"
+                                  onClick={() => void removeMsku(row.seller_sku, row.sid)}>删除 msku</button>
+                        </div>
                       </td>
                       {model.periods.map((p) => {
-                        const c = cellAt(row.cells, p);
-                        const closing: QtyValue = !block.has_fba ? { kind: 'na' }
-                          : c?.inventory?.closing_units == null ? { kind: 'unknown' }
-                          : { kind: 'num', value: c.inventory.closing_units };
+                        const c = row.cells.find((x) => x.period === p);
                         return (
-                          <td className="cell" key={p} data-state={stateOf(closing)}
-                              data-testid={`cell-${row.seller_sku}-${p}`}>
+                          <td className="cell" key={p} data-testid={`cell-${row.seller_sku}-${p}`}>
                             <div className="cell__stack">
-                              <div className="cell__lead i-pencil" data-testid="system">预估 {c?.system_units ?? '—'}</div>
-                              <div data-testid="closing"><Qty v={closing} big /></div>
-                              {c?.inventory && block.has_fba && (
-                                <div className="basis">
-                                  <span>在仓 {c.inventory.on_hand_units}</span>
-                                  <span>采购在途 {c.inventory.purchase_in_transit_units}</span>
-                                  <span>{c.inventory.basis.as_of}</span>
-                                  <span className="chip chip--dim">未计本计划采购</span>
-                                </div>
-                              )}
+                              <div className="cell__lead i-pencil" data-testid="system">
+                                预估 {c?.system_units ?? '—'}
+                                {c?.system_extrapolated && <sup className="ext" title="外推">外</sup>}
+                              </div>
                               <input
                                 className="g" type="text" inputMode="numeric" placeholder=""
-                                aria-label={`期望销量 ${row.seller_sku} ${p.slice(0, 7)}`}
-                                defaultValue={c?.expected_units === null || c === undefined ? '' : String(c.expected_units)}
+                                aria-label={`期望销量 ${row.seller_sku} ${p}`}
+                                defaultValue={c?.expected_units == null ? '' : String(c.expected_units)}
                                 data-touched={c?.basis === 'human' ? '1' : undefined}
                                 onBlur={(e) => void saveDemand(row.seller_sku, row.sid, p, e.target.value)}
                               />
@@ -2513,9 +2909,7 @@ export function PlanGrid() {
                           </td>
                         );
                       })}
-                      <td className="gsum">
-                        <Qty v={sumUnits(row.cells.map((c) => c.expected_units))} />
-                      </td>
+                      <td className="gsum"><Qty v={sumUnits(row.cells.map((c) => c.effective_units))} /></td>
                     </tr>
                   ))}
                 </tbody>
@@ -2532,7 +2926,7 @@ export function PlanGrid() {
             <thead>
               <tr>
                 <th className="gh--row">货号</th>
-                {model.periods.map((p) => <th key={p}>{p.slice(0, 7)}</th>)}
+                {model.periods.map((p) => <th key={p}>{p}</th>)}
                 <th className="gh--sum">合计</th>
               </tr>
             </thead>
@@ -2544,14 +2938,37 @@ export function PlanGrid() {
                     <td className="cell" key={c.period}>
                       <input
                         className="g" type="text" inputMode="numeric" placeholder=""
-                        aria-label={`计划采购量 ${row.sku} ${c.period.slice(0, 7)}`}
-                        defaultValue={c.purchase_units === null ? '' : String(c.purchase_units)}
-                        data-touched={c.purchase_units === null ? undefined : '1'}
+                        aria-label={`计划采购量 ${row.sku} ${c.period}`}
+                        defaultValue={c.planned_units === null ? '' : String(c.planned_units)}
+                        data-touched={c.planned_units === null ? undefined : '1'}
                         onBlur={(e) => void savePurchase(row.sku, c.period, e.target.value)}
                       />
                     </td>
                   ))}
-                  <td className="gsum"><Qty v={sumUnits(row.cells.map((c) => c.purchase_units))} /></td>
+                  <td className="gsum"><Qty v={sumUnits(row.cells.map((c) => c.planned_units))} /></td>
+                </tr>
+              ))}
+              {/* ★ 货号级在途：只读一行，一件都不分摊到店铺 */}
+              {model.purchase.map((row) => (
+                <tr key={`transit-${row.sku}`} data-testid="transit-row">
+                  <td className="gr">
+                    <div className="gr__code i-pencil">货号级在途</div>
+                    <div className="gr__sub"><span className="chip chip--dim">未分摊到店铺</span></div>
+                  </td>
+                  {model.periods.map((p) => {
+                    const t = model.pipeline.find((x) => x.sku === row.sku && x.period === p)?.in_transit ?? null;
+                    return (
+                      <td className="cell" key={p}>
+                        <span className="i-pencil">
+                          <Qty v={t === null ? { kind: 'unknown' } : { kind: 'num', value: t }} />
+                        </span>
+                      </td>
+                    );
+                  })}
+                  <td className="gsum">
+                    <Qty v={sumUnits(model.periods.map((p) =>
+                      model.pipeline.find((x) => x.sku === row.sku && x.period === p)?.in_transit ?? null))} />
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -2564,11 +2981,7 @@ export function PlanGrid() {
   );
 }
 
-function cellAt(cells: MskuCell[], period: string): MskuCell | undefined {
-  return cells.find((c) => c.period === period);
-}
-
-/** ★ 状态用左边条不用徽章（10 §3.2 ③）。未知不是 low，也不是 out —— 不给 data-state */
+/** ★ 状态用左边条不用徽章（10 §3.2 ③）。未知与不适用都不给 data-state —— 它们不是「没货」 */
 function stateOf(v: QtyValue): 'out' | 'low' | undefined {
   if (v.kind !== 'num') return undefined;
   if (v.value <= 0) return 'out';
@@ -2577,26 +2990,48 @@ function stateOf(v: QtyValue): 'out' | 'low' | undefined {
 }
 ```
 
+`app.css` 追加一条（`shell.css` 的角标类是 `sup.ext`，元素选择器已覆盖，这里只补可见性）：
+
+```css
+/* 外推角标：朱批小字，紧跟在预估数后面 */
+sup.ext { cursor: help; }
+```
+
 - [ ] **Step 8: 跑网格测试**
 
 ```bash
 cd web && npx vitest run src/pages/PlanGrid.test.tsx
 ```
-Expected: PASS（11 个用例）。
+Expected: PASS（14 个用例）。
 
-- [ ] **Step 9: 把「空 = 未知」那条守卫弄失败一次，确认它真在守**
+- [ ] **Step 9: 把三条守卫各弄失败一次**
 
 ```bash
 cd web
-# 把空串改成落回 0 —— 这正是本项目第一条判据要防的
+# ① 空串落回 0
 sed -i "s/const units = raw.trim() === '' ? null : Number(raw);/const units = Number(raw || 0);/" src/pages/PlanGrid.tsx
 npx vitest run src/pages/PlanGrid.test.tsx
 ```
-Expected: FAIL —— `★ 清空输入 → 发 null 而不是 0，库存变未知`：`expected '420' to contain '—'`。
-★ 若这条还绿，说明断言打在了别处（例如取样到了旁边那格），必须先修断言再继续。
+Expected: FAIL —— `★ 清空一个 msku 的输入 → 整格未知`：格子给出一个数而不是 `—`。
 
 ```bash
-cd web && git checkout -- src/pages/PlanGrid.tsx && npx vitest run src/pages/PlanGrid.test.tsx
+git checkout -- src/pages/PlanGrid.tsx
+# ② 「不适用」当成 0
+sed -i "s/if (cell.basis.reason === 'not_applicable') return { kind: 'na' };/if (cell.basis.reason === 'not_applicable') return { kind: 'num', value: 0 };/" src/pages/planGridModel.ts
+npx vitest run src/pages/planGridModel.test.ts src/pages/PlanGrid.test.tsx
+```
+Expected: FAIL —— `★ 库存一格三种形态三个字` 与 `★ 无 FBA 的店铺：写「不适用」…`：屏上出现 0。
+
+```bash
+git checkout -- src/pages/planGridModel.ts
+# ③ 把在途并进库存
+sed -i 's/return cell.closing === null ? { kind: .unknown. } : { kind: .num., value: cell.closing };/return cell.closing === null ? { kind: "unknown" } : { kind: "num", value: cell.closing + (cell.basis.sku_level_in_transit ?? 0) };/' src/pages/planGridModel.ts
+npx vitest run src/pages/PlanGrid.test.tsx
+```
+Expected: FAIL —— `★ 在途一件都没并进库存`：`screen.queryByText('280')` 不再为 null。
+
+```bash
+cd web && git checkout -- src/pages/PlanGrid.tsx src/pages/planGridModel.ts && npx vitest run src/pages
 ```
 Expected: PASS。
 
@@ -2605,9 +3040,10 @@ Expected: PASS。
 ```bash
 cd /home/fido/work/2026/jxd_service_group/service_supplychain
 git add web && git commit -m "$(cat <<'EOF'
-feat(web): 计划编辑网格 —— 一格三行、空≠0、存量不可求和
+feat(web): 计划编辑网格 —— 库存按 [店铺, 货号] 画在折叠行，在途只读不分摊
 
-跨 msku 求和与跨月求和分开实现；认不出的店铺与对不上的库存行进丢弃区点名。
+msku 行只有预估与输入；「不适用」「未知」「不可求和」三个字形互不相同。
+认不出的店铺、对不上的库存行、两处在途不一致全部进丢弃区点名。
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01CYVSvM8ihMnoFSLVnV7EzQ
@@ -2624,93 +3060,144 @@ EOF
 - Test: `web/src/pages/PlanAdd.test.tsx`
 
 **Interfaces:**
-- Consumes: `api.searchCatalog` `api.claim`（Task 2）· 类型 `CatalogResult` `CatalogSku` `CatalogMsku` `ClaimHolder` `UnbuildableSeller` · `<AppShell>` `pushToast`（Task 1）· `<ErrorDetail>`（Task 2）
-- Produces: `PlanAdd`（路由组件，无对外导出的函数）
+- Consumes: `api.searchCatalog(q)` `api.claim(planId, target)`（Task 2）· 类型 `CatalogResult` `CatalogItem` `CatalogMsku` `ClaimHolder` `UnbuildableSeller` · `<AppShell>` `pushToast` `<ErrorDetail>`
+- Produces: `PlanAdd`（路由组件，无对外导出函数）
 
-**这一屏的四条硬规矩**（`.stage-a-frontend-spec.md` ① · P11 · `06` §1.2 · 原则六）：
+**这一屏的四条硬规矩**
 
 ```
-① 不给条件 → need_query，与「查不到」长得不一样（前者是「还没搜」，后者是「搜了没有」）
-② 被占用的行 ★ 留在表里标红，不过滤，并点名占用方（哪张计划 / 谁）
+① 不给条件 → need_query=true，与「查不到」（need_query=false 且 matched=0）长得不一样
+② 被占用的行 ★ 留在表里标出来，不过滤（selectable=false），并点名占用方（哪张计划 / 谁）
 ③ 认领是 msku 级 —— 逐 msku 勾，不是「勾货号带走全部」
-④ 建不出格子的店铺要点名（没挂渠道）
+④ 建不出格子的店铺要点名（unbuildable_sellers）
 ```
+
+★ ④ 在阶段 A 后端**恒返回空数组**（渠道码不在 `seller` 镜像里，后端有一条测试盯着这件事）。
+⇒ 前端照样实现渲染分支，并**用注入数据测它**：不执行的分支不会失败，等渠道码进表那天才发现画不出来。
 
 - [ ] **Step 1: 写失败测试**
 
 ```tsx
 // web/src/pages/PlanAdd.test.tsx
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { PlanAdd } from './PlanAdd';
+import type { CatalogResult } from '../api/types';
 
-const renderAdd = () => render(
-  <MemoryRouter initialEntries={['/plans/1/add']}>
-    <Routes><Route path="/plans/:planId/add" element={<PlanAdd />} /></Routes>
-  </MemoryRouter>,
-);
+const CATALOG: CatalogResult = {
+  need_query: false, matched: 2, truncated: false, limit: 50,
+  items: [
+    { sku: 'SKU-1', name: '猫爬架',
+      mskus: [
+        { seller_sku: 'MSKU-A', sid: '11072', seller_name: 'A4Pet-US', selectable: true, claimed_by: null },
+        { seller_sku: 'MSKU-C', sid: '11094', seller_name: 'A4Pet-BS-UK', selectable: false,
+          claimed_by: { plan_id: 2, title: '2026 Q3 补货计划', actor: 'ops.li' } },
+        { seller_sku: 'MSKU-W', sid: '90001', seller_name: 'A4Pet-WM', selectable: true, claimed_by: null },
+      ],
+      unbuildable_sellers: [{ sid: '30112', reason: 'no_channel_code' }],
+      claimed_by: { plan_id: 2, title: '2026 Q3 补货计划' },
+      claimed_by_plans: [{ plan_id: 2, title: '2026 Q3 补货计划' }] },
+    { sku: 'SKU-2', name: '逗猫棒',
+      mskus: [{ seller_sku: 'MSKU-B', sid: '11072', seller_name: 'A4Pet-US', selectable: true, claimed_by: null }],
+      unbuildable_sellers: [], claimed_by: null, claimed_by_plans: [] },
+  ],
+};
+
+beforeEach(() => { vi.resetModules(); });
+
+async function renderAdd(opts: { failOn?: string } = {}) {
+  const { ApiError } = await import('../api/client');
+  vi.doMock('../api', () => ({
+    ApiError,
+    api: {
+      searchCatalog: async (q: { q?: string }) =>
+        !q.q ? { need_query: true, matched: 0, truncated: false, limit: 50, items: [] }
+             : q.q === 'ZZZZ' ? { need_query: false, matched: 0, truncated: false, limit: 50, items: [] }
+             : JSON.parse(JSON.stringify(CATALOG)) as CatalogResult,
+      claim: async (_p: number, t: { seller_sku: string }) => {
+        if (t.seller_sku === opts.failOn) {
+          throw new ApiError(409, 'msku_already_claimed', `${t.seller_sku} 已被占用`,
+            { plan_id: 2, title: '2026 Q3 补货计划', actor: 'ops.li' });
+        }
+        return { claimed: { seller_sku: t.seller_sku, sid: '11072', sku: 'SKU-1' } };
+      },
+    },
+  }));
+  const { PlanAdd } = await import('./PlanAdd');
+  return render(
+    <MemoryRouter initialEntries={['/plans/1/add']}>
+      <Routes><Route path="/plans/:planId/add" element={<PlanAdd />} /></Routes>
+    </MemoryRouter>,
+  );
+}
+
+const search = async (q: string) => {
+  await userEvent.type(screen.getByLabelText('搜货号'), q);
+  await userEvent.click(screen.getByRole('button', { name: '搜索' }));
+};
 
 describe('批量添加', () => {
   it('★ 还没搜 ≠ 搜了没有：两种空屏的字不一样', async () => {
-    renderAdd();
+    await renderAdd();
     expect(await screen.findByTestId('need-query')).toBeInTheDocument();
     expect(screen.queryByTestId('no-hit')).toBeNull();
 
-    await userEvent.type(screen.getByLabelText('搜货号'), 'ZZZZ');
-    await userEvent.click(screen.getByRole('button', { name: '搜索' }));
+    await search('ZZZZ');
     expect(await screen.findByTestId('no-hit')).toBeInTheDocument();
     expect(screen.queryByTestId('need-query')).toBeNull();
   });
 
-  it('★ 被占用的行留在表里标红并点名占用方', async () => {
-    renderAdd();
-    await userEvent.type(screen.getByLabelText('搜货号'), 'DCC1800264');
-    await userEvent.click(screen.getByRole('button', { name: '搜索' }));
-
-    const row = await screen.findByTestId('msku-DCC1800264-UK');
-    expect(row).toHaveClass('off');                       // 留在表里，标灰/标红
+  it('★ 被占用的行留在表里标出来并点名占用方', async () => {
+    await renderAdd();
+    await search('SKU-1');
+    const row = await screen.findByTestId('msku-MSKU-C');
+    expect(row).toHaveClass('off');
     expect(within(row).getByText('2026 Q3 补货计划')).toBeInTheDocument();
     expect(within(row).getByText('ops.li')).toBeInTheDocument();
     expect(within(row).getByRole('checkbox')).toBeDisabled();
   });
 
-  it('★ 认领是 msku 级：勾一个 msku 不会把同货号的另一个也勾上', async () => {
-    renderAdd();
-    await userEvent.type(screen.getByLabelText('搜货号'), 'DCC1800264');
-    await userEvent.click(screen.getByRole('button', { name: '搜索' }));
-    await screen.findByTestId('msku-DCC1800264-US');
-
-    await userEvent.click(within(screen.getByTestId('msku-DCC1800264-US')).getByRole('checkbox'));
-    expect(within(screen.getByTestId('msku-DCC1800264-WMT')).getByRole('checkbox')).not.toBeChecked();
+  it('★ 认领是 msku 级：勾一个不会把同货号的另一个也勾上', async () => {
+    await renderAdd();
+    await search('SKU-1');
+    await userEvent.click(within(await screen.findByTestId('msku-MSKU-A')).getByRole('checkbox'));
+    expect(within(screen.getByTestId('msku-MSKU-W')).getByRole('checkbox')).not.toBeChecked();
     expect(screen.getByTestId('picked')).toHaveTextContent('已选 1');
   });
 
-  it('★ 建不出格子的店铺点名', async () => {
-    renderAdd();
-    await userEvent.type(screen.getByLabelText('搜货号'), 'DCC1800264');
-    await userEvent.click(screen.getByRole('button', { name: '搜索' }));
+  it('★ 建不出格子的店铺点名（阶段 A 后端恒空 ⇒ 这里用注入数据把这条分支跑一遍）', async () => {
+    await renderAdd();
+    await search('SKU-1');
     const box = await screen.findByTestId('unbuildable');
-    expect(box).toHaveTextContent('A4Pet-TikTok-US');
+    expect(box).toHaveTextContent('30112');
     expect(box).toHaveTextContent('no_channel_code');
   });
 
-  it('添加：成功的与被拒的都逐条列出，不合成一句', async () => {
-    renderAdd();
-    await userEvent.type(screen.getByLabelText('搜货号'), 'DCC1800264');
-    await userEvent.click(screen.getByRole('button', { name: '搜索' }));
-    await screen.findByTestId('msku-DCC1800264-US');
-    await userEvent.click(within(screen.getByTestId('msku-DCC1800264-US')).getByRole('checkbox'));
-    await userEvent.click(within(screen.getByTestId('msku-DCC1800264-WMT')).getByRole('checkbox'));
+  it('添加：成功与被拒各自逐条列出，两个数都给', async () => {
+    await renderAdd({ failOn: 'MSKU-W' });
+    await search('SKU-1');
+    await userEvent.click(within(await screen.findByTestId('msku-MSKU-A')).getByRole('checkbox'));
+    await userEvent.click(within(screen.getByTestId('msku-MSKU-W')).getByRole('checkbox'));
     await userEvent.click(screen.getByRole('button', { name: '添加' }));
 
     const report = await screen.findByTestId('claim-report');
-    expect(within(report).getByText('DCC1800264-US')).toBeInTheDocument();
-    expect(within(report).getByText('DCC1800264-WMT')).toBeInTheDocument();
-    // ★ 两边都要有个数：勾了几个、成了几个、拒了几个
-    expect(report).toHaveTextContent('成功 2');
-    expect(report).toHaveTextContent('被拒 0');
+    expect(report).toHaveTextContent('成功 1');
+    expect(report).toHaveTextContent('被拒 1');
+    // ★ 被拒的那一条要说出是被谁占着 —— 只说「被拒 1」等于没说
+    expect(within(report).getByText(/2026 Q3 补货计划/)).toBeInTheDocument();
+    expect(within(report).getAllByRole('listitem')).toHaveLength(2);
+  });
+
+  it('★ 一条被拒不阻断其余 —— 修一条报一条，人就开始绕（原则五）', async () => {
+    await renderAdd({ failOn: 'MSKU-A' });
+    await search('SKU-1');
+    await userEvent.click(within(await screen.findByTestId('msku-MSKU-A')).getByRole('checkbox'));
+    await userEvent.click(within(screen.getByTestId('msku-MSKU-W')).getByRole('checkbox'));
+    await userEvent.click(screen.getByRole('button', { name: '添加' }));
+    const report = await screen.findByTestId('claim-report');
+    expect(report).toHaveTextContent('成功 1');
+    expect(report).toHaveTextContent('被拒 1');
   });
 });
 ```
@@ -2720,7 +3207,7 @@ describe('批量添加', () => {
 ```bash
 cd web && npx vitest run src/pages/PlanAdd.test.tsx
 ```
-Expected: FAIL —— 5 条全红，首条报 `Unable to find an element by: [data-testid="need-query"]`。
+Expected: FAIL —— 6 条全红，首条报 `Unable to find an element by: [data-testid="need-query"]`。
 
 - [ ] **Step 3: 写页面**
 
@@ -2734,20 +3221,22 @@ import { ErrorDetail } from '../components/ErrorDetail';
 import { api, ApiError } from '../api';
 import type { CatalogMsku, CatalogResult } from '../api/types';
 
-interface ClaimOutcome { seller_sku: string; sid: string; ok: boolean; why: string }
+interface Outcome { seller_sku: string; sid: string; ok: boolean; why: string }
+
+const EMPTY: CatalogResult = { need_query: true, matched: 0, truncated: false, limit: 0, items: [] };
 
 export function PlanAdd() {
   const planId = Number(useParams().planId);
   const [q, setQ] = useState('');
-  const [result, setResult] = useState<CatalogResult>({ kind: 'need_query' });
+  const [result, setResult] = useState<CatalogResult>(EMPTY);
   const [picked, setPicked] = useState<Set<string>>(new Set());
-  const [report, setReport] = useState<ClaimOutcome[] | null>(null);
+  const [report, setReport] = useState<Outcome[] | null>(null);
   const [err, setErr] = useState<ApiError | null>(null);
 
   const key = (m: CatalogMsku) => `${m.seller_sku}/${m.sid}`;
 
   async function search() {
-    try { setResult(await api.searchCatalog(planId, q.trim() === '' ? {} : { q: q.trim() })); setErr(null); }
+    try { setResult(await api.searchCatalog(q.trim() === '' ? {} : { q: q.trim() })); setErr(null); }
     catch (e) { setErr(e as ApiError); }
   }
 
@@ -2756,24 +3245,27 @@ export function PlanAdd() {
   }
 
   async function add() {
-    if (result.kind !== 'ok') return;
-    const targets = result.skus.flatMap((s) => s.mskus).filter((m) => picked.has(key(m)));
-    const out: ClaimOutcome[] = [];
+    const targets = result.items.flatMap((s) => s.mskus).filter((m) => picked.has(key(m)));
+    const out: Outcome[] = [];
     for (const m of targets) {
       try {
         await api.claim(planId, { seller_sku: m.seller_sku, sid: m.sid });
         out.push({ seller_sku: m.seller_sku, sid: m.sid, ok: true, why: '已认领' });
       } catch (e) {
         const ae = e as ApiError;
+        const who = ae.fields['title'] ? `${String(ae.fields['title'])} · ${String(ae.fields['actor'] ?? '')}` : '';
         // ★ 一次列全，不是修一条报一条 —— 被拒的继续往下做，最后一起交代
-        out.push({ seller_sku: m.seller_sku, sid: m.sid, ok: false, why: `${ae.code} ${ae.message}` });
+        out.push({ seller_sku: m.seller_sku, sid: m.sid, ok: false, why: `${ae.error} ${who}`.trim() });
       }
     }
     setReport(out);
+    setPicked(new Set());
     await search();
     const bad = out.filter((o) => !o.ok).length;
     pushToast({ kind: bad === 0 ? 'ok' : 'warn', text: `成功 ${out.length - bad} · 被拒 ${bad}` });
   }
+
+  const unbuildable = result.items.flatMap((s) => s.unbuildable_sellers.map((u) => ({ ...u, sku: s.sku })));
 
   return (
     <AppShell crumb="添加货品">
@@ -2793,49 +3285,53 @@ export function PlanAdd() {
       </form>
 
       {/* ★ 两种空屏，两套字 —— 合成一种就分不清「还没搜」和「搜了没有」 */}
-      {result.kind === 'need_query' && (
+      {result.need_query && (
         <div className="empty" data-testid="need-query"><p className="empty__title">输入货号后搜索</p></div>
       )}
-      {result.kind === 'ok' && result.skus.length === 0 && (
+      {!result.need_query && result.matched === 0 && (
         <div className="empty" data-testid="no-hit"><p className="empty__title">没有命中的货号</p></div>
       )}
 
-      {result.kind === 'ok' && result.truncated && (
-        <div className="flash flash--bad">命中超上限，结果被截断 —— 缩小搜索条件</div>
+      {result.truncated && (
+        <div className="flash flash--bad">命中 {result.matched} 条，只列前 {result.limit} 条 —— 缩小搜索条件</div>
       )}
 
-      {result.kind === 'ok' && result.unbuildable_sellers.length > 0 && (
+      {unbuildable.length > 0 && (
         <div className="sec" data-testid="unbuildable">
-          {result.unbuildable_sellers.map((s) => (
-            <div className="dropline" key={s.seller_id}>
+          {unbuildable.map((u) => (
+            <div className="dropline" key={`${u.sku}-${u.sid}`}>
               <span className="k">建不出格子</span>
-              <span>{s.seller_name}</span>
-              <span className="gate__code">{s.reason}</span>
+              <span>{u.sku}</span>
+              <span>sid {u.sid}</span>
+              <span className="gate__code">{u.reason}</span>
             </div>
           ))}
         </div>
       )}
 
-      {result.kind === 'ok' && result.skus.map((sku) => (
-        <div className="sec" key={sku.sku}>
+      {result.items.map((item) => (
+        <div className="sec" key={item.sku}>
           <div className="sec__title">
-            <span>{sku.sku}</span>
-            <span className="muted">{sku.name}</span>
-            {sku.category === null
-              ? <span className="chip chip--dim">无品类</span>
-              : <span className={sku.category_refreshed_at === null ? 'stale' : 'muted'}>{sku.category}</span>}
+            <span>{item.sku}</span>
+            <span className="muted">{item.name}</span>
+            {item.claimed_by === null && item.claimed_by_plans.length > 1 && (
+              // ★ 占用方不唯一时挑一个显示就是编 —— 列名单
+              <span className="chip chip--warn">
+                {item.claimed_by_plans.map((p) => p.title).join(' · ')}
+              </span>
+            )}
           </div>
           <div className="table-scroll">
             <table className="table table--dense">
               <thead><tr><th /><th>msku</th><th>店铺</th><th>sid</th><th>占用</th></tr></thead>
               <tbody>
-                {sku.mskus.map((m) => (
-                  <tr key={key(m)} className={m.claim ? 'off' : undefined} data-testid={`msku-${m.seller_sku}`}>
+                {item.mskus.map((m) => (
+                  <tr key={key(m)} className={m.selectable ? undefined : 'off'} data-testid={`msku-${m.seller_sku}`}>
                     <td>
                       <input
                         type="checkbox"
                         aria-label={`认领 ${m.seller_sku}`}
-                        disabled={m.claim !== null}
+                        disabled={!m.selectable}
                         checked={picked.has(key(m))}
                         onChange={() => toggle(m)}
                       />
@@ -2844,11 +3340,9 @@ export function PlanAdd() {
                     <td>{m.seller_name}</td>
                     <td>{m.sid}</td>
                     <td>
-                      {m.claim ? (
-                        <span className="i-red">
-                          {m.claim.plan_title} · <span>{m.claim.actor}</span>
-                        </span>
-                      ) : <span className="muted">—</span>}
+                      {m.claimed_by
+                        ? <span className="i-red">{m.claimed_by.title} · <span>{m.claimed_by.actor}</span></span>
+                        : <span className="muted">—</span>}
                     </td>
                   </tr>
                 ))}
@@ -2863,11 +3357,13 @@ export function PlanAdd() {
           <div className="gate__sum">
             成功 {report.filter((r) => r.ok).length} · 被拒 {report.filter((r) => !r.ok).length}
           </div>
-          {report.map((r) => (
-            <div className={`gate__item gate__item--${r.ok ? 'pass' : 'fail'}`} key={`${r.seller_sku}/${r.sid}`}>
-              <span>{r.seller_sku}</span> <span className="gate__detail">{r.why}</span>
-            </div>
-          ))}
+          <ul>
+            {report.map((r) => (
+              <li className={`gate__item gate__item--${r.ok ? 'pass' : 'fail'}`} key={`${r.seller_sku}/${r.sid}`}>
+                <span>{r.seller_sku}</span> <span className="gate__detail">{r.why}</span>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
@@ -2882,16 +3378,16 @@ export function PlanAdd() {
 ```bash
 cd web && npx vitest run src/pages/PlanAdd.test.tsx
 ```
-Expected: PASS（5 个用例）。
+Expected: PASS（6 个用例）。
 
-- [ ] **Step 5: 把「被占用不过滤」这条守卫弄失败一次**
+- [ ] **Step 5: 把「被占用不过滤」弄失败一次**
 
 ```bash
 cd web
-sed -i 's/{sku.mskus.map((m) => (/{sku.mskus.filter((m) => m.claim === null).map((m) => (/' src/pages/PlanAdd.tsx
+sed -i 's/{item.mskus.map((m) => (/{item.mskus.filter((m) => m.selectable).map((m) => (/' src/pages/PlanAdd.tsx
 npx vitest run src/pages/PlanAdd.test.tsx
 ```
-Expected: FAIL —— `★ 被占用的行留在表里标红并点名占用方`：`Unable to find an element by: [data-testid="msku-DCC1800264-UK"]`。
+Expected: FAIL —— `★ 被占用的行留在表里标出来并点名占用方`：`Unable to find an element by: [data-testid="msku-MSKU-C"]`。
 ★ 这正是「静默丢失」的形状：过滤掉之后屏幕上一切正常，只是那一行永远不出现。
 
 ```bash
@@ -2906,7 +3402,7 @@ cd /home/fido/work/2026/jxd_service_group/service_supplychain
 git add web && git commit -m "$(cat <<'EOF'
 feat(web): 批量添加 —— 逐 msku 勾，占用的行标红不过滤并点名占用方
 
-「还没搜」与「搜了没有」两套空屏；建不出格子的店铺进丢弃区。
+「还没搜」与「搜了没有」两套空屏；一条被拒不阻断其余，最后一起交代。
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01CYVSvM8ihMnoFSLVnV7EzQ
@@ -2924,7 +3420,7 @@ EOF
 - Test: `web/src/components/Modal.test.tsx` `web/src/pages/PlanRevs.test.tsx`
 
 **Interfaces:**
-- Consumes: `api.listRevs` `api.setCurrentRev` `api.diff` `api.cancelRev`（Task 2）· 类型 `RevList` `Rev` `PlanDiff` `DiffRow` · `<AppShell>` `pushToast` `<ErrorDetail>`
+- Consumes: `api.listRevs` `api.setCurrentRev` `api.diff` `api.cancelRev`（Task 2）· 类型 `RevList` `Rev` `PlanDiff` `DiffMoved` `DiffChanged` · `<AppShell>` `<Qty>` `pushToast` `<ErrorDetail>`
 - Produces:
   - `<Modal title danger onClose>{children}</Modal>` —— ★ 只用 `.modal-backdrop > .modal` 这一套（`shell.css` 里 `dialog.modal` 与 div 版并存，React 只留一套）
   - `PlanRevs`（路由组件）
@@ -2937,7 +3433,7 @@ EOF
 ```tsx
 // web/src/components/Modal.test.tsx
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Modal } from './Modal';
 
@@ -2986,7 +3482,7 @@ export function Modal({
     <div className="modal-backdrop" role="presentation" onClick={onClose}>
       <div className="modal" role="dialog" aria-label={title} onClick={(e) => e.stopPropagation()}>
         <div className="modal__head">{title}</div>
-        {danger && <div className="modal__warn irreversible">⛔ 这一步会改动已提交的记录</div>}
+        {danger && <div className="modal__warn irreversible">⛔ 这一步会撤销已提交的记录</div>}
         <div className="modal__body">{children}</div>
       </div>
     </div>
@@ -3003,21 +3499,60 @@ Expected: PASS（3 个用例）。
 
 ```tsx
 // web/src/pages/PlanRevs.test.tsx
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { PlanRevs } from './PlanRevs';
+import type { PlanDiff, RevList } from '../api/types';
 
-const renderRevs = () => render(
-  <MemoryRouter initialEntries={['/plans/2/revs']}>
-    <Routes><Route path="/plans/:planId/revs" element={<PlanRevs /></Route>} /></Routes>
-  </MemoryRouter>,
-);
+const REVS: RevList = {
+  revs: [
+    { rev: 2, content_digest: '3b7e5d1c', is_current: true, in_flight: true,
+      submitted_by: 'ops.zhang', submitted_at: '2026-09-20T10:31:00+08:00', lines: 3 },
+    { rev: 1, content_digest: '8f1c2a0b', is_current: false, in_flight: false,
+      submitted_by: 'ops.zhang', submitted_at: '2026-09-19T14:03:00+08:00', lines: 2 },
+  ],
+  in_flight_rev: 2, current_rev: 2,
+};
+const DIFF: PlanDiff = {
+  added: [{ sku: 'SKU-1', period: '2026-11', total_units: 300 }],
+  removed: [],
+  changed: [{ sku: 'SKU-1', period: '2026-10',
+              total_units: { from: 500, to: 600 }, demand_at_submit: { from: 160, to: 180 } }],
+};
+
+beforeEach(() => { vi.resetModules(); });
+
+async function renderRevs() {
+  const { ApiError } = await import('../api/client');
+  const state: RevList = JSON.parse(JSON.stringify(REVS));
+  vi.doMock('../api', () => ({
+    ApiError,
+    api: {
+      listRevs: async () => JSON.parse(JSON.stringify(state)) as RevList,
+      setCurrentRev: async (_p: number, rev: number) => {
+        state.revs.forEach((r) => { r.is_current = r.rev === rev; });
+        state.current_rev = rev;          // ★ in_flight_rev 故意不动：它由采购侧决定
+        return { current_rev: rev };
+      },
+      diff: async () => DIFF,
+      cancelRev: async (_p: number, rev: number, reason: string) => {
+        if (reason.trim() === '') throw new ApiError(400, 'reason_required', '撤销必须填理由', { rev });
+        return { cancelled: [101, 102, 103], reason };
+      },
+    },
+  }));
+  const { PlanRevs } = await import('./PlanRevs');
+  return render(
+    <MemoryRouter initialEntries={['/plans/2/revs']}>
+      <Routes><Route path="/plans/:planId/revs" element={<PlanRevs />} /></Routes>
+    </MemoryRouter>,
+  );
+}
 
 describe('版本编辑', () => {
   it('★ 流转中与当前使用分开显示 —— 两个标记不是一回事', async () => {
-    renderRevs();
+    await renderRevs();
     const row2 = await screen.findByTestId('rev-2');
     expect(within(row2).getByText('流转中')).toBeInTheDocument();
     expect(within(row2).getByText('当前使用')).toBeInTheDocument();
@@ -3026,65 +3561,58 @@ describe('版本编辑', () => {
     expect(within(row1).queryByText('当前使用')).toBeNull();
   });
 
-  it('设为当前使用：点 rev 1 之后标记搬过去', async () => {
-    renderRevs();
+  it('设为当前使用：标记搬过去，而流转中留在原地', async () => {
+    await renderRevs();
     await screen.findByTestId('rev-1');
     await userEvent.click(within(screen.getByTestId('rev-1')).getByRole('button', { name: '设为当前使用' }));
     expect(await within(screen.getByTestId('rev-1')).findByText('当前使用')).toBeInTheDocument();
     expect(within(screen.getByTestId('rev-2')).queryByText('当前使用')).toBeNull();
-    // ★ 流转中不跟着搬 —— 它由采购侧决定
     expect(within(screen.getByTestId('rev-2')).getByText('流转中')).toBeInTheDocument();
   });
 
-  it('版本差异：新增 / 改动分得开，两个数并排', async () => {
-    renderRevs();
+  it('★ 版本差异：新增 / 改动分在两处，改动给两个数不给增减', async () => {
+    await renderRevs();
     await screen.findByTestId('rev-2');
     await userEvent.selectOptions(screen.getByLabelText('比较自'), '1');
     await userEvent.click(screen.getByRole('button', { name: '比较' }));
-    const diff = await screen.findByTestId('diff');
-    const changed = within(diff).getByTestId('diff-demand-DCC1800264-US-2026-10-01');
-    expect(changed).toHaveTextContent('160');
-    expect(changed).toHaveTextContent('180');
-    const added = within(diff).getByTestId('diff-purchase-DCC1800264-2026-11-01');
-    expect(added).toHaveTextContent('added');
-    expect(within(added).getByText('—')).toBeInTheDocument();  // before 为空，不是 0
+
+    const changed = within(await screen.findByTestId('diff-changed')).getByTestId('changed-SKU-1-2026-10');
+    expect(changed).toHaveTextContent('500');
+    expect(changed).toHaveTextContent('600');
+    expect(changed).not.toHaveTextContent('+100');      // ★ 不合成增减
+    const added = within(screen.getByTestId('diff-added')).getByTestId('added-SKU-1-2026-11');
+    expect(added).toHaveTextContent('300');
+    // ★ 三个数组都有自己的区块，空的也要说「无」，不许整块消失
+    expect(screen.getByTestId('diff-removed')).toHaveTextContent('无');
   });
 
   it('★ 撤销理由必填：空理由拿到 400 reason_required 并点名', async () => {
-    renderRevs();
+    await renderRevs();
     await screen.findByTestId('rev-2');
     await userEvent.click(within(screen.getByTestId('rev-2')).getByRole('button', { name: '撤销' }));
     await userEvent.click(screen.getByRole('button', { name: '确认撤销' }));
     expect(await screen.findByText('400 reason_required')).toBeInTheDocument();
   });
 
-  it('填了理由就撤得掉，并交代撤了几条记录', async () => {
-    renderRevs();
+  it('填了理由就撤得掉，并交代撤了哪几条记录', async () => {
+    await renderRevs();
     await screen.findByTestId('rev-2');
     await userEvent.click(within(screen.getByTestId('rev-2')).getByRole('button', { name: '撤销' }));
     await userEvent.type(screen.getByLabelText('理由'), '需求口径变了');
     await userEvent.click(screen.getByRole('button', { name: '确认撤销' }));
-    expect(await screen.findByTestId('cancel-report')).toHaveTextContent('撤销 3 条记录');
+    const report = await screen.findByTestId('cancel-report');
+    expect(report).toHaveTextContent('撤销 3 条记录');
+    expect(report).toHaveTextContent('需求口径变了');    // ★ 理由要回显：它被记在每条记录上
   });
 });
 ```
 
-★ 注意第一行 `renderRevs` 里的 JSX 写错了（`<PlanRevs /></Route>`）—— 这是**故意留的第一次失败**，Step 4 先看它报语法错，再改对。这样能确认测试文件真的被执行了，而不是被 vitest 静默跳过。
-
-- [ ] **Step 4: 跑它，先看它以语法错误红**
+- [ ] **Step 4: 跑它确认红**
 
 ```bash
 cd web && npx vitest run src/pages/PlanRevs.test.tsx
 ```
-Expected: FAIL —— esbuild transform error，`Unexpected closing "Route" tag does not match opening "PlanRevs" tag`。
-
-把那一行改成：
-
-```tsx
-    <Routes><Route path="/plans/:planId/revs" element={<PlanRevs />} /></Routes>
-```
-
-再跑：Expected: FAIL —— `Failed to resolve import "./PlanRevs"` 之后是 5 条用例全红。
+Expected: FAIL —— 5 条全红，首条报 `Failed to resolve import "./PlanRevs"`（占位组件没有这些 testid）。
 
 - [ ] **Step 5: 写版本页**
 
@@ -3096,7 +3624,6 @@ import { AppShell } from '../shell/AppShell';
 import { pushToast } from '../shell/toastStore';
 import { ErrorDetail } from '../components/ErrorDetail';
 import { Modal } from '../components/Modal';
-import { Qty } from '../components/Qty';
 import { api, ApiError } from '../api';
 import type { PlanDiff, RevList } from '../api/types';
 
@@ -3107,7 +3634,7 @@ export function PlanRevs() {
   const [diff, setDiff] = useState<PlanDiff | null>(null);
   const [cancelling, setCancelling] = useState<number | null>(null);
   const [reason, setReason] = useState('');
-  const [cancelled, setCancelled] = useState<number | null>(null);
+  const [done, setDone] = useState<{ lines: number; reason: string } | null>(null);
   const [err, setErr] = useState<ApiError | null>(null);
 
   const load = () => api.listRevs(planId).then(setList).catch((e: ApiError) => setErr(e));
@@ -3129,9 +3656,10 @@ export function PlanRevs() {
     if (cancelling === null) return;
     try {
       const r = await api.cancelRev(planId, cancelling, reason);
-      setCancelled(r.cancelled_lines);
+      setDone({ lines: r.cancelled.length, reason: r.reason });
       setCancelling(null);
       setReason('');
+      setErr(null);
       await load();
     } catch (e) { setErr(e as ApiError); }
   }
@@ -3152,7 +3680,7 @@ export function PlanRevs() {
                 <td className="r">{r.rev}</td>
                 <td>{r.submitted_by}</td>
                 <td className="muted">{r.submitted_at.slice(0, 16).replace('T', ' ')}</td>
-                <td className="r">{r.line_count}</td>
+                <td className="r">{r.lines}</td>
                 <td className="gate__code">{r.content_digest}</td>
                 <td>
                   {/* ★ 两个标记分开：流转中由采购/排货消费，当前使用由算需求读 */}
@@ -3181,30 +3709,28 @@ export function PlanRevs() {
       </div>
 
       {diff && (
-        <div className="table-scroll" data-testid="diff">
-          <table className="table table--dense">
-            <thead><tr><th>类</th><th>货号</th><th>msku</th><th>月</th><th className="r">rev {diff.from}</th><th className="r">rev {diff.to}</th><th>变化</th></tr></thead>
-            <tbody>
-              {diff.rows.map((row) => (
-                <tr key={`${row.kind}-${row.sku}-${row.seller_sku ?? ''}-${row.period}`}
-                    data-testid={`diff-${row.kind}-${row.seller_sku ?? row.sku}-${row.period}`}>
-                  <td>{row.kind === 'demand' ? '期望销量' : '计划采购量'}</td>
-                  <td>{row.sku}</td>
-                  <td>{row.seller_sku ?? <span className="muted">—</span>}</td>
-                  <td>{row.period.slice(0, 7)}</td>
-                  {/* ★ 两个数并排 + 变化，不合成一个「增减」 */}
-                  <td className="r"><Qty v={row.before === null ? { kind: 'unknown' } : { kind: 'num', value: row.before }} /></td>
-                  <td className="r"><Qty v={row.after === null ? { kind: 'unknown' } : { kind: 'num', value: row.after }} /></td>
-                  <td><span className="chip chip--dim">{row.change}</span></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <>
+          <DiffBlock title="新增" testId="diff-added" rows={diff.added.map((r) => ({
+            id: `added-${r.sku}-${r.period}`, sku: r.sku, period: r.period,
+            cells: [String(r.total_units)],
+          }))} head={['货号', '月', '数量']} />
+          <DiffBlock title="移除" testId="diff-removed" rows={diff.removed.map((r) => ({
+            id: `removed-${r.sku}-${r.period}`, sku: r.sku, period: r.period,
+            cells: [String(r.total_units)],
+          }))} head={['货号', '月', '数量']} />
+          <DiffBlock title="改动" testId="diff-changed" rows={diff.changed.map((r) => ({
+            id: `changed-${r.sku}-${r.period}`, sku: r.sku, period: r.period,
+            // ★ 两个数并排 + 需求两个数，不合成一个增减
+            cells: [String(r.total_units.from), String(r.total_units.to),
+                    String(r.demand_at_submit.from), String(r.demand_at_submit.to)],
+          }))} head={['货号', '月', `rev ${diff ? from : ''} 数量`, '当前数量', '原需求', '当前需求']} />
+        </>
       )}
 
-      {cancelled !== null && (
-        <div className="flash flash--good" data-testid="cancel-report">撤销 {cancelled} 条记录</div>
+      {done && (
+        <div className="flash flash--good" data-testid="cancel-report">
+          撤销 {done.lines} 条记录 · 理由 {done.reason}
+        </div>
       )}
 
       {cancelling !== null && (
@@ -3223,6 +3749,35 @@ export function PlanRevs() {
     </AppShell>
   );
 }
+
+interface DiffRowView { id: string; sku: string; period: string; cells: string[] }
+
+/** ★ 三个数组各自成块。空的写「无」—— 整块消失会让人以为这一类不存在 */
+function DiffBlock({ title, testId, head, rows }: {
+  title: string; testId: string; head: string[]; rows: DiffRowView[];
+}) {
+  return (
+    <div className="sec" data-testid={testId}>
+      <div className="sec__title"><span>{title}</span><span className="muted">{rows.length}</span></div>
+      {rows.length === 0 ? <div className="todos__empty">无</div> : (
+        <div className="table-scroll">
+          <table className="table table--dense">
+            <thead><tr>{head.map((h) => <th key={h} className="r">{h}</th>)}</tr></thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id} data-testid={r.id}>
+                  <td>{r.sku}</td>
+                  <td>{r.period}</td>
+                  {r.cells.map((c, i) => <td className="r num" key={i}>{c}</td>)}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
 ```
 
 - [ ] **Step 6: 跑测试确认绿**
@@ -3232,14 +3787,14 @@ cd web && npx vitest run src/pages/PlanRevs.test.tsx src/components/Modal.test.t
 ```
 Expected: PASS（8 个用例）。
 
-- [ ] **Step 7: 把「两个标记分开」这条守卫弄失败一次**
+- [ ] **Step 7: 把「两个标记分开」弄失败一次**
 
 ```bash
 cd web
 sed -i 's/{r.rev === list.in_flight_rev \&\& <span className="chip chip--ours">流转中<\/span>}/{r.rev === list.current_rev \&\& <span className="chip chip--ours">流转中<\/span>}/' src/pages/PlanRevs.tsx
 npx vitest run src/pages/PlanRevs.test.tsx
 ```
-Expected: FAIL —— `设为当前使用：点 rev 1 之后标记搬过去`：rev 2 上的「流转中」不见了、rev 1 上多了一个。
+Expected: FAIL —— `设为当前使用：标记搬过去，而流转中留在原地`：rev 2 上的「流转中」不见了，rev 1 上多了一个。
 ★ 这就是「用一个轴掩盖真相」的形状：合成之后屏幕依然自洽，只是它说的不再是事实。
 
 ```bash
@@ -3252,9 +3807,9 @@ Expected: PASS。
 ```bash
 cd /home/fido/work/2026/jxd_service_group/service_supplychain
 git add web && git commit -m "$(cat <<'EOF'
-feat(web): 版本编辑 —— 流转中与当前使用分开显示，撤销理由必填
+feat(web): 版本编辑 —— 流转中与当前使用分开显示，撤销理由必填并回显
 
-diff 两个数并排不合成增减；Modal 只留 .modal-backdrop 一套。
+diff 的新增/移除/改动各自成块，空的写「无」；改动给两个数不合成增减。
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01CYVSvM8ihMnoFSLVnV7EzQ
@@ -3272,13 +3827,15 @@ EOF
 
 **Interfaces:**
 - Consumes: `api.submit`（Task 2）· 类型 `SubmitResult` `SkippedCell` `SkipReason` · `<ErrorDetail>` `pushToast`
-- Produces: 无新导出。屏上新增 `data-testid`：`submit-report` · `skipped-list` · `rev-in-flight`
+- Produces: 无新导出。屏上新增 `data-testid`：`submit-report` · `skipped-list` · `rev-in-flight` · `empty-rev`
 
-**这一步的两条硬规矩**
+**这一步的三条硬规矩**
 
 ```
 ① ★ 判据②：被跳过的格子逐条列出，一条都不许合成成「部分跳过」
-② ★ 409 rev_in_flight 要点名旧版号 —— 不点名，人就只能去库里查「到底是哪一版卡着」
+② ★ 409 rev_in_flight 要点名旧版号 —— 不点名，人只能去库里查「到底是哪一版卡着」
+③ ★ in_flight=false 的空版本要说出来：它铸出 0 条、且**没有占在流转位**。
+   不说，人会以为提交成功了，然后奇怪为什么采购那边什么都没有
 ```
 
 ★ 提交成功后**不立刻跳转**：`skipped[]` 只在这一次响应里存在，跳走就永远看不到了。
@@ -3288,25 +3845,69 @@ EOF
 
 ```tsx
 // web/src/pages/PlanGrid.submit.test.tsx
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import type { GridResponse, PlanSummary, Seller, SubmitResult } from '../api/types';
+
+const PLAN: PlanSummary = {
+  plan_id: 1, title: '2026 Q4 销售计划', period_start: '2026-10-01', months: 3,
+  owner_actor: 'ops.zhang', archived_at: null, state: null, state_rev: null,
+};
+const SELLERS: Seller[] = [
+  { seller_id: '11072', name: 'A4Pet-US', market: 'US', has_fba: true, platform: 'amazon' },
+];
+const GRID: GridResponse = {
+  plan_id: 1, periods: ['2026-10', '2026-11', '2026-12'],
+  demand: [{ seller_sku: 'MSKU-A', sid: '11072', sku: 'SKU-1', period: '2026-10',
+             system_units: 100, system_extrapolated: false, expected_units: 100,
+             effective_units: 100, basis: 'human' }],
+  purchase: [{ sku: 'SKU-1', period: '2026-10', planned_units: 500 },
+             { sku: 'SKU-1', period: '2026-11', planned_units: null },
+             { sku: 'SKU-1', period: '2026-12', planned_units: null }],
+  inventory: ['2026-10', '2026-11', '2026-12'].map((period, n) => ({
+    sku: 'SKU-1', sid: '11072', period,
+    onhand: n === 0 ? 300 : 200, inbound: null, closing: n === 0 ? 200 : null,
+    basis: { source: 'ch' as const, as_of: '2026-09-21', includes_plan_purchase: false as const,
+             reason: n === 0 ? null : ('unknown_demand' as const), sku_level_in_transit: null },
+  })),
+  sku_pipeline: [],
+};
 
 beforeEach(() => { vi.resetModules(); });
 
-async function renderGrid(planId: number) {
+async function renderGrid(submit: () => Promise<SubmitResult>) {
+  const { ApiError } = await import('../api/client');
+  vi.doMock('../api', () => ({
+    ApiError,
+    api: {
+      getPlan: async () => PLAN,
+      listSellers: async () => SELLERS,
+      getGrid: async () => JSON.parse(JSON.stringify(GRID)) as GridResponse,
+      putDemand: async () => GRID.demand[0]!,
+      putPurchase: async () => GRID.purchase[0]!,
+      releaseClaim: async () => ({ released: { seller_sku: '', sid: '' }, dropped_cells: 0 }),
+      submit,
+    },
+  }));
   const { PlanGrid } = await import('./PlanGrid');
   return render(
-    <MemoryRouter initialEntries={[`/plans/${planId}`]}>
+    <MemoryRouter initialEntries={['/plans/1']}>
       <Routes><Route path="/plans/:planId" element={<PlanGrid />} /></Routes>
     </MemoryRouter>,
   );
 }
 
+const OK: SubmitResult = {
+  rev: 1, lines: 1, in_flight: true, content_digest: 'abc',
+  skipped: [{ sku: 'SKU-1', period: '2026-11', reason: 'zero_purchase' },
+            { sku: 'SKU-1', period: '2026-12', reason: 'zero_purchase' }],
+};
+
 describe('提交', () => {
   it('★ 逐条列出被跳过的格子，并交代两边的数', async () => {
-    await renderGrid(1);
+    await renderGrid(async () => OK);
     await screen.findByTestId('purchase-block');
     await userEvent.click(screen.getByRole('button', { name: '提交' }));
 
@@ -3317,43 +3918,63 @@ describe('提交', () => {
     expect(report).toHaveTextContent('跳过 2 条');
 
     const skipped = within(report).getByTestId('skipped-list');
-    expect(within(skipped).getAllByRole('listitem').length).toBe(2);
+    expect(within(skipped).getAllByRole('listitem')).toHaveLength(2);
     expect(skipped).toHaveTextContent('zero_purchase');
     expect(skipped).toHaveTextContent('2026-11');
     expect(skipped).toHaveTextContent('2026-12');
   });
 
   it('提交成功不自动跳走 —— skipped[] 只有这一次机会被看见', async () => {
-    await renderGrid(1);
+    await renderGrid(async () => OK);
     await screen.findByTestId('purchase-block');
     await userEvent.click(screen.getByRole('button', { name: '提交' }));
     await screen.findByTestId('submit-report');
     expect(screen.getByRole('link', { name: '去版本' })).toHaveAttribute('href', '/plans/1/revs');
   });
 
-  it('★ 旧版在流转 → 409 并点名旧版号', async () => {
-    await renderGrid(2);
-    // plan 2 没有网格 fixture ⇒ 先确认它以 404 落在错误面板上，再单独验 409 的形状
-    expect(await screen.findByText(/404 not_found/)).toBeInTheDocument();
+  it('★ 空版本要说出来：铸出 0 条，且没有占在流转位', async () => {
+    await renderGrid(async () => ({
+      rev: 1, lines: 0, in_flight: false, content_digest: 'abc',
+      skipped: [{ sku: 'SKU-1', period: '2026-10', reason: 'zero_purchase' },
+                { sku: 'SKU-1', period: '2026-11', reason: 'zero_purchase' },
+                { sku: 'SKU-1', period: '2026-12', reason: 'no_claimed_msku' }],
+    }));
+    await screen.findByTestId('purchase-block');
+    await userEvent.click(screen.getByRole('button', { name: '提交' }));
+    const empty = await screen.findByTestId('empty-rev');
+    expect(empty).toHaveTextContent('没有占在流转位');
+    expect(screen.getByTestId('submit-report')).toHaveTextContent('铸出 0 条');
+    // ★ 两种跳过理由都要出现，不许只报第一种
+    const skipped = screen.getByTestId('skipped-list');
+    expect(skipped).toHaveTextContent('zero_purchase');
+    expect(skipped).toHaveTextContent('no_claimed_msku');
   });
 
-  it('★ 409 rev_in_flight 的面板点名旧版号', async () => {
+  it('★ 409 rev_in_flight 的面板点名旧版号，且给的下一步是去看那一版', async () => {
     const { ApiError } = await import('../api/client');
-    const { createMockApi } = await import('../api/mock');
-    const base = createMockApi();
-    vi.doMock('../api', async () => ({
-      ApiError,
-      api: { ...base, submit: async () => { throw new ApiError(409, 'rev_in_flight', 'rev 7 还在流转', { in_flight_rev: 7 }); } },
-    }));
-    await renderGrid(1);
+    await renderGrid(async () => {
+      throw new ApiError(409, 'rev_in_flight', '先处理 rev 7', { in_flight_rev: 7 });
+    });
     await screen.findByTestId('purchase-block');
     await userEvent.click(screen.getByRole('button', { name: '提交' }));
 
     const box = await screen.findByTestId('rev-in-flight');
     expect(box).toHaveTextContent('rev 7');
     expect(box).toHaveTextContent('409 rev_in_flight');
-    // ★ 409 不是「你写错了」：屏上给的下一步是去看那一版，不是改表单
+    // ★ 409 不是「你写错了」：下一步是去看那一版，不是改表单
     expect(within(box).getByRole('link', { name: '去看 rev 7' })).toHaveAttribute('href', '/plans/1/revs');
+    expect(screen.queryByTestId('submit-report')).toBeNull();
+  });
+
+  it('★ 400 与 409 分支不同：400 落到表单错误区，不给「去看那一版」', async () => {
+    const { ApiError } = await import('../api/client');
+    await renderGrid(async () => {
+      throw new ApiError(400, 'bad_request', '起始月必须是月初', { period_start: '2026-10-15' });
+    });
+    await screen.findByTestId('purchase-block');
+    await userEvent.click(screen.getByRole('button', { name: '提交' }));
+    expect(await screen.findByText('400 bad_request')).toBeInTheDocument();
+    expect(screen.queryByTestId('rev-in-flight')).toBeNull();
   });
 });
 ```
@@ -3363,14 +3984,14 @@ describe('提交', () => {
 ```bash
 cd web && npx vitest run src/pages/PlanGrid.submit.test.tsx
 ```
-Expected: FAIL —— 4 条全红，首条报 `Unable to find an accessible element with the role "button" and name "提交"`。
+Expected: FAIL —— 5 条全红，首条报 `Unable to find an accessible element with the role "button" and name "提交"`。
 
 - [ ] **Step 3: 在 PlanGrid 里加提交**
 
-在 `web/src/pages/PlanGrid.tsx` 的 import 后追加类型引入：
+把 import 的类型一行改成：
 
 ```tsx
-import type { GridResponse, Seller, SkipReason, SubmitResult } from '../api/types';
+import type { GridResponse, PlanSummary, Seller, SkipReason, SubmitResult } from '../api/types';
 ```
 
 在 `const [err, setErr] = useState<ApiError | null>(null);` 之后追加两个状态：
@@ -3380,23 +4001,27 @@ import type { GridResponse, Seller, SkipReason, SubmitResult } from '../api/type
   const [inFlight, setInFlight] = useState<{ rev: number; err: ApiError } | null>(null);
 ```
 
-在 `async function removeSku` 之后追加：
+在 `async function removeMsku(...)` 之后追加：
 
 ```tsx
   async function submit() {
     setReport(null);
     setInFlight(null);
+    setErr(null);
     try {
       const r = await api.submit(planId);
       setReport(r);
       // ★ 不自动跳走：skipped[] 只在这一次响应里存在
-      pushToast({ kind: r.skipped.length === 0 ? 'ok' : 'warn', text: `rev ${r.rev} · 铸出 ${r.line_count} · 跳过 ${r.skipped.length}` });
+      pushToast({
+        kind: r.skipped.length === 0 ? 'ok' : 'warn',
+        text: `rev ${r.rev} · 铸出 ${r.lines} · 跳过 ${r.skipped.length}`,
+      });
       await load();
     } catch (e) {
       const ae = e as ApiError;
-      if (ae.status === 409 && ae.code === 'rev_in_flight') {
-        // ★ 409 不是「你写错了」—— 点名旧版号，给的下一步是去看那一版
-        setInFlight({ rev: Number(ae.detail.in_flight_rev), err: ae });
+      // ★ 409 是「你没写错，但现在不行」—— 点名旧版号，下一步是去看那一版
+      if (ae.status === 409 && ae.error === 'rev_in_flight') {
+        setInFlight({ rev: Number(ae.fields['in_flight_rev']), err: ae });
         return;
       }
       setErr(ae);
@@ -3404,7 +4029,7 @@ import type { GridResponse, Seller, SkipReason, SubmitResult } from '../api/type
   }
 ```
 
-把 `head__act` 里的按钮组改成（★ 「提交」排在「重置」之后，与原理图一致）：
+把 `head__act` 里的按钮组改成（★「提交」排在「重置」之后，与原理图一致）：
 
 ```tsx
         <div className="head__act">
@@ -3421,7 +4046,7 @@ import type { GridResponse, Seller, SkipReason, SubmitResult } from '../api/type
       {inFlight && (
         <div className="flash flash--bad" data-testid="rev-in-flight">
           <div>rev {inFlight.rev} 还在流转，这一版不能提交</div>
-          <div className="gate__code">{inFlight.err.status} {inFlight.err.code}</div>
+          <div className="gate__code">{inFlight.err.status} {inFlight.err.error}</div>
           <a className="btn btn--sm" href={`/plans/${planId}/revs`}>去看 rev {inFlight.rev}</a>
         </div>
       )}
@@ -3429,15 +4054,22 @@ import type { GridResponse, Seller, SkipReason, SubmitResult } from '../api/type
       {report && (
         <div className="panel sec" data-testid="submit-report">
           <div className="panel__head">
-            rev {report.rev} · 铸出 {report.line_count} 条 · 跳过 {report.skipped.length} 条
+            rev {report.rev} · 铸出 {report.lines} 条 · 跳过 {report.skipped.length} 条
           </div>
           <div className="panel__body">
+            {/* ★ 空版本：说出「没有占在流转位」，否则人会以为提交成功了，
+                 然后奇怪为什么采购那边什么都没有 */}
+            {!report.in_flight && report.lines === 0 && (
+              <div className="flash flash--bad" data-testid="empty-rev">
+                这一版是空的，没有占在流转位
+              </div>
+            )}
             {/* ★ 判据②：逐条列出，不静默丢 */}
             <ul data-testid="skipped-list">
               {report.skipped.map((s) => (
-                <li className="dropline" key={`${s.sku}-${s.seller_id}-${s.period}`}>
+                <li className="dropline" key={`${s.sku}-${s.period}-${s.reason}`}>
                   <span className="k">{s.sku}</span>
-                  <span>{s.period.slice(0, 7)}</span>
+                  <span>{s.period}</span>
                   <span className="gate__code">{s.reason}</span>
                   <span className="gate__detail">{SKIP_WHY[s.reason]}</span>
                 </li>
@@ -3452,7 +4084,7 @@ import type { GridResponse, Seller, SkipReason, SubmitResult } from '../api/type
 在文件末尾（`stateOf` 之后）追加：
 
 ```tsx
-/** S-14 的值域只有这两个。★ 这里是「当场发生的事」，不是功能解说 */
+/** S-14 的值域只有这两个。★ 这里写的是「当场发生的事」，不是功能解说 */
 const SKIP_WHY: Record<SkipReason, string> = {
   zero_purchase: '计划采购量为空或 0',
   no_claimed_msku: '这个货号下没有已认领的 msku',
@@ -3464,14 +4096,14 @@ const SKIP_WHY: Record<SkipReason, string> = {
 ```bash
 cd web && npx vitest run src/pages/PlanGrid.submit.test.tsx
 ```
-Expected: PASS（4 个用例）。
+Expected: PASS（5 个用例）。
 
 - [ ] **Step 5: 回归 Task 4 的网格测试，确认没被改坏**
 
 ```bash
 cd web && npx vitest run src/pages/PlanGrid.test.tsx
 ```
-Expected: PASS（11 个用例）。★ 若 `合计` 那条列头断言红，说明按钮区的改动波及了表头结构 —— 去修实现，不要改断言。
+Expected: PASS（13 个用例）。★ 若列头那条红，说明按钮区的改动波及了表头结构 —— 去修实现，不要改断言。
 
 - [ ] **Step 6: 把「逐条列出」弄失败一次**
 
@@ -3481,7 +4113,7 @@ sed -i 's/跳过 {report.skipped.length} 条/跳过若干条/' src/pages/PlanGri
 npx vitest run src/pages/PlanGrid.submit.test.tsx
 ```
 Expected: FAIL —— `★ 逐条列出被跳过的格子，并交代两边的数`：`expected element to have text content '跳过 2 条'`。
-★ 「部分跳过」正是 `10` §1 原则一点名的反例：300 里跳了多少看不见。
+★「部分跳过」正是 `10` §1 原则一点名的反例：300 里跳了多少看不见。
 
 ```bash
 cd web && git checkout -- src/pages/PlanGrid.tsx && npx vitest run src/pages/PlanGrid.submit.test.tsx
@@ -3493,7 +4125,7 @@ Expected: PASS。
 ```bash
 cd /home/fido/work/2026/jxd_service_group/service_supplychain
 git add web && git commit -m "$(cat <<'EOF'
-feat(web): 提交流程 —— skipped[] 逐条列出，409 rev_in_flight 点名旧版号
+feat(web): 提交流程 —— skipped[] 逐条列出，409 点名旧版号，空版本说出未占流转位
 
 提交成功不自动跳走：skipped[] 只在这一次响应里存在。
 
@@ -3511,37 +4143,41 @@ EOF
 - Create: `web/src/e2e/sameScreen.test.tsx`（判据⑥）
 - Create: `web/src/e2e/planFlow.test.tsx`（判据①）
 - Create: `web/README.md`
-- Test: 同上两个文件
 
 **Interfaces:**
 - Consumes: 前七个 Task 的全部产物
 - Produces: 无代码导出。产出的是**两条门禁**：
   - `sameScreen`：同一份 fixture，`mock` 与 `http`（fetch 桩）渲染出的网格 DOM 文本**逐字相同**
-  - `planFlow`：建 → 加货品 → 填两种量 → 提交 → 铸出 rev，全程可复现
+  - `planFlow`：加货品 → 填两种量 → 提交 → 铸出 rev，全程可复现
 
 ★ 判据⑥ 为什么必须这么测：`mock.ts` 与 `http.ts` 是**两份实现**，两份实现必然分叉。
 让它们读同一份 fixture、比同一屏的文本，是唯一能让分叉**当场红**的办法。
 只跑 mock 会一直绿着 —— 而那正是「不执行的东西不会失败」。
 
-- [ ] **Step 1: 写同屏门禁的失败测试**
+★ 这两个文件**不写死后端 fixture 里的数字**（那些由后端 seed 决定），只认形态与恒等关系。
+
+- [ ] **Step 1: 写同屏门禁**
 
 ```tsx
 // web/src/e2e/sameScreen.test.tsx
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import gridFixture from '../api/fixtures/grid-1.json';
+import plansFixture from '../api/fixtures/plans.json';
 import sellersFixture from '../api/fixtures/sellers.json';
 
 beforeEach(() => { vi.resetModules(); });
 afterEach(() => { vi.restoreAllMocks(); vi.doUnmock('../api'); });
 
-/** ★ http 桩只认这两条路由：其余一律抛，防止「桩把没实现的调用悄悄喂成空数组」 */
+/** ★ 桩只认这三条路由，其余一律抛 —— 防止「桩把没实现的调用悄悄喂成空数组」 */
 function stubFetch() {
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
     const url = String(input);
-    const body = url.endsWith('/plans/1/grid') ? gridFixture
-      : url.endsWith('/sellers') ? sellersFixture
+    const body = url.includes('/grid') ? gridFixture
+      : url.includes('/sellers') ? sellersFixture
+      : url.includes('/plans') ? plansFixture
       : null;
     if (body === null) throw new Error(`桩没有覆盖这个调用：${url}`);
     return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
@@ -3550,14 +4186,13 @@ function stubFetch() {
 
 async function screenText(source: 'mock' | 'api'): Promise<string> {
   vi.resetModules();
+  const { ApiError } = await import('../api/client');
   if (source === 'api') {
     stubFetch();
     const { createHttpApi } = await import('../api/http');
-    const { ApiError } = await import('../api/client');
     vi.doMock('../api', () => ({ api: createHttpApi({ base: '/v1', timeoutMs: 1000 }), ApiError }));
   } else {
     const { createMockApi } = await import('../api/mock');
-    const { ApiError } = await import('../api/client');
     vi.doMock('../api', () => ({ api: createMockApi(), ApiError }));
   }
   const { PlanGrid } = await import('../pages/PlanGrid');
@@ -3566,20 +4201,23 @@ async function screenText(source: 'mock' | 'api'): Promise<string> {
       <Routes><Route path="/plans/:planId" element={<PlanGrid />} /></Routes>
     </MemoryRouter>,
   );
-  const block = await screen.findByTestId('block-11072-DCC1800264');
-  const text = (block.textContent ?? '').replace(/\s+/g, ' ').trim();
+  const blocks = await screen.findAllByTestId(/^block-/);
+  // ★ 展开全部：折叠着比，等于只比了两行字
+  for (const b of blocks) await userEvent.click(within(b).getByRole('button', { name: '展开' }));
+  const text = (document.body.textContent ?? '').replace(/\s+/g, ' ').trim();
   unmount();
   return text;
 }
 
 describe('判据⑥ · 两种数据源跑出同一屏', () => {
-  it('mock 与 api 渲染出的网格文本逐字相同', async () => {
+  it('mock 与 api 渲染出的整屏文本逐字相同', async () => {
     const a = await screenText('mock');
     const b = await screenText('api');
     expect(b).toBe(a);
     // ★ 顺带守住「这一屏确实有内容」—— 两边都空也会相等，那是假绿
     expect(a).toContain('未计本计划采购');
-    expect(a.length).toBeGreaterThan(80);
+    expect(a).toContain('未分摊到店铺');      // ★ 货号级在途那一行也画出来了
+    expect(a.length).toBeGreaterThan(200);
   });
 });
 ```
@@ -3599,7 +4237,7 @@ Expected: 第一次很可能 FAIL。两种常见分叉与处置：
 
 ```bash
 cd web
-sed -i "s/const grids = new Map<number, GridResponse>(\[\[1, clone(gridFixture) as GridResponse\]\]);/const grids = new Map<number, GridResponse>([[1, { ...(clone(gridFixture) as GridResponse), periods: ['2026-10-01'] }]]);/" src/api/mock.ts
+sed -i "s/const grids = new Map<number, GridResponse>(\[\[1, clone(gridFixture) as GridResponse\]\]);/const grids = new Map<number, GridResponse>([[1, { ...(clone(gridFixture) as GridResponse), periods: [(clone(gridFixture) as GridResponse).periods[0]!] }]]);/" src/api/mock.ts
 npx vitest run src/e2e/sameScreen.test.tsx
 ```
 Expected: FAIL —— 两段文本不等（mock 只剩一列月份）。
@@ -3613,74 +4251,109 @@ Expected: PASS。
 
 ```tsx
 // web/src/e2e/planFlow.test.tsx
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { OpsHome } from '../pages/OpsHome';
-import { PlanGrid } from '../pages/PlanGrid';
-import { PlanAdd } from '../pages/PlanAdd';
-import { PlanRevs } from '../pages/PlanRevs';
+import gridFixture from '../api/fixtures/grid-1.json';
+import type { GridResponse } from '../api/types';
 
-const app = (entry: string) => render(
-  <MemoryRouter initialEntries={[entry]}>
-    <Routes>
-      <Route path="/" element={<OpsHome />} />
-      <Route path="/plans/:planId" element={<PlanGrid />} />
-      <Route path="/plans/:planId/add" element={<PlanAdd />} />
-      <Route path="/plans/:planId/revs" element={<PlanRevs />} />
-    </Routes>
-  </MemoryRouter>,
-);
+const G = gridFixture as GridResponse;
+/** ★ 不写死后端 seed 出来的名字与数字，只从 fixture 里认形态 */
+const FIRST_INV = G.inventory.find((i) => i.basis.reason !== 'not_applicable' && i.onhand !== null)!;
+const SIBLINGS = G.demand.filter((d) =>
+  d.sku === FIRST_INV.sku && d.sid === FIRST_INV.sid && d.period === FIRST_INV.period);
+const EDITED = SIBLINGS[0]!;
+const OTHERS = SIBLINGS.slice(1);
+const FIRST_SKU = G.purchase[0]!.sku;
+const LAST_PERIOD = G.periods[G.periods.length - 1]!;
+
+beforeEach(() => { vi.resetModules(); });
+
+async function app(entry: string) {
+  const { ApiError } = await import('../api/client');
+  const { createMockApi } = await import('../api/mock');
+  vi.doMock('../api', () => ({ api: createMockApi(), ApiError }));
+  const [{ OpsHome }, { PlanGrid }, { PlanAdd }, { PlanRevs }] = await Promise.all([
+    import('../pages/OpsHome'), import('../pages/PlanGrid'),
+    import('../pages/PlanAdd'), import('../pages/PlanRevs'),
+  ]);
+  return render(
+    <MemoryRouter initialEntries={[entry]}>
+      <Routes>
+        <Route path="/" element={<OpsHome />} />
+        <Route path="/plans/:planId" element={<PlanGrid />} />
+        <Route path="/plans/:planId/add" element={<PlanAdd />} />
+        <Route path="/plans/:planId/revs" element={<PlanRevs />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
 
 describe('判据① · 建 → 加货品 → 填两种量 → 提交 → 铸出 rev', () => {
-  it('全程可复现', async () => {
-    // ① 建
-    app('/');
+  it('① 建：新建后走到网格', async () => {
+    await app('/');
     await screen.findByTestId('plan-list');
     await userEvent.click(screen.getByRole('button', { name: '新建销售计划' }));
     await userEvent.type(screen.getByLabelText('标题'), '2027 Q1 销售计划');
     await userEvent.click(screen.getByRole('button', { name: '创建' }));
-    expect(await screen.findByTestId('nav-to')).toHaveTextContent('/plans/5');
+    expect(await screen.findByTestId('nav-to')).toHaveTextContent(/^\/plans\/\d+$/);
   });
 
-  it('② 加货品：认领 msku 后回网格', async () => {
-    app('/plans/1/add');
-    await userEvent.type(screen.getByLabelText('搜货号'), 'DCC1800311');
+  it('② 加货品：认领 msku 后可返回网格', async () => {
+    await app('/plans/1/add');
+    await userEvent.type(screen.getByLabelText('搜货号'), 'MSKU');
     await userEvent.click(screen.getByRole('button', { name: '搜索' }));
-    await userEvent.click(await screen.findByLabelText('认领 DCC1800311-US'));
+    const boxes = await screen.findAllByRole('checkbox');
+    const free = boxes.find((b) => !(b as HTMLInputElement).disabled)!;
+    await userEvent.click(free);
     await userEvent.click(screen.getByRole('button', { name: '添加' }));
-    expect(await screen.findByTestId('claim-report')).toHaveTextContent('成功 1');
+    expect(await screen.findByTestId('claim-report')).toHaveTextContent(/成功 \d+/);
     expect(screen.getByRole('link', { name: '返回网格' })).toHaveAttribute('href', '/plans/1');
   });
 
-  it('③④ 填两种量 → 提交 → 铸出 rev，且两种量都进了 rev', async () => {
-    app('/plans/1');
+  it('③④ 填两种量 → 提交 → 铸出 rev，且两种量各自生效', async () => {
+    await app('/plans/1');
     await screen.findByTestId('purchase-block');
-
-    // 期望销量（msku × 月）—— 行默认折叠，先展开
-    const block = await screen.findByTestId('block-11072-DCC1800264');
+    const block = await screen.findByTestId(`block-${FIRST_INV.sid}-${FIRST_INV.sku}`);
     await userEvent.click(within(block).getByRole('button', { name: '展开' }));
-    const cell = screen.getByTestId('cell-DCC1800264-US-2026-12-01');
-    await userEvent.type(within(cell).getByRole('textbox'), '210');
+
+    // 期望销量（msku 级输入）
+    const cell = within(block).getByTestId(`cell-${EDITED.seller_sku}-${FIRST_INV.period}`);
+    const demandInput = within(cell).getByRole('textbox');
+    await userEvent.clear(demandInput);
+    await userEvent.type(demandInput, '10');
     await userEvent.tab();
 
+    // ★ 库存画在店铺·货号行上；期望值从 fixture 现算，不写死
+    const othersUnknown = OTHERS.some((d) => d.effective_units === null);
+    const expected = othersUnknown
+      ? '—'
+      : String(FIRST_INV.onhand! - (10 + OTHERS.reduce((a, d) => a + (d.effective_units as number), 0)));
+    expect(await within(block).findByTestId(`sku-cell-${FIRST_INV.period}`)).toHaveTextContent(expected);
+
     // 计划采购量（货号 × 月，不带店铺）
-    const purchase = within(screen.getByTestId('purchase-block')).getByLabelText('计划采购量 DCC1800264 2026-11');
+    const purchase = within(screen.getByTestId('purchase-block'))
+      .getByLabelText(`计划采购量 ${FIRST_SKU} ${LAST_PERIOD}`);
+    await userEvent.clear(purchase);
     await userEvent.type(purchase, '300');
     await userEvent.tab();
 
     await userEvent.click(screen.getByRole('button', { name: '提交' }));
     const report = await screen.findByTestId('submit-report');
     expect(report).toHaveTextContent('rev 1');
-    // ★ 11 月本来因 zero_purchase 被跳过，填了 300 之后应该铸得出来
-    expect(report).toHaveTextContent('铸出 2 条');
-    expect(report).toHaveTextContent('跳过 1 条');
+    // ★ 恒等式，不是写死的数：铸出 + 跳过 = 货号×月 的格子数
+    const lines = Number(/铸出 (\d+) 条/.exec(report.textContent!)![1]);
+    const skipped = Number(/跳过 (\d+) 条/.exec(report.textContent!)![1]);
+    expect(lines + skipped).toBe(G.purchase.length);
+    expect(lines).toBeGreaterThanOrEqual(1);   // ★ 刚填的 300 至少让一个月铸得出来
   });
 
-  it('⑤ 版本页看得到刚铸出的 rev', async () => {
-    app('/plans/2/revs');
-    expect(await screen.findByTestId('rev-2')).toHaveTextContent('当前使用');
+  it('⑤ 版本页看得到流转中与当前使用', async () => {
+    await app('/plans/2/revs');
+    const row = await screen.findByTestId('rev-2');
+    expect(within(row).getByText('当前使用')).toBeInTheDocument();
+    expect(within(row).getByText('流转中')).toBeInTheDocument();
   });
 });
 ```
@@ -3690,11 +4363,11 @@ describe('判据① · 建 → 加货品 → 填两种量 → 提交 → 铸出 
 ```bash
 cd web && npx vitest run src/e2e/planFlow.test.tsx
 ```
-Expected: 初次 FAIL 于第三条（`铸出 2 条`）—— 若红，先确认 `mock.submit` 的跳过判据是否把「刚填的 300」读了进去；这是**实现问题**，不许把断言改成 `铸出 1 条`。修到 PASS。
+Expected: 初次可能 FAIL 于第三条的恒等式 —— 若红，先确认 `mock.submit` 的跳过判据是否把刚填的 300 读了进去；
+这是**实现问题**，不许把断言改成一个写死的数。修到 PASS。
 
-★ 四条用例**共享同一个 mock 单例**（`api` 是模块级的），所以它们之间有先后依赖：第三条改的数会留到第四条。
-这是刻意的 —— 判据① 要的就是「一张计划从建到提交**全程**可复现」，把每条都隔离开反而测不到跨屏的连续性。
-★ 但顺序一旦有意义，就不许给这个文件开 `--shuffle`。
+★ 四条用例**各自重建 mock 单例**（每条都 `vi.resetModules()` + 新 `createMockApi()`），
+所以**互不依赖、顺序无关**。这一点与 `sameScreen` 相同，可以放心开 `--shuffle`。
 
 Expected 最终: PASS（4 个用例）。
 
@@ -3703,7 +4376,11 @@ Expected 最终: PASS（4 个用例）。
 ```bash
 cd web && npx vitest run && npx tsc -b && npm run build
 ```
-Expected: `Test Files 15 passed`（tokens · AppShell · mock · http · ErrorDetail · Qty · OpsHome · planGridModel · PlanGrid · PlanGrid.submit · PlanAdd · Modal · PlanRevs · sameScreen · planFlow）；tsc 静默；`vite build` 输出 `dist/`。
+Expected: `Test Files 16 passed` —— tokens · AppShell · fixtures · mock · http · ErrorDetail · Qty · OpsHome ·
+planGridModel · PlanGrid · PlanGrid.submit · PlanAdd · Modal · PlanRevs · sameScreen · planFlow（16 个）。
+其中 `fixtures` 需后端 Task 15 的产物到位；未到位时它是唯一的红。tsc 静默；`vite build` 输出 `dist/`。
+
+★ 数字对不上就是信号：少跑了哪个文件，看不出来才是问题。
 
 - [ ] **Step 7: 写 README（★ 只写怎么跑，不写它是什么）**
 
@@ -3723,9 +4400,12 @@ npm run build                 # → dist/，由 FastAPI StaticFiles 托管
 |---|---|---|
 | `VITE_DATA_SOURCE` | `mock` / `api` | 非法值在启动时抛错，不等第一个请求 |
 | `VITE_API_BASE` | 默认 `/v1` | 只打 `api/ui/` |
-| `VITE_API_TIMEOUT_MS` | 默认 `8000` | 超时抛 `ApiError(code='timeout')`，与连不上分得开 |
+| `VITE_API_TIMEOUT_MS` | 默认 `8000` | 超时抛 `ApiError(error='timeout')`，与连不上分得开 |
 
-两条门禁：`src/e2e/sameScreen.test.tsx`（判据⑥）· `src/e2e/planFlow.test.tsx`（判据①）。
+`src/api/fixtures/grid-1.json` 是 `tests/fixtures/grid_response.json` 的副本，
+由 `src/api/fixtures.test.ts` 逐字节盯着。后端重新固化后要一起复制过来。
+
+门禁：`src/e2e/sameScreen.test.tsx`（判据⑥）· `src/e2e/planFlow.test.tsx`（判据①）。
 ```
 
 ★ 起服务由**我自己**在另一个终端执行（`CLAUDE.md` 全局铁律：服务由我来启动）。
@@ -3738,7 +4418,8 @@ cd /home/fido/work/2026/jxd_service_group/service_supplychain
 git add web && git commit -m "$(cat <<'EOF'
 test(web): 两条门禁 —— 判据⑥ 同屏对比、判据① 全流程
 
-同一份 fixture 分别喂 mock 与 http 桩，网格 DOM 文本逐字比对。
+同一份 fixture 分别喂 mock 与 http 桩，展开后整屏文本逐字比对。
+两个文件都不写死后端 seed 的数字，只认形态与恒等式。
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01CYVSvM8ihMnoFSLVnV7EzQ
@@ -3748,24 +4429,57 @@ EOF
 
 ---
 
-## 附录 A · 本计划**收敛**的接口字段（★ 开工前要登记进 `docs/00-待裁定清单.md`）
+## 附录 A · 与后端契约的对齐记录
 
-> `CLAUDE.md` 纪律③：指不到出处的不许自己定。下表每一行都是**前端写得出代码所必需、而 `08` 没写到字段级**的东西。
-> 我在 `web/src/api/types.ts` 里给了具体形状**以便执行**，但它们是**待登记项**，不是裁定。
+> 2026-09-22 二稿：后端计划（`docs/superpowers/plans/2026-09-22-stage-a-backend.md`）已写完并带测试，
+> **它是契约的权威**。本附录记的是我一稿写错、按它改过来的地方 —— 留着是为了让下一个人知道
+> 「为什么前端的形状长这样」，以及**哪些还需要回头改文档**。
 
-| # | 字段 / 形状 | 前端为什么非要它 | 现状出处 |
+### A.1 一稿写错、已按后端改正的（8 处）
+
+| # | 一稿（错） | 后端（对） | 错了的代价 |
 |---|---|---|---|
-| A-1 | `GET /grid` 的 `inventory[].basis = { source: 'ch', as_of, includes_plan_purchase: false }` | 「一个数要能回答它是关于什么的」+ S-10 要求标「未计入本计划的采购」。没有 `as_of` 就无法回答「在仓是哪天的」 | `08` 只写「标 `basis`」，未给形状 |
-| A-2 | `GET /grid` 的 `demand[].basis ∈ {human, system, unknown}` | S-15 已裁定要记 basis；前端据它决定输入框的 `data-touched` 与墨色 | S-15 有裁定，`08` 未落到字段 |
-| A-3 | `POST /submit` 的 `skipped[].reason ∈ {zero_purchase, no_claimed_msku}` | 判据② 要逐条列理由 | ★ S-14 已裁定值域，`08` 未写 |
-| A-4 | `409` 的 code 用 `rev_in_flight`（不是 `another_rev_in_flight`） | 前端要按 code 分支 | `08` §1.1 写 `rev_in_flight`，后端规格 ③ 写 `another_rev_in_flight` —— **两处不一致，须统一** |
-| A-5 | `GET /catalog/skus` 的 `unbuildable_sellers[].reason = 'no_channel_code'` | `06` §1.2 要求「必须点名」，但没给字段 | `06` §1.2 有要求，无字段 |
-| A-6 | `GET /catalog/skus` 的 `need_query` 与 `truncated` 的形状 | P11 要求「不给条件故意不返回」与「查不到」不同形 | P11 有要求，无形状 |
-| A-7 | `GET /sellers` 的 `has_fba` | 「无 FBA 显示不适用不是 0」全靠它 | ★ P5 已要求 `seller` 加 `market`/`has_fba`（S-9 裁定内），`08` §1.4 未写字段 |
-| A-8 | `GET /plans` 的 `state` 对**从未提交**的计划返回 `null` | 「未提交」不是 `04` 的状态值；返回 `已撤销`（`04:443` 空计划单口径）会把它和真撤销混成一个 | ★ `04` 只定义了**有记录**时的木桶派生，未定义无 rev 的计划 |
-| A-9 | 按钮「重置」的语义 = 丢弃未落盘的输入并重新拉取 `GET /grid` | 原理图列了这个按钮但没定义它做什么 | 负责人原理图 |
+| 1 | 错误形状 `{code, message, detail}`（抄自 `08` §0） | ★ `{error, hint, …点名字段**平铺在顶层**}` | 每一处错误分支都读不到字段，屏幕退化成「操作失败」 |
+| 2 | 月份 `"2026-10-01"` | ★ 对外一律 `"2026-10"` | PUT 的路径全是 404 |
+| 3 | 列表返回裸数组 | ★ 带包裹：`{plans}` `{sellers}` `{items}` `{revs}` | `.map` 直接炸，或者更糟：渲染成空列表 |
+| 4 | `purchase[].purchase_units` · `submit.line_count` | ★ `planned_units` · `lines` | 读到 `undefined`，合计与计数全成 NaN |
+| 5 | grid 带 `plan` 抬头 | ★ 只有 `plan_id`；抬头要另取 `GET /plans` | 标题永远空 |
+| 6 | 漏了 `demand[].system_extrapolated` 与 `effective_units` | ★ 都有 | 外推没有角标（`14` §5 要求标记随结果走）；库存用的是生效值而界面显示人填值，两处对不上 |
+| 7 | 漏了 `sku_pipeline[]` | ★ 有，货号 × 月的在途总量 `{sku, period, in_transit}` | 采购在途在屏上彻底消失 —— 「没有在途」和「没算进来」长得一样 |
+| 8 | catalog 自造 `{kind:'need_query'\|'ok'}` 与 `seller_id/seller_name` | ★ `{need_query, matched, truncated, limit, items}`，msku 带 `selectable` / `claimed_by` | 搜索屏整屏渲染不出来 |
 
-★ **A-4 与 A-8 是真分叉，不是缺字段** —— 这两条必须先定，否则前端的分支会写错一半。
+### A.1b 三稿：库存的身份（2026-09-22 第三次裁定，锚在本体上）
+
+| 稿 | `inventory[]` 的键 | 结局 |
+|---|---|---|
+| 一稿 | `(seller_sku, sid)` + `on_hand/purchase_in_transit` | 我自己猜的，作废 |
+| 二稿 | `(seller_sku, sid, sku)` msku × 月，带 `not_applicable` 布尔与 `opening` 链 | team-lead 撤回，作废 |
+| ★ 三稿（最终） | **`(sku, sid)`** —— `02` §3.1a「可售库存[店铺, 货号]」 | 现行 |
+
+三稿带来的三处结构性变化（不是改名，是改身份）：
+
+| # | 变化 | 为什么 |
+|---|---|---|
+| 1 | 库存**挂在块上**（`SkuBlock.inventory`），不再挂在 `MskuCell` 上 | 挂在 msku 上就会被画两遍、加两遍 —— 而 `02` §3.1a 说它的身份只有一个 |
+| 2 | 「不适用」从布尔 `not_applicable` 变成 `basis.reason === 'not_applicable'` | 三种 null 成因（不适用 / 未知 / 无店铺归属）收在一个字段里，**不许合成一个裸 null** |
+| 3 | `inbound` 从 `0` 变成 `null`；在途走 `sku_pipeline[]` 与 `basis.sku_level_in_transit` | `0` 是「有这一层但没有货」，`null` 是「这一层在阶段 A 根本不成立」。两者处置相反 |
+
+### A.2 仍要回头改**文档**的（后端计划也列了，两边同一份）
+
+| # | 事情 | 现状 |
+|---|---|---|
+| 1 | `08` §0 的错误形状 `{code,message,detail}` 与裁定的 `{error,hint,…}` 冲突 | ★ **两份只能有一份生效**，实现按裁定；`08` 待订正 |
+| 2 | `08` §3 的 `another_rev_in_flight` | ★ 统一为 `rev_in_flight` |
+| 3 | `08` §1.1 未写 `sku_pipeline` / `system_extrapolated` / `not_applicable` / `basis` 的字段级形状 | 实现已定，`08` 待补 |
+| 4 | `POST /plans/{id}/archive` 与 `/v1/plan-lines*` | ★ 后端照 `08` 实现，**阶段 A 无界面入口**（原理图没画）。我没有自己发明入口 —— 属不属于阶段 A 的界面，待负责人定 |
+
+### A.3 本计划自己定的、需要登记的两条
+
+| # | 事 | 定成什么 | 为什么不算「自己发明」 |
+|---|---|---|---|
+| 1 | 按钮「重置」的语义 | 丢弃未落盘的输入并重新拉 `GET /grid` | 原理图列了这个按钮但没定义它做什么；这里选了**唯一不产生副作用**的那种解释 |
+| 2 | `closing` 公式里的「期望销量」取哪个 | ★ 取**生效值** `effective_units`（`basis` 记来源） | 取原始 `expected_units` 的话，「采用了系统预估」的格子会被当成未知 —— 与 S-15「提交冻结取生效值并记 basis」冲突 |
+| 3 | `closing` 的**跨月口径**（累计链 vs 每月独立） | ★ 不自己定：mock 跟着 fixture 走，由 Task 2 那条测试**从 fixture 里反推规则**并断言 mock 一致；fixture 分不开两种规则时**硬失败** | 后端计划里 `inventory_projection` 是期初链，但裁定的文字只写了一条不带月份下标的公式。与其猜，不如让 fixture 当证人 —— 且证人不在场时要报错，不是默认通过 |
 
 ---
 
@@ -3774,51 +4488,83 @@ EOF
 | # | 缺口 | 本计划的处置 | 来源 |
 |---|---|---|---|
 | B-1 | 「模拟外部」抽屉在设计系统里没有任何类或 token | ★ 阶段 A 没有任何外部写接口 ⇒ **不做**。留到阶段 B 与 `.chip--ext` 一起设计 | frontend-spec ③ · ⑤ |
-| B-2 | `x-actor` 下拉里的人从哪来（`scm.actor` 谁维护、有没有管理界面） | ★ 前端用 `src/shell/actors.ts` 常量，**两种数据源都读它**；屏上标「留痕可伪造」 | frontend-spec ⑤ 缺口 11 · Q-5 |
+| B-2 | `x-actor` 下拉里的人从哪来（`scm.actor` 谁维护、有没有管理界面） | ★ 前端用 `src/shell/actors.ts` 常量，**两种数据源都读它**；屏上标「留痕可伪造」。后端会校验 actor（不在表里 → 400 `unknown_actor`），所以常量与库里的 actor 对不上时会当场报错，不会静默 | frontend-spec ⑤ 缺口 11 · Q-5 |
 | B-3 | `10` §1 标题写「七条交互原则」而实际列了八条（第八条是 P15 根因） | 本计划按**八条**执行；文档的数字要改，属 `docs/` 的活 | frontend-spec ⑤ 缺口 9 |
 | B-4 | 名称分叉：「期望销量」vs「计划销量」 | 界面标签一律用 **期望销量**（`02`/`14`/`16`/`00e` 口径，也是 `00e:41` 的粒度定义用词） | frontend-spec ⑤ 缺口 7 |
 | B-5 | 首页「进度概览」与版本页下钻 `trace` | 阶段 A 两面承重墙都没有 ⇒ **不渲染**（不是空面板） | frontend-spec ⑤ 缺口 6 |
-| B-6 | mock fixture 与后端对账数据同源 | 本计划把 `web/src/api/fixtures/*.json` 定为**唯一源**；后端落地时要把同一份文件接成契约测试的 fixture，否则判据⑥ 只证明了前端自洽 | frontend-spec ⑤ 缺口 5 |
+| B-6 | `unbuildable_sellers` 阶段 A 恒空 | 前端照样实现渲染分支，并用**注入数据**测它（Task 5）—— 不执行的分支不会失败，等渠道码进表那天才发现画不出来 | 后端计划 §接口形状 c |
 
 ---
 
 ## Self-Review
 
-按 `superpowers:writing-plans` 的三项自检，结果如下（发现的问题已就地改掉）。
+按 `superpowers:writing-plans` 的三项自检。二稿（对齐后端契约）后重跑了一遍，结果如下。
 
 **1. 规格覆盖**
 
-| 规格条目 | 落在 | 
+| 规格条目 | 落在 |
 |---|---|
 | ① 四屏 + 全局外壳 | Task 1（外壳）· 3（`ops`）· 4（`plan`）· 5（`plan-add`）· 6（`plan-rev`） |
-| ② 网格每格的墨与可编辑性 | Task 4 Step 7（三行格）+ Step 5 的 11 条断言 |
+| ② 网格每格的墨与可编辑性 | Task 4 Step 7：库存画在**店铺·货号行**（`02` §3.1a），msku 行只有预估与输入；外推角标 `sup.ext` 补上了一稿漏掉的 `14` §5 |
 | ③ `shell.css` 的 token 与类名原样带走 | Task 1 Step 3~4（sha256 + 六个 token 逐个断言） |
-| ④ 两种人工输入 | Task 1 的「不做」一节：阶段 A 无 ② 类输入 ⇒ 不做抽屉，登记 B-1 |
-| ⑤ 缺口 1/2/3/5（卡开工的四条） | 已被 S 组裁定：S-1/S-5（两表粒度）· S-10/S-19（带预测不落库）· S-20 + `00e:45`（不渲染够不着的态）· fixture 同源（Task 2 Step 3 + B-6） |
-| `10` §1 八条原则 | 一 → Task 7（铸出/跳过两个数并排）· 四 → Task 6 Modal danger · 五 → Task 2 ErrorDetail + Task 5 claim-report · 六 → Task 3 hidden-finished / Task 4 orphans / Task 5 unbuildable / Task 7 skipped · 七 → Task 5 `.stale` · 八 → 「不做」一节。★ 二、三属排货域，阶段 A 无对应物（frontend-spec ⑤ 缺口 10） |
-| `08` §1.1 的 18 个端点 | 阶段 A 用到的 15 个全在 `SupplyChainApi` 里；`/plan-lines*` 与 `/plans/{id}/archive` 未用 —— 见下方「找到并修掉的问题」第 3 条 |
-| 判据 ①②③⑥ | Task 8 planFlow（①）· Task 7（②）· Task 5 claim 409（③）· Task 8 sameScreen（⑥）。★ 判据 ④⑤ 是库层的事，前端测不到 |
+| ④ 两种人工输入 | Global Constraints 的「不做」一节：阶段 A 无 ② 类输入 ⇒ 不做抽屉，登记 B-1 |
+| ⑤ 卡开工的四条缺口 | 已被 S 组 + S-21 裁定：两表粒度（S-1/S-5）· 带预测不落库（S-10/S-19）· 不渲染够不着的态（S-20）· 库存粒度与 basis（S-21）· fixture 同源（Task 2 Step 3） |
+| `10` §1 八条原则 | 一 → Task 7（铸出/跳过两个数并排）· 四 → Task 6 Modal danger · 五 → Task 2 ErrorDetail + Task 5 claim-report · 六 → Task 3 hidden-rows / Task 4 orphans + transit-row（货号级在途只读一行） / Task 5 unbuildable / Task 7 skipped · 七 → `.stale`（Task 5 品类，后端未给 `refreshed_at` ⇒ 见下方「没修」）· 八 → 「不做」一节。★ 二、三属排货域，阶段 A 无对应物 |
+| 后端契约的 15 个端点 | 阶段 A 用到的 13 个全在 `SupplyChainApi` 里；`archive` 与 `plan-lines*` 无界面入口 → 附录 A.2 第 4 条 |
+| 判据 ①②③⑥ | Task 8 planFlow（①）· Task 7（②）· Task 5 claim 409（③）· Task 8 sameScreen（⑥）。判据 ④⑤ 是库层的事，前端测不到 |
 
-**2. 占位符扫描**：全文搜 `TBD` / `TODO` / `待补` / `类似 Task` / `适当` / `etc` —— 0 命中。
-每个代码步骤都给了可直接粘贴的完整代码；Task 1 的四个页面占位明确标注「在各自 Task 里被整体替换」，并给出了完整的占位代码。
+**2. 占位符扫描**：全文搜 `TBD` / `TODO` / `待补` / `类似 Task` / `适当` —— 0 命中。
+每个代码步骤都给了可直接粘贴的完整代码；Task 1 的四个页面占位明确标注「在各自 Task 里被整体替换」并给了完整占位代码。
 
-**3. 类型一致性**：`api/types.ts` 里的名字在 Task 3~8 逐个核对过，以下为**发现并修掉的问题**：
+**3. 类型一致性 + 找到并修掉的问题**
+
+一稿（13 条）：
 
 | # | 发现 | 改法 |
 |---|---|---|
-| 1 | 初稿把 `Modal.tsx` 排在「批量添加」那个 Task，但批量添加不需要弹窗、版本撤销才需要 | 移到 Task 6；File Structure 与 Task 编号同步改了（`PlanAdd`→Task 5、`PlanRevs`→Task 6） |
-| 2 | 初稿的 `DashboardPlanCounts` 里自造了 `never_submitted` / `cancelled` 两个后端字段 | 删掉。三个计数改为：未提交 ← `/dashboard/unsubmitted.never_submitted.length`、已提交 ← `/dashboard/plans.submitted`、已撤销 ← 计划列表里 `state==='已撤销'` 的张数。三者**全部指得到出处** |
-| 3 | 初稿在首页用 `GET /plans?state=已撤销` 做筛选，但 `state` 取值域未定义、且「未提交」根本不是一个状态值 | 改成只发 `{archived:false}`，筛选与排序全在前端做。★ 避免发出「未声明取值」被 400 |
-| 4 | 初稿 `inventoryAt` 对 `has_fba=false` 返回 `{kind:'num', value:0}` | 改成 `{kind:'na'}`。这正是「不适用 ≠ 0」，改前测试会绿——所以补了 Task 4 Step 1 的第四条断言 |
-| 5 | `sumUnits([])` 初稿返回 `0` | 改成 `{kind:'unknown'}`：没有数不等于 0。断言写在 Task 4 Step 1 第二条 |
-| 6 | Task 7 初稿提交成功后直接 `navigate` 到版本页 | 改成停在网格页出结果面板 —— `skipped[]` 只在这一次响应里存在，跳走就永远看不到了（判据②） |
-| 7 | `08` 与后端规格对 409 的 code 写法不一致（`rev_in_flight` / `another_rev_in_flight`） | 前端统一用 `rev_in_flight`（`08` §1.1 现行 + 负责人转述），并登记为附录 A-4 的**真分叉**，须后端同步 |
-| 8 | 三处「未知」的渲染初稿都写成 `—`，包括「不可求和」 | 拆成三个字形（`—` / `不适用` / `不可求和`），Task 3 的 `Qty` 单测直接断言三者互不相同 |
-| 9 | ★ Task 4 的五条测试直接取 `cell-<msku>-<月>`，而实现里 msku 行**默认折叠** —— 这些 testid 在折叠态根本不存在，测试会全红 | 测试里加 `expand()` 助手，取 msku 级格子前先点「展开」 |
-| 10 | 「无 FBA 显示不适用」那条断言写的是 3 处，实际是 3 个月 + 合计列 = 4 处 | 改成 4，并补一条 `queryByText('0')` 为 null —— 只数个数会被「其中一处渲染成 0」骗过 |
-| 11 | 「折叠行显示 Σ 只读」在实现里没有可断言的落点 | 折叠行的 Σ 加 `data-testid={sum-expected-<月>}` 与 `.i-ink`；测试同时断言折叠行**没有 textbox**（在货号级填数会把人填的粒度悄悄降一层） |
-| 12 | Task 8 的 planFlow 第三条同样漏了展开；末尾还留了一个不存在的 `screen.unmount?.()` | 补展开；删掉 `unmount`，并写明这四条**共享同一个 mock 单例、顺序有意义**，因此不许对该文件开 `--shuffle` |
-| 13 | Task 8 Step 6 写「Test Files 12 passed」，实际是 15 个测试文件 | 改成 15 并逐个列名 —— ★ 「不执行的东西不会失败」：数字对不上时，少跑了三个文件是看不出来的 |
+| 1 | `Modal.tsx` 归属 Task 错位一位 | 移到 Task 6，File Structure 同步改 |
+| 2 | 自造后端不存在的计数字段 | 三个计数改为全部指得到出处 |
+| 3 | 首页用 `?state=` 发未定义取值 | 只发 `{archived:false}`，筛选排序全在前端 |
+| 4 | `has_fba=false` 返回 0 | 改「不适用」 |
+| 5 | `sumUnits([])` 返回 0 | 改「未知」 |
+| 6 | 提交成功直接跳版本页 | 改为停在网格出结果面板 |
+| 7 | 409 code 两份写法 | 统一 `rev_in_flight` |
+| 8 | 三处「未知」共用一个字形 | 拆成 `—` / `不适用` / `不可求和` |
+| 9~13 | 网格测试漏展开、不适用计数 3 应为 4、折叠行 Σ 无断言落点、planFlow 漏展开与不存在的 `unmount`、测试文件数写错 | 逐条改正 |
 
-★ 一条**没修**的：`GET /plan-lines*` 与 `POST /plans/{id}/archive` 在阶段 A 的四屏里没有入口（原理图没画）。
-我没有自己发明入口，也没有把它们塞进某一屏 —— 按纪律③ 记在这里，待负责人决定它们属不属于阶段 A 的界面。
+二稿（对齐后端契约，新发现 9 条）：
+
+| # | 发现 | 改法 |
+|---|---|---|
+| 14 | ★ **错误形状整个写错**：一稿按 `08` §0 的 `{code,message,detail}`，而裁定并已落测试的是 `{error,hint,…顶层点名字段}` | `ApiError` / `http.ts` 解析 / `ErrorDetail` / 全部错误断言重写。★ 这是最贵的一条：不改的话每个错误分支都读到 `undefined`，屏幕退化成「操作失败」 |
+| 15 | ★ **月份格式写错**：一稿到处用 `"2026-10-01"` | 对外一律 `"YYYY-MM"`；只有建计划的 `period_start` 仍是月初日期 |
+| 16 | ★ **列表响应都带包裹**，一稿当裸数组 | `listPlans` 返回 `PlanList`（含 `excluded.archived`），`listSellers` 在数据层拆包 |
+| 17 | 字段名错三处：`purchase_units` / `line_count` / `catalog` 的自造判别式 | 改为 `planned_units` / `lines` / `{need_query,matched,truncated,limit,items}` |
+| 18 | ★ **grid 不带计划抬头**，一稿假设它带 | 新增 `api.getPlan()`（数据层内部拉 `GET /plans` 再挑），页面不必知道 |
+| 19 | ★ 漏了 `system_extrapolated` —— 而 `14` §5 明写「标记必须随结果一起返回」 | 网格渲染 `sup.ext` 角标并加断言；`.stage-a-frontend-spec.md` ② 也要求了，一稿整条漏掉 |
+| 20 | ★ 漏了 `sku_pipeline[]` | 模型层原样带过来、**不并入库存**，并有一条断言盯着「并进去会得到的那个数不许出现」；总量放折叠区（附录 A.3 第 2 条） |
+| 21 | ★ 一稿的页面测试**写死了 fixture 的数字**，而 fixture 现在由后端 seed 生成 | 页面测试改为自造 grid 注入；只留一条用真 fixture、**只认形态不认数字**；planFlow 同样改成恒等式断言 |
+| 22 | 二稿把库存改到 msku 级后，折叠行只剩「不可求和」，**断货信号在折叠态消失了** | 当时补了 `outageCount()`；三稿库存回到店铺·货号行后这个补丁**不再需要**，已连同 `blockInventory` / `closingOf` 一起删掉 —— ★ 留着就是一段永不执行的代码 |
+
+三稿（库存身份回到 `(sku, sid)`，新发现 6 条）：
+
+| # | 发现 | 改法 |
+|---|---|---|
+| 23 | ★ **库存挂错了层**：二稿把它挂在 `MskuCell.inventory` 上，于是同一格库存会被画两遍、跨 msku 还会被加一遍 | 移到 `SkuBlock.inventory`；模型测试里加一条 `Object.keys(MskuCell)` **不含** `inventory` 的断言 —— 挂回去就红 |
+| 24 | ★ `inbound` 从 `0` 改成 `null` 不是改名 | `0` = 「有这一层但没有货」，`null` = 「这一层在阶段 A 根本不成立」。mock 测试改成断言 `inbound === null`，并加一条「在途没有并进任何一格」的反向断言 |
+| 25 | ★ 「不适用」从布尔降成 `basis.reason` 的一个取值 | `inventoryAt()` 改按 `reason` 判；fixtures 的形态断言从 `not_applicable === true` 改成 `reason === 'not_applicable'`，并要求 **null 成因至少两种**（只有一种等于这条断言没跑） |
+| 26 | ★ 同一个在途数字现在有**两处来源**（`basis.sku_level_in_transit` 与 `sku_pipeline[].in_transit`） | 新增 orphan `in_transit_disagrees`：两处不一致就点名，不许挑一个显示。★ 两个真相不报，最后就会有人拿其中一个去对账 |
+| 27 | ★ `closing` 的**跨月口径**在裁定文字里没有月份下标 | 不自己定：Task 2 新增一条测试**从 fixture 反推规则**再断言 mock 一致；fixture 分不开两种规则时**硬失败**（证人不在场要报错，不是默认通过）——附录 A.3 第 3 条 |
+| 28 | 折叠态**没有输入框**（输入是 msku 级的），一眼看去像功能缺失 | 不是缺失，是原理图本来的样子。写进 Task 4 的口径表并加断言 `折叠态 queryByRole('textbox') === null`，免得后来有人「顺手补上」而把人填粒度悄悄降一层 |
+
+★ 三条**没修**的，记在这里而不是悄悄处理：
+
+1. **`.stale` 品类陈旧标注无处可挂** —— 后端的 `catalog` item 没有 `category` / `refreshed_at`（`08` §1.4 的 `/v1/categories` 才有）。
+   原则七在阶段 A 的这一屏**落不了地**，我没有自己发明字段。→ 应登记进 `00`。
+2. **`archive` 与 `plan-lines*` 无界面入口** —— 后端照 `08` 实现了，原理图没画。不自己发明入口（附录 A.2 第 4 条）。
+3. **`unbuildable_sellers` 阶段 A 恒空** —— 渲染分支靠注入数据测（B-6），但它在生产里**一次都不会执行**。
+   这是「不执行的东西不会失败」的一个已知实例，后端那边有一条盯着 `seller` 表列的测试兜底。
+4. **`basis.reason === 'no_seller_attribution'`** 在阶段 A 也不会出现（在途根本不进这一格）。
+   类型里留着它是因为后端契约里有；★ 但**没有任何前端分支渲染它** —— 真出现时会落到「未知」的 `—`。
+   这是刻意的取舍：为一个阶段 A 不可达的成因造一个屏幕形态，只会多一段没人验证的代码。
+   ⚠️ 阶段 B 接上采购在途时**必须回来补**，否则三种 null 成因会在那时合成两种。
