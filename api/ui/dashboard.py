@@ -3,14 +3,19 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
 
-from api.ui.deps import actor_optional, declared, require_fresh_mirrors
+from api.ui.deps import actor_optional, declared, known_states, require_fresh_mirrors
 from rules.digest import content_digest
 from rules.submit import DemandCell, PurchaseCell
 from shared.pg_client import pg_conn, timed
 
 router = APIRouter(dependencies=[Depends(require_fresh_mirrors)])
 
-COUNTED = ["进行中", "已提交", "已提交未确认", "已下单", "准备排货", "已排货"]
+#: 派生桶：不是记录状态，是由记录状态算出来的两个口径。
+#: ★ 其余的桶一律从 `plan_line_state_rank` ∪ {已撤销} 推出来（deps.known_states），
+#:   不手列 —— 手列的宇宙必然漏掉第 N+1 种：`已确认` 在阶段 A 经
+#:   `POST /plan-lines/{id}/transition` 真的到得了，而它曾经没有自己的桶，
+#:   那样的计划只在「进行中」里出现，看板上看不出它已经被确认过。
+DERIVED_BUCKETS = ["进行中", "已提交未确认"]
 #: 阶段 A 铸不出这几个态（要承重墙①②）。★ 接口照样返回它们（诚实），
 #  由前端按阶段不渲染 —— 接口自己抹成 0，「没有」和「还没做」就长得一样了（S-20）。
 UNREACHABLE_IN_STAGE_A = ["已下单", "准备排货", "已排货"]
@@ -20,11 +25,12 @@ UNREACHABLE_IN_STAGE_A = ["已下单", "准备排货", "已排货"]
 def dashboard_plans(request: Request, who: str | None = Depends(actor_optional)):
     declared(request)
     with timed("dashboard_plans", actor=who), pg_conn() as c, c.cursor() as cur:
+        counted = DERIVED_BUCKETS + known_states(cur)
         cur.execute("SELECT v.overall, count(*) FROM v_plan_overall_state v"
                     " JOIN plan p USING (plan_id) WHERE p.archived_at IS NULL"
                     " GROUP BY v.overall")
         by_state = {k: n for k, n in cur.fetchall()}
-    counts = {k: 0 for k in COUNTED}
+    counts = {k: 0 for k in counted}
     for state, n in by_state.items():
         if state in counts:
             counts[state] += n

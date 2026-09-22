@@ -9,7 +9,14 @@ import psycopg2
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
-from api.ui.deps import actor, actor_optional, declared, require_fresh_mirrors
+from api.ui.deps import (
+    actor,
+    actor_optional,
+    declared,
+    ensure_writable,
+    known_states,
+    require_fresh_mirrors,
+)
 from api.ui.errors import ApiError
 from dim.fixture_source import FixtureSource
 from forecast.estimate import InsufficientHistory, monthly_estimate
@@ -35,11 +42,18 @@ def _date(s: str, field: str) -> dt.date:
 
 @router.post("/plans")
 def create_plan(request: Request, body: dict, who: str = Depends(actor)):
+    declared(request)
     title = (body.get("title") or "").strip()
     if not title:
         raise ApiError(400, "title_required", "标题必填", {"field": "title"})
     start = _date(body.get("period_start"), "period_start")
     months = body.get("months", 3)          # ★ M-10：默认 3，范围 1~24 由库层 CHECK 裁决
+    # ★ 库层的 CHECK 管的是**范围**不是**类型**：字符串会以 22P02 撞成 500（让前端去
+    #   重试一件永远不会成功的事），而 3.5 会被 PG 悄悄四舍五入成 4 —— 一个人没要过的值，
+    #   且没有任何回显。范围仍归 CHECK，类型在这里挡。
+    if not isinstance(months, int) or isinstance(months, bool):
+        raise ApiError(400, "validation_error", "按 fields 逐项改",
+                       {"fields": ["months"], "got": months})
     with timed("create_plan", actor=who), pg_conn() as c, c.cursor() as cur:
         cur.execute("INSERT INTO plan (title, period_start, months, owner_actor, created_by)"
                     " VALUES (%s, %s, %s, %s, %s) RETURNING plan_id",
@@ -53,19 +67,30 @@ def list_plans(request: Request, who: str | None = Depends(actor_optional)):
     declared(request, "state", "owner", "archived")
     q = request.query_params
     want_archived = q.get("archived", "false").lower() == "true"
-    where, args = ["(%s OR p.archived_at IS NULL)"], [want_archived]
-    if q.get("owner"):
-        where.append("p.owner_actor = %s")
-        args.append(q["owner"])
-    if q.get("state"):
-        where.append("v.overall = %s")
-        args.append(q["state"])
-    sql = ("SELECT p.plan_id, p.title, p.period_start, p.months, p.owner_actor,"
-           " p.archived_at, v.overall, v.state_rev"
-           " FROM plan p JOIN v_plan_overall_state v USING (plan_id)"
-           f" WHERE {' AND '.join(where)} ORDER BY p.plan_id DESC")
     with timed("list_plans", actor=who), pg_conn() as c, c.cursor() as cur:
-        cur.execute(sql, args)
+        # ★ state= 打错字不许悄悄返回空集 —— 那与「这个范围里确实没有」长得一模一样。
+        #   宇宙与 /v1/plan-lines 同一个出处（deps.known_states），不另立一份。
+        if q.get("state"):
+            known = known_states(cur)
+            if q["state"] not in known:
+                raise ApiError(400, "bad_state", "state 不是白名单里的状态值",
+                               {"got": q["state"], "allowed": known})
+        # ★ 候选集 = owner/state 圈定的那一批。archived 的排除数只能在候选集里数：
+        #   在全库上数的话，按 owner 过滤时报的是别人计划的归档数，而那不是这次查询丢的。
+        where, args = [], []
+        if q.get("owner"):
+            where.append("p.owner_actor = %s")
+            args.append(q["owner"])
+        if q.get("state"):
+            where.append("v.overall = %s")
+            args.append(q["state"])
+        candidates = " AND ".join(where) if where else "true"
+        cur.execute(
+            "SELECT p.plan_id, p.title, p.period_start, p.months, p.owner_actor,"
+            " p.archived_at, v.overall, v.state_rev"
+            " FROM plan p JOIN v_plan_overall_state v USING (plan_id)"
+            f" WHERE (%s OR p.archived_at IS NULL) AND {candidates}"
+            " ORDER BY p.plan_id DESC", [want_archived, *args])
         # ★ 对外的字段名是 state（裁定第 3 条）；库里的列叫 overall，
         #   两边同名反而会让人以为它是张表上的字段 —— 它是派生的
         plans = [{"plan_id": r[0], "title": r[1], "period_start": r[2].isoformat(),
@@ -73,7 +98,8 @@ def list_plans(request: Request, who: str | None = Depends(actor_optional)):
                   "archived_at": r[5].isoformat() if r[5] else None,
                   "state": r[6], "state_rev": r[7]} for r in cur.fetchall()]
         # ★ 统计被丢掉的那一侧：不说「挡掉了几张」，人只会觉得计划凭空少了
-        cur.execute("SELECT count(*) FROM plan WHERE archived_at IS NOT NULL")
+        cur.execute("SELECT count(*) FROM plan p JOIN v_plan_overall_state v USING (plan_id)"
+                    f" WHERE p.archived_at IS NOT NULL AND {candidates}", args)
         archived = 0 if want_archived else cur.fetchone()[0]
     return {"plans": plans, "excluded": {"archived": archived}}
 
@@ -89,12 +115,14 @@ def _periods(cur, plan_id: int) -> list[dt.date]:
 
 
 @router.post("/plans/{plan_id}/claims")
-def claim(plan_id: int, body: dict, who: str = Depends(actor)):
+def claim(plan_id: int, body: dict, request: Request, who: str = Depends(actor)):
+    declared(request)
     seller_sku, sid = body.get("seller_sku"), body.get("sid")
     if not seller_sku or not sid:
         raise ApiError(400, "bad_request", "seller_sku 与 sid 必填",
                        {"got": {"seller_sku": seller_sku, "sid": sid}})
     with timed("claim", actor=who, plan_id=plan_id), pg_conn() as c, c.cursor() as cur:
+        ensure_writable(cur, plan_id)
         periods = _periods(cur, plan_id)
         cur.execute("SELECT sku FROM msku_bridge WHERE seller_sku = %s AND sid = %s",
                     (seller_sku, sid))
@@ -157,9 +185,40 @@ def claim(plan_id: int, body: dict, who: str = Depends(actor)):
             "no_history": no_history}
 
 
+def _stranded_purchase_cells(cur, plan_id: int, seller_sku: str, sid: str) -> list[dict]:
+    """释放一个 msku 之后，**留在原地**的货号级采购格子。
+
+    ★ 不删：同货号的兄弟 msku 还在认领中时，那批格子正是它的（PK 不含 msku）。
+    ★ 但必须报：`dropped_cells` 只点名了两种格子里的一种，于是货号级那一批
+      在界面上无声地留着 —— 提交时它们会以 `no_claimed_msku` 被跳过，
+      而人到那时才知道刚才的释放还留下了东西。
+    ★ 还有兄弟在认领 ⇒ 一个都不算搁浅；认不出货号（桥表缺行）也不许静默当成空。
+    """
+    cur.execute("SELECT sku FROM msku_bridge WHERE seller_sku = %s AND sid = %s",
+                (seller_sku, sid))
+    row = cur.fetchone()
+    if row is None:
+        log.warning("op=release_claim plan_id=%s seller_sku=%s sid=%s 桥表无此 msku —— "
+                    "无法判定货号级采购格子是否搁浅", plan_id, seller_sku, sid)
+        return []
+    sku = row[0]
+    cur.execute("SELECT count(*) FROM msku_claim cl"
+                " JOIN msku_bridge b ON b.seller_sku = cl.seller_sku AND b.sid = cl.sid"
+                " WHERE cl.plan_id = %s AND cl.released_at IS NULL AND b.sku = %s",
+                (plan_id, sku))
+    if cur.fetchone()[0]:
+        return []
+    cur.execute("SELECT period_start FROM plan_purchase_cell"
+                " WHERE plan_id = %s AND sku = %s ORDER BY period_start", (plan_id, sku))
+    return [{"sku": sku, "period": p.strftime("%Y-%m")} for (p,) in cur.fetchall()]
+
+
 @router.delete("/plans/{plan_id}/claims/{seller_sku}/{sid}")
-def release(plan_id: int, seller_sku: str, sid: str, who: str = Depends(actor)):
+def release(plan_id: int, seller_sku: str, sid: str, request: Request,
+            who: str = Depends(actor)):
+    declared(request)
     with timed("release_claim", actor=who, plan_id=plan_id), pg_conn() as c, c.cursor() as cur:
+        ensure_writable(cur, plan_id)
         cur.execute("SELECT period_start, expected_units FROM plan_demand_cell"
                     " WHERE plan_id = %s AND seller_sku = %s AND sid = %s ORDER BY period_start",
                     (plan_id, seller_sku, sid))
@@ -173,8 +232,13 @@ def release(plan_id: int, seller_sku: str, sid: str, who: str = Depends(actor)):
         if cur.fetchone() is None:
             raise ApiError(404, "claim_not_found", "没有这条在占用中的认领",
                            {"plan_id": plan_id, "seller_sku": seller_sku, "sid": sid})
+        # ★ 必须在释放之后算：之前算的话，刚释放的这一个自己还算在「兄弟」里
+        stranded = _stranded_purchase_cells(cur, plan_id, seller_sku, sid)
+    log.info("op=release_claim plan_id=%s seller_sku=%s sid=%s dropped=%d stranded=%d",
+             plan_id, seller_sku, sid, len(dropped), len(stranded))
     # ★ 丢东西必须有声：删掉的格子逐条回给界面，包括人填过的数
-    return {"released": {"seller_sku": seller_sku, "sid": sid}, "dropped_cells": dropped}
+    return {"released": {"seller_sku": seller_sku, "sid": sid}, "dropped_cells": dropped,
+            "stranded_purchase_cells": stranded}
 
 
 def _ym(d: dt.date) -> str:
@@ -261,8 +325,10 @@ def grid(plan_id: int, request: Request, who: str | None = Depends(actor_optiona
                 "closing": row["closing"],
                 "basis": {
                     "source": "ch", "as_of": as_of,
-                    # ★ 裁定：恒 false 且必须显式返回 —— 「没算进来」不能长成「算了是 0」
-                    "includes_plan_purchase": False,
+                    # ★ 裁定：阶段 A 恒 false，但必须**由明细算出**而不是盖章 ——
+                    #   盖死的那个在阶段 B 真掺进计划采购时会撒谎，而标记撒谎比
+                    #   没有标记更坏（forecast/projection.py 的同名注释）
+                    "includes_plan_purchase": not row["basis"]["excludes_plan_purchase"],
                     "demand": row["demand"],
                     # ★ 恒定：这一格的入库为什么是 null
                     "reason": "no_seller_attribution",
@@ -308,10 +374,12 @@ def _units(body: dict, field: str) -> int | None:
 
 @router.put("/plans/{plan_id}/demand/{seller_sku}/{sid}/{period}")
 def put_demand(plan_id: int, seller_sku: str, sid: str, period: str, body: dict,
-               who: str = Depends(actor)):
+               request: Request, who: str = Depends(actor)):
+    declared(request)
     units = _units(body, "expected_units")
     # ★ 一格一事务：重算（预测）放在事务外 —— 预测慢，不该把行锁攥着（01 §5）
     with timed("put_demand", actor=who, plan_id=plan_id), pg_conn() as c, c.cursor() as cur:
+        ensure_writable(cur, plan_id)
         cur.execute("UPDATE plan_demand_cell SET expected_units = %s, updated_by = %s,"
                     " updated_at = now()"
                     " WHERE plan_id = %s AND seller_sku = %s AND sid = %s AND period_start = %s"
@@ -331,9 +399,12 @@ def put_demand(plan_id: int, seller_sku: str, sid: str, period: str, body: dict,
 
 
 @router.put("/plans/{plan_id}/purchase/{sku}/{period}")
-def put_purchase(plan_id: int, sku: str, period: str, body: dict, who: str = Depends(actor)):
+def put_purchase(plan_id: int, sku: str, period: str, body: dict, request: Request,
+                 who: str = Depends(actor)):
+    declared(request)
     units = _units(body, "planned_units")
     with timed("put_purchase", actor=who, plan_id=plan_id), pg_conn() as c, c.cursor() as cur:
+        ensure_writable(cur, plan_id)
         cur.execute("UPDATE plan_purchase_cell SET planned_units = %s, updated_by = %s,"
                     " updated_at = now()"
                     " WHERE plan_id = %s AND sku = %s AND period_start = %s RETURNING 1",
@@ -346,9 +417,13 @@ def put_purchase(plan_id: int, sku: str, period: str, body: dict, who: str = Dep
 
 
 @router.post("/plans/{plan_id}/archive")
-def archive(plan_id: int, who: str = Depends(actor)):
+def archive(plan_id: int, request: Request, who: str = Depends(actor)):
     """★ 同一事务释放全部占用：分两次做，中间挂掉就会留下一张归档了却还扣着货的计划。"""
+    declared(request)
     with timed("archive", actor=who, plan_id=plan_id), pg_conn() as c, c.cursor() as cur:
+        # ★ 再归档一次要 409 而不是把 archived_at 往后推：那会让「什么时候封存的」
+        #   变成「最后一次点按钮的时间」，而这张计划的占用其实早就释放完了
+        ensure_writable(cur, plan_id)
         cur.execute("UPDATE msku_claim SET released_at = now(), released_by = %s"
                     " WHERE plan_id = %s AND released_at IS NULL RETURNING seller_sku, sid",
                     (who, plan_id))

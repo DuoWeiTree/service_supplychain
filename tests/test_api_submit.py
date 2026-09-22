@@ -13,7 +13,7 @@ def test_submit_mints_lines_and_lists_every_skipped_cell(client, seed):
     with pg_conn() as c, c.cursor() as cur:
         cur.execute("SELECT sku, total_units, demand_at_submit, demand_by_seller, state"
                     " FROM plan_line WHERE plan_id = %s", (pid,))
-        sku, total, dsum, by_seller, state = cur.fetchone()
+        _sku, total, dsum, by_seller, state = cur.fetchone()
     assert (total, dsum, state) == (500, 240, "已提交")
     assert set(by_seller) == {"11072", "11094"}
     assert by_seller["11072"]["basis"] == "human"
@@ -84,6 +84,38 @@ def test_cancelling_a_rev_cancels_every_live_line_with_one_reason(client, seed):
     with pg_conn() as c, c.cursor() as cur:
         cur.execute("SELECT reason FROM plan_line_event WHERE to_state = '已撤销'")
         assert [r[0] for r in cur.fetchall()] == ["供应商断供"]
+
+
+def test_cancel_rev_counts_the_lines_it_skipped(client, seed):
+    """★ 统计被丢掉的那一侧：`state NOT IN TERMINAL` 过滤掉的记录一条都没被报出来，
+    于是「这一版本来就只有 1 条」与「另外 2 条早已在终态」长得一模一样。
+    候选集是这一版的全部记录，skipped_terminal 只在这个集合里数。"""
+    pid = prepared(client, seed)
+    client.put(f"/v1/plans/{pid}/purchase/{seed.sku_a}/2026-11",
+               json={"planned_units": 300}, headers=H(seed.actor))
+    client.put(f"/v1/plans/{pid}/purchase/{seed.sku_a}/2026-12",
+               json={"planned_units": 200}, headers=H(seed.actor))
+    client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
+    lines = client.get("/v1/plan-lines", params={"plan_ids": pid},
+                       headers=H(seed.actor)).json()["lines"]
+    assert len(lines) == 3
+    # 先单独撤掉两条 → 它们进终态，整版撤销时会被那个 NOT IN 过滤掉
+    for row in lines[:2]:
+        client.post(f"/v1/plan-lines/{row['line_id']}/cancel",
+                    json={"reason": "先撤这两条"}, headers=H(seed.actor))
+    r = client.post(f"/v1/plans/{pid}/revs/1/cancel", json={"reason": "整版重来"},
+                    headers=H(seed.actor)).json()
+    assert len(r["cancelled"]) == 1
+    assert r["skipped_terminal"] == 2
+
+
+def test_cancel_rev_reports_zero_skipped_when_nothing_was_terminal(client, seed):
+    """★ 恒等于「有跳过」的数字看不出区别 —— 一条都没跳过时必须是 0。"""
+    pid = prepared(client, seed)
+    client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
+    r = client.post(f"/v1/plans/{pid}/revs/1/cancel", json={"reason": "重来"},
+                    headers=H(seed.actor)).json()
+    assert len(r["cancelled"]) == 1 and r["skipped_terminal"] == 0
 
 
 def test_a_new_rev_is_allowed_after_the_old_one_settles(client, seed):

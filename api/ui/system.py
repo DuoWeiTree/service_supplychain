@@ -11,7 +11,9 @@ system_router = APIRouter()
 
 
 @health_router.get("/health")
-def health():
+def health(request: Request):
+    # ★ 探活也要拒未声明参数：唯一不拦的那个端点会变成「先试探活能不能带这个参数」
+    declared(request)
     return {"status": "ok"}
 
 

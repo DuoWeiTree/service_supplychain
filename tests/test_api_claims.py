@@ -1,7 +1,6 @@
 import threading
 
 import psycopg2.errors
-import pytest
 
 from shared.pg_client import pg_conn
 
@@ -31,7 +30,7 @@ def test_claimed_rows_stay_in_the_table_marked(client, seed):
                 json={"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]}, headers=H(seed.actor))
     items = client.get("/v1/catalog/skus", params={"q": seed.sku_a},
                        headers=H(seed.actor)).json()["items"]
-    m = [x for x in items[0]["mskus"] if x["seller_sku"] == seed.msku_a[0]][0]
+    m = next(x for x in items[0]["mskus"] if x["seller_sku"] == seed.msku_a[0])
     assert m["selectable"] is False and m["claimed_by"]["plan_id"] == p1
     assert items[0]["claimed_by"] == {"plan_id": p1, "title": "10 月计划"}
 
@@ -75,7 +74,7 @@ def test_truncation_is_reported_with_the_limit(client, seed):
 
 def test_sellers_dimension_carries_market_and_has_fba(client, seed):
     rows = client.get("/v1/sellers", headers=H(seed.actor)).json()["sellers"]
-    wm = [r for r in rows if r["seller_id"] == seed.seller_nofba][0]
+    wm = next(r for r in rows if r["seller_id"] == seed.seller_nofba)
     assert wm == {"seller_id": seed.seller_nofba, "name": "A4Pet-WM", "market": "US",
                   "has_fba": False, "platform": "walmart"}
 
@@ -185,6 +184,49 @@ def test_release_keeps_the_row_and_names_the_cells_it_drops(client, seed):
     with pg_conn() as c, c.cursor() as cur:
         cur.execute("SELECT released_at IS NOT NULL FROM msku_claim WHERE plan_id = %s", (p,))
         assert cur.fetchone()[0] is True
+
+
+def test_release_names_the_purchase_cells_it_leaves_behind(client, seed):
+    """★ 释放删掉的是 msku 级的期望销量格子；货号级的采购格子**留在原地**
+    （PK 不含 msku，兄弟 msku 还要用）—— 但只报一种格子，另一种就无声地留着。
+
+    实测后果：释放了该货号唯一的 msku 之后，`GET /grid` 里那条 purchase 仍在，
+    `PUT …/purchase/…` 仍返回 200，而提交时它以 no_claimed_msku 被跳过 ——
+    人要到那时才知道刚才的释放还留下了东西。
+    """
+    p = mk(client, seed)
+    body = {"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]}
+    client.post(f"/v1/plans/{p}/claims", json=body, headers=H(seed.actor))
+    client.put(f"/v1/plans/{p}/purchase/{seed.sku_a}/2026-10",
+               json={"planned_units": 500}, headers=H(seed.actor))
+    r = client.delete(f"/v1/plans/{p}/claims/{seed.msku_a[0]}/{seed.msku_a[1]}",
+                      headers=H(seed.actor)).json()
+    assert r["stranded_purchase_cells"] == [
+        {"sku": seed.sku_a, "period": "2026-10"},
+        {"sku": seed.sku_a, "period": "2026-11"},
+        {"sku": seed.sku_a, "period": "2026-12"}]
+    # ★ 报了不等于删了：兄弟 msku 再认领回来时要用的就是这几行
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT count(*) FROM plan_purchase_cell WHERE plan_id = %s AND sku = %s",
+                    (p, seed.sku_a))
+        assert cur.fetchone()[0] == 3
+
+
+def test_a_sibling_msku_keeps_the_purchase_cells_from_being_stranded(client, seed):
+    """★ 「搁浅」与「还有人用」必须分得开：同货号还有 msku 在认领中时，
+    那批格子一个都没搁浅 —— 恒报「搁浅」等于每次释放都喊一次狼来了。"""
+    p = mk(client, seed)
+    for ms in (seed.msku_a, seed.msku_b):      # 两个 msku 同属 sku_a
+        client.post(f"/v1/plans/{p}/claims", json={"seller_sku": ms[0], "sid": ms[1]},
+                    headers=H(seed.actor))
+    client.put(f"/v1/plans/{p}/demand/{seed.msku_a[0]}/{seed.msku_a[1]}/2026-10",
+               json={"expected_units": 130}, headers=H(seed.actor))
+    r = client.delete(f"/v1/plans/{p}/claims/{seed.msku_a[0]}/{seed.msku_a[1]}",
+                      headers=H(seed.actor)).json()
+    assert r["stranded_purchase_cells"] == []
+    # ★ 两个列表各说各的事：这一次确实删掉了三个期望销量格子
+    assert [x["period"] for x in r["dropped_cells"]] == ["2026-10", "2026-11", "2026-12"]
+    assert {"period": "2026-10", "expected_units": 130} in r["dropped_cells"]
 
 
 def test_reclaiming_in_the_same_plan_revives_the_row(client, seed):

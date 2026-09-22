@@ -5,7 +5,13 @@ import logging
 
 from fastapi import APIRouter, Depends, Request
 
-from api.ui.deps import actor, actor_optional, declared, require_fresh_mirrors
+from api.ui.deps import (
+    actor,
+    actor_optional,
+    declared,
+    known_states,
+    require_fresh_mirrors,
+)
 from api.ui.errors import ApiError
 from shared.pg_client import pg_conn, timed
 
@@ -26,14 +32,6 @@ def _allowed_next(cur, state: str) -> list[str]:
         " LEFT JOIN plan_line_state_rank r ON r.state = t.to_state"
         " WHERE t.from_state = %s ORDER BY r.rank NULLS LAST, t.to_state", (state,))
     return [r[0] for r in cur.fetchall()]
-
-
-def _known_states(cur) -> list[str]:
-    """★ 状态值的白名单只有一个出处：`plan_line_state_rank`（004）+ 旁路终态
-    「已撤销」（004 注释：它刻意不进 rank 表）。`_allowed_next` 用同一张表校验迁移，
-    这里校验 `state=` 查询参数——两处都不许各自维护一份宇宙，会分叉。"""
-    cur.execute("SELECT state FROM plan_line_state_rank ORDER BY rank")
-    return [r[0] for r in cur.fetchall()] + ["已撤销"]
 
 
 @router.get("/plan-lines")
@@ -60,7 +58,7 @@ def list_lines(request: Request, who: str | None = Depends(actor_optional)):
 
     with timed("list_lines", actor=who), pg_conn() as c, c.cursor() as cur:
         if q.get("state"):
-            known = _known_states(cur)
+            known = known_states(cur)
             if q["state"] not in known:
                 raise ApiError(400, "bad_state", "state 不是白名单里的状态值",
                                {"got": q["state"], "allowed": known})
@@ -141,7 +139,8 @@ def _transition(line_id: int, to_state: str, reason: str, who: str, src: str) ->
 
 
 @router.post("/plan-lines/{line_id}/cancel")
-def cancel_line(line_id: int, body: dict, who: str = Depends(actor)):
+def cancel_line(line_id: int, body: dict, request: Request, who: str = Depends(actor)):
+    declared(request)
     reason = (body.get("reason") or "").strip()
     if not reason:
         raise ApiError(400, "reason_required", "撤销必须填理由", {"field": "reason"})
@@ -153,12 +152,13 @@ def cancel_line(line_id: int, body: dict, who: str = Depends(actor)):
 
 
 @router.post("/plan-lines/{line_id}/transition")
-def move_line(line_id: int, body: dict, who: str = Depends(actor)):
+def move_line(line_id: int, body: dict, request: Request, who: str = Depends(actor)):
     """哪些迁移合法完全由 003 迁移的白名单（`plan_line_transition`）裁决，
     这里不设阶段 A 专属的关卡——比如「已提交→已确认」这条 forward 边今天就走得通，
     是因为它在白名单里，不是因为这段代码替它开了路。非法就 422 并回显 allowed[]，
     让「不在白名单里」看起来就是「现在不行」，而不是一个默默成功的动作。
     """
+    declared(request)
     to_state = (body.get("to_state") or "").strip()
     lid, from_state, new_state = _transition(line_id, to_state, (body.get("reason") or "").strip(),
                                              who, f"transition:{line_id}")
