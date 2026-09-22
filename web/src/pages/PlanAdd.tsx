@@ -152,7 +152,7 @@ export function PlanAdd() {
               <thead><tr><th /><th>msku</th><th>店铺</th><th>sid</th><th>占用</th></tr></thead>
               <tbody>
                 {item.mskus.map((m) => (
-                  <tr key={key(m)} className={m.selectable ? undefined : 'off'} data-testid={`msku-${m.seller_sku}`}>
+                  <tr key={key(m)} className={m.selectable ? undefined : 'off'} data-testid={`msku-${m.seller_sku}-${m.sid}`}>
                     <td>
                       <input
                         type="checkbox"
@@ -165,7 +165,7 @@ export function PlanAdd() {
                     <td>
                       {m.seller_sku}
                       {noHistory.has(key(m)) && (
-                        <span className="chip chip--warn" data-testid={`no-history-${m.seller_sku}`}>无历史</span>
+                        <span className="chip chip--warn" data-testid={`no-history-${m.seller_sku}-${m.sid}`}>无历史</span>
                       )}
                     </td>
                     <td>{m.seller_name}</td>

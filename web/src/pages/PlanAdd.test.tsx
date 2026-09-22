@@ -79,7 +79,7 @@ describe('批量添加', () => {
   it('★ 被占用的行留在表里标出来并点名占用方', async () => {
     await renderAdd();
     await search('SKU-1');
-    const row = await screen.findByTestId('msku-MSKU-C');
+    const row = await screen.findByTestId('msku-MSKU-C-11094');
     expect(row).toHaveClass('off');
     expect(within(row).getByText('2026 Q3 补货计划')).toBeInTheDocument();
     expect(within(row).getByText('ops.li')).toBeInTheDocument();
@@ -89,8 +89,8 @@ describe('批量添加', () => {
   it('★ 认领是 msku 级：勾一个不会把同货号的另一个也勾上', async () => {
     await renderAdd();
     await search('SKU-1');
-    await userEvent.click(within(await screen.findByTestId('msku-MSKU-A')).getByRole('checkbox'));
-    expect(within(screen.getByTestId('msku-MSKU-W')).getByRole('checkbox')).not.toBeChecked();
+    await userEvent.click(within(await screen.findByTestId('msku-MSKU-A-11072')).getByRole('checkbox'));
+    expect(within(screen.getByTestId('msku-MSKU-W-90001')).getByRole('checkbox')).not.toBeChecked();
     expect(screen.getByTestId('picked')).toHaveTextContent('已选 1');
   });
 
@@ -105,8 +105,8 @@ describe('批量添加', () => {
   it('添加：成功与被拒各自逐条列出，两个数都给', async () => {
     await renderAdd({ failOn: 'MSKU-W' });
     await search('SKU-1');
-    await userEvent.click(within(await screen.findByTestId('msku-MSKU-A')).getByRole('checkbox'));
-    await userEvent.click(within(screen.getByTestId('msku-MSKU-W')).getByRole('checkbox'));
+    await userEvent.click(within(await screen.findByTestId('msku-MSKU-A-11072')).getByRole('checkbox'));
+    await userEvent.click(within(screen.getByTestId('msku-MSKU-W-90001')).getByRole('checkbox'));
     await userEvent.click(screen.getByRole('button', { name: '添加' }));
 
     const report = await screen.findByTestId('claim-report');
@@ -120,8 +120,8 @@ describe('批量添加', () => {
   it('★ 一条被拒不阻断其余 —— 修一条报一条，人就开始绕（原则五）', async () => {
     await renderAdd({ failOn: 'MSKU-A' });
     await search('SKU-1');
-    await userEvent.click(within(await screen.findByTestId('msku-MSKU-A')).getByRole('checkbox'));
-    await userEvent.click(within(screen.getByTestId('msku-MSKU-W')).getByRole('checkbox'));
+    await userEvent.click(within(await screen.findByTestId('msku-MSKU-A-11072')).getByRole('checkbox'));
+    await userEvent.click(within(screen.getByTestId('msku-MSKU-W-90001')).getByRole('checkbox'));
     await userEvent.click(screen.getByRole('button', { name: '添加' }));
     const report = await screen.findByTestId('claim-report');
     expect(report).toHaveTextContent('已添加 1');
@@ -131,7 +131,7 @@ describe('批量添加', () => {
   it('★ 409 的 claimed_by 为 null 时只给 hint，不许现造一个占用方', async () => {
     await renderAdd({ failNoHolder: 'MSKU-A' });
     await search('SKU-1');
-    await userEvent.click(within(await screen.findByTestId('msku-MSKU-A')).getByRole('checkbox'));
+    await userEvent.click(within(await screen.findByTestId('msku-MSKU-A-11072')).getByRole('checkbox'));
     await userEvent.click(screen.getByRole('button', { name: '添加' }));
 
     const report = await screen.findByTestId('claim-report');
@@ -169,8 +169,8 @@ describe('批量添加', () => {
       </MemoryRouter>,
     );
     await search('SKU-1');
-    await userEvent.click(within(await screen.findByTestId('msku-MSKU-A')).getByRole('checkbox'));
-    await userEvent.click(within(screen.getByTestId('msku-MSKU-W')).getByRole('checkbox'));
+    await userEvent.click(within(await screen.findByTestId('msku-MSKU-A-11072')).getByRole('checkbox'));
+    await userEvent.click(within(screen.getByTestId('msku-MSKU-W-90001')).getByRole('checkbox'));
     await userEvent.click(screen.getByRole('button', { name: '添加' }));
 
     await screen.findByTestId('claim-report');
@@ -180,12 +180,12 @@ describe('批量添加', () => {
     // ★ 页面文案不许出现西式中点 —— 这正是 team-lead 的裁定
     expect(status.textContent).not.toContain('·');
 
-    expect(await screen.findByTestId('no-history-MSKU-A')).toBeInTheDocument();
-    expect(screen.queryByTestId('no-history-MSKU-W')).toBeNull();
+    expect(await screen.findByTestId('no-history-MSKU-A-11072')).toBeInTheDocument();
+    expect(screen.queryByTestId('no-history-MSKU-W-90001')).toBeNull();
 
     // 标记要留到会话结束：重新搜索刷新结果之后仍然看得见
     await search('SKU-1');
-    expect(await screen.findByTestId('no-history-MSKU-A')).toBeInTheDocument();
+    expect(await screen.findByTestId('no-history-MSKU-A-11072')).toBeInTheDocument();
   });
 
   // ★ Finding 1（review）：add() 在认领循环跑完之前 picked 不清空，按钮也没有「在飞」态 ——
@@ -215,8 +215,8 @@ describe('批量添加', () => {
       </MemoryRouter>,
     );
     await search('SKU-1');
-    await userEvent.click(within(await screen.findByTestId('msku-MSKU-A')).getByRole('checkbox'));
-    await userEvent.click(within(screen.getByTestId('msku-MSKU-W')).getByRole('checkbox'));
+    await userEvent.click(within(await screen.findByTestId('msku-MSKU-A-11072')).getByRole('checkbox'));
+    await userEvent.click(within(screen.getByTestId('msku-MSKU-W-90001')).getByRole('checkbox'));
 
     const button = screen.getByRole('button', { name: '添加' });
     fireEvent.click(button);
@@ -266,10 +266,9 @@ describe('批量添加', () => {
     );
     await search('SKU-9');
 
-    // ★ 两行共用同一个 seller_sku，data-testid 因而也相同 —— 用 findAllByTestId 各自取出
-    const rows = await screen.findAllByTestId('msku-MSKU-DUAL');
-    expect(rows).toHaveLength(2);
-    const [rowA, rowB] = rows as [HTMLElement, HTMLElement];
+    // ★ 两行共用同一个 seller_sku，但 testid 带 sid ⇒ 各自有独立、可精确定位的身份
+    const rowA = await screen.findByTestId('msku-MSKU-DUAL-11072');
+    const rowB = screen.getByTestId('msku-MSKU-DUAL-11094');
     await userEvent.click(within(rowA).getByRole('checkbox'));
     expect(within(rowB).getByRole('checkbox')).not.toBeChecked();
 
