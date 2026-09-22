@@ -145,14 +145,18 @@ def claim(plan_id: int, body: dict, request: Request, who: str = Depends(actor))
         except psycopg2.errors.UniqueViolation:
             c.rollback()
             with pg_conn() as c2, c2.cursor() as cur2:
-                cur2.execute("SELECT plan_id, claimed_by FROM msku_claim"
-                             " WHERE seller_sku = %s AND sid = %s"
-                             "   AND released_at IS NULL AND NOT plan_ordered",
+                # ★ team-lead 裁定：claimed_by 里加 title（join plan.title）——
+                #   occupier 查询本来就在一条新连接上跑，join 不多花一次往返。
+                cur2.execute("SELECT m.plan_id, m.claimed_by, p.title FROM msku_claim m"
+                             " JOIN plan p ON p.plan_id = m.plan_id"
+                             " WHERE m.seller_sku = %s AND m.sid = %s"
+                             "   AND m.released_at IS NULL AND NOT m.plan_ordered",
                              (seller_sku, sid))
                 holder = cur2.fetchone()
             raise ApiError(409, "msku_already_claimed", "该 msku 已被另一张尚未下单的计划占用",
                            {"seller_sku": seller_sku, "sid": sid,
-                            "claimed_by": {"plan_id": holder[0], "actor": holder[1]}
+                            "claimed_by": {"plan_id": holder[0], "actor": holder[1],
+                                          "title": holder[2]}
                             if holder else None}) from None
 
         no_history = []
@@ -245,6 +249,23 @@ def _ym(d: dt.date) -> str:
     return d.strftime("%Y-%m")
 
 
+def _demand_row(seller_sku: str, sid: str, sku: str, period: str,
+                sysu: int | None, expu: int | None, extrap: bool) -> dict:
+    """grid() 与 put_demand() 共用的同一份构造器（team-lead 09-22 裁定：一个行形状一个来源）。
+
+    ★ effective_demand() 是 effective_units 唯一裁定者 —— 两个端点各自算一遍迟早分叉，
+    put_demand() 曾经就漏了 sku/effective_units 两个字段，前端拿它原地替换 grid 里的行时
+    在真实 API 下会读到 undefined（mock 因为整格 clone 而不漏，两个数据源因此在这一格上分了叉）。"""
+    eff = effective_demand(sysu, expu)
+    return {"seller_sku": seller_sku, "sid": sid, "sku": sku, "period": period,
+            "system_units": sysu, "expected_units": expu, "basis": eff.basis,
+            # ★ 外推 ≠ 预估，标记必须随数走（14 §5）
+            "system_extrapolated": extrap,
+            # ★ 单一来源：前端按 (sid, sku) 分块、库存公式的入参都读这一个字段，
+            #   不许各自重算 —— effective_demand() 是唯一裁定者（rules/effective.py）
+            "effective_units": eff.units}
+
+
 def _load_grid(cur, plan_id: int):
     periods = _periods(cur, plan_id)
     cur.execute(
@@ -277,22 +298,16 @@ def grid(plan_id: int, request: Request, who: str | None = Depends(actor_optiona
     onhand_added: set[tuple[str, str]] = set()
 
     for seller_sku, sid, sku, period, sysu, extrap, expu, fba in demand:
-        eff = effective_demand(sysu, expu)
-        out_demand.append({"seller_sku": seller_sku, "sid": sid, "sku": sku,
-                           "period": _ym(period),
-                           "system_units": sysu, "expected_units": expu, "basis": eff.basis,
-                           # ★ 外推 ≠ 预估，标记必须随数走（14 §5）
-                           "system_extrapolated": extrap,
-                           # ★ 单一来源：前端按 (sid, sku) 分块、库存公式的入参都读这一个字段，
-                           #   不许各自重算 —— effective_demand() 是唯一裁定者（rules/effective.py）
-                           "effective_units": eff.units})
+        row = _demand_row(seller_sku, sid, sku, _ym(period), sysu, expu, extrap)
+        out_demand.append(row)
+        eff_units = row["effective_units"]
         key, ym = (sku, sid), _ym(period)
         slot = demand_by_store.setdefault(key, {})
         # ★ 合计行 = 各 msku 之和（14 §1 ①）；只要有一个 msku 未知，这一格就是未知
         if ym not in slot:
-            slot[ym] = eff.units
-        elif slot[ym] is not None and eff.units is not None:
-            slot[ym] += eff.units
+            slot[ym] = eff_units
+        elif slot[ym] is not None and eff_units is not None:
+            slot[ym] += eff_units
         else:
             slot[ym] = None
         if key not in onhand_by_store:
@@ -380,22 +395,25 @@ def put_demand(plan_id: int, seller_sku: str, sid: str, period: str, body: dict,
     # ★ 一格一事务：重算（预测）放在事务外 —— 预测慢，不该把行锁攥着（01 §5）
     with timed("put_demand", actor=who, plan_id=plan_id), pg_conn() as c, c.cursor() as cur:
         ensure_writable(cur, plan_id)
-        cur.execute("UPDATE plan_demand_cell SET expected_units = %s, updated_by = %s,"
+        # ★ 团队裁定：回整行九键，跟 grid() 里 demand[] 那一格同一个构造器（_demand_row）——
+        #   凭 UPDATE...FROM 顺带 JOIN msku_bridge 拿 sku，不必再开一次连接。
+        cur.execute("UPDATE plan_demand_cell d SET expected_units = %s, updated_by = %s,"
                     " updated_at = now()"
-                    " WHERE plan_id = %s AND seller_sku = %s AND sid = %s AND period_start = %s"
-                    " RETURNING system_units, system_extrapolated",
+                    " FROM msku_bridge b"
+                    " WHERE d.plan_id = %s AND d.seller_sku = %s AND d.sid = %s"
+                    "   AND d.period_start = %s"
+                    "   AND b.seller_sku = d.seller_sku AND b.sid = d.sid"
+                    " RETURNING d.system_units, d.system_extrapolated, b.sku",
                     (units, who, plan_id, seller_sku, sid, _date(period + "-01", "period")))
         row = cur.fetchone()
     if row is None:
         raise ApiError(404, "cell_not_found", "这一格还没长出来（先认领这个 msku）",
                        {"plan_id": plan_id, "seller_sku": seller_sku, "sid": sid,
                         "period": period})
-    eff = effective_demand(row[0], units)
-    # ★ 回的是 grid 里 demand[] 那一格同样的形状 —— 前端拿它原地替换那一行，
-    #   形状不同就要在前端再写一遍映射，而两份映射迟早分叉
-    return {"cell": {"seller_sku": seller_sku, "sid": sid, "period": period,
-                     "system_units": row[0], "expected_units": units,
-                     "basis": eff.basis, "system_extrapolated": row[1]}}
+    sysu, extrap, sku = row
+    # ★ 回的是 grid 里 demand[] 那一格同样的九键形状 —— 前端拿它原地替换那一行，
+    #   形状不同就要在前端再写一遍映射，而两份映射迟早分叉（曾经漏了 sku/effective_units）
+    return {"cell": _demand_row(seller_sku, sid, sku, period, sysu, units, extrap)}
 
 
 @router.put("/plans/{plan_id}/purchase/{sku}/{period}")

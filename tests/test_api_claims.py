@@ -135,7 +135,7 @@ def test_second_plan_claiming_the_same_msku_is_409_and_names_the_holder(client, 
     assert client.post(f"/v1/plans/{p1}/claims", json=body, headers=H(seed.actor)).status_code == 200
     r = client.post(f"/v1/plans/{p2}/claims", json=body, headers=H(seed.actor))
     assert r.status_code == 409 and r.json()["error"] == "msku_already_claimed"
-    assert r.json()["claimed_by"] == {"plan_id": p1, "actor": seed.actor}
+    assert r.json()["claimed_by"] == {"plan_id": p1, "actor": seed.actor, "title": "10 月计划"}
 
 
 def test_two_connections_racing_for_the_same_msku(client, seed):

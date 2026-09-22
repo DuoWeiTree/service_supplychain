@@ -154,8 +154,16 @@ def test_put_demand_and_purchase_are_one_cell_one_transaction(client, seed):
     pid = setup_plan(client, seed)
     r1 = client.put(f"/v1/plans/{pid}/demand/MSKU-A/11072/2026-11",
                     json={"expected_units": 130}, headers=H(seed.actor))
-    assert r1.status_code == 200 and r1.json()["cell"]["expected_units"] == 130
-    assert r1.json()["cell"]["basis"] == "human"
+    cell = r1.json()["cell"]
+    assert r1.status_code == 200 and cell["expected_units"] == 130
+    assert cell["basis"] == "human"
+    # ★ team-lead 裁定：PUT 回的必须是 grid() 那一格同样的九键，不是 7 键的子集 ——
+    #   少 sku/effective_units 两个字段，前端原地替换那一行时在真实 API 下会读到 undefined。
+    assert set(cell) == {"seller_sku", "sid", "sku", "period", "system_units",
+                         "expected_units", "basis", "system_extrapolated",
+                         "effective_units"}
+    assert cell["sku"] == seed.sku_a
+    assert cell["effective_units"] == 130          # 人填优先
     r2 = client.put(f"/v1/plans/{pid}/purchase/{seed.sku_a}/2026-11",
                     json={"planned_units": 500}, headers=H(seed.actor))
     assert r2.status_code == 200 and r2.json()["cell"]["planned_units"] == 500
