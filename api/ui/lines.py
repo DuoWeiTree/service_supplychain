@@ -1,11 +1,15 @@
 """计划单记录的查询与状态动作。"""
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, Request
 
 from api.ui.deps import actor, actor_optional, declared, require_fresh_mirrors
 from api.ui.errors import ApiError
 from shared.pg_client import pg_conn, timed
+
+log = logging.getLogger("scm.api")
 
 router = APIRouter(dependencies=[Depends(require_fresh_mirrors)])
 
@@ -24,6 +28,14 @@ def _allowed_next(cur, state: str) -> list[str]:
     return [r[0] for r in cur.fetchall()]
 
 
+def _known_states(cur) -> list[str]:
+    """★ 状态值的白名单只有一个出处：`plan_line_state_rank`（004）+ 旁路终态
+    「已撤销」（004 注释：它刻意不进 rank 表）。`_allowed_next` 用同一张表校验迁移，
+    这里校验 `state=` 查询参数——两处都不许各自维护一份宇宙，会分叉。"""
+    cur.execute("SELECT state FROM plan_line_state_rank ORDER BY rank")
+    return [r[0] for r in cur.fetchall()] + ["已撤销"]
+
+
 @router.get("/plan-lines")
 def list_lines(request: Request, who: str | None = Depends(actor_optional)):
     declared(request, "plan_ids", "state", "sku", "category", "period", "group_by")
@@ -38,34 +50,52 @@ def list_lines(request: Request, who: str | None = Depends(actor_optional)):
         raise ApiError(400, "bad_group_by", "group_by 只支持 sku | period",
                        {"got": group_by, "allowed": ["sku", "period"]})
 
-    where, args = ["true"], []
+    plan_ids = None
     if q.get("plan_ids"):
         try:
-            ids = [int(x) for x in q["plan_ids"].split(",") if x]
+            plan_ids = [int(x) for x in q["plan_ids"].split(",") if x]
         except ValueError:
             raise ApiError(400, "bad_plan_ids", "plan_ids 必须是逗号分隔的整数",
                            {"got": q["plan_ids"]}) from None
-        where.append("l.plan_id = ANY(%s)")
-        args.append(ids)
-    for col, key in (("l.state", "state"), ("l.sku", "sku")):
-        if q.get(key):
-            where.append(f"{col} = %s")
-            args.append(q[key])
-    if q.get("period"):
-        where.append("l.period_start = %s")
-        args.append(q["period"] + "-01")
 
-    with pg_conn() as c, c.cursor() as cur:
+    with timed("list_lines", actor=who), pg_conn() as c, c.cursor() as cur:
+        if q.get("state"):
+            known = _known_states(cur)
+            if q["state"] not in known:
+                raise ApiError(400, "bad_state", "state 不是白名单里的状态值",
+                               {"got": q["state"], "allowed": known})
+
+        # ★ 候选集只按 plan_ids 圈定（没给就是全库）：excluded{} 要回答「这次
+        #   查询范围里，每个 filter 各自丢了多少」——候选集圈错了，没被勾选的
+        #   计划、没被勾选的行也会被算进「丢掉」，那不是这次查询丢的东西。
+        where, args = ["true"], []
+        if plan_ids is not None:
+            where.append("l.plan_id = ANY(%s)")
+            args.append(plan_ids)
         cur.execute("SELECT l.line_id, l.plan_id, l.rev, l.sku, l.period_start, l.total_units,"
                     " l.demand_at_submit, l.demand_by_seller, l.state"
                     f" FROM plan_line l WHERE {' AND '.join(where)}"
                     " ORDER BY l.plan_id, l.rev, l.sku, l.period_start", args)
-        lines = [{"line_id": r[0], "plan_id": r[1], "rev": r[2], "sku": r[3],
-                  "period": r[4].strftime("%Y-%m"), "total_units": r[5],
-                  "demand_at_submit": r[6], "demand_by_seller": r[7], "state": r[8]}
-                 for r in cur.fetchall()]
-        cur.execute("SELECT count(*) FROM plan_line")
-        total = cur.fetchone()[0]
+        candidates = [{"line_id": r[0], "plan_id": r[1], "rev": r[2], "sku": r[3],
+                      "period": r[4].strftime("%Y-%m"), "total_units": r[5],
+                      "demand_at_submit": r[6], "demand_by_seller": r[7], "state": r[8]}
+                     for r in cur.fetchall()]
+
+    # ★ 每个 filter 各自在候选集上报告自己丢了多少，而不是合并成一个匿名总数——
+    #   一个数分不清是 state 丢的还是 period 丢的，人只能猜（对照 /v1/plans 的
+    #   excluded:{archived:N}：一个具名 filter 一个桶，这里有四个就该有四个桶）。
+    excluded = {"state": 0, "sku": 0, "category": 0, "period": 0}
+    lines = candidates
+    if q.get("state"):
+        excluded["state"] = sum(1 for r in candidates if r["state"] != q["state"])
+        lines = [r for r in lines if r["state"] == q["state"]]
+    if q.get("sku"):
+        excluded["sku"] = sum(1 for r in candidates if r["sku"] != q["sku"])
+        lines = [r for r in lines if r["sku"] == q["sku"]]
+    if q.get("period"):
+        excluded["period"] = sum(1 for r in candidates if r["period"] != q["period"])
+        lines = [r for r in lines if r["period"] == q["period"]]
+    # ★ category 恒为 0：给了这个参数在函数开头就已经 400 了，走不到这里。
 
     groups: dict[str, dict] = {}
     if group_by:
@@ -76,13 +106,13 @@ def list_lines(request: Request, who: str | None = Depends(actor_optional)):
             slot["lines"] += 1
             slot["total_units"] += row["total_units"]
             slot["demand_at_submit"] += row["demand_at_submit"]
-    # ★ 过滤必须同时统计被丢掉的那一侧
-    return {"lines": lines, "groups": groups,
-            "excluded": {"filtered_out": total - len(lines)}}
+    return {"lines": lines, "groups": groups, "excluded": excluded}
 
 
-def _transition(line_id: int, to_state: str, reason: str, who: str, src: str):
-    with timed("plan_line_transition", actor=who, line_id=line_id), \
+def _transition(line_id: int, to_state: str, reason: str, who: str, src: str) -> tuple[int, str, str]:
+    """返回 (line_id, from_state, to_state)。★ from_state 只为 caller 落 post-commit
+    日志用——对外响应体仍然只有 {"line_id","state"}（08 §接口清单），不额外回显 from。"""
+    with timed("plan_line_transition", actor=who, line_id=line_id, to_state=to_state), \
             pg_conn() as c, c.cursor() as cur:
         cur.execute("SELECT state FROM plan_line WHERE line_id = %s FOR UPDATE", (line_id,))
         row = cur.fetchone()
@@ -107,7 +137,7 @@ def _transition(line_id: int, to_state: str, reason: str, who: str, src: str):
                     " (line_id, from_state, to_state, actor, reason, src)"
                     " VALUES (%s, %s, %s, %s, %s, %s)",
                     (line_id, state, to_state, who, reason or None, src))
-    return {"line_id": line_id, "state": to_state}
+    return line_id, state, to_state
 
 
 @router.post("/plan-lines/{line_id}/cancel")
@@ -115,17 +145,22 @@ def cancel_line(line_id: int, body: dict, who: str = Depends(actor)):
     reason = (body.get("reason") or "").strip()
     if not reason:
         raise ApiError(400, "reason_required", "撤销必须填理由", {"field": "reason"})
-    return _transition(line_id, "已撤销", reason, who, f"cancel_line:{line_id}")
+    lid, from_state, to_state = _transition(line_id, "已撤销", reason, who, f"cancel_line:{line_id}")
+    # ★ timed() 的 fields 在进入时就定死，塞不进事务里才查到的 from_state ——
+    #   补这一行事后日志，否则翻日志看得到「谁撤销失败了」看不到「从哪个状态撤的」
+    log.info("op=cancel_line line_id=%s from=%s to=%s actor=%s", lid, from_state, to_state, who)
+    return {"line_id": lid, "state": to_state}
 
 
 @router.post("/plan-lines/{line_id}/transition")
 def move_line(line_id: int, body: dict, who: str = Depends(actor)):
-    """★ 阶段 A 里唯一走得通的目标是「已撤销」（C 类，人做的）。
-
-    其余目标态全是 A 类 —— 由承重墙①②的量推出来，属阶段 B/C。
-    这个端点**不替它们提前开路**：非法就 422 并回显 allowed[]，
-    让「阶段 A 还没有这条路」看起来就是「现在不行」，而不是一个默默成功的动作。
+    """哪些迁移合法完全由 003 迁移的白名单（`plan_line_transition`）裁决，
+    这里不设阶段 A 专属的关卡——比如「已提交→已确认」这条 forward 边今天就走得通，
+    是因为它在白名单里，不是因为这段代码替它开了路。非法就 422 并回显 allowed[]，
+    让「不在白名单里」看起来就是「现在不行」，而不是一个默默成功的动作。
     """
     to_state = (body.get("to_state") or "").strip()
-    return _transition(line_id, to_state, (body.get("reason") or "").strip(), who,
-                       f"transition:{line_id}")
+    lid, from_state, new_state = _transition(line_id, to_state, (body.get("reason") or "").strip(),
+                                             who, f"transition:{line_id}")
+    log.info("op=move_line line_id=%s from=%s to=%s actor=%s", lid, from_state, new_state, who)
+    return {"line_id": lid, "state": new_state}

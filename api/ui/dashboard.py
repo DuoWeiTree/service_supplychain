@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Request
 from api.ui.deps import actor_optional, declared, require_fresh_mirrors
 from rules.digest import content_digest
 from rules.submit import DemandCell, PurchaseCell
-from shared.pg_client import pg_conn
+from shared.pg_client import pg_conn, timed
 
 router = APIRouter(dependencies=[Depends(require_fresh_mirrors)])
 
@@ -19,7 +19,7 @@ UNREACHABLE_IN_STAGE_A = ["已下单", "准备排货", "已排货"]
 @router.get("/dashboard/plans")
 def dashboard_plans(request: Request, who: str | None = Depends(actor_optional)):
     declared(request)
-    with pg_conn() as c, c.cursor() as cur:
+    with timed("dashboard_plans", actor=who), pg_conn() as c, c.cursor() as cur:
         cur.execute("SELECT v.overall, count(*) FROM v_plan_overall_state v"
                     " JOIN plan p USING (plan_id) WHERE p.archived_at IS NULL"
                     " GROUP BY v.overall")
@@ -41,7 +41,7 @@ def dashboard_plans(request: Request, who: str | None = Depends(actor_optional))
 def dashboard_unsubmitted(request: Request, who: str | None = Depends(actor_optional)):
     declared(request)
     never, changed = [], []
-    with pg_conn() as c, c.cursor() as cur:
+    with timed("dashboard_unsubmitted", actor=who), pg_conn() as c, c.cursor() as cur:
         cur.execute("SELECT p.plan_id, p.title, r.rev, r.content_digest"
                     "  FROM plan p"
                     "  LEFT JOIN LATERAL (SELECT rev, content_digest FROM plan_rev"
