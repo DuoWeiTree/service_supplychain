@@ -303,6 +303,10 @@ def test_plan_line_pkey_rejects_duplicate_id(wipe, seed):
             " VALUES (%s, 1, %s, %s, 5, '{}'::jsonb, 0, '已提交') RETURNING line_id",
             (p, seed.sku_a, OCT))
         line_id = cur.fetchone()[0]
+        # ★ 003 上线后 plan_line 一律要有铸出事件（延迟约束在 commit 时抓），
+        #   这里插的是会成功提交的一行，补上它免得撞上与本测试无关的约束。
+        cur.execute("INSERT INTO plan_line_event (line_id, from_state, to_state, actor, src)"
+                    " VALUES (%s, '[*]', '已提交', %s, 'test')", (line_id, seed.actor))
     with pytest.raises(psycopg2.errors.UniqueViolation) as ei, pg_conn() as c, c.cursor() as cur:
         # ★ 换一个 sku 避免同时撞上 plan_line_one_per_cell，纯粹只测 line_id 主键
         cur.execute(
@@ -321,7 +325,13 @@ def test_plan_line_one_per_cell(wipe, seed):
         cur.execute(
             "INSERT INTO plan_line (plan_id, rev, sku, period_start, total_units,"
             " demand_by_seller, demand_at_submit, state)"
-            " VALUES (%s, 1, %s, %s, 5, '{}'::jsonb, 0, '已提交')", (p, seed.sku_a, OCT))
+            " VALUES (%s, 1, %s, %s, 5, '{}'::jsonb, 0, '已提交') RETURNING line_id",
+            (p, seed.sku_a, OCT))
+        line_id = cur.fetchone()[0]
+        # ★ 003 上线后 plan_line 一律要有铸出事件（延迟约束在 commit 时抓），
+        #   这里插的是会成功提交的一行，补上它免得撞上与本测试无关的约束。
+        cur.execute("INSERT INTO plan_line_event (line_id, from_state, to_state, actor, src)"
+                    " VALUES (%s, '[*]', '已提交', %s, 'test')", (line_id, seed.actor))
     with pytest.raises(psycopg2.errors.UniqueViolation) as ei, pg_conn() as c, c.cursor() as cur:
         cur.execute(
             "INSERT INTO plan_line (plan_id, rev, sku, period_start, total_units,"
