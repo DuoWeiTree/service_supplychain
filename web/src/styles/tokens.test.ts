@@ -2,14 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
+import { prototypeAsset, webRoot } from '../testing/paths';
 
-// ★ 相对 vitest 的 cwd（web/），不用 import.meta.url 拼 URL ——
-//   在 jsdom environment 下 Vite 会把 out-of-root import.meta.url 转成带
-//   /@fs/ 前缀的开发服务器路径，readFileSync(new URL(...)) 会拿它当真实
-//   文件路径去读，读到一个磁盘上不存在的 /@fs/... 路径，7 个用例全部
-//   ENOENT —— 这是测试线束坏了在报红，不是断言真的在守什么。
-const SRC = resolve(process.cwd(), '../docs/prototype/assets/shell.css');
-const DST = resolve(process.cwd(), 'src/styles/shell.css');
+// ★ 路径解析交给 testing/paths.ts 的 prototypeAsset() / webRoot() 统一做
+//   （不在这里各自 resolve(process.cwd(), …)一遍）—— 不在 web/ 下跑，
+//   会在 webRoot() 那一处点名报错，而不是这里 7 个用例各自 ENOENT。
+const SRC = prototypeAsset('shell.css');
+const DST = resolve(webRoot(), 'src/styles/shell.css');
 
 // ★ 墨迹系统的六个承重 token —— 值写死在这里，因为 #F0F1ED（冷纸）与 #F4F1EA（暖奶油）
 //   只差几个色阶而方向相反，"顺手微调" 不会有任何东西报错。
