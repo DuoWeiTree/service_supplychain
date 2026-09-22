@@ -2217,7 +2217,9 @@ EOF
   - `MskuRow = { seller_sku: string; sid: Sid; cells: MskuCell[] }`
   - `MskuCell = { period; system_units; system_extrapolated; expected_units; effective_units; basis }`
   - `PurchaseRow = { sku: string; cells: { period: Period; planned_units: number | null }[] }`
-  - `Orphan = { kind: 'unknown_seller' | 'inventory_without_demand' | 'demand_without_inventory' | 'na_disagrees_with_seller' | 'in_transit_disagrees' | 'demand_disagrees'; key: string }`
+  - `Orphan = { kind: 'unknown_seller' | 'inventory_without_demand' | 'demand_without_inventory' | 'na_disagrees_with_seller' | 'in_transit_disagrees' | 'demand_disagrees' | 'chain_broken'; key: string }`
+    ★ `chain_broken`（Task 4 评审后裁定加入）：同一 (sku, sid) 相邻两月 `onhand(N+1) ≠ closing(N)` —— `14` §1.1 恒等式 ④ 写明「必须由代码强制」，前端不守它就只能靠 fixture 碰巧成立
+    ★ 同轮裁定的钩子变更（Task 7 按此取）：折叠行的期末 testid **恒为 `closing-sku`**，块上以 `data-open` 表状态；在途行 `transit-row-{sku}`；无 FBA 的块**不渲染 `sum-inventory`**；在途按 `inventory[].basis.sku_level_in_transit` 取、`sku_pipeline` 只作交叉核对
   - `sumUnits(values: (number | null)[]): QtyValue` · `demandAt(block, period): QtyValue` · `inventoryAt(block, period): QtyValue` · `closingOfLast(block, periods): QtyValue` · `outageCount(block): number`
   - Task 7 会在这个文件里加「提交」按钮，**不改本 Task 的任何导出名与 `data-testid`**
 
