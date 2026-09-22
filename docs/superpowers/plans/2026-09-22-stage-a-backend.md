@@ -53,7 +53,7 @@
 // 1. GET /v1/plans/{id}/grid
 {
   "demand":   [{"seller_sku": "", "sid": "", "period": "YYYY-MM",
-                "system_units": 0, "expected_units": null,
+                "system_units": 0, "system_extrapolated": false, "expected_units": null,
                 "basis": "human|system|unknown"}],                       // S-15
   "purchase": [{"sku": "", "period": "YYYY-MM", "planned_units": null}],
   // ★ 键是 (sku, sid)：可售库存的粒度是[店铺, 货号]（02 §3.1a）
