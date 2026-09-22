@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import type { PlanDiff, RevList } from '../api/types';
@@ -136,5 +136,93 @@ describe('版本编辑', () => {
     expect(report).toHaveTextContent('撤销 1 条记录');
     expect(report).toHaveTextContent('另有 3 条已在终态，未动');
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+
+  // ★ review finding 1：与 PlanGrid.tsx/PlanAdd.tsx 同一护栏模式，同一手法验证 ——
+  //   用同步的 fireEvent.click 连打两次（不像 userEvent 那样在两次点击之间等待微任务落定），
+  //   逼出竞态：真正的护栏必须在函数入口同步早退，不能只靠 UI 层「看起来」禁用了。
+  it('★ 设为当前使用在飞时禁用并防重入：双击只发一次请求', async () => {
+    const { ApiError } = await import('../api/client');
+    const calls: number[] = [];
+    const state: RevList = JSON.parse(JSON.stringify(REVS));
+    vi.doMock('../api', () => ({
+      ApiError,
+      api: {
+        listRevs: async () => JSON.parse(JSON.stringify(state)) as RevList,
+        setCurrentRev: async (_p: number, rev: number) => {
+          calls.push(rev);
+          state.current_rev = rev;
+          return { current_rev: rev };
+        },
+        diff: async () => DIFF,
+        cancelRev: async () => ({ cancelled: [], skipped_terminal: 0, reason: '' }),
+      },
+    }));
+    const { PlanRevs } = await import('./PlanRevs');
+    render(
+      <MemoryRouter initialEntries={['/plans/2/revs']}>
+        <Routes><Route path="/plans/:planId/revs" element={<PlanRevs />} /></Routes>
+      </MemoryRouter>,
+    );
+    const button = within(await screen.findByTestId('rev-1')).getByRole('button', { name: '设为当前使用' });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    await waitFor(() => expect(within(screen.getByTestId('rev-1')).getByText('当前使用')).toBeInTheDocument());
+    expect(calls).toHaveLength(1);
+  });
+
+  it('★ 确认撤销在飞时禁用并防重入：双击只发一次请求', async () => {
+    const { ApiError } = await import('../api/client');
+    const calls: number[] = [];
+    vi.doMock('../api', () => ({
+      ApiError,
+      api: {
+        listRevs: async () => JSON.parse(JSON.stringify(REVS)) as RevList,
+        setCurrentRev: async (_p: number, rev: number) => ({ current_rev: rev }),
+        diff: async () => DIFF,
+        cancelRev: async (_p: number, rev: number, reason: string) => {
+          calls.push(rev);
+          return { cancelled: [101], skipped_terminal: 0, reason };
+        },
+      },
+    }));
+    const { PlanRevs } = await import('./PlanRevs');
+    render(
+      <MemoryRouter initialEntries={['/plans/2/revs']}>
+        <Routes><Route path="/plans/:planId/revs" element={<PlanRevs />} /></Routes>
+      </MemoryRouter>,
+    );
+    await screen.findByTestId('rev-2');
+    await userEvent.click(within(screen.getByTestId('rev-2')).getByRole('button', { name: '撤销' }));
+    await userEvent.type(screen.getByLabelText('理由'), '双击测试');
+    const confirm = screen.getByRole('button', { name: '确认撤销' });
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+    await screen.findByTestId('cancel-report');
+    expect(calls).toHaveLength(1);
+  });
+
+  // ★ review finding 4：404 rev_not_found 走的是与 400 同一条 catch → <ErrorDetail> 路径，
+  //   之前没有测试直接点名过这一支
+  it('★ setCurrentRev 拿到 404 rev_not_found 时用 ErrorDetail 点名', async () => {
+    const { ApiError } = await import('../api/client');
+    vi.doMock('../api', () => ({
+      ApiError,
+      api: {
+        listRevs: async () => JSON.parse(JSON.stringify(REVS)) as RevList,
+        setCurrentRev: async () => { throw new ApiError(404, 'rev_not_found', '没有这一版', { rev: 1 }); },
+        diff: async () => DIFF,
+        cancelRev: async () => ({ cancelled: [], skipped_terminal: 0, reason: '' }),
+      },
+    }));
+    const { PlanRevs } = await import('./PlanRevs');
+    render(
+      <MemoryRouter initialEntries={['/plans/2/revs']}>
+        <Routes><Route path="/plans/:planId/revs" element={<PlanRevs />} /></Routes>
+      </MemoryRouter>,
+    );
+    await userEvent.click(within(await screen.findByTestId('rev-1')).getByRole('button', { name: '设为当前使用' }));
+    expect(await screen.findByText('404 rev_not_found')).toBeInTheDocument();
+    expect(screen.getByText('没有这一版')).toBeInTheDocument();
   });
 });

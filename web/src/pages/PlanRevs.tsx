@@ -18,6 +18,11 @@ export function PlanRevs() {
   const [reason, setReason] = useState('');
   const [done, setDone] = useState<CancelDone | null>(null);
   const [err, setErr] = useState<ApiError | null>(null);
+  // ★ 与 PlanGrid.tsx/PlanAdd.tsx 同一护栏模式（pending + disabled + 入口早退）：
+  //   防双击对同一个 rev 发出重复的「设为当前使用」请求
+  const [settingCurrent, setSettingCurrent] = useState<Set<number>>(new Set());
+  // ★ 撤销弹窗同一时刻只有一个在开，用一个布尔就够，跟 PlanAdd.tsx 的 `adding` 同形
+  const [confirmingCancel, setConfirmingCancel] = useState(false);
 
   const load = () => api.listRevs(planId)
     .then((r) => { setList(r); setErr(null); })
@@ -27,11 +32,15 @@ export function PlanRevs() {
   if (!list) return <AppShell crumb="版本">{err ? <ErrorDetail err={err} /> : <div className="empty" />}</AppShell>;
 
   async function setCurrent(rev: number) {
+    // ★ 入口早退：与 PlanGrid.tsx 的 pending 早退同一形状，防双击并发发出重复请求
+    if (settingCurrent.has(rev)) return;
+    setSettingCurrent((s) => new Set(s).add(rev));
     try {
       await api.setCurrentRev(planId, rev);
       await load();
       pushToast({ kind: 'ok', text: `rev ${rev} 已设为当前使用` });
     } catch (e) { setErr(e as ApiError); }
+    finally { setSettingCurrent((s) => { const n = new Set(s); n.delete(rev); return n; }); }
   }
 
   async function compare() {
@@ -41,7 +50,9 @@ export function PlanRevs() {
   }
 
   async function doCancel() {
-    if (cancelling === null) return;
+    // ★ 入口早退：与 add()/saveDemand() 同一形状，防双击对同一版发出两次撤销请求
+    if (cancelling === null || confirmingCancel) return;
+    setConfirmingCancel(true);
     try {
       const r = await api.cancelRev(planId, cancelling, reason);
       // ★ 先把列表刷新完，再报「done」—— done 是界面上最后落地的那个状态变化，
@@ -55,6 +66,7 @@ export function PlanRevs() {
       setReason('');
       setErr(null);
     } catch (e) { setErr(e as ApiError); }
+    finally { setConfirmingCancel(false); }
   }
 
   return (
@@ -69,7 +81,7 @@ export function PlanRevs() {
           <thead>
             <tr>
               <th className="r">rev</th><th>提交人</th><th>提交时间</th><th className="r">记录</th>
-              <th>digest</th><th>标记</th><th />
+              <th>内容摘要</th><th>标记</th><th />
             </tr>
           </thead>
           <tbody>
@@ -88,7 +100,10 @@ export function PlanRevs() {
                 </td>
                 <td>
                   {r.rev !== list.current_rev && (
-                    <button type="button" className="btn btn--sm" onClick={() => void setCurrent(r.rev)}>设为当前使用</button>
+                    <button
+                      type="button" className="btn btn--sm" disabled={settingCurrent.has(r.rev)}
+                      onClick={() => void setCurrent(r.rev)}
+                    >设为当前使用</button>
                   )}{' '}
                   <button type="button" className="btn btn--sm btn--danger" onClick={() => setCancelling(r.rev)}>撤销</button>
                 </td>
@@ -151,7 +166,10 @@ export function PlanRevs() {
             <input className="inp inp--text" aria-label="理由" value={reason} onChange={(e) => setReason(e.target.value)} />
           </label>
           <div className="btn-row">
-            <button type="button" className="btn btn--danger" onClick={() => void doCancel()}>确认撤销</button>
+            <button
+              type="button" className="btn btn--danger" disabled={confirmingCancel}
+              onClick={() => void doCancel()}
+            >确认撤销</button>
             <button type="button" className="btn btn--ghost" onClick={() => setCancelling(null)}>取消</button>
           </div>
           {err && <ErrorDetail err={err} />}
