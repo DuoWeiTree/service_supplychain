@@ -10,14 +10,19 @@ describe('运营首页', () => {
   it('只渲染够得着的三态，其余★不渲染（不是 0）', async () => {
     renderHome();
     const counts = await screen.findByTestId('counts');
-    expect(within(counts).getByText('未提交')).toBeInTheDocument();
-    expect(within(counts).getByText('已提交')).toBeInTheDocument();
-    expect(within(counts).getByText('已撤销')).toBeInTheDocument();
-    // ★ 阶段 A 够不着的：一个字都不许出现，包括写成 0
-    for (const gone of ['已下单', '准备排货', '已排货', '进行中', '已提交未确认']) {
-      expect(within(counts).queryByText(gone)).toBeNull();
-    }
+    // ★ 穷尽相等，不是举例排除 —— 举例排除拦不住"已确认/已完结"这类漏在名单外的态悄悄混进来
+    const labels = Array.from(counts.querySelectorAll('.kpi__d')).map((el) => el.textContent);
+    expect(new Set(labels)).toEqual(new Set(['未提交', '已提交', '已撤销']));
     expect(counts.textContent).not.toContain('0');
+  });
+
+  it('计划列表里 state===null 的行渲染"未提交"芯片，不是"已撤销"或空白', async () => {
+    renderHome();
+    const table = await screen.findByTestId('plan-list');
+    const row = within(table).getByText('2026 Q4 销售计划').closest('tr');
+    expect(row).not.toBeNull();
+    expect(within(row as HTMLElement).getByText('未提交')).toHaveClass('chip', 'chip--dim');
+    expect(within(row as HTMLElement).queryByText('已撤销')).toBeNull();
   });
 
   it('★ 接口说哪些态够不着，屏上就一个都不许有 —— 名单由接口给，不在前端硬编码', async () => {
