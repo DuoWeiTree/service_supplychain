@@ -336,3 +336,20 @@ def put_purchase(plan_id: int, sku: str, period: str, body: dict, who: str = Dep
         raise ApiError(404, "cell_not_found", "这一格还没长出来（先认领该货号下的 msku）",
                        {"plan_id": plan_id, "sku": sku, "period": period})
     return {"cell": {"sku": sku, "period": period, "planned_units": units}}
+
+
+@router.post("/plans/{plan_id}/archive")
+def archive(plan_id: int, who: str = Depends(actor)):
+    """★ 同一事务释放全部占用：分两次做，中间挂掉就会留下一张归档了却还扣着货的计划。"""
+    with timed("archive", actor=who, plan_id=plan_id), pg_conn() as c, c.cursor() as cur:
+        cur.execute("UPDATE msku_claim SET released_at = now(), released_by = %s"
+                    " WHERE plan_id = %s AND released_at IS NULL RETURNING seller_sku, sid",
+                    (who, plan_id))
+        released = cur.fetchall()
+        cur.execute("UPDATE plan SET archived_at = now() WHERE plan_id = %s"
+                    " RETURNING archived_at", (plan_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise ApiError(404, "plan_not_found", "计划不存在", {"plan_id": plan_id})
+    return {"archived_at": row[0].isoformat(), "released": len(released),
+            "released_mskus": [{"seller_sku": s, "sid": i} for s, i in released]}

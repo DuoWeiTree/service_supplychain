@@ -24,3 +24,27 @@ def mint(cur, actor, sku, total=100, state="已提交", birth=True):
         cur.execute("INSERT INTO plan_line_event (line_id, from_state, to_state, actor, src)"
                     " VALUES (%s, '[*]', %s, %s, 'test')", (line_id, state, actor))
     return plan_id, line_id
+
+
+def H(actor: str) -> dict:
+    return {"x-actor": actor}
+
+
+def prepared(client, seed, purchase=500, expected=120):
+    """一张填好两种量的计划：MSKU-A（11072）· MSKU-C（11094）同属 sku_a。
+
+    ★ 两个店铺是刻意的：单店的话 demand_by_seller 只有一把键，
+      「按店冻结」这件事等于没被测到。
+    """
+    pid = client.post("/v1/plans", json={"title": "10 月计划", "period_start": "2026-10-01",
+                                         "months": 3}, headers=H(seed.actor)).json()["plan_id"]
+    for ms in (seed.msku_a, seed.msku_c):
+        client.post(f"/v1/plans/{pid}/claims", json={"seller_sku": ms[0], "sid": ms[1]},
+                    headers=H(seed.actor))
+        if expected is not None:
+            client.put(f"/v1/plans/{pid}/demand/{ms[0]}/{ms[1]}/2026-10",
+                       json={"expected_units": expected}, headers=H(seed.actor))
+    if purchase is not None:
+        client.put(f"/v1/plans/{pid}/purchase/{seed.sku_a}/2026-10",
+                   json={"planned_units": purchase}, headers=H(seed.actor))
+    return pid

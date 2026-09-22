@@ -10,7 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from api.ui import catalog, plans, system
+from api.ui import catalog, plans, submit, system
 from api.ui.errors import ApiError, translate
 from shared.pg_client import business_schema, pg_conn
 
@@ -89,5 +89,6 @@ def create_app() -> FastAPI:
     app.include_router(system.health_router)
     app.include_router(system.system_router, prefix="/v1")
     app.include_router(plans.router, prefix="/v1")
+    app.include_router(submit.router, prefix="/v1")
     app.include_router(catalog.router, prefix="/v1")
     return app
