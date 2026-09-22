@@ -30,6 +30,11 @@ def test_zero_onhand_and_not_applicable_are_different(s):
     assert s.onhand_available("MSKU-W", "90001") is None
 
 
+def test_missing_row_is_none_not_just_empty_cell(s):
+    """★ 与上面的空串（MSKU-W）不是同一件事：这里连行都不存在，同样必须是 None。"""
+    assert s.onhand_available("MSKU-NOPE", "11072") is None
+
+
 def test_in_transit_keeps_每笔的依据(s):
     rows = s.purchase_in_transit("DCC1800264G1")
     assert [(r.period, r.units, r.ref) for r in rows] == [
@@ -45,6 +50,14 @@ def test_unknown_sku_has_no_in_transit_rows(s):
 def test_as_of_travels_with_the_facts(s):
     """★ CH 是采集副本不是实时领星 —— 不带 as_of 的数回答不了「它是关于什么的」。"""
     assert s.as_of() == dt.date(2026, 9, 21)
+
+
+def test_as_of_missing_file_fails_loudly(tmp_path):
+    """★ 缺 as_of.txt 不许悄悄退回今天 —— 那会让「过期的 fixture」看起来和「新鲜」一样。"""
+    empty = FixtureSource(tmp_path)
+    with pytest.raises(FileNotFoundError) as ei:
+        empty.as_of()
+    assert str(tmp_path / "as_of.txt") in str(ei.value)
 
 
 def test_ch_source_is_explicitly_not_implemented():
