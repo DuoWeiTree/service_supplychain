@@ -16,3 +16,13 @@ user     = "default"
 password = "YOUR_CH_PASSWORD"
 database = "jxd_raw"
 secure   = false
+
+[api]
+# ★ 阶段 A 按 Q-5 内网裸跑，不做鉴权；这一段留给 api/pub/ 上线时用。
+bind = "0.0.0.0"
+port = 8090
+
+[freshness]
+# ★ 维度镜像陈旧超过它 → 拒绝服务（E-4）。
+# ★ 设计取值 · 未实测 —— 文档没给过阈值，刷新频率定下来后按实测改。
+max_age_hours = 24
