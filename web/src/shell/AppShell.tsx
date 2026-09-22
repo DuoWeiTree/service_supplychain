@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { useSyncExternalStore } from 'react';
 import { Link } from 'react-router-dom';
-import { ACTORS } from './actors';
+import { ACTORS, actorLabel } from './actors';
 import { getActor, setActor, subscribeActor } from './actorStore';
 import { Toasts } from './Toasts';
 
@@ -23,7 +23,7 @@ export function AppShell({ crumb, children }: { crumb: string; children: ReactNo
             value={actor}
             onChange={(e) => setActor(e.target.value)}
           >
-            {ACTORS.map((a) => <option key={a.actor_id} value={a.actor_id}>{a.name}</option>)}
+            {ACTORS.map((a) => <option key={a.actor_id} value={a.actor_id}>{actorLabel(a)}</option>)}
           </select>
           <span className="chip chip--dim">留痕可伪造</span>
         </div>

@@ -165,7 +165,9 @@ export function PlanGrid() {
                   type="button" className="btn btn--sm btn--danger"
                   disabled={pending.has(skuKey(block))} onClick={() => void removeSku(block)}
                 >
-                  删除货号
+                  {/* ★ I7 裁定：动作一名到底 —— 按钮「移出货号」→ toast「已移出」。
+                      按钮说「删除」而 toast 说「已移出」，人会以为是两件事 */}
+                  移出货号
                 </button>
               </span>
             </div>
@@ -239,7 +241,7 @@ export function PlanGrid() {
                             type="button" className="btn btn--sm btn--ghost"
                             disabled={pending.has(mskuKey(row.seller_sku, row.sid))}
                             onClick={() => void removeMsku(row.seller_sku, row.sid)}
-                          >删除 msku</button>
+                          >移出 msku</button>
                         </div>
                       </td>
                       {model.periods.map((p) => {

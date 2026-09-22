@@ -5,7 +5,7 @@ import { api, ApiError } from '../api';
 import type { PlanId, Period, Sid } from '../api/types';
 import { parseUnits, type SkuBlock } from './planGridModel';
 
-/** ★ 网格页的保存类动作（期望销量 / 计划采购量 / 删除货号 / 删除 msku）从 PlanGrid.tsx
+/** ★ 网格页的保存类动作（期望销量 / 计划采购量 / 移出货号 / 移出 msku）从 PlanGrid.tsx
  *  抽到这里——行为与测试断言不变（Ruling B），只是搬家。
  *  `load` 由调用方传入并在每次保存后触发重载；`fail`/`succeed` 把失败挂到页面底部的
  *  ErrorDetail 上，并在**同一个动作**下次成功时把它收掉（不是任何一次 load 都清）。 */

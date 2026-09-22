@@ -318,7 +318,7 @@ describe('计划编辑网格', () => {
     await waitFor(() => expect(input).not.toBeDisabled());
   });
 
-  it('★ 删除货号遇错即停，toast 点名已释放的与失败的那个（F4）', async () => {
+  it('★ 移出货号遇错即停，toast 点名已释放的与失败的那个（F4）', async () => {
     const releaseClaim = vi.fn(async (...args: unknown[]) => {
       const [, sellerSku] = args as [number, string];
       if (sellerSku === 'MSKU-B') throw new ApiError(500, 'release_failed', '释放失败：服务器炸了');
@@ -326,7 +326,7 @@ describe('计划编辑网格', () => {
     });
     await renderGrid(makeGrid(), (m) => { m.api.releaseClaim = releaseClaim; });
     const block = await screen.findByTestId('block-11072-SKU-1');
-    await userEvent.click(within(block).getByRole('button', { name: '删除货号' }));
+    await userEvent.click(within(block).getByRole('button', { name: '移出货号' }));
     const status = await screen.findByRole('status');
     expect(status).toHaveTextContent('已释放 MSKU-A');
     expect(status).toHaveTextContent('MSKU-B 释放失败');
@@ -335,11 +335,11 @@ describe('计划编辑网格', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('释放失败：服务器炸了');
   });
 
-  it('★ 删除货号在第一个 msku 就失败 —— 调用次数本身能区分「停了」还是「继续了」（F4）', async () => {
+  it('★ 移出货号在第一个 msku 就失败 —— 调用次数本身能区分「停了」还是「继续了」（F4）', async () => {
     const releaseClaim = vi.fn(async () => { throw new ApiError(500, 'release_failed', '第一个就炸了'); });
     await renderGrid(makeGrid(), (m) => { m.api.releaseClaim = releaseClaim; });
     const block = await screen.findByTestId('block-11072-SKU-1');
-    await userEvent.click(within(block).getByRole('button', { name: '删除货号' }));
+    await userEvent.click(within(block).getByRole('button', { name: '移出货号' }));
     await screen.findByRole('alert');
     // ★ 若代码把 catch 里的 return 换成继续循环，这里会变成 2 —— 块里一共 2 个 msku
     expect(releaseClaim).toHaveBeenCalledTimes(1);
@@ -351,19 +351,19 @@ describe('计划编辑网格', () => {
     const releaseClaim = vi.fn(async () => { throw new ApiError(500, 'release_failed', '释放失败：服务器炸了'); });
     await renderGrid(makeGrid(), (m) => { m.api.releaseClaim = releaseClaim; });
     const block = await expand('block-11072-SKU-1');
-    const buttons = within(block).getAllByRole('button', { name: '删除 msku' });
+    const buttons = within(block).getAllByRole('button', { name: '移出 msku' });
     await userEvent.click(buttons[0]!);
     expect(await screen.findByRole('alert')).toHaveTextContent('释放失败：服务器炸了');
   });
 
   // ★ I3（终审）：removeSku / removeMsku 是分支里仅剩的两个无护栏写动作。
-  //   双击「删除货号」会并发跑两轮释放循环，第二轮拿 404 走进中断分支，
+  //   双击「移出货号」会并发跑两轮释放循环，第二轮拿 404 走进中断分支，
   //   报出一条「移出中断」的**假失败**——第一轮其实全成功了。
   //   与 PlanAdd/PlanRevs 同一手法：同步 fireEvent 连打两次，逼出竞态。
-  it('★ 双击「删除货号」只跑一轮释放循环（I3）', async () => {
+  it('★ 双击「移出货号」只跑一轮释放循环（I3）', async () => {
     const { mock } = await renderGrid();
     const block = await screen.findByTestId('block-11072-SKU-1');
-    const btn = within(block).getByRole('button', { name: '删除货号' });
+    const btn = within(block).getByRole('button', { name: '移出货号' });
     fireEvent.click(btn);
     fireEvent.click(btn);
     await screen.findByRole('status');
@@ -371,10 +371,10 @@ describe('计划编辑网格', () => {
     expect(mock.api.releaseClaim).toHaveBeenCalledTimes(2);
   });
 
-  it('★ 双击「删除 msku」只发一次释放请求（I3）', async () => {
+  it('★ 双击「移出 msku」只发一次释放请求（I3）', async () => {
     const { mock } = await renderGrid();
     const block = await expand('block-11072-SKU-1');
-    const btn = within(block).getAllByRole('button', { name: '删除 msku' })[0]!;
+    const btn = within(block).getAllByRole('button', { name: '移出 msku' })[0]!;
     fireEvent.click(btn);
     fireEvent.click(btn);
     await screen.findByRole('status');
@@ -389,7 +389,7 @@ describe('计划编辑网格', () => {
     }));
     await renderGrid(makeGrid(), (m) => { m.api.releaseClaim = releaseClaim; });
     const block = await expand('block-11072-SKU-1');
-    const buttons = within(block).getAllByRole('button', { name: '删除 msku' });
+    const buttons = within(block).getAllByRole('button', { name: '移出 msku' });
     await userEvent.click(buttons[0]!);
     const status = await screen.findByRole('status');
     expect(status).toHaveTextContent('MSKU-A 已移出，丢弃 1 格');
@@ -460,7 +460,7 @@ describe('计划编辑网格', () => {
     const releaseClaim = vi.fn(async () => { throw new ApiError(500, 'release_failed', '释放失败：服务器炸了'); });
     await renderGrid(makeGrid(), (m) => { m.api.releaseClaim = releaseClaim; });
     const block = await expand('block-11072-SKU-1');
-    await userEvent.click(within(block).getAllByRole('button', { name: '删除 msku' })[0]!);
+    await userEvent.click(within(block).getAllByRole('button', { name: '移出 msku' })[0]!);
     expect(await screen.findByRole('alert')).toHaveTextContent('释放失败：服务器炸了');
 
     // 另一个动作成功（保存一格）→ 会触发 load()，但那条释放错误必须还在
