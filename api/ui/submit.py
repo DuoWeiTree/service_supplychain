@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 
 import psycopg2
 from fastapi import APIRouter, Depends, Request
@@ -13,9 +14,25 @@ from rules.digest import content_digest
 from rules.submit import DemandCell, PurchaseCell, select_submittable
 from shared.pg_client import pg_conn, timed
 
+log = logging.getLogger("scm.api")
+
 router = APIRouter(dependencies=[Depends(require_fresh_mirrors)])
 
 TERMINAL = ("已完结", "已撤销")
+
+
+def _ensure_plan(cur, plan_id: int) -> None:
+    """★ 没有这一步，`plan_rev_plan_id_fkey`（未命名，`translate()` 认不出）
+    会让「计划不存在」以 500 冒出来，而不是本仓其余端点统一给的 404（`plans.py:_periods`）。"""
+    cur.execute("SELECT 1 FROM plan WHERE plan_id = %s", (plan_id,))
+    if cur.fetchone() is None:
+        raise ApiError(404, "plan_not_found", "计划不存在", {"plan_id": plan_id})
+
+
+def _ensure_rev(cur, plan_id: int, rev: int) -> None:
+    cur.execute("SELECT 1 FROM plan_rev WHERE plan_id = %s AND rev = %s", (plan_id, rev))
+    if cur.fetchone() is None:
+        raise ApiError(404, "rev_not_found", "没有这一版", {"plan_id": plan_id, "rev": rev})
 
 
 def _cells(cur, plan_id: int):
@@ -41,6 +58,7 @@ def _cells(cur, plan_id: int):
 def submit(plan_id: int, request: Request, who: str = Depends(actor)):
     declared(request)
     with timed("submit", actor=who, plan_id=plan_id), pg_conn() as c, c.cursor() as cur:
+        _ensure_plan(cur, plan_id)
         purchase, demand, claimed = _cells(cur, plan_id)
         lines, skipped = select_submittable(purchase, demand, claimed)
         digest = content_digest(purchase, demand)
@@ -90,6 +108,10 @@ def submit(plan_id: int, request: Request, who: str = Depends(actor)):
                     (plan_id, rev))
         in_flight = cur.fetchone()[0]
 
+    # ★ timed() 的 fields 在进入时就定死，塞不进事务算出来的 rev/lines/skipped ——
+    #   补这一行事后日志，否则翻日志看得到「谁提交失败了」看不到「铸出的是第几版」
+    log.info("op=submit plan_id=%s rev=%s lines=%d skipped=%d in_flight=%s",
+             plan_id, rev, len(lines), len(skipped), in_flight)
     return {"rev": rev, "lines": len(lines), "in_flight": in_flight,
             "content_digest": digest,
             "skipped": [{"sku": s.sku, "period": s.period, "reason": s.reason}
@@ -99,7 +121,8 @@ def submit(plan_id: int, request: Request, who: str = Depends(actor)):
 @router.get("/plans/{plan_id}/revs")
 def revs(plan_id: int, request: Request, who: str | None = Depends(actor_optional)):
     declared(request)
-    with pg_conn() as c, c.cursor() as cur:
+    with timed("revs", actor=who, plan_id=plan_id), pg_conn() as c, c.cursor() as cur:
+        _ensure_plan(cur, plan_id)
         cur.execute(
             "SELECT r.rev, r.content_digest, r.is_current, r.in_flight, r.submitted_by,"
             "       r.submitted_at, count(l.line_id)"
@@ -117,7 +140,8 @@ def revs(plan_id: int, request: Request, who: str | None = Depends(actor_optiona
 
 @router.post("/plans/{plan_id}/revs/{rev}/current")
 def mark_current(plan_id: int, rev: int, who: str = Depends(actor)):
-    with pg_conn() as c, c.cursor() as cur:
+    with timed("mark_current", actor=who, plan_id=plan_id), pg_conn() as c, c.cursor() as cur:
+        _ensure_plan(cur, plan_id)
         # 先清后立：部分唯一索引不可延迟，同一语句里换不过来
         cur.execute("UPDATE plan_rev SET is_current = false WHERE plan_id = %s AND is_current",
                     (plan_id,))
@@ -137,7 +161,8 @@ def diff(plan_id: int, request: Request, who: str | None = Depends(actor_optiona
     except (KeyError, ValueError):
         raise ApiError(400, "bad_request", "from 与 to 必须是版本号",
                        {"got": dict(request.query_params)}) from None
-    with pg_conn() as c, c.cursor() as cur:
+    with timed("diff", actor=who, plan_id=plan_id), pg_conn() as c, c.cursor() as cur:
+        _ensure_plan(cur, plan_id)
         cur.execute("SELECT rev, sku, period_start, total_units, demand_at_submit"
                     " FROM plan_line WHERE plan_id = %s AND rev IN (%s, %s)", (plan_id, a, b))
         rows = cur.fetchall()
@@ -163,6 +188,8 @@ def cancel_rev(plan_id: int, rev: int, body: dict, who: str = Depends(actor)):
         #   这里给的是能让人改表单的 400（08 §0.1：400 = 你写错了）
         raise ApiError(400, "reason_required", "撤销必须填理由", {"field": "reason"})
     with timed("cancel_rev", actor=who, plan_id=plan_id), pg_conn() as c, c.cursor() as cur:
+        _ensure_plan(cur, plan_id)
+        _ensure_rev(cur, plan_id, rev)
         cur.execute("SELECT line_id, state FROM plan_line"
                     " WHERE plan_id = %s AND rev = %s AND state NOT IN %s FOR UPDATE",
                     (plan_id, rev, TERMINAL))
@@ -173,4 +200,5 @@ def cancel_rev(plan_id: int, rev: int, body: dict, who: str = Depends(actor)):
                         " (line_id, from_state, to_state, actor, reason, src)"
                         " VALUES (%s, %s, '已撤销', %s, %s, %s)",
                         (line_id, state, who, reason, f"cancel_rev:{plan_id}#{rev}"))
+    log.info("op=cancel_rev plan_id=%s rev=%s cancelled=%d", plan_id, rev, len(lines))
     return {"cancelled": [line_id for line_id, _ in lines], "reason": reason}

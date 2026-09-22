@@ -24,6 +24,9 @@ def test_every_line_has_its_birth_event(client, seed):
     pid = prepared(client, seed)
     client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
     with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT count(*) FROM plan_line WHERE plan_id = %s", (pid,))
+        # ★ 铸出 0 条时下面那句「缺事件的记录数 == 0」会真空绿 —— 先确认真有记录可查
+        assert cur.fetchone()[0] > 0
         cur.execute("SELECT count(*) FROM plan_line l"
                     " WHERE l.plan_id = %s AND NOT EXISTS (SELECT 1 FROM plan_line_event e"
                     "   WHERE e.line_id = l.line_id AND e.from_state = '[*]')", (pid,))
@@ -124,6 +127,41 @@ def test_diff_between_revs_names_what_moved(client, seed):
                              "total_units": {"from": 500, "to": 600},
                              "demand_at_submit": {"from": 240, "to": 240}}]
     assert d["added"] == [] and d["removed"] == []
+
+
+def test_diff_reports_added_and_removed_lines(client, seed):
+    """★ 键集合恒等时 added/removed 恒空也会绿——补一个两条分支都非空的靶子。"""
+    pid = prepared(client, seed)
+    client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
+    client.post(f"/v1/plans/{pid}/revs/1/cancel", json={"reason": "换品"}, headers=H(seed.actor))
+    # sku_a 清零 → rev2 里这行消失（removed）
+    client.put(f"/v1/plans/{pid}/purchase/{seed.sku_a}/2026-10",
+               json={"planned_units": 0}, headers=H(seed.actor))
+    # 新认领 msku_d（sku_b）并填两种量 → rev2 多出一行（added）
+    client.post(f"/v1/plans/{pid}/claims",
+                json={"seller_sku": seed.msku_d[0], "sid": seed.msku_d[1]},
+                headers=H(seed.actor))
+    client.put(f"/v1/plans/{pid}/demand/{seed.msku_d[0]}/{seed.msku_d[1]}/2026-10",
+               json={"expected_units": 50}, headers=H(seed.actor))
+    client.put(f"/v1/plans/{pid}/purchase/{seed.sku_b}/2026-10",
+               json={"planned_units": 300}, headers=H(seed.actor))
+    client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
+    d = client.get(f"/v1/plans/{pid}/diff", params={"from": 1, "to": 2},
+                   headers=H(seed.actor)).json()
+    assert d["added"] == [{"sku": seed.sku_b, "period": "2026-10", "total_units": 300}]
+    assert d["removed"] == [{"sku": seed.sku_a, "period": "2026-10", "total_units": 500}]
+
+
+def test_submit_on_a_nonexistent_plan_is_404(client, seed):
+    r = client.post("/v1/plans/999999/submit", headers=H(seed.actor))
+    assert r.status_code == 404 and r.json()["error"] == "plan_not_found"
+
+
+def test_cancel_of_a_nonexistent_rev_is_404(client, seed):
+    pid = prepared(client, seed)
+    r = client.post(f"/v1/plans/{pid}/revs/999/cancel", json={"reason": "test"},
+                    headers=H(seed.actor))
+    assert r.status_code == 404 and r.json()["error"] == "rev_not_found"
 
 
 def test_archive_releases_every_claim_in_the_same_transaction(client, seed):

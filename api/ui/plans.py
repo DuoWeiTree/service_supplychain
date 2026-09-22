@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from pathlib import Path
 
 import psycopg2
@@ -15,6 +16,8 @@ from forecast.estimate import InsufficientHistory, monthly_estimate
 from forecast.projection import inventory_projection
 from rules.effective import effective_demand
 from shared.pg_client import pg_conn, timed
+
+log = logging.getLogger("scm.api")
 
 router = APIRouter(dependencies=[Depends(require_fresh_mirrors)])
 
@@ -351,5 +354,8 @@ def archive(plan_id: int, who: str = Depends(actor)):
         row = cur.fetchone()
         if row is None:
             raise ApiError(404, "plan_not_found", "计划不存在", {"plan_id": plan_id})
+    # ★ timed() 的 fields 在进入时就定死，塞不进事务算出来的 released ——
+    #   补这一行事后日志，否则「归档了却一条都没释放」查不出来
+    log.info("op=archive plan_id=%s released=%d", plan_id, len(released))
     return {"archived_at": row[0].isoformat(), "released": len(released),
             "released_mskus": [{"seller_sku": s, "sid": i} for s, i in released]}
