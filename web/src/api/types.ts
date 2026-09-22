@@ -82,6 +82,13 @@ export interface DemandCell {
   basis: DemandBasis;
 }
 
+/** `PUT .../demand/...` 的信封。★ team-lead 09-22 裁定：回的是 grid() 里 demand[] 同一格
+ *  的完整九键（`api/ui/plans.py` 的 `_demand_row()`），不是它的子集 —— 曾经漏过
+ *  `sku`/`effective_units`，http.ts 用 `Awaited<ReturnType<...>>` 从接口签名反推类型，
+ *  掩盖了「真正的响应比类型声称的少两个键」这件事。这里改成显式命名的信封类型，
+ *  不再从签名里套一个部分形状回来。 */
+export interface PutDemandResult { cell: DemandCell }
+
 export interface PurchaseCell {
   /** ★ 货号级，不带店铺（P1/P2） */
   sku: string;
@@ -182,7 +189,17 @@ export interface CatalogResult {
 }
 
 export interface ClaimTarget { seller_sku: string; sid: Sid }
-export interface ClaimResult { claimed: { seller_sku: string; sid: Sid; sku: string } }
+/** ★ 没有历史 ≠ 预估 0（`api/ui/plans.py:163-166`）：格子照建，`system_units` 留 null 并点名，
+ *  不能让「拿不到历史」悄悄长得跟「预估出来是 0」一样。 */
+export type NoHistoryReason = 'no_sales_history';
+export interface NoHistoryEntry { seller_sku: string; sid: Sid; reason: NoHistoryReason }
+export interface ClaimResult {
+  claimed: { seller_sku: string; sid: Sid; sku: string };
+  /** ★ team-lead 09-22 裁定：`api/ui/plans.py:183-185` 保证返回，两个键都不可选 ——
+   *  认领这一下真种出了几个月的格子，brief 原文的 `ClaimResult` 漏了这两个 */
+  seeded: { demand_cells: number; purchase_cells: number };
+  no_history: NoHistoryEntry[];
+}
 // ★ 后端把丢掉的格逐条回给界面（含人填过的数），不是一个数；货号级采购格不删、只点名「搁浅」
 export interface DroppedCell { period: string; expected_units: number | null }
 export interface StrandedPurchaseCell { sku: string; period: string }
@@ -201,9 +218,12 @@ export interface SubmitResult {
   /** ★ 铸出几条。字段名是 `lines`（team-lead 裁定；后端若残留 `minted` 以 `lines` 为准） */
   lines: number;
   skipped: SkippedCell[];
-  /** ★ 空版本不占在流转位时为 false。头部接口形状块没列它，可能缺 ⇒ 可选，缺了就不渲染那一行 */
-  in_flight?: boolean;
-  content_digest?: string;
+  /** ★ team-lead 09-22 裁定：两个都是保证的，不是可选 —— 契约块原文「后两个也是保证的，
+   *  不是可选」（`docs/superpowers/plans/2026-09-22-stage-a-backend.md:64`），
+   *  `api/ui/submit.py:114-117` 恒返回两者。brief 原文 Step 1 写成可选，是 brief 自己的错，
+   *  只有 `CatalogResult.matched` 允许可选。 */
+  in_flight: boolean;
+  content_digest: string;
 }
 
 export interface Rev {
@@ -233,7 +253,14 @@ export interface DiffChanged {
 /** ★ 三个数组分开，不合成一个「变化量」—— 新增和改动的处置不同 */
 export interface PlanDiff { added: DiffMoved[]; removed: DiffMoved[]; changed: DiffChanged[] }
 
-export interface CancelRevResult { cancelled: number[]; reason: string }
+export interface CancelRevResult {
+  cancelled: number[];
+  /** ★ team-lead 09-22 裁定：`api/ui/submit.py:213-214` 保证返回，不许丢——
+   *  「这一版本来就只有 1 条」与「另外 3 条早已在终态」长得一模一样，
+   *  丢了这个数就分不清两者 */
+  skipped_terminal: number;
+  reason: string;
+}
 
 export interface ListPlansQuery {
   /** ★ 只发契约里声明过的参数 —— 未声明查询参数一律 400 */

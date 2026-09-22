@@ -91,12 +91,19 @@ describe('mock 数据源', () => {
     }
   });
 
-  it('★ 占用撞了抛 409 并点名占用方（点名字段在顶层，不在 detail 里）', async () => {
+  it('★ 占用撞了抛 409，占用方嵌在 claimed_by 里 —— 不是目录端点那种拍平写法', async () => {
+    // ★ team-lead 09-22 裁定（找到 5）：真实后端 api/ui/plans.py:153-156 的 409 形状是
+    //   {seller_sku, sid, claimed_by: {plan_id, actor, title} | null}，claimed_by 嵌套，
+    //   不是像目录端点那样把 plan_id/title/actor 拍平在顶层。原文用 toMatchObject 只
+    //   断言了两个键的部分匹配，两种形状都能蒙混过关；换成 toEqual 精确匹配整个 fields。
     const err = await api.claim(1, { seller_sku: 'MSKU-C', sid: '11094' }).catch((e) => e);
     expect(err).toBeInstanceOf(ApiError);
     expect((err as ApiError).status).toBe(409);
     expect((err as ApiError).error).toBe('msku_already_claimed');
-    expect((err as ApiError).fields).toMatchObject({ plan_id: 2, title: '2026 Q3 补货计划' });
+    expect((err as ApiError).fields).toEqual({
+      seller_sku: 'MSKU-C', sid: '11094',
+      claimed_by: { plan_id: 2, actor: 'ops.li', title: '2026 Q3 补货计划' },
+    });
   });
 
   it('★ 提交逐条列 skipped[]，理由取 S-14 的两个值；铸出与跳过两个数都给', async () => {
@@ -128,6 +135,28 @@ describe('mock 数据源', () => {
     const err = await api.cancelRev(2, 2, '   ').catch((e) => e);
     expect((err as ApiError).status).toBe(400);
     expect((err as ApiError).error).toBe('reason_required');
+  });
+
+  it('★ 撤销版本要带 skipped_terminal（team-lead 09-22 裁定，找到 3）', async () => {
+    const r = await api.cancelRev(2, 2, '试用期结束');
+    expect(r.skipped_terminal).toBe(0);
+    expect(r.cancelled.length).toBeGreaterThan(0);
+  });
+
+  it('★ 认领成功要带 seeded 与 no_history（team-lead 09-22 裁定，找到 2）', async () => {
+    // plan 1 是唯一带着真实 grid-1.json 网格的 mock 计划，no_history 就从这张网格现查。
+    // MSKU-A@11072：grid-1.json 里三个月 system_units 都有数（100/120/90），
+    // 有历史可估 ⇒ no_history 必须是空数组，不是随手塞一条
+    const withHistory = await api.claim(1, { seller_sku: 'MSKU-A', sid: '11072' });
+    expect(withHistory.seeded).toEqual({ demand_cells: 3, purchase_cells: 3 });
+    expect(withHistory.no_history).toEqual([]);
+
+    // MSKU-B@11072：grid-1.json 里三个月 system_units 全是 null，
+    // 没历史可估 ⇒ 必须点名，不能让「没历史」悄悄长得跟「预估是 0」一样
+    const noHistory = await api.claim(1, { seller_sku: 'MSKU-B', sid: '11072' });
+    expect(noHistory.no_history).toEqual([
+      { seller_sku: 'MSKU-B', sid: '11072', reason: 'no_sales_history' },
+    ]);
   });
 
   it('★ 看板计数带全部 9 个桶（team-lead 09-22 裁定）：手列的宇宙会漏掉第 N+1 种状态', async () => {

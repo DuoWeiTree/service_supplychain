@@ -3,6 +3,7 @@ import { createHttpApi } from './http';
 import { ApiError } from './client';
 import { setActor } from '../shell/actorStore';
 import gridFixture from './fixtures/grid-1.json';
+import type { DemandCell } from './types';
 
 afterEach(() => { vi.restoreAllMocks(); });
 
@@ -44,6 +45,24 @@ describe('http 数据源', () => {
     await api.putPurchase(1, 'SKU-1', '2026-10', 500);
     expect(JSON.parse((spy.mock.calls[0]![1] as RequestInit).body as string)).toEqual({ expected_units: null });
     expect(JSON.parse((spy.mock.calls[1]![1] as RequestInit).body as string)).toEqual({ planned_units: 500 });
+  });
+
+  it('★ putDemand 拿到的是完整九键，不是接口签名替它"声称"出来的 —— stub 用真实 fixture 的一整行', async () => {
+    // ★ team-lead 09-22 裁定（找到 4）：http.ts 曾经用 Awaited<ReturnType<...>> 从
+    //   SupplyChainApi['putDemand'] 的签名反推类型，签名说 9 键，真实后端一度只发 7 键
+    //   （漏 sku/effective_units），TS 却因为这个反推走过场而不报错。改用显式的
+    //   PutDemandResult 信封后，这条测试拿 grid-1.json 里一整行真实 9 键数据当 stub，
+    //   证明 http.ts 原样透传而不是自己拼了一份缺字段的假格子。
+    const realCell = (gridFixture as { demand: DemandCell[] }).demand[0]!;
+    expect(Object.keys(realCell).sort()).toEqual(
+      ['basis', 'effective_units', 'expected_units', 'period', 'seller_sku',
+       'sid', 'sku', 'system_extrapolated', 'system_units'].sort(),
+    );
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(ok({ cell: realCell }));
+    const got = await mk().putDemand(1, realCell.seller_sku, realCell.sid, realCell.period, null);
+    expect(got).toEqual(realCell);
+    expect(got.sku).toBe(realCell.sku);
+    expect(got.effective_units).toBe(realCell.effective_units);
   });
 
   it('409 抛 ApiError，点名字段从顶层收进 fields', async () => {

@@ -152,15 +152,33 @@ export function createMockApi(): SupplyChainApi {
     async claim(planId, target) {
       const item = catalog.items.find((s) => s.mskus.some((m) => m.seller_sku === target.seller_sku && m.sid === target.sid));
       const msku = item?.mskus.find((m) => m.seller_sku === target.seller_sku && m.sid === target.sid);
-      if (!item || !msku) throw new ApiError(404, 'msku_not_found', '没有这个 msku', { ...target });
+      // ★ 与后端同码：api/ui/plans.py:131 用 unknown_msku，不是 msku_not_found
+      if (!item || !msku) throw new ApiError(404, 'unknown_msku', '没有这个 msku', { ...target });
       if (!msku.selectable && msku.claimed_by) {
-        // ★ 点名字段平铺在顶层，前端据此说出「被哪张计划、被谁占着」
+        // ★ team-lead 09-22 裁定：认领 409 与目录端点的占用方不是同一个形状 ——
+        //   这里嵌套在 claimed_by 里（api/ui/plans.py:153-156，backend 现已带 title），
+        //   不是像目录那样把字段拍平在顶层。别再借用 ClaimHolder 那份拍平写法。
         throw new ApiError(409, 'msku_already_claimed', `${target.seller_sku} 已被占用`,
-          { ...target, plan_id: msku.claimed_by.plan_id, title: msku.claimed_by.title, actor: msku.claimed_by.actor });
+          { seller_sku: target.seller_sku, sid: target.sid,
+            claimed_by: { plan_id: msku.claimed_by.plan_id, actor: msku.claimed_by.actor, title: msku.claimed_by.title } });
       }
       msku.selectable = false;
       msku.claimed_by = { plan_id: planId, title: plan(planId).title, actor: 'ops.zhang' };
-      return { claimed: { ...target, sku: item.sku } };
+      // ★ team-lead 09-22 裁定：种出的格子数与「没有销售历史」都要点名（api/ui/plans.py:163-186）。
+      //   mock 没有真的重新播种格子，用 plan 的 months 代表种出的月份数（与真实播种的行数一致）；
+      //   no_history 从这张计划已有的 grid 里现查 —— 这个 msku 名下各月 system_units
+      //   全为 null 才算「没历史」，不是拍脑袋写死的固定名单。
+      const g = grids.get(planId);
+      const mine = g?.demand.filter((d) => d.seller_sku === target.seller_sku && d.sid === target.sid) ?? [];
+      const noHistory = mine.length > 0 && mine.every((d) => d.system_units === null)
+        ? [{ seller_sku: target.seller_sku, sid: target.sid, reason: 'no_sales_history' as const }]
+        : [];
+      const months = plan(planId).months;
+      return {
+        claimed: { ...target, sku: item.sku },
+        seeded: { demand_cells: months, purchase_cells: months },
+        no_history: noHistory,
+      };
     },
 
     async releaseClaim(_planId, sellerSku, sid) {
@@ -227,7 +245,10 @@ export function createMockApi(): SupplyChainApi {
       l.in_flight_rev = null;
       inFlight.set(planId, null);
       plan(planId).state = '已撤销';
-      return { cancelled: Array.from({ length: target.lines }, (_, i) => i + 1), reason };
+      // ★ team-lead 09-22 裁定：skipped_terminal 是保证字段（api/ui/submit.py:213-214）——
+      //   「这一版本来就只有 1 条」与「另外 3 条早已在终态」长得一模一样，必须给这个数。
+      //   mock 不追踪逐条记录的状态，固定给 0（fixture 里 revs-1 的记录都当作非终态在流转）。
+      return { cancelled: Array.from({ length: target.lines }, (_, i) => i + 1), skipped_terminal: 0, reason };
     },
   };
 }

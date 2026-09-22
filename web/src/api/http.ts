@@ -1,6 +1,6 @@
 import { ApiError, type SupplyChainApi } from './client';
 import { getActor } from '../shell/actorStore';
-import type { CatalogResult, PlanList, PlanSummary, Seller } from './types';
+import type { CatalogResult, PlanList, PlanSummary, PutDemandResult, Seller } from './types';
 
 interface HttpOptions { base: string; timeoutMs: number }
 
@@ -82,8 +82,12 @@ export function createHttpApi(opt: HttpOptions): SupplyChainApi {
     listSellers: async () => (await call<{ sellers: Seller[] }>('GET', '/sellers')).sellers,
 
     getGrid: (planId) => call('GET', `/plans/${planId}/grid`),
+    // ★ team-lead 09-22 裁定：显式命名的信封类型（PutDemandResult），不是从
+    //   Awaited<ReturnType<SupplyChainApi['putDemand']>> 反推的部分形状 ——
+    //   那种写法只是把接口签名"声称"的类型抄一遍，掩盖了后端曾经真的少发两个键
+    //   （sku / effective_units）这件事。见 api/ui/plans.py 的 _demand_row()。
     putDemand: async (planId, sellerSku, sid, period, units) =>
-      (await call<{ cell: Awaited<ReturnType<SupplyChainApi['putDemand']>> }>(
+      (await call<PutDemandResult>(
         'PUT', `/plans/${planId}/demand/${encodeURIComponent(sellerSku)}/${sid}/${period}`,
         { expected_units: units })).cell,
     putPurchase: async (planId, sku, period, units) =>
