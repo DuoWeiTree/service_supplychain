@@ -44,9 +44,14 @@ export function PlanRevs() {
     });
   }
 
-  async function compare() {
-    if (from === '' || !list) return;
-    try { setDiff(await api.diff(planId, Number(from), list.current_rev ?? 0)); setErr(null); }
+  /** ★ I4 裁定：比较的**另一端由调用方给出一个真实存在的 rev**，函数内部没有兜底值。
+   *  原来写的是 `list.current_rev ?? 0` —— 后端对不存在的 rev 不报错，plan_line 里
+   *  没有 rev 0 的行，于是 added/removed/changed 全空，屏上三块「无」与
+   *  「这两版一模一样」长得完全一样。静默兜底：回退可以，但必须有声。
+   *  把 `?? 0` 整个拿掉比在它前面加一道早退更硬 —— 那个错的数已经不存在了。 */
+  async function compare(to: number) {
+    if (from === '') return;
+    try { setDiff(await api.diff(planId, Number(from), to)); setErr(null); }
     catch (e) { setErr(e as ApiError); }
   }
 
@@ -123,7 +128,15 @@ export function PlanRevs() {
             {list.revs.map((r) => <option key={r.rev} value={r.rev}>rev {r.rev}</option>)}
           </select>
         </label>
-        <button type="button" className="btn" disabled={from === ''} onClick={() => void compare()}>比较</button>
+        <button
+          type="button" className="btn"
+          disabled={from === '' || list.current_rev === null}
+          onClick={() => { if (list.current_rev !== null) void compare(list.current_rev); }}
+        >比较</button>
+        {/* ★ I4：没有「当前使用」时说出来并给下一步，而不是拿 rev 0 比出三块「无」 */}
+        {list.current_rev === null && (
+          <span className="bar__say" data-testid="no-current-rev">还没有当前使用的版本，先设一版</span>
+        )}
       </div>
 
       {diff && (
@@ -141,7 +154,9 @@ export function PlanRevs() {
             }))}
           />
           <DiffBlock
-            title="改动" testId="diff-changed" head={['货号', '月', `rev ${from} 数量`, '当前数量', '原需求', '当前需求']}
+            // ★ I4：表头把两边的版本号都写出来 —— 「当前」指代的东西可能根本不存在
+            title="改动" testId="diff-changed"
+            head={['货号', '月', `rev ${from} 数量`, `rev ${list.current_rev} 数量`, '原需求', '当前需求']}
             rows={diff.changed.map((r) => ({
               id: `changed-${r.sku}-${r.period}`, sku: r.sku, period: r.period,
               // ★ 两个数并排给，不合成一个增减

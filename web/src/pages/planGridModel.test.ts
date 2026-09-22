@@ -220,6 +220,26 @@ describe('★ F6/F8 裁定：在途以 basis.sku_level_in_transit 为权威，sk
     expect(m.orphans).toContainEqual({ kind: 'in_transit_disagrees', key: 'SKU-1/2026-10' });
   });
 
+  // ★ M4（终审）：交叉核对原来只有一个方向 —— 有 pipeline 行而 basis 对不上会报，
+  //   basis 非零而**根本没有** pipeline 行则无人点名。后者同样是两个真相。
+  it('★ basis 说有在途、sku_pipeline 里没有这一行 —— 也要点名', () => {
+    const g = makeGrid();
+    g.sku_pipeline = g.sku_pipeline.filter((p) => p.period !== P[0]!);   // 10 月那行整行拿掉
+    const m = buildGridModel(g, sellers);
+    expect(m.orphans).toContainEqual({ kind: 'in_transit_disagrees', key: 'SKU-1/2026-10' });
+  });
+
+  it('★ basis 是 0 而没有 pipeline 行：那是「没有在途」不是「对不上」，不许误报', () => {
+    const g = makeGrid();
+    g.inventory[0] = inv('11072', P[0]!, 420, 200, null, 0);
+    g.inventory[3] = inv('90001', P[0]!, null, null, 'not_applicable', null);
+    g.sku_pipeline = g.sku_pipeline.filter((p) => p.period !== P[0]!);
+    const m = buildGridModel(g, sellers);
+    // ★ 只看 10 月这个 key：makeGrid 的 11/12 月本来就对不上（pipeline 为 null 而 basis 80），
+    //   拿整张 orphans 断言会把这条判据托在别人的失败上
+    expect(m.orphans.filter((o) => o.key === `SKU-1/${P[0]!}`)).toEqual([]);
+  });
+
   it('货号级在途行按 blocks ∪ purchase ∪ sku_pipeline 的并集铺，不按 purchase 单独铺', () => {
     const g = makeGrid();
     // 追加一个只出现在 sku_pipeline、既不在 purchase 也不在任何块里的货号

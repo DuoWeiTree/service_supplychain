@@ -42,11 +42,16 @@ async function renderRevs() {
     },
   }));
   const { PlanRevs } = await import('./PlanRevs');
-  return render(
+  const utils = render(
     <MemoryRouter initialEntries={['/plans/2/revs']}>
       <Routes><Route path="/plans/:planId/revs" element={<PlanRevs />} /></Routes>
     </MemoryRouter>,
   );
+  // ★ 初次 load() 的落地要等在这里。renderRevs 是 async 函数 —— 调用方 `await` 它的
+  //   那一下就是一次微任务跳变，listRevs 的 resolve 正好落在 act() 之外，于是每条用它的
+  //   测试都甩出一条 act() 警告。findBy* 自带 act 包裹，把那次更新收进来。
+  await screen.findByTestId('rev-2');
+  return utils;
 }
 
 describe('版本编辑', () => {
@@ -200,6 +205,42 @@ describe('版本编辑', () => {
     fireEvent.click(confirm);
     await screen.findByTestId('cancel-report');
     expect(calls).toHaveLength(1);
+  });
+
+  // ★ I4（终审）：current_rev 为 null 时原来发的是 to=0 —— 后端对不存在的 rev 不报错，
+  //   plan_line 里没有 rev 0 的行，于是三块全是「无」，与「这两版一模一样」长得完全一样。
+  it('★ 没有当前使用的版本：比较禁用、不发请求，并说出下一步', async () => {
+    const { ApiError } = await import('../api/client');
+    const diffCalls: number[][] = [];
+    const NO_CURRENT: RevList = { ...JSON.parse(JSON.stringify(REVS)) as RevList, current_rev: null };
+    vi.doMock('../api', () => ({
+      ApiError,
+      api: {
+        listRevs: async () => JSON.parse(JSON.stringify(NO_CURRENT)) as RevList,
+        setCurrentRev: async (_p: number, rev: number) => ({ current_rev: rev }),
+        diff: async (_p: number, from: number, to: number) => { diffCalls.push([from, to]); return DIFF; },
+        cancelRev: async () => ({ cancelled: [], skipped_terminal: 0, reason: '' }),
+      },
+    }));
+    const { PlanRevs } = await import('./PlanRevs');
+    render(
+      <MemoryRouter initialEntries={['/plans/2/revs']}>
+        <Routes><Route path="/plans/:planId/revs" element={<PlanRevs />} /></Routes>
+      </MemoryRouter>,
+    );
+    await screen.findByTestId('rev-2');
+    expect(screen.getByTestId('no-current-rev')).toHaveTextContent('还没有当前使用的版本，先设一版');
+
+    // 选了「比较自」也照样禁用 —— 缺的是另一端，不是这一端
+    await userEvent.selectOptions(screen.getByLabelText('比较自'), '1');
+    expect(screen.getByRole('button', { name: '比较' })).toBeDisabled();
+
+    // ★ 这一条只能证到「点不动、没发请求」为止：按钮置灰后 jsdom 本来就不派发 click，
+    //   所以它托着一半。真正硬的那半在源码形状上 —— `?? 0` 已经整个不存在了，
+    //   compare(to) 的另一端必须由调用方给一个真实的 rev，没有兜底值可落。
+    fireEvent.click(screen.getByRole('button', { name: '比较' }));
+    await waitFor(() => expect(screen.queryByTestId('diff-changed')).toBeNull());
+    expect(diffCalls).toEqual([]);
   });
 
   // ★ review finding 4：404 rev_not_found 走的是与 400 同一条 catch → <ErrorDetail> 路径，

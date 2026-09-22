@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import gridFixture from '../api/fixtures/grid-1.json';
@@ -25,7 +25,7 @@ async function app(entry: string) {
     import('../pages/OpsHome'), import('../pages/PlanGrid'),
     import('../pages/PlanAdd'), import('../pages/PlanRevs'),
   ]);
-  return render(
+  const utils = render(
     <MemoryRouter initialEntries={[entry]}>
       <Routes>
         <Route path="/" element={<OpsHome />} />
@@ -35,6 +35,11 @@ async function app(entry: string) {
       </Routes>
     </MemoryRouter>,
   );
+  // ★ app() 是 async 函数：调用方 `await` 它的那一下就是一次微任务跳变，
+  //   只发一个请求的页面（PlanRevs 的 listRevs）会正好在 act() 之外落地 → act() 警告。
+  //   空的 async act 把那批待落地的更新收进来，行为不变。
+  await act(async () => {});
+  return utils;
 }
 
 describe('判据① · 建 → 加货品 → 填两种量 → 提交 → 铸出 rev', () => {
@@ -87,7 +92,11 @@ describe('判据① · 建 → 加货品 → 填两种量 → 提交 → 铸出 
     const expected = othersUnknown
       ? '—'
       : String(FIRST_INV.onhand! - (10 + OTHERS.reduce((a, d) => a + (d.effective_units as number), 0)));
-    expect(await within(block).findByTestId(`sku-cell-${FIRST_INV.period}`)).toHaveTextContent(expected);
+    // ★ M5（终审）：断言钉在 closing-sku 这个点上，不打在整个 sku-cell 上 ——
+    //   同一格里还有「期初 40」「as_of 2026-09-21」「预估 7」「Σ 期望 10」，
+    //   期望值一旦落到 26/21/20/40 就会被旁边那串字托住而看不出错
+    const skuCell = await within(block).findByTestId(`sku-cell-${FIRST_INV.period}`);
+    expect(within(skuCell).getByTestId('closing-sku')).toHaveTextContent(expected);
 
     // 计划采购量（货号 × 月，不带店铺）
     const purchase = within(screen.getByTestId('purchase-block'))
@@ -104,6 +113,13 @@ describe('判据① · 建 → 加货品 → 填两种量 → 提交 → 铸出 
     const skipped = Number(/跳过 (\d+) 条/.exec(report.textContent!)![1]);
     expect(lines + skipped).toBe(G.purchase.length);
     expect(lines).toBeGreaterThanOrEqual(1);   // ★ 刚填的 300 至少让一个月铸得出来
+
+    // ★ T8（parked）：「铸出了一版」此前只有提交响应这一个证人 —— 那是同一次调用自己说的。
+    //   去版本页回查一遍：真的有 rev 1，且它就是在流转的那一版。
+    await userEvent.click(within(report).getByRole('link', { name: '去版本' }));
+    const row = await screen.findByTestId('rev-1');
+    expect(within(row).getByText('流转中')).toBeInTheDocument();
+    expect(row).toHaveTextContent(String(lines));
   });
 
   it('⑤ 版本页看得到流转中与当前使用', async () => {

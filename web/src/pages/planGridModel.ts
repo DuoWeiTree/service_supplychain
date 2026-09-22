@@ -173,6 +173,12 @@ export function buildGridModel(grid: GridResponse, sellers: Seller[]): GridModel
         // ★ 两 sid 已经互相矛盾时不再重复报第二条同 key 的 orphan
         orphans.push({ kind: 'in_transit_disagrees', key: `${sku}/${period}` });
       }
+      // ★ M4（终审）：交叉核对原来只有一个方向。basis 说这个月有在途、而 sku_pipeline
+      //   里**根本没有这一行**，同样是两个真相 —— 少报一侧就等于挑一个信。
+      //   basis 为 0 的月份不报：fixture 里缺行的月份都是 0，那是「没有在途」不是「对不上」。
+      if (!pipelineRow && basisVal !== null && basisVal !== 0 && nonNull.length <= 1) {
+        orphans.push({ kind: 'in_transit_disagrees', key: `${sku}/${period}` });
+      }
       return { period, units: basisVal };
     }),
   }));
