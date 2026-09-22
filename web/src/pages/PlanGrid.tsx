@@ -109,6 +109,14 @@ export function PlanGrid() {
           </div>
         </div>
       )}
+      {/* ★ I1 裁定：归档是「有、但封存了」，不是「没有这张计划」—— 屏上要说得出这三个字。
+          写动作照发，后端的 409 plan_archived 会原样落到页尾的 ErrorDetail 上：
+          置灰按钮会把「归档了」与「这一步现在不能做」混成一个说法 */}
+      {plan?.archived_at != null && (
+        <div className="note" data-testid="archived-notice">
+          这张计划已归档（{plan.archived_at.slice(0, 10)}），不接受写入
+        </div>
+      )}
       {planErr && <ErrorDetail err={planErr} />}
       {!plan && !planErr && <div className="empty"><p className="empty__title">正在取计划抬头…</p></div>}
 

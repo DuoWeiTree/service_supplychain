@@ -41,7 +41,9 @@ describe('运营首页', () => {
     const table = await screen.findByTestId('plan-list');
     expect(within(table).queryByText('2026 Q1 首发计划')).toBeNull();
     expect(screen.getByTestId('hidden-rows')).toHaveTextContent('已完结 1 张');
-    expect(screen.getByTestId('hidden-rows')).toHaveTextContent('已归档 2 张');
+    // ★ I2：这个数由 mock 按本次查询现算（fixture 里 1 张归档），不再是冻死的常量 2
+    expect(screen.getByTestId('hidden-rows')).toHaveTextContent('已归档 1 张');
+    expect(within(table).queryByText('2025 Q4 封存计划')).toBeNull();
   });
 
   it('两栏：未提交 / 提交后又改过（第二栏点名是跟哪一版比的）', async () => {

@@ -1,6 +1,6 @@
 import { ApiError, type SupplyChainApi } from './client';
 import type {
-  CatalogResult, CountKey, GridResponse, PlanList, PlanSummary, RevList, Seller, SkippedCell,
+  CatalogResult, CountKey, GridResponse, PlanSummary, RevList, Seller, SkippedCell,
 } from './types';
 import plansFixture from './fixtures/plans.json';
 import gridFixture from './fixtures/grid-1.json';
@@ -11,7 +11,9 @@ import sellersFixture from './fixtures/sellers.json';
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 
 export function createMockApi(): SupplyChainApi {
-  const list = clone(plansFixture) as PlanList;
+  // ★ fixture 里只有 plans：`excluded.archived` 是**按这次查询现算**的（见 listPlans），
+  //   冻一个常量进去就会在加了归档计划之后继续报旧数，而那正是它要挡的事
+  const list = { plans: clone(plansFixture.plans) as PlanSummary[] };
   const grids = new Map<number, GridResponse>([[1, clone(gridFixture) as GridResponse]]);
   const catalog = clone(catalogFixture) as CatalogResult;
   const revs = new Map<number, RevList>([[2, clone(revsFixture) as RevList]]);
@@ -23,6 +25,25 @@ export function createMockApi(): SupplyChainApi {
     if (!p) throw new ApiError(404, 'plan_not_found', '没有这张计划', { plan_id: id });
     return p;
   };
+  /** ★ 归档后一律拒写（`api/ui/deps.py:82-95` 的 `ensure_writable`，后端每个写端点都挂着它）。
+   *  mock 从前一处都没有：归档计划上的认领/填数/提交在 mock 下全成功、在真 API 下全 409，
+   *  而两种数据源的唯一门禁读的是同一份 fixture，这条分叉永远照不到。
+   *  ★ 与「计划不存在」分得开：404 是没有这张计划，409 是有、但它已经封存了。 */
+  const writable = (id: number): PlanSummary => {
+    const p = plan(id);
+    if (p.archived_at !== null) {
+      throw new ApiError(409, 'plan_archived', '计划已归档，不接受写入',
+        { plan_id: id, archived_at: p.archived_at });
+    }
+    return p;
+  };
+  /** 候选集 = owner/state 圈定的那一批。★ `excluded.archived` 只能在候选集里数 ——
+   *  在全库上数的话，按 owner 过滤时报的是别人计划的归档数（`api/ui/plans.py:83-86`）。 */
+  const candidates = (q: { state?: string; owner?: string }) => list.plans.filter((p) =>
+    (q.state === undefined || p.state === q.state) &&
+    (q.owner === undefined || p.owner_actor === q.owner));
+  /** ★ 两个看板都只数没归档的（`api/ui/dashboard.py:30`/`:57` 的 `archived_at IS NULL`）*/
+  const live = () => list.plans.filter((p) => p.archived_at === null);
   const grid = (id: number): GridResponse => {
     const g = grids.get(id);
     if (!g) throw new ApiError(404, 'plan_not_found', '这张计划还没有网格', { plan_id: id });
@@ -56,11 +77,13 @@ export function createMockApi(): SupplyChainApi {
 
   return {
     async listPlans(q) {
-      const plans = list.plans.filter((p) =>
-        (q.state === undefined || p.state === q.state) &&
-        (q.owner === undefined || p.owner_actor === q.owner) &&
-        (q.archived === undefined || (p.archived_at !== null) === q.archived));
-      return { plans, excluded: list.excluded };
+      // ★ `archived` 不给时后端**排除**已归档（`api/ui/plans.py:69` 的默认值 false），
+      //   不是「不过滤」；给 true 时是**全给**（含未归档），不是「只给归档的」。
+      //   这两处 mock 从前都反着来，而归档语义的分叉恰好落在唯一那条门禁的视野之外。
+      const want = q.archived === true;
+      const pool = candidates(q);
+      const plans = clone(want ? pool : pool.filter((p) => p.archived_at === null));
+      return { plans, excluded: { archived: want ? 0 : pool.filter((p) => p.archived_at !== null).length } };
     },
     async getPlan(planId) { return clone(plan(planId)); },
     async createPlan(input) {
@@ -82,7 +105,7 @@ export function createMockApi(): SupplyChainApi {
       const counted: CountKey[] = ['进行中', '已提交未确认', ...RANKED, '已撤销'];
       const counts = Object.fromEntries(counted.map((k) => [k, 0])) as Record<CountKey, number>;
       let neverSubmittedExcluded = 0;
-      for (const p of list.plans) {
+      for (const p of live()) {
         if (p.state === null) { neverSubmittedExcluded += 1; continue; }
         counts[p.state] += 1;
         // ★ 与后端一致：只要不是已完结/已撤销就算「进行中」，已提交额外再计一次「已提交未确认」
@@ -96,9 +119,11 @@ export function createMockApi(): SupplyChainApi {
       };
     },
     async dashboardUnsubmitted() {
+      // ★ 两栏都只看没归档的（`api/ui/dashboard.py:57`）—— 归档计划已经不在列表里了，
+      //   再催人去提交它就是催一件做不到的事（后端会 409 plan_archived）
       return {
-        never_submitted: list.plans.filter((p) => p.state === null).map((p) => ({ plan_id: p.plan_id, title: p.title })),
-        changed_since_submit: list.plans.filter((p) => p.plan_id === 2)
+        never_submitted: live().filter((p) => p.state === null).map((p) => ({ plan_id: p.plan_id, title: p.title })),
+        changed_since_submit: live().filter((p) => p.plan_id === 2)
           .map((p) => ({ plan_id: p.plan_id, title: p.title, since_rev: p.state_rev ?? 0 })),
       };
     },
@@ -107,6 +132,7 @@ export function createMockApi(): SupplyChainApi {
     async getGrid(planId) { return clone(grid(planId)); },
 
     async putDemand(planId, sellerSku, sid, period, units) {
+      writable(planId);
       const g = grid(planId);
       const cell = g.demand.find((d) => d.seller_sku === sellerSku && d.sid === sid && d.period === period);
       if (!cell) {
@@ -125,6 +151,7 @@ export function createMockApi(): SupplyChainApi {
     },
 
     async putPurchase(planId, sku, period, units) {
+      writable(planId);
       const g = grid(planId);
       const cell = g.purchase.find((p) => p.sku === sku && p.period === period);
       if (!cell) {
@@ -150,6 +177,7 @@ export function createMockApi(): SupplyChainApi {
     },
 
     async claim(planId, target) {
+      writable(planId);
       const item = catalog.items.find((s) => s.mskus.some((m) => m.seller_sku === target.seller_sku && m.sid === target.sid));
       const msku = item?.mskus.find((m) => m.seller_sku === target.seller_sku && m.sid === target.sid);
       // ★ 与后端同码：api/ui/plans.py:131 用 unknown_msku，不是 msku_not_found
@@ -181,13 +209,15 @@ export function createMockApi(): SupplyChainApi {
       };
     },
 
-    async releaseClaim(_planId, sellerSku, sid) {
+    async releaseClaim(planId, sellerSku, sid) {
+      writable(planId);
       const msku = catalog.items.flatMap((s) => s.mskus).find((m) => m.seller_sku === sellerSku && m.sid === sid);
       if (msku) { msku.selectable = true; msku.claimed_by = null; }   // ★ 释放不删行
       return { released: { seller_sku: sellerSku, sid }, dropped_cells: [], stranded_purchase_cells: [] };
     },
 
     async submit(planId) {
+      writable(planId);
       const held = inFlight.get(planId) ?? null;
       if (held !== null) {
         throw new ApiError(409, 'rev_in_flight', `rev ${held} 还在流转`, { in_flight_rev: held });
@@ -195,9 +225,19 @@ export function createMockApi(): SupplyChainApi {
       const g = grid(planId);
       const skipped: SkippedCell[] = [];
       let lines = 0;
-      for (const pc of g.purchase) {
-        const claimed = g.demand.some((d) => d.sku === pc.sku && d.period === pc.period);
-        if (!claimed) { skipped.push({ sku: pc.sku, period: pc.period, reason: 'no_claimed_msku' }); continue; }
+      // ★ M2：判据的键照抄 `rules/submit.py:53` —— 后端是 `{c.sku for c in demand_cells}`，
+      //   **只按货号**，不带月份。当前 fixture 每个货号三个月全有需求格，两者给同一答案，
+      //   所以这是潜伏分叉不是现症；按月份多卡一道，会在「某个月没认领 msku」时
+      //   报出后端根本不会报的 no_claimed_msku
+      const skusWithClaim = new Set(g.demand.map((d) => d.sku));
+      // ★ 后端按排序后的 purchase_cells 遍历、skipped 也排序输出（`rules/submit.py`）——
+      //   顺序不同会让两种数据源的「逐条列出」一屏对不上
+      const ordered = [...g.purchase].sort((a, b) =>
+        a.sku.localeCompare(b.sku) || a.period.localeCompare(b.period));
+      for (const pc of ordered) {
+        if (!skusWithClaim.has(pc.sku)) {
+          skipped.push({ sku: pc.sku, period: pc.period, reason: 'no_claimed_msku' }); continue;
+        }
         if (pc.planned_units === null || pc.planned_units === 0) {
           skipped.push({ sku: pc.sku, period: pc.period, reason: 'zero_purchase' }); continue;
         }
@@ -208,7 +248,9 @@ export function createMockApi(): SupplyChainApi {
       // ★ 空版本不占在流转位：占着的话这张计划从此再也提交不了，而错误会说「有一版在流转」
       const alive = lines > 0;
       p.state_rev = rev;
-      p.state = alive ? '已提交' : '已撤销';
+      // ★ M3：铸出 0 条时后端一条 plan_line 都没有，木桶派生的 v_plan_overall_state.overall
+      //   是 NULL（即「未提交」）—— 不是「已撤销」。写成已撤销会让两种数据源的首页计数不同
+      p.state = alive ? '已提交' : null;
       inFlight.set(planId, alive ? rev : null);
       revs.set(planId, {
         revs: [{ rev, content_digest: `mock-${planId}-${rev}`, is_current: true, in_flight: alive,
@@ -222,6 +264,7 @@ export function createMockApi(): SupplyChainApi {
       return clone(revs.get(planId) ?? { revs: [], in_flight_rev: null, current_rev: null });
     },
     async setCurrentRev(planId, rev) {
+      writable(planId);
       const l = revs.get(planId);
       if (!l || !l.revs.some((r) => r.rev === rev)) throw new ApiError(404, 'rev_not_found', '没有这一版', { plan_id: planId, rev });
       l.revs.forEach((r) => { r.is_current = r.rev === rev; });
@@ -237,6 +280,7 @@ export function createMockApi(): SupplyChainApi {
       };
     },
     async cancelRev(planId, rev, reason) {
+      writable(planId);
       if (reason.trim() === '') throw new ApiError(400, 'reason_required', '撤销必须填理由', { plan_id: planId, rev });
       const l = revs.get(planId);
       const target = l?.revs.find((r) => r.rev === rev);

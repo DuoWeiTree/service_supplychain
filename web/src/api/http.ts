@@ -1,6 +1,8 @@
 import { ApiError, type SupplyChainApi } from './client';
 import { getActor } from '../shell/actorStore';
-import type { CatalogResult, PlanList, PlanSummary, PutDemandResult, Seller } from './types';
+import type {
+  CatalogResult, PlanList, PlanSummary, PutDemandResult, PutPurchaseResult, Seller,
+} from './types';
 
 interface HttpOptions { base: string; timeoutMs: number }
 
@@ -71,7 +73,12 @@ export function createHttpApi(opt: HttpOptions): SupplyChainApi {
     listPlans: plans,
     async getPlan(planId) {
       // ★ GET /grid 不带计划抬头；这里拆两次调用，页面不必知道
-      const { plans: rows } = await plans({});
+      // ★ I1 裁定：必须带 archived=true。后端 `GET /plans` 默认排除已归档
+      //   （`api/ui/plans.py:69`），不带它的话 find 落空 → 前端抛 404「没有这张计划」，
+      //   而后端专门把这两件事分开过（`deps.py:88`：404 是没有这张计划，
+      //   409 是有、但它已经封存了）。运营打开一张归档计划，屏上说的是「没有这张计划」——
+      //   而它就在那儿。带 true 时后端返回**全集**（含未归档），按 id 挑一张即可。
+      const { plans: rows } = await plans({ archived: true });
       const hit = rows.find((p: PlanSummary) => p.plan_id === planId);
       if (!hit) throw new ApiError(404, 'plan_not_found', '没有这张计划', { plan_id: planId });
       return hit;
@@ -86,13 +93,16 @@ export function createHttpApi(opt: HttpOptions): SupplyChainApi {
     //   Awaited<ReturnType<SupplyChainApi['putDemand']>> 反推的部分形状 ——
     //   那种写法只是把接口签名"声称"的类型抄一遍，掩盖了后端曾经真的少发两个键
     //   （sku / effective_units）这件事。见 api/ui/plans.py 的 _demand_row()。
+    // ★ M15：同一个模板里的每一段都过 encodeURIComponent —— sid / period 目前都是
+    //   安全字符集，但「这一段为什么不用转义」的理由不写在代码里，下一个人只会照抄旁边那段
     putDemand: async (planId, sellerSku, sid, period, units) =>
       (await call<PutDemandResult>(
-        'PUT', `/plans/${planId}/demand/${encodeURIComponent(sellerSku)}/${sid}/${period}`,
+        'PUT', `/plans/${planId}/demand/${encodeURIComponent(sellerSku)}/${encodeURIComponent(sid)}/${encodeURIComponent(period)}`,
         { expected_units: units })).cell,
+    // ★ M1：与 putDemand 同一个理由，用具名信封而不是从接口签名反推 —— 见 types.ts
     putPurchase: async (planId, sku, period, units) =>
-      (await call<{ cell: Awaited<ReturnType<SupplyChainApi['putPurchase']>> }>(
-        'PUT', `/plans/${planId}/purchase/${encodeURIComponent(sku)}/${period}`,
+      (await call<PutPurchaseResult>(
+        'PUT', `/plans/${planId}/purchase/${encodeURIComponent(sku)}/${encodeURIComponent(period)}`,
         { planned_units: units })).cell,
 
     searchCatalog: (q) => call<CatalogResult>('GET', `/catalog/skus${qs({ q: q.q, limit: q.limit })}`),

@@ -96,6 +96,11 @@ export interface PurchaseCell {
   planned_units: number | null;
 }
 
+/** `PUT .../purchase/...` 的信封。★ M1（终审）：与 `PutDemandResult` 同一个理由 ——
+ *  `Awaited<ReturnType<SupplyChainApi['putPurchase']>>` 只是把接口签名"声称"的类型
+ *  抄一遍，真实响应少发了键也照样通过。这半边此前没跟着改。 */
+export interface PutPurchaseResult { cell: PurchaseCell }
+
 /** ★ `inbound` 为什么是 null。阶段 A **恒定**是这一个值 —— 它不说明 closing 的任何事 */
 export type InboundReason = 'no_seller_attribution';
 

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+
 import { createMockApi } from './mock';
 import { ApiError } from './client';
 import type { CountKey } from './types';
@@ -157,6 +158,61 @@ describe('mock 数据源', () => {
     expect(noHistory.no_history).toEqual([
       { seller_sku: 'MSKU-B', sid: '11072', reason: 'no_sales_history' },
     ]);
+  });
+
+  // ★ I2（终审）：mock 与真 API 在「归档」这件事上语义相反，而唯一那条门禁看不见 ——
+  //   plans.json 四张计划的 archived_at 全是 null，两种数据源在这条分叉上永远同答案。
+  //   现在 fixture 里有一张归档计划（plan 5），下面四条各钉一侧。
+  describe('归档：与 api/ui 同口径', () => {
+    const ARCHIVED = 5;
+
+    it('★ 不给 archived 时**排除**已归档，并把挡掉的那一侧数出来', async () => {
+      const { plans, excluded } = await api.listPlans({});
+      expect(plans.map((p) => p.plan_id)).not.toContain(ARCHIVED);
+      // ★ 不是冻在 fixture 里的常量：加一张归档计划这个数就得跟着动
+      expect(excluded.archived).toBe(1);
+    });
+
+    it('★ archived=true 是**全集**（含未归档），不是「只给归档的」；此时 excluded 为 0', async () => {
+      const { plans, excluded } = await api.listPlans({ archived: true });
+      expect(plans.map((p) => p.plan_id)).toContain(ARCHIVED);
+      expect(plans.length).toBeGreaterThan(1);
+      expect(excluded.archived).toBe(0);
+    });
+
+    it('★ 两个看板都只数没归档的（dashboard.py 的 archived_at IS NULL）', async () => {
+      const { counts } = await api.dashboardPlans();
+      // fixture 里没归档的「已提交」只有 plan 2；归档的 plan 5 也是已提交 —— 数进去就是 2
+      expect(counts['已提交']).toBe(1);
+      const board = await api.dashboardUnsubmitted();
+      expect(board.never_submitted.map((p) => p.plan_id)).not.toContain(ARCHIVED);
+    });
+
+    it('★ 归档计划上的**每一个**写动作都 409 plan_archived，点名 archived_at', async () => {
+      const writes: [string, Promise<unknown>][] = [
+        ['claim', api.claim(ARCHIVED, { seller_sku: 'MSKU-A', sid: '11072' })],
+        ['releaseClaim', api.releaseClaim(ARCHIVED, 'MSKU-A', '11072')],
+        ['putDemand', api.putDemand(ARCHIVED, 'MSKU-A', '11072', '2026-10', 1)],
+        ['putPurchase', api.putPurchase(ARCHIVED, 'DCC1800264G1', '2026-10', 1)],
+        ['submit', api.submit(ARCHIVED)],
+        ['setCurrentRev', api.setCurrentRev(ARCHIVED, 1)],
+        ['cancelRev', api.cancelRev(ARCHIVED, 1, '理由')],
+      ];
+      for (const [name, p] of writes) {
+        const err = await p.catch((e: unknown) => e);
+        expect(err, name).toBeInstanceOf(ApiError);
+        expect((err as ApiError).status, name).toBe(409);
+        expect((err as ApiError).error, name).toBe('plan_archived');
+        expect((err as ApiError).fields, name).toEqual({
+          plan_id: ARCHIVED, archived_at: '2026-08-30T10:00:00+08:00',
+        });
+      }
+    });
+
+    it('★ 读不受影响：归档计划照样拿得到抬头（404 与 409 是两件事）', async () => {
+      const p = await api.getPlan(ARCHIVED);
+      expect(p.archived_at).not.toBeNull();
+    });
   });
 
   it('★ 看板计数带全部 9 个桶（team-lead 09-22 裁定）：手列的宇宙会漏掉第 N+1 种状态', async () => {
