@@ -12,7 +12,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api.ui import catalog, dashboard, lines, plans, submit, system
 from api.ui.errors import ApiError, translate
-from shared.pg_client import business_schema, pg_conn
+from shared.logging import setup_logging
+from shared.pg_client import business_schema, pg_conn, timed
 
 log = logging.getLogger("scm.api")
 
@@ -53,7 +54,7 @@ async def _reshape_validation_error(request: Request, exc: RequestValidationErro
 def _log_startup() -> None:
     """★ 配置类问题往启动钩子放，别等第一个请求才炸 ——
     在启动日志第一屏可见，胜过淹没在访问日志里的一片 500。"""
-    with pg_conn() as c, c.cursor() as cur:
+    with timed("startup"), pg_conn() as c, c.cursor() as cur:
         cur.execute("SELECT mirror, refreshed_at FROM v_mirror_freshness ORDER BY mirror")
         for mirror, at in cur.fetchall():
             log.info("startup mirror=%s refreshed_at=%s", mirror, at)
@@ -70,6 +71,9 @@ async def _lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    # ★ 第一件事：没有它，下面每一条 INFO（timed() 的耗时、启动钩子、提交后的结果行）
+    #   都会落进 logging.lastResort 被按 WARNING 丢掉 —— 本仓全部可追踪性在部署形态下失效。
+    setup_logging()
     app = FastAPI(title="service_supplychain · api/ui", lifespan=_lifespan)
 
     @app.exception_handler(ApiError)

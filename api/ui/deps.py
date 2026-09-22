@@ -7,7 +7,7 @@ from fastapi import Request
 
 from api.ui.errors import ApiError
 from shared.config import freshness
-from shared.pg_client import pg_conn
+from shared.pg_client import pg_conn, timed
 
 
 def declared(request: Request, *names: str) -> None:
@@ -24,7 +24,9 @@ def require_fresh_mirrors() -> None:
     max_age = dt.timedelta(hours=float(freshness().get("max_age_hours", 24)))
     now = dt.datetime.now(dt.UTC)
     stale = []
-    with pg_conn() as c, c.cursor() as cur:
+    # ★ 这是挂在五个业务路由上的依赖，每个请求都要跑一次 —— 不包 timed()，
+    #   PG 慢或连不上时它只会以一句 500 冒出来，打的哪个库、等了多久全都没有。
+    with timed("require_fresh_mirrors"), pg_conn() as c, c.cursor() as cur:
         cur.execute("SELECT mirror, refreshed_at FROM v_mirror_freshness ORDER BY mirror")
         for mirror, at in cur.fetchall():
             # ★ NULL 是「一行都没有」，不是「刚刷过」
@@ -37,7 +39,7 @@ def require_fresh_mirrors() -> None:
 
 
 def _check_actor(who: str) -> str:
-    with pg_conn() as c, c.cursor() as cur:
+    with timed("check_actor", actor=who), pg_conn() as c, c.cursor() as cur:
         cur.execute("SELECT active FROM actor WHERE actor_id = %s", (who,))
         row = cur.fetchone()
     if row is None:
@@ -67,3 +69,40 @@ def actor_optional(request: Request) -> str | None:
     """
     who = (request.headers.get("x-actor") or "").strip()
     return _check_actor(who) if who else None
+
+
+def ensure_plan(cur, plan_id: int) -> None:
+    """★ 没有这一步，`plan_rev_plan_id_fkey`（未命名，`translate()` 认不出）
+    会让「计划不存在」以 500 冒出来，而不是本仓其余端点统一给的 404。"""
+    cur.execute("SELECT 1 FROM plan WHERE plan_id = %s", (plan_id,))
+    if cur.fetchone() is None:
+        raise ApiError(404, "plan_not_found", "计划不存在", {"plan_id": plan_id})
+
+
+def ensure_writable(cur, plan_id: int) -> None:
+    """归档后一律拒写（409 plan_archived）；读不受影响。
+
+    ★ 归档是**一次事务里释放全部占用**。若归档后还能写，紧接着的一次认领就把刚
+      释放的 msku 又扣回去 —— 而 `GET /v1/plans` 默认不显示已归档的计划，于是那个
+      msku 被一张「看不见的计划」占着，判据③ 正是这面墙。
+    ★ 与「计划不存在」分得开：404 是没有这张计划，409 是有、但它已经封存了。
+    """
+    cur.execute("SELECT archived_at FROM plan WHERE plan_id = %s", (plan_id,))
+    row = cur.fetchone()
+    if row is None:
+        raise ApiError(404, "plan_not_found", "计划不存在", {"plan_id": plan_id})
+    if row[0] is not None:
+        raise ApiError(409, "plan_archived", "计划已归档，不接受写入",
+                       {"plan_id": plan_id, "archived_at": row[0].isoformat()})
+
+
+def known_states(cur) -> list[str]:
+    """★ 状态值的白名单只有一个出处：`plan_line_state_rank`（004）+ 旁路终态
+    「已撤销」（004 注释：它刻意不进 rank 表）。
+
+    三个调用者共用这一份：`lines._allowed_next` 校验迁移、`/v1/plan-lines` 与
+    `/v1/plans` 校验 `state=` 查询参数、看板派生统计桶 ——
+    各自维护一份宇宙必然分叉，而分叉的形态是「同一个状态在两个屏幕上待遇不同」。
+    """
+    cur.execute("SELECT state FROM plan_line_state_rank ORDER BY rank")
+    return [r[0] for r in cur.fetchall()] + ["已撤销"]
