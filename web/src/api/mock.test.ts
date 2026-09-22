@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createMockApi } from './mock';
 import { ApiError } from './client';
+import type { CountKey } from './types';
 
 let api = createMockApi();
 beforeEach(() => { api = createMockApi(); });
@@ -127,5 +128,17 @@ describe('mock 数据源', () => {
     const err = await api.cancelRev(2, 2, '   ').catch((e) => e);
     expect((err as ApiError).status).toBe(400);
     expect((err as ApiError).error).toBe('reason_required');
+  });
+
+  it('★ 看板计数带全部 9 个桶（team-lead 09-22 裁定）：手列的宇宙会漏掉第 N+1 种状态', async () => {
+    // ★ 与 api/ui/dashboard.py:18-31 同源：两个派生桶 + plan_line_state_rank（004 迁移，
+    //   按 rank）+ 旁路终态已撤销。少一个键，Task 3 首页渲染「阶段 A 够不着」的桶时就会打洞。
+    const want: CountKey[] = ['进行中', '已提交未确认', '已提交', '已确认', '已下单', '准备排货', '已排货', '已完结', '已撤销'];
+    const { counts } = await api.dashboardPlans();
+    expect(Object.keys(counts).sort()).toEqual([...want].sort());
+    expect(Object.values(counts).every((n) => typeof n === 'number')).toBe(true);
+    // ★ fixture 里 plan3=已撤销、plan4=已完结 —— 两个桶必须非零，否则这条门禁在假装测
+    expect(counts['已撤销']).toBeGreaterThan(0);
+    expect(counts['已完结']).toBeGreaterThan(0);
   });
 });

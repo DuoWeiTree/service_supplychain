@@ -32,8 +32,15 @@ export interface PlanList {
   excluded: { archived: number };
 }
 
-/** 看板计数的键是**中文状态名**（后端 `COUNTED`），不是英文 */
-export type CountKey = '进行中' | '已提交' | '已提交未确认' | '已下单' | '准备排货' | '已排货';
+/** 看板计数的键是**中文状态名**（后端 `COUNTED`），不是英文。
+ *  ★ team-lead 2026-09-22 裁定：brief 原文只列了 6 个，是旧值 —— 实际是
+ *  `api/ui/dashboard.py:18-31` 的 `DERIVED_BUCKETS + known_states(cur)`：
+ *  两个派生桶（进行中 / 已提交未确认）+ `plan_line_state_rank`（`004` 迁移，按 rank 排序）
+ *  的全部记录状态 + 旁路终态「已撤销」。手列会漏掉第 N+1 种状态（`已确认` 09-22 前就漏过）——
+ *  这份顺序必须跟后端的发出顺序一致，不是字母序或别的排法。 */
+export type CountKey =
+  | '进行中' | '已提交未确认'
+  | '已提交' | '已确认' | '已下单' | '准备排货' | '已排货' | '已完结' | '已撤销';
 
 export interface DashboardPlans {
   counts: Record<CountKey, number>;

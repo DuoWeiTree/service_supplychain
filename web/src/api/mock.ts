@@ -1,6 +1,6 @@
 import { ApiError, type SupplyChainApi } from './client';
 import type {
-  CatalogResult, GridResponse, PlanList, PlanSummary, RevList, Seller, SkippedCell,
+  CatalogResult, CountKey, GridResponse, PlanList, PlanSummary, RevList, Seller, SkippedCell,
 } from './types';
 import plansFixture from './fixtures/plans.json';
 import gridFixture from './fixtures/grid-1.json';
@@ -74,10 +74,25 @@ export function createMockApi(): SupplyChainApi {
       return { plan_id };
     },
     async dashboardPlans() {
-      // ★ 返回全集（诚实）。够不着的三个态由前端不渲染，不是接口抹成 0（S-20）
+      // ★ 键的全集按 team-lead 09-22 裁定，照 api/ui/dashboard.py:18-31 的推导法算
+      //   （派生桶 + plan_line_state_rank 按 rank 顺序 + 旁路终态已撤销），不手列 ——
+      //   手列的宇宙会漏掉第 N+1 种状态，而这里从 list.plans 现算，fixture 改了状态
+      //   计数也跟着对，不会像写死的数字那样悄悄脱节。
+      const RANKED: readonly CountKey[] = ['已提交', '已确认', '已下单', '准备排货', '已排货', '已完结'];
+      const counted: CountKey[] = ['进行中', '已提交未确认', ...RANKED, '已撤销'];
+      const counts = Object.fromEntries(counted.map((k) => [k, 0])) as Record<CountKey, number>;
+      let neverSubmittedExcluded = 0;
+      for (const p of list.plans) {
+        if (p.state === null) { neverSubmittedExcluded += 1; continue; }
+        counts[p.state] += 1;
+        // ★ 与后端一致：只要不是已完结/已撤销就算「进行中」，已提交额外再计一次「已提交未确认」
+        if (p.state !== '已完结' && p.state !== '已撤销') counts['进行中'] += 1;
+        if (p.state === '已提交') counts['已提交未确认'] += 1;
+      }
       return {
-        counts: { 进行中: 2, 已提交: 1, 已提交未确认: 1, 已下单: 0, 准备排货: 0, 已排货: 0 },
-        scope_note: { unreachable_in_stage_a: ['已下单', '准备排货', '已排货'], never_submitted_excluded: 1 },
+        counts,
+        // ★ 够不着的三个态由前端不渲染，不是接口抹成 0（S-20）
+        scope_note: { unreachable_in_stage_a: ['已下单', '准备排货', '已排货'], never_submitted_excluded: neverSubmittedExcluded },
       };
     },
     async dashboardUnsubmitted() {
