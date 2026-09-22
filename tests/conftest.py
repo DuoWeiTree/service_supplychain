@@ -104,6 +104,11 @@ def seed(wipe):
     ★ 刻意包含两种「长得像 0 其实不是」的形态：
       · actor `bob` 停用 —— 与「不存在」分得开
       · seller `WM-1` has_fba=false —— 它的 FBA 在仓是「不适用」，不是 0（02 §3.1a）
+
+    ★ Task 10 补：`warehouse` 是 `v_mirror_freshness` 的四个镜像之一，
+      之前这里没种它，第一个挂 `require_fresh_mirrors` 的路由（`/v1/plans`）
+      上线前没人发现 —— `/v1/readiness` 只报告新鲜度、不拒绝服务，盖不住这个缺口。
+      不种它，任何挂了这个依赖的端点在 `seed` 下永远 503。
     """
     from shared.pg_client import pg_conn
     ns = SimpleNamespace(
@@ -114,6 +119,7 @@ def seed(wipe):
         msku_c=("MSKU-C", "11094"),          # ★ 与 msku_a 同货号、不同店 → 在途无归属那一形态
         msku_d=("MSKU-D", "11072"),          # ★ sku_b 在有 FBA 的店 → closing 有真数那一形态
         msku_nofba=("MSKU-W", "90001"),      # ★ 无 FBA → 不适用那一形态
+        wid=1,
     )
     with pg_conn() as c, c.cursor() as cur:
         cur.executemany("INSERT INTO actor (actor_id, name, active) VALUES (%s, %s, %s)",
@@ -130,6 +136,9 @@ def seed(wipe):
                         [(*ns.msku_a, ns.sku_a), (*ns.msku_b, ns.sku_a),
                          (*ns.msku_c, ns.sku_a), (*ns.msku_d, ns.sku_b),
                          (*ns.msku_nofba, ns.sku_b)])
+        cur.execute(
+            "INSERT INTO warehouse (wid, name, kind, market, refreshed_at)"
+            " VALUES (%s, %s, %s, %s, now())", (ns.wid, "测试仓", "local", "US"))
     return ns
 
 
