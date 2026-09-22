@@ -80,10 +80,17 @@ def wipe(business_db):
       TRUNCATE 会先炸在还没创建的表上，而不是炸在测试真正要验的地方。
     """
     assert_not_production_schema()
+    from migrations.pg.apply import applied_versions
     from shared.pg_client import pg_conn
     with pg_conn() as c, c.cursor() as cur:
         cur.execute("SELECT tablename FROM pg_tables WHERE schemaname = current_schema()")
         existing = {r[0] for r in cur.fetchall()}
+        # ★ 过滤本身会哑掉「表名拼错/改名」这类真事故：一旦阶段 A 最后一个迁移
+        #   （004，落地全部表）已应用，DATA_TABLES 就该与 existing 相等 ——
+        #   不相等就点名硬失败，不许再靠「还没到它的迁移」这个借口继续漏下去。
+        if "004_plan_overall_state.sql" in applied_versions(business_db):
+            missing = set(DATA_TABLES) - existing
+            assert not missing, f"DATA_TABLES 里这些表不存在：{sorted(missing)}"
         tables = [t for t in DATA_TABLES if t in existing]
         if tables:
             cur.execute(f"TRUNCATE {', '.join(tables)} RESTART IDENTITY CASCADE")

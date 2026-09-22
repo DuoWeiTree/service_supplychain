@@ -55,7 +55,7 @@ def test_warehouse_kind_is_a_closed_set(wipe):
 
 
 def test_forbid_update_delete_names_the_table_and_the_op(wipe, seed):
-    """守卫函数本身要能被证伪：挂一张临时的只追加表，改它必须炸且点名。"""
+    """守卫函数本身要能被证伪：挂一张临时的只追加表，改它或删它都必须炸且点名。"""
     with pg_conn() as c, c.cursor() as cur:
         cur.execute("CREATE TEMP TABLE probe_append_only (x int)")
         cur.execute("CREATE TRIGGER t BEFORE UPDATE OR DELETE ON probe_append_only "
@@ -64,3 +64,12 @@ def test_forbid_update_delete_names_the_table_and_the_op(wipe, seed):
         with pytest.raises(psycopg2.errors.RaiseException) as ei:
             cur.execute("UPDATE probe_append_only SET x = 2")
         assert "probe_append_only" in str(ei.value) and "UPDATE" in str(ei.value)
+
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("CREATE TEMP TABLE probe_append_only (x int)")
+        cur.execute("CREATE TRIGGER t BEFORE UPDATE OR DELETE ON probe_append_only "
+                    "FOR EACH ROW EXECUTE FUNCTION forbid_update_delete()")
+        cur.execute("INSERT INTO probe_append_only VALUES (1)")
+        with pytest.raises(psycopg2.errors.RaiseException) as ei:
+            cur.execute("DELETE FROM probe_append_only")
+        assert "probe_append_only" in str(ei.value) and "DELETE" in str(ei.value)

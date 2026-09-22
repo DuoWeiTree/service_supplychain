@@ -51,3 +51,18 @@ def test_pg_conn_sets_search_path(business_db):
     with pg_conn() as c, c.cursor() as cur:
         cur.execute("SHOW search_path")
         assert cur.fetchone()[0].strip() == business_db
+
+
+def test_wipe_fails_loudly_once_all_tables_should_exist(business_db, monkeypatch, request):
+    """★ 静默兜底是最坏的一种：`wipe` 把 DATA_TABLES 过滤到「已存在」那步，
+    本身会哑掉「表名拼错/改名」这类真事故 —— 拼错的表和「还没到它的迁移」长得一模一样。
+    Stage A 最后一个迁移（004）落地后 DATA_TABLES 应与 existing 相等，
+    这里假装 004 已落地、掺一张假表，验证 `wipe` 会点名它硬失败，而不是悄悄漏掉。"""
+    import conftest
+
+    monkeypatch.setattr(conftest, "DATA_TABLES", conftest.DATA_TABLES + ("no_such_table_zzz",))
+    monkeypatch.setattr(mig, "applied_versions", lambda schema: ["004_plan_overall_state.sql"])
+
+    with pytest.raises(AssertionError) as ei:
+        request.getfixturevalue("wipe")
+    assert "no_such_table_zzz" in str(ei.value)
