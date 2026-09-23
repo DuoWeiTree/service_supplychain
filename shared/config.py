@@ -38,5 +38,17 @@ def api() -> dict:
     return dict(_cfg().get("api", {}))
 
 
+#: ★ 设计取值 · 未实测（设计 §10 OQ-6/7/10）。config.toml 缺键时用它们，
+#:   但缺键与「明确写了这个值」在日志里要分得开 —— 见 jobs/scheduler.py 的启动行。
+_FRESHNESS_DEFAULTS = {
+    "max_age_hours": 24,
+    "refresh_at": "06:30",              # ★ 07:481「在 CH 采集窗口之后」，具体时刻未实测
+    "refresh_timezone": "Asia/Shanghai",
+    "scheduler_enabled": True,
+    "coverage_drop_threshold": 0.30,    # OQ-6 裁定 09-22
+    "startup_gate": True,
+}
+
+
 def freshness() -> dict:
-    return dict(_cfg().get("freshness", {"max_age_hours": 24}))
+    return {**_FRESHNESS_DEFAULTS, **_cfg().get("freshness", {})}

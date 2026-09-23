@@ -46,12 +46,37 @@ def _switch_schema(text: str) -> str:
     return "".join(out)
 
 
+def _disable_scheduler(text: str) -> str:
+    """★ 测试固定 `[freshness] scheduler_enabled = false` —— 不这样，每个
+    `client` 夹具的 `create_app()` 都会在 `_lifespan` 里起一个真 APScheduler
+    （task-6-brief Step 7）。已有这一行就覆盖成 false，没有就在 `[freshness]`
+    段尾追加一行 —— 两种情况 `config.toml` 都可能出现（新增键 vs 老配置未跟上）。
+    """
+    out, in_freshness, seen = [], False, False
+    for line in text.splitlines(keepends=True):
+        s = line.strip()
+        if s.startswith("["):
+            if in_freshness and not seen:
+                out.append("scheduler_enabled = false\n")
+            in_freshness = s.startswith("[freshness]")
+            seen = False
+        if in_freshness and s.startswith("scheduler_enabled"):
+            out.append("scheduler_enabled = false\n")
+            seen = True
+            continue
+        out.append(line)
+    if in_freshness and not seen:
+        out.append("scheduler_enabled = false\n")
+    return "".join(out)
+
+
 @pytest.fixture(scope="session")
 def business_db(tmp_path_factory):
     from shared import config as config_module
 
     cfg = tmp_path_factory.mktemp("jxd_scm") / "config.toml"
-    cfg.write_text(_switch_schema(CONFIG_TOML.read_text("utf-8")), encoding="utf-8")
+    text = _disable_scheduler(_switch_schema(CONFIG_TOML.read_text("utf-8")))
+    cfg.write_text(text, encoding="utf-8")
     prev = os.environ.get("JXD_SCM_CONFIG")
     os.environ["JXD_SCM_CONFIG"] = str(cfg)
     config_module.reset_cache()

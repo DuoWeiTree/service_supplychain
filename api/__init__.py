@@ -10,8 +10,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from api.ui import catalog, dashboard, lines, plans, submit, system
+from api.ui import catalog, dashboard, lines, ops, plans, submit, system
 from api.ui.errors import ApiError, translate
+from jobs import scheduler as job_scheduler
 from shared.logging import setup_logging
 from shared.pg_client import business_schema, pg_conn, timed
 
@@ -66,8 +67,12 @@ def _log_startup() -> None:
 async def _lifespan(app: FastAPI):
     # ★ FastAPI 0.141 移除了 add_event_handler（曾经只是 deprecated）——
     #   lifespan 是现在唯一的启动钩子入口，行为等价：serve 第一个请求前跑完。
-    _log_startup()
-    yield
+    job_scheduler.start()          # ★ 先起调度器：启动检查可能要立刻触发一轮刷新
+    try:
+        _log_startup()
+        yield
+    finally:
+        job_scheduler.shutdown()
 
 
 def create_app() -> FastAPI:
@@ -97,4 +102,5 @@ def create_app() -> FastAPI:
     app.include_router(catalog.router, prefix="/v1")
     app.include_router(lines.router, prefix="/v1")
     app.include_router(dashboard.router, prefix="/v1")
+    app.include_router(ops.router, prefix="/v1")
     return app
