@@ -3,6 +3,7 @@
 ★ 测试 schema 是 scm_test。禁止 scm（本服务生产）与 inv（同库另一个在跑的系统）——
   往它们任何一个里写一行都是事故，而这类事故没有任何回声。
 """
+import logging
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -184,6 +185,30 @@ def seed(wipe):
             "INSERT INTO warehouse (wid, name, kind, market, refreshed_at)"
             " VALUES (%s, %s, %s, %s, now())", (ns.wid, "测试仓", "local", "US"))
     return ns
+
+
+@pytest.fixture
+def scm_log(caplog):
+    """★ 看得见 `scm.*` 日志的 caplog。
+
+    `shared/logging.py` 刻意把 `scm` 的 `propagate` 关掉（root 上挂着什么不归
+    我们管），而 pytest 的 caplog handler 装在 **root** 上 —— 于是裸用 caplog
+    断言 `scm.*` 的日志，抓到的是空字符串。`tests/test_logging.py:80` 已经
+    写明了这一点并用 `addHandler(caplog.handler)` 绕开，但
+    `tests/test_api_startup_check.py` 的几条没跟上：它们**只在别的测试先跑过
+    时才绿**（实测 `pytest tests/test_api_startup_check.py` 全绿，
+    单跑那一条 `caplog.text` 为 `''` 直接红）。
+
+    ★ 这正是本仓点名过的失败形态：断言被旁边的东西托住，看起来和真的守住了
+      一模一样。日志断言不该依赖自己跑在谁后面。
+    """
+    logger = logging.getLogger("scm")
+    logger.addHandler(caplog.handler)
+    caplog.handler.setLevel(logging.INFO)
+    try:
+        yield caplog
+    finally:
+        logger.removeHandler(caplog.handler)
 
 
 @pytest.fixture

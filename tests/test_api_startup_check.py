@@ -50,12 +50,12 @@ def test_startup_gate_false_never_triggers_a_refresh(wipe, monkeypatch):
 
 
 def test_a_failing_startup_refresh_is_logged_with_cause_and_does_not_stop_the_app(
-        wipe, monkeypatch, caplog):
+        wipe, monkeypatch, scm_log):
     """★ 静默兜底是最坏的一种：刷新崩了要连原因一起留声，且绝不能让应用起不来。
 
     ★ fix round 2：异常消息本身刻意不含类名（"CH 连不上：模拟
     UND_ERR_CONNECT_TIMEOUT" 里没有 "RuntimeError" 这个词）——这样
-    `"RuntimeError" in caplog.text` 只有日志真的打了 `type(e).__name__`
+    `"RuntimeError" in scm_log.text` 只有日志真的打了 `type(e).__name__`
     才会过，不会被"消息文本恰好包含那几个字"这种巧合托住。只断言消息文本
     （旧版测试的写法）证不出"类名被记录"，这正是本轮要补的洞。
     """
@@ -65,17 +65,17 @@ def test_a_failing_startup_refresh_is_logged_with_cause_and_does_not_stop_the_ap
         raise RuntimeError("CH 连不上：模拟 UND_ERR_CONNECT_TIMEOUT")
 
     monkeypatch.setattr(refresh_dims, "refresh_all", _boom)
-    with caplog.at_level(logging.WARNING, logger="scm.api"):  # noqa: SIM117
+    with scm_log.at_level(logging.WARNING, logger="scm.api"):  # noqa: SIM117
         with TestClient(api.create_app()) as c:
             assert c.get("/health").status_code == 200
-    assert "CH 连不上" in caplog.text and "UND_ERR_CONNECT_TIMEOUT" in caplog.text
-    assert "RuntimeError" in caplog.text, (
+    assert "CH 连不上" in scm_log.text and "UND_ERR_CONNECT_TIMEOUT" in scm_log.text
+    assert "RuntimeError" in scm_log.text, (
         "日志必须带异常类名（err_type=<class>），不能只有 str(e)——"
-        f"实际日志：{caplog.text!r}")
+        f"实际日志：{scm_log.text!r}")
 
 
 def test_a_failing_startup_refresh_that_is_a_pg_error_logs_class_and_pgcode(
-        wipe, monkeypatch, caplog):
+        wipe, monkeypatch, scm_log):
     """★ psycopg2.Error 的 pgcode/constraint 全在 `.diag` 里，不在 `str(e)` 里——
     真实 PG 拒绝（唯一键冲突、外键冲突……）与真实 CH 连不上必须分得开，不能靠
     "记得看 err_type"。用一次真的坏查询在测试库里现抓一个真 `psycopg2.Error`，
@@ -95,16 +95,16 @@ def test_a_failing_startup_refresh_that_is_a_pg_error_logs_class_and_pgcode(
         raise pg_err
 
     monkeypatch.setattr(refresh_dims, "refresh_all", _boom)
-    with caplog.at_level(logging.WARNING, logger="scm.api"):  # noqa: SIM117
+    with scm_log.at_level(logging.WARNING, logger="scm.api"):  # noqa: SIM117
         with TestClient(api.create_app()) as c:
             assert c.get("/health").status_code == 200
-    assert type(pg_err).__name__ in caplog.text, \
-        f"缺异常类名：{caplog.text!r}"
-    assert pg_err.pgcode in caplog.text, f"缺 pgcode：{caplog.text!r}"
+    assert type(pg_err).__name__ in scm_log.text, \
+        f"缺异常类名：{scm_log.text!r}"
+    assert pg_err.pgcode in scm_log.text, f"缺 pgcode：{scm_log.text!r}"
 
 
 def test_a_busy_lock_at_startup_is_skipped_not_treated_as_a_failure(
-        wipe, monkeypatch, caplog):
+        wipe, monkeypatch, scm_log):
     """★ advisory lock 被占（另一轮 CLI/运维触发正在跑）是正常状态，不是启动
     刷新失败——与 `jobs/scheduler.py::_tick` 对 `RefreshInFlight` 的处理保持
     同一判据：必须记成"跳过"，不能跟真失败混进同一种 `outcome=fail` 日志，
@@ -115,16 +115,16 @@ def test_a_busy_lock_at_startup_is_skipped_not_treated_as_a_failure(
         raise RefreshInFlight()
 
     monkeypatch.setattr(refresh_dims, "refresh_all", _busy)
-    with caplog.at_level(logging.WARNING, logger="scm.api"):  # noqa: SIM117
+    with scm_log.at_level(logging.WARNING, logger="scm.api"):  # noqa: SIM117
         with TestClient(api.create_app()) as c:
             assert c.get("/health").status_code == 200
-    assert "outcome=skipped" in caplog.text and "busy" in caplog.text
-    assert "outcome=fail" not in caplog.text, \
-        f"抢锁被占不许算成失败：{caplog.text!r}"
+    assert "outcome=skipped" in scm_log.text and "busy" in scm_log.text
+    assert "outcome=fail" not in scm_log.text, \
+        f"抢锁被占不许算成失败：{scm_log.text!r}"
 
 
 def test_boot_with_unreachable_pg_still_serves_health_and_names_the_cause(
-        wipe, monkeypatch, caplog):
+        wipe, monkeypatch, scm_log):
     """★ OQ-8 的原文是「不拦启动，**也不拦** `/health` / `/v1/readiness`」，
     而实现只把 CH 侧（触发的那次刷新）兜住了：读新鲜度的那一行在 `try` 之外，
     PG 连不上时异常直接冲出 lifespan，应用整个起不来 —— 容器里就是无限崩溃重启，
@@ -139,15 +139,15 @@ def test_boot_with_unreachable_pg_still_serves_health_and_names_the_cause(
     dead = {**pg_client.business_pg(), "host": "127.0.0.1", "port": 5499}
     monkeypatch.setattr(pg_client, "business_pg", lambda: dead)
 
-    with caplog.at_level(logging.WARNING, logger="scm.api"):  # noqa: SIM117
+    with scm_log.at_level(logging.WARNING, logger="scm.api"):  # noqa: SIM117
         with TestClient(api.create_app()) as c:
             assert c.get("/health").status_code == 200, "PG 连不上也不许拖垮 /health"
-    assert "stage=freshness_read" in caplog.text, (
-        f"没点名是哪一步失败的：{caplog.text!r}")
-    assert "OperationalError" in caplog.text, (
-        f"日志必须带异常类名，不能只有 str(e)：{caplog.text!r}")
-    assert "5499" in caplog.text, (
-        f"日志必须点名打的谁（host:port）—— 否则下次得重新复现：{caplog.text!r}")
+    assert "stage=freshness_read" in scm_log.text, (
+        f"没点名是哪一步失败的：{scm_log.text!r}")
+    assert "OperationalError" in scm_log.text, (
+        f"日志必须带异常类名，不能只有 str(e)：{scm_log.text!r}")
+    assert "5499" in scm_log.text, (
+        f"日志必须点名打的谁（host:port）—— 否则下次得重新复现：{scm_log.text!r}")
 
 
 def test_suite_default_never_triggers_a_refresh_even_with_stale_mirrors(wipe, monkeypatch):
