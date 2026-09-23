@@ -562,7 +562,7 @@ Expected: FAIL —— `ModuleNotFoundError: No module named 'migrations.pg.apply
 [api]
 # ★ 阶段 A 按 Q-5 内网裸跑，不做鉴权；这一段留给 api/pub/ 上线时用。
 bind = "0.0.0.0"
-port = 8090
+port = 8091
 
 [freshness]
 # ★ 维度镜像陈旧超过它 → 拒绝服务（E-4）。
@@ -5094,7 +5094,7 @@ def test_criterion_5_the_back_edge_exists_and_terminal_states_are_sealed(client,
     uv sync
     cp config.example.toml config.toml     # 填 PG / CH 口令
     python -m migrations.pg.apply          # 应用迁移到 config.toml 里的 schema
-    uvicorn --factory api:create_app --port 8090
+    uvicorn --factory api:create_app --port 8091
 
 ## 测试
 

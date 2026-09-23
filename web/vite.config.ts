@@ -10,7 +10,7 @@ export default defineConfig({
   //   VITE_DATA_SOURCE=api 这半边在开发形态下开箱不可用。
   //   端口抄 config.example.toml 的 [api] port（根 README 的 uvicorn 也是它），
   //   不另写第二份。
-  server: { proxy: { '/v1': { target: 'http://127.0.0.1:8090', changeOrigin: true } } },
+  server: { proxy: { '/v1': { target: 'http://127.0.0.1:8091', changeOrigin: true } } },
   test: {
     globals: true,
     environment: 'jsdom',

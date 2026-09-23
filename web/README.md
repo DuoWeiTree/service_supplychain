@@ -17,12 +17,12 @@
 
 三条命令，两个终端：
 
-    uv run uvicorn --factory api:create_app --port 8090     # 仓库根目录，先起
+    uv run uvicorn --factory api:create_app --port 8091     # 仓库根目录，先起
     VITE_DATA_SOURCE=api npm run dev                        # web/，起在 5173
     # 浏览器开 http://localhost:5173
 
 `VITE_API_BASE` 默认 `/v1` 是**相对路径** —— 它之所以能打到后端，是因为
-`vite.config.ts` 里的 `server.proxy` 把 `/v1` 转发到 `127.0.0.1:8090`。
+`vite.config.ts` 里的 `server.proxy` 把 `/v1` 转发到 `127.0.0.1:8091`。
 端口抄 `config.example.toml` 的 `[api] port`，别再写死第二份。
 
 后端没起时前端报的是 `ApiError(error='bad_response')`「返回的不是 JSON」——

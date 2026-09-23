@@ -7,7 +7,7 @@
     uv sync
     cp config.example.toml config.toml     # 填 [business_pg] / [clickhouse] 口令
     uv run python -m migrations.pg.apply   # 应用迁移到 config.toml 里的 schema（默认 scm）
-    uv run uvicorn --factory api:create_app --port 8090
+    uv run uvicorn --factory api:create_app --port 8091
 
 `config.toml` 不入库（`.gitignore`），模板是 `config.example.toml` —— 新机器上
 **必须先 cp**，否则第一次取配置就会以 `FileNotFoundError` 挂掉。
