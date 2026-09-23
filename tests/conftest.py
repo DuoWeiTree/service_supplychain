@@ -159,11 +159,16 @@ def seed(wipe):
     ns = SimpleNamespace(
         actor="alice", actor_inactive="bob",
         seller_a="11072", seller_b="11094", seller_nofba="90001",
-        sku_a="DCC1800264G1", sku_b="A4P-TOY-002",
+        sku_a="DCC1800264G1", sku_b="A4P-TOY-002", sku_e="A4P-TOY-003",
         msku_a=("MSKU-A", "11072"), msku_b=("MSKU-B", "11072"),
         msku_c=("MSKU-C", "11094"),          # ★ 与 msku_a 同货号、不同店 → 在途无归属那一形态
         msku_d=("MSKU-D", "11072"),          # ★ sku_b 在有 FBA 的店 → closing 有真数那一形态
         msku_nofba=("MSKU-W", "90001"),      # ★ 无 FBA → 不适用那一形态
+        # ★ 09-23 真实缺陷：sku_e 独占，不与任何其它 msku 共享 (sku, sid) ——
+        #   否则同组里另一个 msku 的真实在仓数字会把这个「没取到」悄悄盖住。
+        #   seller_a 有 FBA，但 tests/fixtures/fba_onhand.csv 里刻意不给 MSKU-E 一行，
+        #   模拟「阶段 A 冻结 fixture 里没有这个 msku」→ 未知在仓那一形态。
+        msku_e=("MSKU-E", "11072"),
         wid=1,
     )
     with pg_conn() as c, c.cursor() as cur:
@@ -176,11 +181,11 @@ def seed(wipe):
              (ns.seller_b, "A4Pet-BS-UK", "UK", True, "amazon"),
              (ns.seller_nofba, "A4Pet-WM", "US", False, "walmart")])
         cur.executemany("INSERT INTO sku_catalog (sku, name, refreshed_at) VALUES (%s, %s, now())",
-                        [(ns.sku_a, "猫爬架"), (ns.sku_b, "逗猫棒")])
+                        [(ns.sku_a, "猫爬架"), (ns.sku_b, "逗猫棒"), (ns.sku_e, "猫抓板")])
         cur.executemany("INSERT INTO msku_bridge VALUES (%s, %s, %s, now())",
                         [(*ns.msku_a, ns.sku_a), (*ns.msku_b, ns.sku_a),
                          (*ns.msku_c, ns.sku_a), (*ns.msku_d, ns.sku_b),
-                         (*ns.msku_nofba, ns.sku_b)])
+                         (*ns.msku_nofba, ns.sku_b), (*ns.msku_e, ns.sku_e)])
         cur.execute(
             "INSERT INTO warehouse (wid, name, kind, market, refreshed_at)"
             " VALUES (%s, %s, %s, %s, now())", (ns.wid, "测试仓", "local", "US"))

@@ -134,6 +134,30 @@ def test_no_fba_seller_is_not_applicable_not_zero(client, seed):
     assert row["basis"]["closing_reason"] == "not_applicable"
 
 
+def test_fba_seller_missing_the_onhand_number_is_unknown_not_not_applicable(client, seed):
+    """★ 09-23 真实缺陷（负责人在真实数据下撞见）：`seed.msku_e` 绑在**有 FBA** 的
+    `seller_a` 上，但阶段 A 的冻结 fixture（`tests/fixtures/fba_onhand.csv`）里刻意
+    没有它这一行 —— 这是「有 FBA 但数字没取到」，必须读成未知，不是不适用。
+
+    旧实现把 `onhand is None` 一步到位地读成 `not_applicable`，即使这个 (sku, sid)
+    对应的店铺 `has_fba=true`——前端 `na_disagrees_with_seller` 守卫正是靠对比
+    `closing_reason === 'not_applicable'` 与 `seller.has_fba` 抓到这个坍缩的。
+    """
+    pid = setup_plan(client, seed, mskus=(seed.msku_e,))
+    g = client.get(f"/v1/plans/{pid}/grid", headers=H(seed.actor)).json()
+    rows = sorted(g["inventory"], key=lambda r: r["period"])
+    assert len(rows) == 3, "三个月计划该有三行"
+    for row in rows:
+        assert row["onhand"] is None and row["closing"] is None
+        assert row["basis"]["closing_reason"] == "unknown_onhand"
+        assert row["basis"]["closing_reason"] != "not_applicable", \
+            "该店有 FBA —— 不许被标成不适用"
+    # ★ 需求本身是已知的（seed 里给了 MSKU-E 三个月销售历史）——
+    #   证明这一格是「在仓未知」而不是被「需求也未知」顺带带出来的
+    assert all(r["basis"]["demand"] is not None for r in rows), \
+        "这一格的未知专属于在仓，不该连需求也一起说不清"
+
+
 def test_the_two_reasons_behind_a_null_closing_are_distinguishable(client, seed):
     """★ closing 的 null 只有两种成因，记在 closing_reason 上（头部口径 b）；
     inbound 恒 null 那件事记在 reason 上，两者不许挤进同一个字段。"""

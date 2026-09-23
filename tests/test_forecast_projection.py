@@ -83,10 +83,14 @@ def test_unknown_demand_propagates_forward_and_is_not_zero():
 
 
 def test_not_applicable_is_a_third_state():
-    """★ 三种状态必须两两分得开：0（真的没货）· 未知（人没填）· 不适用（该平台无 FBA）。"""
+    """★ 三种状态必须两两分得开：0（真的没货）· 未知（人没填）· 不适用（该平台无 FBA）。
+
+    ★ 09-23 真实缺陷修复：onhand is None 本身分不清「不适用」与「未知在仓」——
+    调用方必须显式传 applicable=False 才是「不适用」（该店没有 FBA，02 §3.1a）。
+    """
     zero = inventory_projection(0, {}, {"2026-10": 0})
     unknown = inventory_projection(100, {}, {"2026-10": None})
-    na = inventory_projection(None, {}, {"2026-10": 5})
+    na = inventory_projection(None, {}, {"2026-10": 5}, applicable=False)
     assert zero[0]["closing"] == 0 and not zero[0]["unknown"] and not zero[0]["not_applicable"]
     assert unknown[0]["closing"] is None and unknown[0]["unknown"]
     assert na[0]["closing"] is None and na[0]["not_applicable"]
@@ -95,6 +99,35 @@ def test_not_applicable_is_a_third_state():
     # ★ 同理：该店铺压根没有这门生意，「缺 0 件」是个不存在的答案
     assert na[0]["gap"] is None and na[0]["shortage"] is None
     assert zero[0]["gap"] == 0 and zero[0]["shortage"] is False, "真的不缺货才是 0/False"
+
+
+def test_unknown_onhand_is_distinguished_from_not_applicable():
+    """★ 09-23 真实缺陷（负责人在真实数据下亲眼撞见）：`onhand is None` 有两种
+    互不相同的成因，压成一个 `not_applicable` 就会在有 FBA 的店上撒谎：
+
+      · 该店铺压根没有 FBA（02 §3.1a）→ 不适用，`applicable=False`
+      · 该店铺**有** FBA，但阶段 A 的冻结 fixture 里没有这个 msku 的在仓数字
+        → 未知在仓，是「人没填」的同类，不是「不存在」
+
+    两者的 `basis.reason`、`unknown`、`not_applicable` 三个字段必须两两分得开，
+    否则前端 `na_disagrees_with_seller` 那条守卫会在真实 FBA 店上误报
+    （负责人截图看到的 12 个孤儿正是这个坍缩）。
+    """
+    applicable_but_unknown = inventory_projection(None, {}, {"2026-10": 5}, applicable=True)
+    na = inventory_projection(None, {}, {"2026-10": 5}, applicable=False)
+    row = applicable_but_unknown[0]
+    assert row["closing"] is None
+    assert row["opening"] is None
+    assert row["unknown"] is True, "有 FBA 但数字未知 —— 与「人没填」同类，必须传染式未知"
+    assert row["not_applicable"] is False, "有 FBA 的店不许被标成不适用"
+    assert row["basis"]["reason"] == "unknown_onhand"
+    assert row["basis"]["reason"] != na[0]["basis"]["reason"]
+    # ★ 「不知道缺多少」不是「一件都不缺」——同 unknown_demand 的处置
+    assert row["gap"] is None and row["shortage"] is None
+    # ★ applicable 默认值必须是 True（向后兼容其余全部调用方：onhand 非 None 时不受影响，
+    #   但 onhand 恰好是 None 又没显式传 applicable 的旧调用不该悄悄退化成「不适用」）
+    default_applicable = inventory_projection(None, {}, {"2026-10": 5})
+    assert default_applicable[0]["basis"]["reason"] == "unknown_onhand"
 
 
 def test_shortage_and_gap_are_reported():

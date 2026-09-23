@@ -67,6 +67,39 @@
       "system_units": null
     },
     {
+      "basis": "system",
+      "effective_units": 5,
+      "expected_units": null,
+      "period": "2026-10",
+      "seller_sku": "MSKU-E",
+      "sid": "11072",
+      "sku": "A4P-TOY-003",
+      "system_extrapolated": false,
+      "system_units": 5
+    },
+    {
+      "basis": "system",
+      "effective_units": 6,
+      "expected_units": null,
+      "period": "2026-11",
+      "seller_sku": "MSKU-E",
+      "sid": "11072",
+      "sku": "A4P-TOY-003",
+      "system_extrapolated": false,
+      "system_units": 6
+    },
+    {
+      "basis": "system",
+      "effective_units": 7,
+      "expected_units": null,
+      "period": "2026-12",
+      "seller_sku": "MSKU-E",
+      "sid": "11072",
+      "sku": "A4P-TOY-003",
+      "system_extrapolated": false,
+      "system_units": 7
+    },
+    {
       "basis": "human",
       "effective_units": 130,
       "expected_units": 130,
@@ -278,6 +311,60 @@
     {
       "basis": {
         "as_of": "2026-09-21",
+        "closing_reason": "unknown_onhand",
+        "demand": 5,
+        "includes_plan_purchase": false,
+        "reason": "no_seller_attribution",
+        "sku_level_in_transit": 0,
+        "source": "ch",
+        "sources": []
+      },
+      "closing": null,
+      "inbound": null,
+      "onhand": null,
+      "period": "2026-10",
+      "sid": "11072",
+      "sku": "A4P-TOY-003"
+    },
+    {
+      "basis": {
+        "as_of": "2026-09-21",
+        "closing_reason": "unknown_onhand",
+        "demand": 6,
+        "includes_plan_purchase": false,
+        "reason": "no_seller_attribution",
+        "sku_level_in_transit": 0,
+        "source": "ch",
+        "sources": []
+      },
+      "closing": null,
+      "inbound": null,
+      "onhand": null,
+      "period": "2026-11",
+      "sid": "11072",
+      "sku": "A4P-TOY-003"
+    },
+    {
+      "basis": {
+        "as_of": "2026-09-21",
+        "closing_reason": "unknown_onhand",
+        "demand": 7,
+        "includes_plan_purchase": false,
+        "reason": "no_seller_attribution",
+        "sku_level_in_transit": 0,
+        "source": "ch",
+        "sources": []
+      },
+      "closing": null,
+      "inbound": null,
+      "onhand": null,
+      "period": "2026-12",
+      "sid": "11072",
+      "sku": "A4P-TOY-003"
+    },
+    {
+      "basis": {
+        "as_of": "2026-09-21",
         "closing_reason": "unknown_demand",
         "demand": null,
         "includes_plan_purchase": false,
@@ -405,6 +492,21 @@
       "period": "2026-12",
       "planned_units": null,
       "sku": "A4P-TOY-002"
+    },
+    {
+      "period": "2026-10",
+      "planned_units": null,
+      "sku": "A4P-TOY-003"
+    },
+    {
+      "period": "2026-11",
+      "planned_units": null,
+      "sku": "A4P-TOY-003"
+    },
+    {
+      "period": "2026-12",
+      "planned_units": null,
+      "sku": "A4P-TOY-003"
     },
     {
       "period": "2026-10",

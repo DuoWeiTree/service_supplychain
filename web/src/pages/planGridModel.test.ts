@@ -139,6 +139,22 @@ describe('网格模型', () => {
     expect(m.orphans).toContainEqual({ kind: 'na_disagrees_with_seller', key: 'SKU-1/11072/2026-10' });
   });
 
+  it('★ 09-23 真实缺陷：有 FBA 的店给「未知在仓」不许被当成「不适用」误报',
+     () => {
+    // ★ sid 11072 在 sellers 里 has_fba=true；这一格 onhand=null 但成因是
+    //   unknown_onhand（阶段 A 没取到这个 msku 的数字），不是该店没有 FBA。
+    //   旧实现只看 onhand is null 就判「不适用」，会在这一格上误触发
+    //   na_disagrees_with_seller —— 负责人在真实数据上看到的 12 个孤儿正是这个坍缩。
+    const g = makeGrid();
+    g.inventory[0] = { ...g.inventory[0]!, onhand: null, closing: null,
+      basis: { ...g.inventory[0]!.basis, closing_reason: 'unknown_onhand' } };
+    const m = buildGridModel(g, sellers);
+    expect(m.orphans).not.toContainEqual(
+      { kind: 'na_disagrees_with_seller', key: 'SKU-1/11072/2026-10' });
+    expect(inventoryAt(m.blocks[0]!, P[0]!)).toEqual({ kind: 'unknown' });
+    expect(inventoryAt(m.blocks[0]!, P[0]!)).not.toEqual({ kind: 'na' });
+  });
+
   it('★ reason 恒定：它解释 inbound，不参与 closing 的判断', () => {
     const m = buildGridModel(makeGrid(), sellers);
     const all = m.blocks.flatMap((b) => b.inventory.map((i) => i.basis.reason));
@@ -259,10 +275,13 @@ describe('★ F6/F8 裁定：在途以 basis.sku_level_in_transit 为权威，sk
 });
 
 describe('★ 后端那份真 fixture：orphans 应当为空（团队裁定的验收基线）', () => {
-  it('4 块、零丢弃', () => {
+  it('5 块、零丢弃', () => {
+    // ★ 09-23 补了第 5 块（A4P-TOY-003/11072）：有 FBA 但没取到在仓数字的
+    //   unknown_onhand 形态。它必须与 na_disagrees_with_seller 的判据相容 ——
+    //   该店 has_fba=true 且 closing_reason 不是 'not_applicable'，不该被点名。
     const realSellers = (realSellersFixture as { sellers: Seller[] }).sellers;
     const m = buildGridModel(realGrid as unknown as GridResponse, realSellers);
-    expect(m.blocks).toHaveLength(4);
+    expect(m.blocks).toHaveLength(5);
     expect(m.orphans).toEqual([]);
   });
 });

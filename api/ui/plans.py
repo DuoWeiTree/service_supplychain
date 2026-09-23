@@ -291,8 +291,14 @@ def grid(plan_id: int, request: Request, who: str | None = Depends(actor_optiona
     out_demand: list[dict] = []
     #: (sku, sid) → {period: 该店该货号各 msku 的期望销量之和}
     demand_by_store: dict[tuple[str, str], dict[str, int | None]] = {}
-    #: (sku, sid) → 在仓合计。★ 该店无 FBA / 各 msku 全无在仓数据 → None（不适用），不是 0
+    #: (sku, sid) → 在仓合计。★ 该店无 FBA / 各 msku 全无在仓数据 → None，
+    #  但这两种「None」不是一回事 —— 下面 applicable_by_store 把它们分开（09-23 真实缺陷）
     onhand_by_store: dict[tuple[str, str], int | None] = {}
+    #: (sku, sid) → 该店是否有 FBA（= 该 sid 的 seller.has_fba，同一 sid 下恒定）。
+    #  ★ 决定 onhand 为 None 时读作「不适用」还是「未知在仓」——
+    #    不能靠 onhand is None 反推，那会把「有 FBA 但没数字」错认成「不适用」，
+    #    而这正是负责人在真实数据上撞见的 12 个 na_disagrees_with_seller 孤儿的成因。
+    applicable_by_store: dict[tuple[str, str], bool] = {}
     # ★ demand 每个 msku 有 N 个月份行；在仓事实与月份无关，只能对每个 msku 累加一次 ——
     #   否则一个 3 个月的计划会把在仓数算成 3 倍。
     onhand_added: set[tuple[str, str]] = set()
@@ -312,6 +318,9 @@ def grid(plan_id: int, request: Request, who: str | None = Depends(actor_optiona
             slot[ym] = None
         if key not in onhand_by_store:
             onhand_by_store[key] = None
+        # ★ fba 只取决于 sid（同一 key 下每行都一样），但用 or 而不是覆盖 ——
+        #   同一 key 可能被多个 msku 行访问到，任何一次看见 True 就定了
+        applicable_by_store[key] = applicable_by_store.get(key, False) or fba
         if fba and (seller_sku, sid) not in onhand_added:
             onhand_added.add((seller_sku, sid))
             got = SOURCE.onhand_available(seller_sku, sid)
@@ -330,7 +339,8 @@ def grid(plan_id: int, request: Request, who: str | None = Depends(actor_optiona
         #   「计划内只有一家店认领」不等于它是这批货的唯一消费者 —— 同一货号可能被
         #   本计划之外的店铺在卖。按单店给全额与平摊一样，都是发明分配规则（C4 禁）。
         #   所以推演的入库项是空的，closing = onhand − demand。
-        rows = inventory_projection(onhand_by_store[(sku, sid)], {}, by_month)
+        rows = inventory_projection(onhand_by_store[(sku, sid)], {}, by_month,
+                                    applicable=applicable_by_store.get((sku, sid), False))
         for row in rows:
             inventory.append({
                 "sku": sku, "sid": sid, "period": row["period"],

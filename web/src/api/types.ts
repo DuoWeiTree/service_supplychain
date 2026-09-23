@@ -104,8 +104,13 @@ export interface PutPurchaseResult { cell: PurchaseCell }
 /** ★ `inbound` 为什么是 null。阶段 A **恒定**是这一个值 —— 它不说明 closing 的任何事 */
 export type InboundReason = 'no_seller_attribution';
 
-/** ★ `closing` 为什么是 null。两种成因处置不同，**不许合成一个裸 null** */
-export type ClosingReason = null | 'not_applicable' | 'unknown_demand';
+/** ★ `closing` 为什么是 null。三种成因处置各不相同，**不许合成一个裸 null**：
+ *  `not_applicable` 该店没有 FBA（02 §3.1a）；`unknown_demand` 期望销量未知；
+ *  `unknown_onhand` 该店**有** FBA，但阶段 A 没取到这个 msku 的在仓数字 ——
+ *  与 `not_applicable` 长得像（onhand 都是 null）但成因不同，09-23 真实缺陷：
+ *  压成一个会在真实 FBA 店上误判成「不适用」，前端 `na_disagrees_with_seller`
+ *  守卫正是靠这个区分抓到的。 */
+export type ClosingReason = null | 'not_applicable' | 'unknown_demand' | 'unknown_onhand';
 
 export interface InventoryBasis {
   source: 'ch';

@@ -25,6 +25,29 @@ describe('mock 数据源', () => {
     expect(back.expected_units).toBeNull();
   });
 
+  it('★ 09-23 真实缺陷：未知在仓（有 FBA 但没取到数字）编辑需求后不许被recompute()'
+     + ' 改判成「需求未知」——两者成因不同，且这个 (sku,sid) 从一开始就没有在仓数字，'
+     + '与需求编辑无关', async () => {
+    const g0 = await api.getGrid(1);
+    const cell0 = g0.inventory.find((i) => i.sku === 'A4P-TOY-003' && i.sid === '11072'
+      && i.period === '2026-10')!;
+    // ★ 先确认 fixture 本身是这一形态：有 FBA 但在仓未知，不是不适用
+    expect(cell0.onhand).toBeNull();
+    expect(cell0.basis.closing_reason).toBe('unknown_onhand');
+    const msku = g0.demand.find((d) => d.sku === 'A4P-TOY-003' && d.sid === '11072'
+      && d.period === '2026-10')!;
+    // ★ 编辑需求触发 recompute() —— 在仓数字依旧没取到，reason 不该被顺手改成
+    //   'unknown_demand'（那是另一种成因：需求本身未知，这一格的需求其实是已知的）
+    await api.putDemand(1, msku.seller_sku, msku.sid, msku.period, 42);
+    const g1 = await api.getGrid(1);
+    const cell1 = g1.inventory.find((i) => i.sku === 'A4P-TOY-003' && i.sid === '11072'
+      && i.period === '2026-10')!;
+    expect(cell1.onhand).toBeNull();
+    expect(cell1.closing).toBeNull();
+    expect(cell1.basis.closing_reason).toBe('unknown_onhand');
+    expect(cell1.basis.closing_reason).not.toBe('not_applicable');
+  });
+
   it('★ 库存的身份是「店铺 × 货号」—— 一格对应多个 msku，不是每个 msku 一格', async () => {
     const g = await api.getGrid(1);
     expect(g.inventory.every((i) => 'sku' in i && 'sid' in i && !('seller_sku' in i))).toBe(true);

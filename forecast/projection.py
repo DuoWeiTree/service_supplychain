@@ -6,8 +6,14 @@
   所以每一格都带 excludes_plan_purchase，把「没算进来」说出来；该标记**由明细算出**，
   不是常量 —— 一个永远为 True 的标记在真掺进计划采购时会撒谎。
 
-★ closing 为 None 的那两种格子（未知 / 不适用），shortage 与 gap 一律跟着 None：
-  「不知道缺多少」不是「一件都不缺」，给 0/False 等于替人回答。
+★ closing 为 None 的那三种格子（未知销量 / 未知在仓 / 不适用），shortage 与 gap
+  一律跟着 None：「不知道缺多少」不是「一件都不缺」，给 0/False 等于替人回答。
+
+★ 09-23 真实缺陷修复：`onhand is None` 本身分不清两种成因 ——
+  该店铺没有 FBA（不适用）与该店铺**有** FBA 但阶段 A 的 fixture 没有这个 msku
+  的在仓数字（未知在仓）。两者压成一个 `not_applicable` 会在真实 FBA 店上撒谎
+  （负责人截图看到的 `na_disagrees_with_seller` 孤儿正是这个坍缩）。调用方必须
+  显式传 `applicable`——它知道 `has_fba`，本函数不猜。
 """
 from __future__ import annotations
 
@@ -31,11 +37,19 @@ def inventory_projection(
     onhand: int | None,
     inbound_by_month: Mapping[str, Sequence[InboundSource]],
     expected_by_month: Mapping[str, int | None],
+    applicable: bool = True,
 ) -> list[dict]:
     """periods 由 expected_by_month 的键给出（每个计划月都必须有键，值可以是 None）。
 
     ★ inbound 传的是**明细**不是合计：合计在这里求和，
       「有结论必有依据」就不依赖调用方自觉（恒等式⑥）。
+
+    ★ applicable：该 (sku, sid) 所在的店铺是不是有 FBA（02 §3.1a）—— 调用方必须
+      显式传（它知道 `has_fba`），本函数不从 `onhand is None` 反推。默认 True 是
+      为了不动其余全部「onhand 非 None」的调用方；真正决定行为的只有
+      `onhand is None` 与 `applicable` 的组合：
+        onhand is None, applicable=False → 不适用（该店没有这门生意）
+        onhand is None, applicable=True  → 未知在仓（有 FBA，但数字没取到）
     """
     periods = sorted(expected_by_month)
     extra = sorted(set(inbound_by_month) - set(periods))
@@ -60,11 +74,19 @@ def inventory_projection(
             "excludes_plan_purchase": not any(s.kind == "plan_purchase" for s in sources),
         }
         if onhand is None:
-            # ★ 该店铺没有 FBA（02 §3.1a）—— 不适用，不是 0，也不是未知
-            basis["reason"] = "not_applicable"
-            rows.append({"period": period, "opening": None, "demand": demand,
-                         "inbound": inbound, "closing": None, "shortage": None, "gap": None,
-                         "unknown": False, "not_applicable": True, "basis": basis})
+            if applicable:
+                # ★ 该店铺**有** FBA，但阶段 A 没取到这个 msku 的在仓数字 ——
+                #   与「人没填期望销量」同类，是未知，不是不适用（09-23 真实缺陷）。
+                basis["reason"] = "unknown_onhand"
+                rows.append({"period": period, "opening": None, "demand": demand,
+                             "inbound": inbound, "closing": None, "shortage": None, "gap": None,
+                             "unknown": True, "not_applicable": False, "basis": basis})
+            else:
+                # ★ 该店铺没有 FBA（02 §3.1a）—— 不适用，不是 0，也不是未知
+                basis["reason"] = "not_applicable"
+                rows.append({"period": period, "opening": None, "demand": demand,
+                             "inbound": inbound, "closing": None, "shortage": None, "gap": None,
+                             "unknown": False, "not_applicable": True, "basis": basis})
             continue
         if demand is None:
             unknown = True

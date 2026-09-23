@@ -63,6 +63,17 @@ export function createMockApi(): SupplyChainApi {
         // ★ 不适用：不是 0，也不参与链。reason 不动 —— 它恒为 no_seller_attribution
         row.onhand = null; row.basis.demand = null; row.closing = null; continue;
       }
+      if (row.basis.closing_reason === 'unknown_onhand') {
+        // ★ 09-23 真实缺陷：有 FBA 但阶段 A 没取到这个 (sku,sid) 的在仓数字 ——
+        //   与 not_applicable 一样，这个原因跟需求编辑无关，锁定不许被下面按
+        //   demand 算出来的 'unknown_demand' 覆盖掉（那是另一种成因，后端
+        //   forecast/projection.py 的同名注释）。需求本身仍按正常路径算出来展示。
+        const mine = g.demand.filter((d) => d.sku === sku && d.sid === sid && d.period === row.period);
+        const demand = mine.length === 0 || mine.some((d) => d.effective_units === null)
+          ? null : mine.reduce((a, d) => a + (d.effective_units as number), 0);
+        row.onhand = null; row.basis.demand = demand; row.closing = null;
+        continue;
+      }
       const mine = g.demand.filter((d) => d.sku === sku && d.sid === sid && d.period === row.period);
       const demand = mine.length === 0 || mine.some((d) => d.effective_units === null)
         ? null : mine.reduce((a, d) => a + (d.effective_units as number), 0);
