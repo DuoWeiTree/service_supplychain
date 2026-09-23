@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import datetime as dt
 import logging
 
 import psycopg2
@@ -12,7 +13,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api.ui import catalog, dashboard, lines, ops, plans, submit, system
 from api.ui.errors import ApiError, translate
+from dim.registry import gate_503_names
+from jobs import refresh_dims
 from jobs import scheduler as job_scheduler
+from shared import config as config_module
 from shared.logging import setup_logging
 from shared.pg_client import business_schema, pg_conn, timed
 
@@ -52,15 +56,49 @@ async def _reshape_validation_error(request: Request, exc: RequestValidationErro
     })
 
 
-def _log_startup() -> None:
-    """★ 配置类问题往启动钩子放，别等第一个请求才炸 ——
-    在启动日志第一屏可见，胜过淹没在访问日志里的一片 500。"""
+def _stale_mirrors() -> list[dict]:
+    """★ 打全部镜像的新鲜度日志（不管新不新鲜），只把陈旧的 gate_503 镜像挑进返回值。"""
+    max_age = dt.timedelta(hours=float(config_module.freshness()["max_age_hours"]))
+    now = dt.datetime.now(dt.UTC)
+    gated = gate_503_names()
+    out = []
     with timed("startup"), pg_conn() as c, c.cursor() as cur:
         cur.execute("SELECT mirror, refreshed_at FROM v_mirror_freshness ORDER BY mirror")
         for mirror, at in cur.fetchall():
             log.info("startup mirror=%s refreshed_at=%s", mirror, at)
+            # ★ NULL 是「一行都没有」，不是「刚刷过」
+            if mirror in gated and (at is None or now - at > max_age):
+                out.append({"mirror": mirror,
+                            "refreshed_at": at.isoformat() if at else None})
         cur.execute("SELECT count(*) FROM schema_migration")
         log.info("startup schema=%s migrations=%d", business_schema(), cur.fetchone()[0])
+    return out
+
+
+def _startup_check() -> None:
+    """★ OQ-8 裁定（控制器 09-22）：不拦启动、不拦 /health · /v1/readiness——
+    只记录 + 在需要时触发一次立即刷新。真正的拒绝服务只在业务路由按请求判
+    （api/ui/deps.py::require_fresh_mirrors）。
+
+    ★ 全程不许抛出会中断 lifespan 的异常：触发的这次刷新本身失败也只记日志——
+    静默兜底是最坏的一种，但「刷新失败」和「应用起不来」是两件不同的事，
+    把二者绑在一起就是把一次 CH 抖动变成一次人工到场（设计 §10.1 OQ-8）。
+    """
+    stale = _stale_mirrors()
+    if not stale:
+        return
+    if not config_module.freshness()["startup_gate"]:
+        log.warning("startup stale=%s startup_gate=false —— 只记录，不触发刷新；"
+                    "业务端点仍会逐请求 503", [s["mirror"] for s in stale])
+        return
+    log.warning("startup stale=%s startup_gate=true —— 触发一次立即刷新",
+               [s["mirror"] for s in stale])
+    try:
+        runs = refresh_dims.refresh_all("scheduler")
+        log.info("startup refresh runs=%s", [(r.mirror, r.ok) for r in runs])
+    except BaseException as e:  # noqa: BLE001 - 必须兜住一切，让 lifespan 永不中断；
+        # 「刷新失败」和「应用起不来」是两件不同的事（设计 §10.1 OQ-8）。
+        log.warning("startup refresh failed err=%s", e)
 
 
 @contextlib.asynccontextmanager
@@ -69,7 +107,7 @@ async def _lifespan(app: FastAPI):
     #   lifespan 是现在唯一的启动钩子入口，行为等价：serve 第一个请求前跑完。
     job_scheduler.start()          # ★ 先起调度器：启动检查可能要立刻触发一轮刷新
     try:
-        _log_startup()
+        _startup_check()
         yield
     finally:
         job_scheduler.shutdown()
