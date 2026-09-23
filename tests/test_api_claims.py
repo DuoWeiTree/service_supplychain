@@ -96,13 +96,26 @@ def test_claim_seeds_both_grids_and_names_mskus_without_history(client, seed):
     assert [r[3] for r in rows] == [None, None, None], "★ 人填列留空 = 未知，不预填"
 
 
-def test_msku_without_history_is_seeded_null_and_named(client, seed):
-    """★ 没有历史 ≠ 预估 0。格子照建，system_units 留 NULL，并在返回里点名。"""
+def test_msku_without_history_is_seeded_null_and_named(client, seed, use_source):
+    """★ 没有历史 ≠ 预估 0。格子照建，system_units 留 NULL，并在返回里点名。
+
+    ★ 终审 I-2 之后换了靶子：原先拿 MSKU-W（Walmart 店）当「没有历史」，而那
+      其实是**不适用**（见下一条）。这里改成一个 Amazon 店的 msku，用一个真的
+      返回空历史的源 —— 「查过了、一行都没有」与「压根没有这条取数链路」是
+      两件事，两个 reason 各有各的靶子。"""
+    from api.ui import plans
+    from dim.fixture_source import FixtureSource
+
+    class NoHistory(FixtureSource):
+        def monthly_sales_history(self, seller_sku, sid, months):
+            return []
+
+    use_source(lambda: NoHistory(plans.FIXTURES))
     p = mk(client, seed)
     r = client.post(f"/v1/plans/{p}/claims",
-                    json={"seller_sku": seed.msku_nofba[0], "sid": seed.msku_nofba[1]},
+                    json={"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]},
                     headers=H(seed.actor)).json()
-    assert r["no_history"] == [{"seller_sku": seed.msku_nofba[0], "sid": seed.msku_nofba[1],
+    assert r["no_history"] == [{"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1],
                                 "reason": "no_sales_history"}]
     with pg_conn() as c, c.cursor() as cur:
         # ★ DISTINCT 会把行数一起折叠掉：3 行全 NULL 和只种出 1 行会长得一样。
@@ -110,6 +123,63 @@ def test_msku_without_history_is_seeded_null_and_named(client, seed):
         cur.execute("SELECT count(*), count(system_units) FROM plan_demand_cell WHERE plan_id = %s",
                     (p,))
         assert cur.fetchone() == (3, 0)
+
+
+def test_a_store_with_no_amazon_sales_source_is_not_applicable_not_unknown(client, seed):
+    """★★ 终审 I-2：`seed` 里的 90001 是 `platform='walmart'` —— 它在
+    `amazon_sp_api_report_all_orders` 里**按构造**不会有行。那是「不适用」，
+    不是「认不出这个店」。
+
+    修复前：fixture 档返回 200 + `no_history/no_sales_history`，CH 档在
+    `store_for()` 上抛 `UnknownStore` → **503**。同一件事两档两种答案，而 503
+    那一侧还把「不适用」说成了「这个店没有声明取数映射」，运维会去 STORE_SID
+    里补一行永远不该存在的映射。"""
+    p = mk(client, seed)
+    r = client.post(f"/v1/plans/{p}/claims",
+                    json={"seller_sku": seed.msku_nofba[0], "sid": seed.msku_nofba[1]},
+                    headers=H(seed.actor))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["no_history"] == [{"seller_sku": seed.msku_nofba[0], "sid": seed.msku_nofba[1],
+                                   "reason": "not_applicable_non_amazon_platform",
+                                   "platform": "walmart"}], body
+    assert body["history_window"] is None, (
+        "不适用就不该有口径标记 —— 有标记意味着「查过了」，而这条链路压根没查")
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT count(*), count(system_units) FROM plan_demand_cell WHERE plan_id = %s",
+                    (p,))
+        assert cur.fetchone() == (3, 0), "格子照建、system_units 留 NULL —— 不适用不是 0"
+
+
+def test_both_profiles_answer_the_same_for_a_store_with_no_amazon_sales_source(client, seed,
+                                                                              use_source):
+    """★ 终审 I-2 的判据本身：**两档必须给同一个形状**。
+
+    CH 档用一个真的 `ChSource`，它的 `query` 被换成一条**一被调用就炸**的桩 ——
+    这条闸如果没拦住，CH 档就会去查一个不存在的取数源，而那正是修复前的行为。
+    """
+    from dim import ch_source as cs
+
+    def must_not_be_called(sql, parameters=None):
+        raise AssertionError(
+            f"非 Amazon 店的 claim 去查了 CH —— 闸没拦住。SQL={' '.join(sql.split())[:120]}")
+
+    # ★ 同一张计划里认领两次（ON CONFLICT DO UPDATE）—— 换成两张计划会撞
+    #   409 msku_already_claimed，那是另一条规则，与本条要比的东西无关。
+    p = mk(client, seed)
+    body = {"seller_sku": seed.msku_nofba[0], "sid": seed.msku_nofba[1]}
+    r0 = client.post(f"/v1/plans/{p}/claims", json=body, headers=H(seed.actor))
+    assert r0.status_code == 200, r0.text
+    fixture_body = r0.json()
+
+    use_source(lambda: cs.ChSource(must_not_be_called))
+    r = client.post(f"/v1/plans/{p}/claims", json=body, headers=H(seed.actor))
+    assert r.status_code == 200, r.text
+    ch_body = r.json()
+    assert ch_body["no_history"] == fixture_body["no_history"], (
+        f"两档对同一个 msku 给出不同答案：ch={ch_body['no_history']} "
+        f"fixture={fixture_body['no_history']}")
+    assert ch_body["history_window"] == fixture_body["history_window"] is None
 
 
 def test_two_mskus_of_the_same_sku_do_not_double_the_purchase_cells(client, seed):

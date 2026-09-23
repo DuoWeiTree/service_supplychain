@@ -46,6 +46,30 @@
     [forecast]
     source = "fixture"   # 改成 "ch" 即切到真 ClickHouse，无需改代码
 
+取数源**每请求装配一个**，不缓存、不共享（`api/ui/source_factory.py::source_dep`）。
+一个 `ChSource` 身上全是可变的每次调用状态外加一个 CH 客户端，跨请求共享它会让
+并发请求互相踩，而 `clickhouse_connect` 拒绝并发的那个异常会被报成「CH 连不上」。
+代价是每次 grid 多付一次建客户端（≈8ms）+ 四条查询（≈38ms）。
+
+### 换源之前先过这三条
+
+改这一行之前跑一次 `uv run pytest -q tests/test_order_store_map_live.py`，三条
+live 门禁都必须绿（它们要能连内网 CH）：
+
+1. **报表里的每一组 `(store, sales_channel)` 都已声明**——新开的店要补进
+   `dim/order_store_map.py::STORE_SID`。
+2. **每个能被认领的 sid 都解析得出 store**——反方向：宇宙是 `msku_bridge`
+   里的 sid，不是报表里的组。解析不出的要么补映射，要么写进
+   `NO_ORDER_REPORT_SID` 并带上实测出处。当前豁免三个（11098 / 11099 / 11100，
+   合计 179 个 msku），它们在订单报表里**一单都没有**，认领会 503。
+3. **订单报表里仍然没有任何 sid 列**——有了的话整张声明表都要重做。
+
+切换后第一张 grid 的 `source_notes.dropped` 应当长这样（2026-09-23 实测量级）：
+`onhand.shared_pool_excluded ≈ {rows: 1114, units: 14073}`（sid=0 欧洲共享池，
+占全部可售 27.6%），`in_transit` 通常为空或只有个位数 `missing_eta_rows`。
+`shared_pool_excluded` 变成 0 是信号，不是好消息——要么共享池真清空了，
+要么排除逻辑坏了，两种都得查。
+
 `[forecast]` 段（`config.example.toml`）七组键：
 
 | 键 | 作用 |

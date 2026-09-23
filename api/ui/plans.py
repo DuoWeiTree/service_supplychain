@@ -48,6 +48,15 @@ router = APIRouter(dependencies=[Depends(require_fresh_mirrors)])
 #:   换源仍然只改 config.toml 的 [forecast] source，dim/source.py 的协议不变。
 
 
+#: 有月销量取数源的平台。★ 阶段 A 只有 Amazon：`monthly_sales_history` 唯一的
+#: 源是 `amazon_sp_api_report_all_orders`，按 `(store, sales_channel)` 取数
+#: （dim/order_store_map.py）。非 Amazon 的店在那张表里**按构造**就不会有行 ——
+#: 那是「不适用」，不是「认不出这个店」，更不是「卖了 0 件」。
+#: ★ 不在这里硬编店铺号：判据是 `seller.platform`（镜像列，001:29），新平台
+#: 接进来时改的是这一行，不是散落各处的 if。平台的销量源到位了就把它加进来。
+_SALES_PLATFORM = ("amazon",)
+
+
 def _source_error(e: Exception) -> ApiError:
     """把 ChSource 的失败翻成 ApiError —— 同 jobs/refresh_dims.ChUnreachable → refresh_failed
     的形状，不另发明一种。★ 一律 503：拿不到数算出来的曲线看起来完全正常，S-29/S-30 的
@@ -182,13 +191,17 @@ def claim(plan_id: int, body: dict, request: Request,
     with timed("claim", actor=who, plan_id=plan_id), pg_conn() as c, c.cursor() as cur:
         ensure_writable(cur, plan_id)
         periods = _periods(cur, plan_id)
-        cur.execute("SELECT sku FROM msku_bridge WHERE seller_sku = %s AND sid = %s",
-                    (seller_sku, sid))
+        # ★ 终审 I-2：顺手把 seller.platform 取回来 —— 它决定这个 msku 的销量
+        #   **有没有取数源**（见下面 `_SALES_PLATFORM`）。FK msku_bridge_seller_fk
+        #   保证桥表每一行都有对应的 seller 行，所以 JOIN 不会吃掉任何 msku。
+        cur.execute("SELECT b.sku, s.platform FROM msku_bridge b"
+                    " JOIN seller s ON s.seller_id = b.sid"
+                    " WHERE b.seller_sku = %s AND b.sid = %s", (seller_sku, sid))
         row = cur.fetchone()
         if row is None:
             raise ApiError(404, "unknown_msku", "msku 不在桥表里",
                            {"seller_sku": seller_sku, "sid": sid})
-        sku = row[0]
+        sku, platform = row
 
         # ★ 先查后写挡不住并发，所以这里不查 —— 直接插，让部分唯一索引裁决；
         #   撞上了再回头查是谁占的，只为把 409 的 detail 点到名。
@@ -219,24 +232,36 @@ def claim(plan_id: int, body: dict, request: Request,
 
         no_history = []
         history_window = None
-        try:
-            est = monthly_estimate(source.monthly_sales_history(seller_sku, sid, len(periods)),
-                                   len(periods))
-        except InsufficientHistory:
-            # ★ 没有历史 ≠ 预估 0：格子照建（人还要在上面填），system_units 留 NULL 并点名
-            est = None
+        est = None
+        if platform not in _SALES_PLATFORM:
+            # ★ 终审 I-2：「这个店压根没有 Amazon 销量源」是**不适用**，不是未知。
+            #   走到 monthly_sales_history 的话，CH 档会在 store_for() 上抛
+            #   UnknownStore → 503，而 fixture 档同一个 msku 是 200 —— 两档对同一
+            #   件事给出两种答案，且 503 那一侧把「不适用」说成了「认不出这个店」。
+            #   闸放在调用方，与 grid() 里 `has_fba` 那一闸同一个位置、同一个理由：
+            #   ★ 不适用 ≠ 0，也 ≠ 未知（CLAUDE.md 判据一），三者必须分得开。
             no_history.append({"seller_sku": seller_sku, "sid": sid,
-                               "reason": "no_sales_history"})
-        except (ChUnavailable, ChDataUnusable, UnknownShape, UnknownStore) as e:
-            # ★ fix round 1：UnknownStore 曾经漏在这个元组外——monthly_sales_history()
-            #   → order_store_map.store_for() 抛的这个异常会裸着冒成无 S-29 形状的 500。
-            #   claim() 不碰采购表，所以这里不需要 PurchaseTableStale（同 grid() 不需要
-            #   UnknownStore 一个道理——见 _source_error() 上面的审计注释）。
-            raise _source_error(e) from e
-        # ★ 用了哪几个月、哪些是补 0、最新那个月距今多少天 —— 订单是滞后采集的
-        #   （CLAUDE.md 铁律三），一个没有标记的数比没有数更坏。
-        if hasattr(source, "history_window"):
-            history_window = source.history_window(seller_sku, sid) or None
+                               "reason": "not_applicable_non_amazon_platform",
+                               "platform": platform})
+        else:
+            try:
+                est = monthly_estimate(
+                    source.monthly_sales_history(seller_sku, sid, len(periods)), len(periods))
+            except InsufficientHistory:
+                # ★ 没有历史 ≠ 预估 0：格子照建（人还要在上面填），system_units 留 NULL 并点名
+                est = None
+                no_history.append({"seller_sku": seller_sku, "sid": sid,
+                                   "reason": "no_sales_history"})
+            except (ChUnavailable, ChDataUnusable, UnknownShape, UnknownStore) as e:
+                # ★ fix round 1：UnknownStore 曾经漏在这个元组外——monthly_sales_history()
+                #   → order_store_map.store_for() 抛的这个异常会裸着冒成无 S-29 形状的 500。
+                #   claim() 不碰采购表，所以这里不需要 PurchaseTableStale（同 grid() 不需要
+                #   UnknownStore 一个道理——见 _source_error() 上面的审计注释）。
+                raise _source_error(e) from e
+            # ★ 用了哪几个月、哪些是补 0、最新那个月距今多少天 —— 订单是滞后采集的
+            #   （CLAUDE.md 铁律三），一个没有标记的数比没有数更坏。
+            if hasattr(source, "history_window"):
+                history_window = source.history_window(seller_sku, sid) or None
         for i, period in enumerate(periods):
             cur.execute(
                 "INSERT INTO plan_demand_cell (plan_id, seller_sku, sid, period_start,"
