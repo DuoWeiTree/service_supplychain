@@ -50,6 +50,23 @@ def test_bad_refresh_at_fails_at_build_not_at_0630(monkeypatch):
         raise AssertionError("配置写错了却起得来")
 
 
+def test_bad_refresh_timezone_names_the_config_key(monkeypatch):
+    """★ 终审 M-3：`refresh_at` 有 `_hour_minute()` 包一层、消息里带
+    `[freshness] refresh_at`；`refresh_timezone` 旁边什么都没有，裸抛
+    `ZoneInfoNotFoundError: 'No time zone found with key Asia/Shangahi'`。
+    启动即炸是对的（配置类错误往启动钩子放），但拿到这句话的人不知道该去改
+    哪个文件的哪一行 —— 两者不对称，而不对称的那一半迟早被当成 bug 去查代码。
+    """
+    _with_freshness(monkeypatch, refresh_timezone="Asia/Shangahi")
+    try:
+        S.build_scheduler()
+    except ValueError as e:
+        assert "refresh_timezone" in str(e), f"没点名配置键：{e}"
+        assert "Asia/Shangahi" in str(e), f"没回显写错的值：{e}"
+    else:
+        raise AssertionError("时区写错了却起得来")
+
+
 def test_freshness_config_has_every_key_even_when_toml_omits_them(monkeypatch):
     monkeypatch.setattr(config_module, "_CFG", {}, raising=False)
     config_module._CFG = {}

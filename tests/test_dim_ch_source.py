@@ -75,6 +75,28 @@ def test_seller_market_is_country_and_platform_is_constant_amazon():
     assert by_id["11072"][4] == "amazon"    # platform ← 常量
 
 
+def test_both_listing_reads_use_the_same_capture_window():
+    """★ 终审 M-9：`SQL_SELLER` 的 join 侧原先对 `l` 一个 `_captured_date`
+    过滤都没有（全部 58 天历史），而 `SQL_MSKU_BRIDGE` 卡 30 天。两处读的是
+    同一张表、回答的是同一件事（这个店还有没有在卖的 listing）。实测今天两个
+    窗口的 has_fba 完全一致（21 个 sid 无一差异），所以没有实际影响 ——
+    但**没有任何地方记着这两个窗口本该一致**。这条测试就是那个地方。
+    """
+    window = f"today() - {cs._LISTING_WINDOW_DAYS}"
+    assert window in cs.SQL_MSKU_BRIDGE, "msku_bridge 的窗口没走共享常量"
+    assert window in cs.SQL_SELLER, "seller 的 join 侧没有同一个窗口"
+
+
+def test_seller_keeps_the_left_join_when_it_filters_the_listing_side():
+    """★ 窗口过滤必须写在 `ON` 里。挪进 `WHERE` 会把 LEFT JOIN 退化成 INNER
+    JOIN —— 30 天内一条 listing 都没有的店会**整个消失**，而那正是最该被看见
+    的状态（同「全集用商品目录 LEFT JOIN 快照」那条铁律：断货的 SKU 不返回，
+    直接查快照会让完全断货的货号从预测里整个消失）。"""
+    assert "LEFT JOIN" in cs.SQL_SELLER.upper()
+    assert "WHERE" not in cs.SQL_SELLER.upper(), (
+        "seller 的窗口过滤跑到 WHERE 去了 —— LEFT JOIN 就退化成 INNER JOIN 了")
+
+
 def test_seller_sql_does_not_reference_nonexistent_columns():
     """★ 探针实测（design §7.0）：lingxing_seller_list 没有 marketplace/platform
     列 —— 照抄草案会在真实 CH 上跑不通。"""
@@ -95,3 +117,33 @@ def test_empty_source_is_not_silently_ok():
     """★ 一行都没取到不是「刷新成功、只是没数据」。"""
     with pytest.raises(cs.UnknownShape):
         cs.fetch_sku_catalog(R.replay([]))
+
+
+def test_a_null_warehouse_type_fails_loudly_like_any_other_unknown_shape():
+    """★ 终审 M-11：`int(typ)` 在 `type` 为 NULL 时抛的是 `TypeError`，而不是
+    那条写得很好的 `UnknownShape` —— 于是「认不出的仓」与「源里这一列是空的」
+    在留痕里长成两种东西，而后者本该走同一条硬失败的路。
+    实测今天 118 个仓的 `type` 一个 NULL 都没有，所以这是潜在缺口不是现行 bug；
+    但认不出的形态必须默认可见，而不是等它出现那天才发现没人接。"""
+    with pytest.raises(cs.UnknownShape) as ei:
+        cs.fetch_warehouse(R.replay([(9, "类型为空的仓", None, None, R.D2)]))
+    assert "9" in str(ei.value) and "类型为空的仓" in str(ei.value)
+
+
+def test_coerced_empty_strings_are_counted_not_silent():
+    """★ 终审 M-11：`name or ""` / `market or ""` 把 NULL 悄悄变成 `''`，
+    而 `fetch_seller` 无条件返回 `dropped=0, drop_reasons={}` —— 代码里
+    **没有留下能观测它的地方**。`seller.market` 在 PG 是 NOT NULL（001:29），
+    所以源里的 NULL `country` 会变成 `''`，正是 OQ-5 为 `warehouse.market`
+    明确拒绝的那一种（「留空是『还没到』，写成 `''` 就再也分不开」）。
+
+    ★ 计数不算 `rows_dropped`：这些行没有被丢，`rows_dropped` 必须仍然等于
+      真丢弃之和，否则就是拿另一种口径去污染它。
+    """
+    got = cs.fetch_seller(R.replay([("11072", None, None, R.D2, 0)]))
+    assert got.dropped == 0, "强制转换不是丢弃，不许计进 rows_dropped"
+    assert got.drop_reasons.get("coerced_empty_name") == 1, got.drop_reasons
+    assert got.drop_reasons.get("coerced_empty_market") == 1, got.drop_reasons
+
+    cat = cs.fetch_sku_catalog(R.replay([("SKU-1", None, R.D2)]))
+    assert cat.drop_reasons.get("coerced_empty_name") == 1, cat.drop_reasons

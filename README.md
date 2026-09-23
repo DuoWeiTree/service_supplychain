@@ -57,6 +57,12 @@
 `models` / `forecast` / `rules` / `dim` 这几层只喂 fixture 就能跑通，配置文件
 指向一个不存在的路径也不影响——这条命令就是这件事的证明，不是口号。
 
+★ 上面列的每个文件都**不许**有要连库的断言。镜像登记表的门禁 (b)（「登记了
+就得有真表、真视图、真 fetch」）要连 PG，所以它单独放在
+`tests/test_mirror_registry_pg.py`，不在这条命令里——拆文件而不是在命令后面
+挂 `-k "not ..."`，是因为 `-k` 是一句会被人抄漏的话，抄漏之后命令照样「能跑」，
+只是又开始连库；文件边界抄不漏。
+
 ### 前端 mock 用的 fixture
 
 `tests/fixtures/grid_response.json` 是 `GET /v1/plans/{id}/grid` 的固化响应，

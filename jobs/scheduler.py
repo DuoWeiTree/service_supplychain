@@ -34,6 +34,20 @@ def _hour_minute(raw: str) -> tuple[int, int]:
         raise ValueError(f"[freshness] refresh_at 必须是 \"HH:MM\"，收到 {raw!r}") from e
 
 
+def _timezone(raw: str) -> ZoneInfo:
+    """★ 终审 M-3：裸 `ZoneInfo(...)` 抛的是
+    `ZoneInfoNotFoundError: 'No time zone found with key Asia/Shangahi'` ——
+    启动即炸是对的，但拿到这句话的人不知道该去改哪个文件的哪一行。
+    `refresh_at` 旁边已经有 `_hour_minute()` 点名 `[freshness] refresh_at`，
+    两者不对称，而不对称的那一半迟早被当成 bug 去查代码。"""
+    try:
+        return ZoneInfo(raw)
+    except Exception as e:
+        raise ValueError(
+            f"[freshness] refresh_timezone 必须是一个 IANA 时区名"
+            f"（如 \"Asia/Shanghai\"），收到 {raw!r}：{e}") from e
+
+
 def _on_error(event) -> None:
     # ★ APScheduler 默认把 job 异常吞进它自己的 logger —— 不挂这个监听器，
     #   刷新崩了在 scm.* 的日志里一个字都看不到。这道网只接得住 `_tick()`
@@ -71,7 +85,7 @@ def build_scheduler() -> AsyncIOScheduler | None:
                     " —— 镜像不会自动刷新，只能靠 CLI 或 /v1/jobs/refresh-dims")
         return None
     hour, minute = _hour_minute(str(cfg["refresh_at"]))
-    tz = ZoneInfo(str(cfg["refresh_timezone"]))
+    tz = _timezone(str(cfg["refresh_timezone"]))
     sch = AsyncIOScheduler(timezone=tz)
     sch.add_job(_tick, id=REFRESH_JOB_ID,
                 trigger=CronTrigger(hour=hour, minute=minute, timezone=tz),

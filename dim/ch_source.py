@@ -66,13 +66,22 @@ SELECT sku,
  GROUP BY sku
 """
 
-SQL_MSKU_BRIDGE = """
+#: ★ 这个 30 天窗口与 `SQL_SELLER` 里 join `lingxing_product_listing` 那一侧
+#: **必须是同一个数**（终审 M-9）：两处读的是同一张表、回答的是同一件事
+#: （这个店还有没有在卖的 listing）。原先 `SQL_SELLER` 对 `l` 一个
+#: `_captured_date` 过滤都没有，用的是全部 58 天历史 —— 今天两个窗口算出的
+#: `has_fba` 完全一致（21 个 sid 无一差异，2026-09-22 实测），所以当时没有
+#: 实际影响；但一个店停掉全部 FBA listing 超过 30 天之后，两张镜像会对同一
+#: 件事给出不同答案，而**没有任何地方记着这两个窗口本该一致**。
+_LISTING_WINDOW_DAYS = 30
+
+SQL_MSKU_BRIDGE = f"""
 SELECT seller_sku,
        toString(sid)                     AS sid,
        argMax(local_sku, _captured_date) AS sku,
        max(_captured_date)               AS captured
   FROM jxd_raw.lingxing_product_listing
- WHERE _captured_date >= today() - 30
+ WHERE _captured_date >= today() - {_LISTING_WINDOW_DAYS}
  GROUP BY seller_sku, sid
 """
 
@@ -102,14 +111,22 @@ SELECT wid,
 #:   `toString(l.sid) = s.sid`，不是反过来 `toInt64OrNull(s.sid)`——
 #:   PG 侧 seller_id 是 text（001），保持以字符串为准的一侧不做数值解析，
 #:   避免 sid 里出现非数字格式时 toInt64OrNull 悄悄给出 NULL 而漏关联。
-SQL_SELLER = """
+#: ★ 终审 M-9：join 侧的 `_captured_date` 窗口与 `SQL_MSKU_BRIDGE` 共用
+#: `_LISTING_WINDOW_DAYS` —— 两处读同一张表、回答同一件事，窗口不同就会让
+#: 两张镜像对「这个店还有没有在卖的 listing」给出不同答案。
+#: 过滤写在 `ON` 里而不是 `WHERE` 里：`WHERE` 会把 LEFT JOIN 退化成 INNER
+#: JOIN，30 天内一条 listing 都没有的店会**整个消失**，而那正是最该被看见的
+#: 状态（同 CLAUDE.md「全集用商品目录 LEFT JOIN 快照」那条铁律）。
+SQL_SELLER = f"""
 SELECT toString(s.sid)                          AS seller_id,
        argMax(s.name, s._captured_date)         AS name,
        argMax(s.country, s._captured_date)      AS market,
        max(s._captured_date)                    AS captured,
        maxIf(1, l.fulfillment_channel_type = 'FBA') AS has_fba_flag
   FROM jxd_raw.lingxing_seller_list s
-  LEFT JOIN jxd_raw.lingxing_product_listing l ON toString(l.sid) = s.sid
+  LEFT JOIN jxd_raw.lingxing_product_listing l
+         ON toString(l.sid) = s.sid
+        AND l._captured_date >= today() - {_LISTING_WINDOW_DAYS}
  GROUP BY s.sid
 """
 
@@ -126,16 +143,40 @@ def _nonempty(rows: list[tuple], table: str) -> None:
             "把采集缺口读成空会让整张镜像被清成不存在")
 
 
+def _bump(reasons: dict, key: str) -> None:
+    reasons[key] = reasons.get(key, 0) + 1
+
+
+def _coerce_empty(reasons: dict, column: str, value):
+    """NULL → `''` 的那一次强制转换，必须留下能被观测到的痕迹。
+
+    ★ 终审 M-11：`name or ""` / `market or ""` 原先悄悄做掉，而
+    `seller.market` 在 PG 是 NOT NULL（`001:29`）—— 源里的 NULL `country`
+    就这样变成 `''`，正是 OQ-5 为 `warehouse.market` 明确拒绝的那一种
+    （「留空是『还没到』，写成 `''` 就再也分不开」）。实测今天一例都没有，
+    所以这是潜在缺口不是现行 bug；缺的是**代码里能观测它的地方**。
+
+    ★ 计数不进 `rows_dropped`：这些行没有被丢，`rows_dropped` 必须仍然等于
+    真丢弃之和，否则就是拿另一种口径去污染它（同终审 M-1 那条的方向）。
+    """
+    if value:
+        return value
+    _bump(reasons, f"coerced_empty_{column}")
+    return ""
+
+
 def fetch_sku_catalog(query: Query) -> Fetched:
     raw = query(SQL_SKU_CATALOG)
     _nonempty(raw, "lingxing_product_local_products")
     rows, reasons = [], {}
+    dropped = 0
     for sku, name, _cap in raw:
         if not (sku or "").strip():
-            reasons["empty_sku"] = reasons.get("empty_sku", 0) + 1
+            _bump(reasons, "empty_sku")
+            dropped += 1
             continue
-        rows.append((sku, name or ""))
-    return Fetched(rows, sum(reasons.values()), reasons, max(r[2] for r in raw))
+        rows.append((sku, _coerce_empty(reasons, "name", name)))
+    return Fetched(rows, dropped, reasons, max(r[2] for r in raw))
 
 
 def fetch_msku_bridge(query: Query) -> Fetched:
@@ -160,7 +201,10 @@ def fetch_warehouse(query: Query) -> Fetched:
     _nonempty(raw, "lingxing_inventory_warehouses")
     rows, reasons = [], {}
     for wid, name, typ, sub, _cap in raw:
-        kind = _WAREHOUSE_KIND.get((int(typ), int(sub or 0)))
+        # ★ 终审 M-11：`int(typ)` 在 type 为 NULL 时抛的是 `TypeError`，而不是
+        #   下面那条写得很好的 `UnknownShape` —— 于是「认不出的仓」与「源里这
+        #   一列是空的」在留痕里长成两种东西，而后者本该走同一条硬失败的路。
+        kind = None if typ is None else _WAREHOUSE_KIND.get((int(typ), int(sub or 0)))
         if kind is None:
             raise UnknownShape(
                 f"仓 {wid}「{name}」的 type/sub_type = {typ}/{sub} 认不出。"
@@ -182,7 +226,10 @@ def fetch_seller(query: Query) -> Fetched:
     该源表没有列，写常量 'amazon'。"""
     raw = query(SQL_SELLER)
     _nonempty(raw, "lingxing_seller_list")
-    rows = []
+    rows, reasons = [], {}
     for seller_id, name, market, _cap, has_fba_flag in raw:
-        rows.append((seller_id, name or "", market or "", bool(has_fba_flag), "amazon"))
-    return Fetched(rows, 0, {}, max(r[3] for r in raw))
+        rows.append((seller_id,
+                     _coerce_empty(reasons, "name", name),
+                     _coerce_empty(reasons, "market", market),
+                     bool(has_fba_flag), "amazon"))
+    return Fetched(rows, 0, reasons, max(r[3] for r in raw))
