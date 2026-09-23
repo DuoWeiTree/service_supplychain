@@ -78,9 +78,53 @@ def test_unknown_mirror_name_is_refused(seed):
         rd.refresh_all("cli", only="no_such_mirror", query=R.replay([]))
 
 
+def test_a_db_level_failure_inside_upsert_still_writes_provenance_and_does_not_stop_others(seed):
+    """review 09-22 finding 1：`_upsert()` 的 SQL 执行阶段才炸的原始 DB 异常
+    （这里用主键重复触发——`sku_catalog` 的 `coverage=("rows",)` 没有
+    `distinct:` 规则，拦不住"这一批内部有没有重复主键"这种形态）不能连累
+    收尾那条留痕 `INSERT`，也不能打断其余镜像的遍历。这与
+    `test_a_failed_mirror_does_not_stop_the_others` 的区别是：那条测试的失败
+    发生在 `m.fetch()` 内部（Python 级异常，事务还没被碰脏）；这条测试的失败
+    发生在 `_upsert()` 内部（DB 级异常，事务会被 PG 标记为 aborted）。"""
+    with pg_conn() as c, c.cursor() as cur:
+        before = _rows(cur, "SELECT count(*) FROM sku_catalog WHERE sku = 'SKU-DUP'")[0]
+
+    got = rd.refresh_all("cli", query=_mixed_query_with_db_level_failure())
+    names = {r.mirror: r.ok for r in got}
+    assert names["sku_catalog"] is False, "主键重复的这一批必须失败，不能悄悄落进镜像"
+    assert names["seller"] is True
+    assert names["warehouse"] is True
+    assert names["msku_bridge"] is True
+    assert set(names) == {m.name for m in rd.registry.refresh_order()}, (
+        "四张镜像都要跑到——sku_catalog 失败不许打断循环，warehouse/msku_bridge"
+        "不许连尝试都没被尝试")
+
+    with pg_conn() as c, c.cursor() as cur:
+        assert _rows(cur, "SELECT count(*) FROM sku_catalog WHERE sku = 'SKU-DUP'")[0] == before, (
+            "拒批了却动了镜像 —— 主键重复的批次不该有任何一行落进 sku_catalog")
+        run = _rows(cur, "SELECT ok, error FROM dim_refresh_run"
+                         " WHERE mirror = 'sku_catalog' ORDER BY run_id DESC LIMIT 1")[0]
+    assert run[0] is False, "DB 级异常也必须留下 ok=false 的一行，不能让整个 run 消失"
+    assert "cannot affect row a second time" in (run[1] or ""), (
+        f"error 字段没有点名异常成因：{run[1]!r}")
+
+
 def _mixed_query():
     """按 SQL 里出现的表名派发到对应的假行。"""
     from dim import ch_source as cs
     table = {cs.SQL_SKU_CATALOG: R.SKU_CATALOG, cs.SQL_MSKU_BRIDGE: R.MSKU_BRIDGE,
              cs.SQL_WAREHOUSE: R.WAREHOUSE_UNKNOWN, cs.SQL_SELLER: R.SELLER}
+    return lambda sql: list(table[sql])
+
+
+def _mixed_query_with_db_level_failure():
+    """★ 与 `_mixed_query` 的区别：这里让 `sku_catalog` 拿到一批 fetch 层
+    filters 拦不住的重复主键行——失败发生在 `_upsert()` 的 `execute_values`
+    调用本身（PG 报 `ON CONFLICT DO UPDATE command cannot affect row a
+    second time`），而不是 `ch_source.fetch_*` 里的 Python 级 `UnknownShape`。
+    """
+    from dim import ch_source as cs
+    dup_sku_catalog = [("SKU-DUP", "第一份", R.D2), ("SKU-DUP", "第二份(重复主键)", R.D2)]
+    table = {cs.SQL_SKU_CATALOG: dup_sku_catalog, cs.SQL_MSKU_BRIDGE: R.MSKU_BRIDGE,
+             cs.SQL_WAREHOUSE: R.WAREHOUSE, cs.SQL_SELLER: R.SELLER}
     return lambda sql: list(table[sql])

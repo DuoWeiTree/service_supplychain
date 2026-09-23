@@ -12,13 +12,14 @@ import logging
 import sys
 from typing import NamedTuple
 
+import psycopg2
 from psycopg2.extras import execute_values
 
 from dim import ch_source, registry
 from jobs.lock import RefreshInFlight, advisory_lock
 from shared.ch_client import ch_client, ch_query
 from shared.config import freshness
-from shared.pg_client import pg_conn, timed
+from shared.pg_client import pg_conn, pg_error_fields, timed
 
 log = logging.getLogger("scm.jobs")
 
@@ -104,13 +105,28 @@ def refresh_one(cur, m: registry.Mirror, query, trigger: str, actor: str | None)
     """★ `dim_refresh_run` 只追加（006 的 `BEFORE UPDATE OR DELETE` 触发器挡住了
     `UPDATE`）—— 整轮跑完只在收尾时写**一次完整的行**，不分「先 INSERT 占位、
     再 UPDATE 补结果」两次。`started_at` 在 Python 侧先取好时间戳，跟收尾那次
-    INSERT 一起落库，而不是靠数据库的 `DEFAULT now()`（那样会记成收尾时刻）。"""
+    INSERT 一起落库，而不是靠数据库的 `DEFAULT now()`（那样会记成收尾时刻）。
+
+    ★ review 09-22 finding 1 修复：`_upsert()` 在 SQL 执行阶段抛出的原始 DB
+    异常（唯一键冲突、NOT NULL、CHECK……）会把 PG 事务标记为 aborted——如果
+    收尾那条 `INSERT INTO dim_refresh_run` 跟 `_upsert` 共享同一个未清理的
+    事务，它自己也会跟着炸成 `InFailedSqlTransaction`，一路冒出到
+    `refresh_all`，既丢了本该必写的留痕行，又会打断对其余镜像的遍历
+    （`refresh_one` 只被调用到一半，循环压根走不到下一个 `m`）。
+    `m.fetch()` / `_check_coverage()` 抛出的 Python 级异常（`UnknownShape`、
+    `CoverageDrop`）能被干净地记录，纯粹是因为它们发生在**碰这个 cursor
+    之前**，事务还没被弄脏——这是巧合，不是不变式，所以必须用 SAVEPOINT
+    把「取数 + 校验 + upsert」这一段单独框起来：出错就 `ROLLBACK TO
+    SAVEPOINT`，把连接从 aborted 状态里捞回来，让收尾的 `INSERT` 总能在一个
+    干净的事务状态上执行。"""
+    savepoint = f"mirror_{m.name}"
     started_at = dt.datetime.now(dt.UTC)
     rows_in = rows_dropped = 0
     reasons: dict = {}
     source_max_captured = None
     ok = False
     error: str | None = None
+    cur.execute(f"SAVEPOINT {savepoint}")
     try:
         fetched = m.fetch(query)
         rows_in, rows_dropped = len(fetched.rows), fetched.dropped
@@ -122,10 +138,21 @@ def refresh_one(cur, m: registry.Mirror, query, trigger: str, actor: str | None)
     except BaseException as e:  # noqa: BLE001 - 必须兜住一切（CoverageDrop/UnknownShape/
         # pg 错误/……）才能保证收尾那条 INSERT 总会写：漏一种异常类型就是漏一批「今天刷过
         # 但没人知道为什么没成」的沉默失败。
-        # ★ 失败也要写完整的一行：只打日志的话，明天没人知道今天刷过、更不知道为什么没成
+        # ★ 出错的这段可能已经把事务弄脏（_upsert 内的原始 DB 异常）——先回滚到
+        #   SAVEPOINT，收尾的 INSERT 才有一个干净的事务状态可用。对 Python 级异常
+        #   （CoverageDrop/UnknownShape）这个 ROLLBACK 是空操作，无害。
+        cur.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+        # ★ 失败也要写完整的一行：只打日志的话，明天没人知道今天刷过、更不知道为什么没成。
+        #   日志本身也要带上「打的谁 · 多久 · 怎么失败的」三问的第三问——只取 str(e)
+        #   会把 psycopg2.Error 的 pgcode/constraint 全部丢掉，落库的 error 字段不能
+        #   替代这一行日志（house 07:485 同一条纪律）。
         error = f"{type(e).__name__}: {e}"[:2000]
-        log.warning("op=refresh mirror=%s trigger=%s outcome=fail err=%s",
-                    m.name, trigger, e)
+        if isinstance(e, psycopg2.Error):
+            log.warning("op=refresh mirror=%s trigger=%s outcome=fail err_type=%s pg=%s",
+                        m.name, trigger, type(e).__name__, pg_error_fields(e))
+        else:
+            log.warning("op=refresh mirror=%s trigger=%s outcome=fail err_type=%s err=%s",
+                        m.name, trigger, type(e).__name__, e)
     cur.execute(
         "INSERT INTO dim_refresh_run (mirror, trigger, actor, started_at, finished_at,"
         " source_max_captured, rows_in, rows_dropped, drop_reasons, ok, error)"
