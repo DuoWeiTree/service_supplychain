@@ -30,15 +30,20 @@ def refresh_dims_now(request: Request, body: RefreshBody, who: str = Depends(act
     #   这与同函数里拒绝 `except Exception` 兜底是同一条理由，只是换了异常类型。
     # ★ 只把 `registry.by_name` 这一次包起来：验过之后再冒出来的 KeyError
     #   就不再是「名字错了」，必须走真正的错误路径。
-    # ⚠ pending 条目（登记了但本阶段没有取数实现）现在会以 500 冒出来，
-    #   而不是原先那句措辞错误的 404 —— 它该有自己的错误码（`mirror_pending`
-    #   409），新增错误码要连 `docs/08` §3 一起做，已记进 parked-findings。
+    # ★ pending 条目（登记了但本阶段没有取数实现）的名字是**认得的**，
+    #   三种答案里只有一种对：404 是撒谎（登记表里明明有它）、500 是把
+    #   「还没做」说成「我们炸了」，都让调用方无从分辨。给 409 + 点名。
+    #   顺序：不认识的名字 → 404；认识但没实现 → 409；其余照常往下走。
     if body.only is not None:
         try:
-            registry.by_name(body.only)
+            mirror = registry.by_name(body.only)
         except KeyError as e:
             raise ApiError(404, "unknown_mirror", "登记表里没有这个镜像",
                            {"only": body.only}) from e
+        if mirror.pending:
+            raise ApiError(409, "mirror_pending",
+                           "这张镜像已登记，但本阶段还没有取数实现，刷不了",
+                           {"mirror": mirror.name, "stage": mirror.stage})
     try:
         runs = refresh_dims.refresh_all("api", actor=who, only=body.only)
     except RefreshInFlight as e:

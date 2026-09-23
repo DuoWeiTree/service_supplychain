@@ -81,6 +81,32 @@ def test_a_known_mirror_name_is_validated_before_the_refresh_is_attempted(
     assert called == [], "名字是错的，却已经去跑刷新了"
 
 
+def test_a_pending_mirror_is_409_named_not_500_or_404(client, seed, monkeypatch):
+    """★ 登记了但本阶段没有取数实现的条目，名字是**认得的** —— 三种答案里
+    只有一种是对的：
+
+      404 unknown_mirror  → 撒谎（登记表里明明有它）
+      500                 → 把「还没做」说成「我们炸了」，调用方无从分辨
+      409 mirror_pending  → 名字对、这一阶段还轮不到它
+
+    ★ 顺带钉住顺序与「没白跑」：pending 在**调用之前**就被拦下，不该先抢锁、
+      先建连、先碰 CH 才发现这张表压根没有取数实现。
+    """
+    from jobs import refresh_dims as rd
+    called = []
+    monkeypatch.setattr(rd, "refresh_all", lambda *a, **k: called.append(k) or [])
+
+    r = client.post("/v1/jobs/refresh-dims", json={"only": "po_snapshot"},
+                    headers={"x-actor": seed.actor})
+    assert r.status_code == 409, f"pending 条目必须是 409，实际 {r.status_code}：{r.text}"
+    body = r.json()
+    assert body["error"] == "mirror_pending", body
+    assert "hint" in body, f"S-29 形状缺 hint：{body}"
+    assert body.get("mirror") == "po_snapshot", f"没点名是哪一张：{body}"
+    assert body.get("stage") == "B", f"没点名它排在哪个阶段：{body}"
+    assert called == [], "pending 条目却已经去跑刷新了"
+
+
 def test_undeclared_query_param_is_400(client, seed):
     r = client.post("/v1/jobs/refresh-dims?force=1", json={},
                     headers={"x-actor": seed.actor})
