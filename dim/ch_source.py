@@ -1,7 +1,7 @@
-"""真 CH 取数。★ 预测取数（`as_of`）已在 2026-09-23 ChSource 设计里接真 CH——
+"""真 CH 取数。★ 预测取数（`as_of` / `onhand_available`）已在 2026-09-23 ChSource 设计里接真 CH——
 
-其余三个方法（`monthly_sales_history` / `onhand_available` / `purchase_in_transit`）
-仍刻意抛 `NotImplementedError`，不给空实现：空实现会让「该做没做」和「本来就不用做」
+其余两个方法（`monthly_sales_history` / `purchase_in_transit`）仍刻意抛
+`NotImplementedError`，不给空实现：空实现会让「该做没做」和「本来就不用做」
 长得一模一样（01 规则五）。取数口径在 `docs/superpowers/specs/2026-09-23-chsource-design.md`
 与 CLAUDE.md「取数的四条铁律」里；`ChSource` 类的完整定义在本文件末尾「预测取数」段
 （与下面的镜像刷新取数层是两件事，见该段落开头的说明）。
@@ -295,11 +295,68 @@ SELECT _captured_date, count() AS rows, uniq(sid) AS uniq_sid,
 SETTLE_MINUTES = 30
 LOOKBACK_DAYS = 7
 
-#: ★ 其余三个方法在本任务（Task 1）仍未实现，留给后续任务（Task 2~4）——
-#:   与文件顶部旧占位类的道理一样：空实现要能被认出来，不许悄悄返回假数据。
+#: ★ 其余两个方法（`monthly_sales_history` / `purchase_in_transit`）仍未实现，
+#:   留给后续任务（Task 3~4）——与文件顶部旧占位类的道理一样：空实现要能被
+#:   认出来，不许悄悄返回假数据。
 _STUB_MSG = ("CH 取数属后续阶段任务：请按 docs/superpowers/specs/2026-09-23-chsource-design.md"
              " §4 实现（商品目录 LEFT JOIN 快照、msku→货号按 as_of argMax 但 sid 不参与、"
              "日报先按 _captured_date 去重并比对覆盖面）")
+
+#: ★ 列裁定（design §4.3 / OQ-4 裁定）：`afn_fulfillable_quantity` = 可售在仓。
+#:   不用 `available_total`（实测 972/8,080 行更大，含预留与不可售，OQ-4：差额
+#:   不解释就不用它，禁止总量相减凑数）；不用 `total`（含 inbound，inbound 在
+#:   grid 里是另一列）。
+#: ★ 不按 `sku` 关联：该列实测 1,932/8,080（23.9%）为空。
+#: ★ `sid` 与 `seller_sku` 都出，且 sid 转 String —— PG 侧 seller_id 是 text（001），
+#:   以字符串为准的一侧不做数值解析（同 `SQL_SELLER` 的 `toString(l.sid)` 那条理由）。
+#: ★ `sid != 0` 的排除**不写进 SQL**，留在 Python 侧的 `parse_onhand` 做——写进
+#:   `WHERE` 会让 CH 直接吞掉这批行，Python 端就再也数不出「排除了多少」，
+#:   而 27.6% 的可售被排除这件事必须能被计数（controller 09-23 裁定）。
+SQL_FBA_ONHAND = f"""
+SELECT toString(sid)                              AS sid,
+       seller_sku                                 AS seller_sku,
+       toInt64(sum(afn_fulfillable_quantity))     AS units,
+       count()                                    AS raw_rows
+  FROM {FBA_DETAIL_TABLE}
+ WHERE _captured_date = toDate('{{as_of}}')
+ GROUP BY sid, seller_sku
+"""
+
+#: ★ sid=0 是欧洲共享池（PL+SE 合池），不是任何单店的在仓（design §1.3 E-4：
+#:   name='PETSFIT-JXD-UK欧洲仓'，seller_group_name='PETSFIT-JXD-PL,PETSFIT-JXD-SE'，
+#:   1,114 行 / 14,073 件，占全部可售 27.6%）。折进任何一个 sid 都是凭空给它
+#:   14,073 件。归属未裁定（OQ-2）——阶段 A 只排除 + 计数，不猜分摊规则。
+SHARED_POOL_SID = "0"
+
+
+def parse_onhand(rows: list[tuple]) -> tuple[dict[tuple[str, str], int], dict]:
+    """纯变换：CH 行 → `(sid, seller_sku) -> units` + 丢弃计数。
+
+    ★ 两种「重复」都记进同一个 `rows_collapsed`，来源不同：
+      1. SQL 自己的 `GROUP BY` 内，单个分组由多条原始行 `sum()` 出来
+         （`raw_rows > 1`，CLAUDE.md 铁律 4「库存日报会重复行」）；
+      2. Python 侧同一个 `(sid, seller_sku)` 键出现在**两条不同的返回行**里——
+         这在正常的 `GROUP BY sid, seller_sku` 输出里不该发生，出现了就是
+         SQL 或源表形态变了，拼接也要能被看见，不是覆盖掉旧值完事。
+    """
+    out: dict[tuple[str, str], int] = {}
+    dropped: dict = {}
+    for sid, seller_sku, units, raw_rows in rows:
+        sid = str(sid)
+        units = int(units)
+        raw_rows = int(raw_rows)
+        if sid == SHARED_POOL_SID:
+            bucket = dropped.setdefault("shared_pool_excluded", {"rows": 0, "units": 0})
+            bucket["rows"] += raw_rows
+            bucket["units"] += units
+            continue
+        if raw_rows > 1:
+            dropped["rows_collapsed"] = dropped.get("rows_collapsed", 0) + raw_rows - 1
+        key = (sid, seller_sku)
+        if key in out:
+            dropped["rows_collapsed"] = dropped.get("rows_collapsed", 0) + 1
+        out[key] = out.get(key, 0) + units
+    return out, dropped
 
 
 class ChUnavailable(Exception):
@@ -392,8 +449,8 @@ def pick_snapshot_date(rows: list[tuple], threshold: float,
 class ChSource:
     """真 CH 取数。★ 客户端由调用方注入 —— dim/ 不许 import shared.ch_client。
 
-    只有 `as_of()` 在本任务（Task 1）接了真取数；其余三个方法仍显式
-    `NotImplementedError`，留给 Task 2~4。
+    `as_of()`（Task 1）与 `onhand_available()`（Task 2）已接真取数；其余两个
+    方法仍显式 `NotImplementedError`，留给 Task 3~4。
 
     ★ `min_rows`/`min_distinct_sid`/`lookback_days`/`settle_minutes` 的默认值
     = `shared.config._FORECAST_DEFAULTS` 里同名键（`min_rows`/`min_distinct_sid`
@@ -428,6 +485,12 @@ class ChSource:
         self._settle_minutes = settle_minutes
         self._classify = classify_failure
         self._as_of: tuple[dt.datetime, dt.date] | None = None
+        #: ★ 缓存键是解析出来的快照日，不是 TTL——同一 `_captured_date` 的快照
+        #:   不可变（E-1/E-3：一天写一次、60 秒写完），日期一变整份丢弃重建
+        #:   （不合并，记忆 `defaults-preserve-staleness`）。
+        self._onhand_cache: tuple[dt.date, dict[tuple[str, str], int]] | None = None
+        #: ★ 最近一批取数的丢弃计数，供上层写进日志与响应（`source_notes.dropped`）。
+        self._stats: dict = {}
 
     def as_of(self) -> dt.date:
         now = self._now()
@@ -461,8 +524,47 @@ class ChSource:
                               ) -> list[tuple[dt.date, int]]:
         raise NotImplementedError(_STUB_MSG)
 
+    def _onhand(self) -> dict[tuple[str, str], int]:
+        """按 `as_of()` 的快照日批量取一次并缓存（design §5：21 次 grid 调用
+        → 1 条 SQL）。★ 同 `as_of()` 的模式：查询失败必须分类后抛
+        `ChUnavailable`，不许让裸 driver 异常从这里漏出去——`as_of()`
+        成功之后、在仓批量查询本身仍可能在两次往返之间掉线。"""
+        as_of = self.as_of()
+        if self._onhand_cache is not None and self._onhand_cache[0] == as_of:
+            return self._onhand_cache[1]
+        sql = SQL_FBA_ONHAND.format(as_of=as_of.isoformat())
+        t0 = time.perf_counter()
+        try:
+            rows = self._q(sql)
+        except Exception as e:
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            cause = self._classify(e)
+            log.warning("op=ch_onhand outcome=fail target=%s as_of=%s elapsed_ms=%d cause=%s",
+                       FBA_DETAIL_TABLE, as_of, elapsed_ms, cause)
+            raise ChUnavailable(target=FBA_DETAIL_TABLE, cause=cause) from e
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        if not rows:
+            raise UnknownShape(
+                f"{FBA_DETAIL_TABLE} 在 as_of={as_of} 取回 0 行 —— "
+                "这一天通过了掉档守卫却是空的，说明守卫和取数读的不是同一批")
+        by_key, dropped = parse_onhand(rows)
+        log.info("op=ch_onhand outcome=ok as_of=%s keys=%d dropped=%s elapsed_ms=%d",
+                 as_of, len(by_key), dropped, elapsed_ms)
+        self._onhand_cache = (as_of, by_key)
+        self._stats["onhand"] = dropped
+        return by_key
+
     def onhand_available(self, seller_sku: str, sid: str) -> int | None:
-        raise NotImplementedError(_STUB_MSG)
+        # ★ 批次被接受 ⇒ 缺行就是 0（L-1：FBA 报表不返回库存为 0 的 SKU，
+        #   完全断货正是最该被看见的状态）。批次不可用 ⇒ `_onhand()` 已经
+        #   抛了（`ChUnavailable`/`ChDataUnusable`/`UnknownShape`），绝不会
+        #   走到这里返回 0 冒充未知。`has_fba=false` 的「不适用」不经过本
+        #   方法（B-6，调用方已按 PG `seller.has_fba` 闸住）。
+        return self._onhand().get((str(sid), seller_sku), 0)
+
+    def stats(self) -> dict:
+        """最近一次批量取数的丢弃计数，供上层写进日志与响应（`source_notes.dropped`）。"""
+        return dict(self._stats)
 
     def purchase_in_transit(self, sku: str) -> list[InTransit]:
         raise NotImplementedError(_STUB_MSG)

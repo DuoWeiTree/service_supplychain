@@ -209,3 +209,132 @@ def test_lookback_days_shows_up_in_the_empty_candidate_error():
     格式化里用一次就丢掉。"""
     with pytest.raises(cs.UnknownShape, match=r"近 3 天"):
         cs.pick_snapshot_date([], 0.30, MIN_ROWS, MIN_SID, lookback_days=3)
+
+
+#: ★ 实测形状（design §1.3 E-4）：sid=0 是欧洲共享池
+#:   （name='PETSFIT-JXD-UK欧洲仓'，seller_group_name='PETSFIT-JXD-PL,PETSFIT-JXD-SE'），
+#:   1,114 行 / 14,073 件，占全部可售 50,947 件的 27.6%。它不是任何单店的在仓。
+ONHAND_ROWS = [
+    ("11072", "DCC1800264G1Z2B", 672, 1),
+    ("11072", "DVCD105013ALZ2B", 1323, 1),
+    ("0", "002F2RedM", 14073, 1114),      # ← 共享池，必须被排除且计数
+    ("11094", "MSKU-UK-1", 0, 1),         # ← 真的是 0，不是缺行
+]
+
+
+def onhand_query(rows=None, days=None):
+    def q(sql: str):
+        if "lingxing_inventory_fba_detail" in sql and "_captured_date >=" in sql:
+            return days if days is not None else [day(23), day(22)]
+        if "afn_fulfillable_quantity" in sql:
+            return ONHAND_ROWS if rows is None else rows
+        raise AssertionError(f"没预料到的 SQL：{sql[:80]}")
+    return q
+
+
+def test_shared_pool_sid_zero_is_excluded_and_counted():
+    """★ 27.6% 的可售被排除，不留痕就再也没人想得起来它去哪了。"""
+    by_key, dropped = cs.parse_onhand(ONHAND_ROWS)
+    assert ("0", "002F2RedM") not in by_key
+    assert dropped == {"shared_pool_excluded": {"rows": 1114, "units": 14073}}
+
+
+def test_a_real_zero_is_zero_not_missing():
+    by_key, _ = cs.parse_onhand(ONHAND_ROWS)
+    assert by_key[("11094", "MSKU-UK-1")] == 0
+
+
+def test_msku_absent_from_an_accepted_batch_is_zero():
+    """★ L-1：FBA 报表不返回库存为 0 的 SKU —— 缺行 = 0，而断货正是最该被看见的状态。"""
+    src = cs.ChSource(onhand_query())
+    assert src.onhand_available("NEVER-STOCKED", "11072") == 0
+
+
+def test_onhand_reads_the_snapshot_once_for_many_mskus():
+    calls = []
+    base = onhand_query()
+
+    def q(sql):
+        calls.append(sql)
+        return base(sql)
+
+    src = cs.ChSource(q)
+    for msku in ("DCC1800264G1Z2B", "DVCD105013ALZ2B", "NEVER-STOCKED"):
+        src.onhand_available(msku, "11072")
+    assert sum("afn_fulfillable_quantity" in s for s in calls) == 1, (
+        "grid 逐 msku 调 21 次 —— 不批量就是 21 次往返")
+
+
+def test_unusable_batch_raises_instead_of_returning_zero():
+    """★ 这条是整个设计的支点：拿不到数时返回 0 会让「断货」和「查不到」长得一样。"""
+    bad = [day(23, rows=100), day(22, rows=100)]
+    src = cs.ChSource(onhand_query(days=bad))
+    with pytest.raises(cs.ChDataUnusable):
+        src.onhand_available("DCC1800264G1Z2B", "11072")
+
+
+def test_duplicate_rows_are_summed_and_counted():
+    """★ 今天一行不重（实测 8,080/8,080 n=1），但重复行是 L-4 点名的形态。"""
+    rows = [("11072", "X", 10, 1), ("11072", "X", 5, 1)]
+    by_key, dropped = cs.parse_onhand(rows)
+    assert by_key[("11072", "X")] == 15
+    assert dropped["rows_collapsed"] == 1
+
+
+def test_onhand_query_failure_becomes_ch_unavailable():
+    """★ as_of() 拿到快照日之后，在仓批量查询本身仍可能失败（连接在两次
+    往返之间断掉）——必须走 as_of() 同一条 classify_failure/ChUnavailable
+    路径，不许让裸 driver 异常从 onhand_available 漏出去（同 Task 1 的
+    ChUnavailable 曾经「定义了但从没抛过」那个教训，见 progress.md Task 1
+    Fix round 2）。"""
+
+    def q(sql: str):
+        if "lingxing_inventory_fba_detail" in sql and "_captured_date >=" in sql:
+            return [day(23), day(22)]
+        if "afn_fulfillable_quantity" in sql:
+            raise ConnectionRefusedError(111, "Connection refused")
+        raise AssertionError(f"没预料到的 SQL：{sql[:80]}")
+
+    src = cs.ChSource(q, classify_failure=describe_failure)
+    with pytest.raises(cs.ChUnavailable) as e:
+        src.onhand_available("DCC1800264G1Z2B", "11072")
+    assert e.value.cause["kind"] == "connect_refused"
+    assert e.value.target == cs.FBA_DETAIL_TABLE
+
+
+def test_onhand_stats_reports_the_drop_reasons_from_the_last_batch():
+    """★ `stats()` 供上层写进日志与响应（brief 接口 4）——不是内部细节。"""
+    src = cs.ChSource(onhand_query())
+    src.onhand_available("DCC1800264G1Z2B", "11072")
+    assert src.stats() == {"onhand": {"shared_pool_excluded": {"rows": 1114, "units": 14073}}}
+
+
+def test_onhand_cache_rebuilds_when_as_of_moves_to_a_new_day():
+    """★ 缓存键是解析出来的快照日——同一天不可变，日期一变整份丢弃重建
+    （不合并，记忆 defaults-preserve-staleness）。TTL 到期但候选日不变时
+    缓存应当保留（同一天重建也是浪费），所以这条测试真的把候选日往前推
+    一天，而不是只让 TTL 过期。"""
+    calls = []
+    state = {"days": [day(23), day(22)]}
+
+    def q(sql):
+        calls.append(sql)
+        if "lingxing_inventory_fba_detail" in sql and "_captured_date >=" in sql:
+            return state["days"]
+        if "afn_fulfillable_quantity" in sql:
+            if "2026-09-23" in sql:
+                return [("11072", "X", 1, 1)]
+            return [("11072", "X", 2, 1)]
+        raise AssertionError(f"没预料到的 SQL：{sql[:80]}")
+
+    clock = [dt.datetime(2026, 9, 23, 12, 0, 0)]  # noqa: DTZ001
+    src = cs.ChSource(q, now=lambda: clock[0], cache_ttl_s=300)
+    assert src.onhand_available("X", "11072") == 1
+    assert src.onhand_available("X", "11072") == 1
+    assert sum("afn_fulfillable_quantity" in c for c in calls) == 1
+
+    clock[0] += dt.timedelta(seconds=301)
+    state["days"] = [day(24), day(23)]
+    calls.clear()
+    assert src.onhand_available("X", "11072") == 2
+    assert sum("afn_fulfillable_quantity" in c for c in calls) == 1
