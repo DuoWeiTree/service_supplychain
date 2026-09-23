@@ -123,6 +123,33 @@ def test_a_busy_lock_at_startup_is_skipped_not_treated_as_a_failure(
         f"抢锁被占不许算成失败：{caplog.text!r}"
 
 
+def test_boot_with_unreachable_pg_still_serves_health_and_names_the_cause(
+        wipe, monkeypatch, caplog):
+    """★ OQ-8 的原文是「不拦启动，**也不拦** `/health` / `/v1/readiness`」，
+    而实现只把 CH 侧（触发的那次刷新）兜住了：读新鲜度的那一行在 `try` 之外，
+    PG 连不上时异常直接冲出 lifespan，应用整个起不来 —— 容器里就是无限崩溃重启，
+    而查「为什么起不来」要用的正是那两个口子。
+
+    ★ 不 monkeypatch `_stale_mirrors` 造一个假异常：那验的是「假异常接不接得住」，
+      不是「PG 真连不上时应用起不起得来」。把连接配置指到本机一个死端口，
+      让 psycopg2 真的去连、真的被拒（loopback，不依赖内网、不依赖超时）。
+    """
+    _cfg(monkeypatch, startup_gate=True)
+    from shared import pg_client
+    dead = {**pg_client.business_pg(), "host": "127.0.0.1", "port": 5499}
+    monkeypatch.setattr(pg_client, "business_pg", lambda: dead)
+
+    with caplog.at_level(logging.WARNING, logger="scm.api"):  # noqa: SIM117
+        with TestClient(api.create_app()) as c:
+            assert c.get("/health").status_code == 200, "PG 连不上也不许拖垮 /health"
+    assert "stage=freshness_read" in caplog.text, (
+        f"没点名是哪一步失败的：{caplog.text!r}")
+    assert "OperationalError" in caplog.text, (
+        f"日志必须带异常类名，不能只有 str(e)：{caplog.text!r}")
+    assert "5499" in caplog.text, (
+        f"日志必须点名打的谁（host:port）—— 否则下次得重新复现：{caplog.text!r}")
+
+
 def test_suite_default_never_triggers_a_refresh_even_with_stale_mirrors(wipe, monkeypatch):
     """★ fix round 1：conftest 把 `[freshness] startup_gate` 全局钉成 false ——
     不这样，任何一个带 `with TestClient(...)` 对着空表/陈旧镜像跑 lifespan 的

@@ -84,8 +84,23 @@ def _startup_check() -> None:
     ★ 全程不许抛出会中断 lifespan 的异常：触发的这次刷新本身失败也只记日志——
     静默兜底是最坏的一种，但「刷新失败」和「应用起不来」是两件不同的事，
     把二者绑在一起就是把一次 CH 抖动变成一次人工到场（设计 §10.1 OQ-8）。
+
+    ★ 终审 I-1：**读新鲜度**这一步也在「全程」里。它原先排在 try 之外，于是
+      PG 连不上时异常直接冲出 lifespan，`/health` 与 `/v1/readiness` 一起没了——
+      而那正是要用来查「为什么起不来」的两个口子（OQ-8 裁定的原话）。
+      读不到就不知道该不该刷，所以这里只记一条点名成因的日志然后照常返回，
+      不猜「大概是新鲜的」也不猜「大概该刷一轮」。
     """
-    stale = _stale_mirrors()
+    try:
+        stale = _stale_mirrors()
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as e:  # noqa: BLE001 - 见上：这一步失败不许中断 lifespan
+        log.warning("startup outcome=fail stage=freshness_read err_type=%s pg=%s err=%s"
+                    " —— 读不到新鲜度，本次不触发刷新；/health 与 /v1/readiness 照常可达",
+                    type(e).__name__,
+                    pg_error_fields(e) if isinstance(e, psycopg2.Error) else {}, e)
+        return
     if not stale:
         return
     if not config_module.freshness()["startup_gate"]:
@@ -105,7 +120,12 @@ def _startup_check() -> None:
         #   下次换一种措辞的异常也照样分得清。
         log.warning("startup refresh outcome=skipped reason=busy err_type=%s err=%s",
                    type(e).__name__, e)
-    except BaseException as e:  # noqa: BLE001 - 必须兜住一切，让 lifespan 永不中断；
+    except (KeyboardInterrupt, SystemExit):
+        # ★ 终审 M-5：`BaseException` 会把 Ctrl-C / SystemExit 也记成「刷新失败」。
+        #   「兜住一切」的意图是「漏一种异常类型就是漏一批沉默失败」，
+        #   而这两种不属于那一批——它们是「人让它停」，必须原样往外走。
+        raise
+    except Exception as e:  # noqa: BLE001 - 必须兜住一切，让 lifespan 永不中断；
         # 「刷新失败」和「应用起不来」是两件不同的事（设计 §10.1 OQ-8）。
         # ★ 只取 str(e) 等于丢了异常类名与 psycopg2 的 pgcode/constraint——同一条
         #   纪律 jobs/refresh_dims.py::refresh_one 已经示范过，这里照抄，不能
