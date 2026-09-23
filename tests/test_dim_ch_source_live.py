@@ -279,6 +279,46 @@ def test_purchase_as_of_is_within_staleness_budget(live_query_raw):
         "走到这条断言本身就说明还在预算内）")
 
 
+def test_purchase_order_table_is_within_staleness_budget_too(live_query_raw):
+    """★ Task 7（残留后追加，09-23）：上面那条只验了行项表的年龄——单据表
+    （`PURCHASE_ORDER_TABLE`，给在途的 `status`）之前没有任何人看过它自己的
+    `max(_captured_date)`。09-22 实测过两张表真的会分叉（行项表当天、单据表
+    停在两天前），这条把两张表各自的快照日单独打出来，不只信任
+    `purchase_as_of()` 内部已经做过的合并判定——留证据，下次复现不用再连
+    一次 CH。"""
+    threshold_days = cs.ChSource.__init__.__kwdefaults__["purchase_staleness_days"]
+    src = cs.ChSource(live_query_raw, classify_failure=describe_failure)
+    as_of = src.as_of()
+
+    items_rows = live_query_raw(cs.SQL_PURCHASE_AS_OF)
+    order_rows = live_query_raw(cs.SQL_PURCHASE_ORDER_AS_OF)
+    items_captured = items_rows[0][0]
+    order_captured = order_rows[0][0]
+    items_age_days = (as_of - items_captured).days
+    order_age_days = (as_of - order_captured).days
+    print(f"purchase_as_of live check: reference(as_of)={as_of} threshold_days={threshold_days} "
+          f"| {cs.PURCHASE_ITEMS_TABLE} max(_captured_date)={items_captured} "
+          f"age_days={items_age_days} "
+          f"| {cs.PURCHASE_ORDER_TABLE} max(_captured_date)={order_captured} "
+          f"age_days={order_age_days}")
+
+    assert items_captured is not None and order_captured is not None, (
+        "两张表理应各自至少有一个采集日——None 说明这张表从未采集过，"
+        "`purchase_as_of()` 会把它读成 UnknownShape，不是「没有在途」")
+    assert items_age_days < threshold_days, (
+        f"{cs.PURCHASE_ITEMS_TABLE} max(_captured_date)={items_captured}，"
+        f"比 as_of={as_of} 晚 {items_age_days} 天，已达/超默认阈值 {threshold_days} 天")
+    assert order_age_days < threshold_days, (
+        f"{cs.PURCHASE_ORDER_TABLE} max(_captured_date)={order_captured}，"
+        f"比 as_of={as_of} 晚 {order_age_days} 天，已达/超默认阈值 {threshold_days} 天—— "
+        "这正是 Task 7 要防的那种漂移：行项表新鲜、单据表冻住，status 停在冻结的"
+        "那一刻会让已完成/已作废的单子继续被读成待到货")
+
+    # ★ purchase_as_of() 内部走的是同一套判定——两条路径必须一致，不许分叉。
+    purchase_as_of = src.purchase_as_of()
+    assert purchase_as_of == items_captured
+
+
 #: ---------------------------------------------------------------------------
 #: Task 4（monthly_sales_history，design §4.2 / §7 / §8 OQ-1）：`SQL_MONTHLY_SALES`
 #: 是新 SQL，带一层子查询 + `GROUP BY amazon_order_id, order_item_id` 去重——

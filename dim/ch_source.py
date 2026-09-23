@@ -447,6 +447,16 @@ SQL_PURCHASE_AS_OF = f"""
 SELECT max(_captured_date) FROM {PURCHASE_ITEMS_TABLE}
 """
 
+#: Task 7：在途数量来自行项表，`status` 来自单据表——两张表合成一个数，陈旧
+#: 守卫原先只量了行项表那一半。单据表停摆时行项表可以照常采集（09-22 实测：
+#: 行项表当天、单据表停在两天前），后果与 E-12 同形——status=9/-1 的单子
+#: 继续被读成「待到货」。两张表分开查，是为了失败时能点名到底是哪张
+#: （`ChUnavailable.target` 各自指向自己），不许合并成一次查询后就分不清
+#: 「打的谁」。
+SQL_PURCHASE_ORDER_AS_OF = f"""
+SELECT max(_captured_date) FROM {PURCHASE_ORDER_TABLE}
+"""
+
 #: ★★ 必须按采购单 `status` 过滤，不能只靠 `quantity_real > quantity_receive`。
 #:    实测（design §1.3 E-12）：status=9（已完成）的 966 行 / 104,479 件，行项
 #:    `quantity_receive` **全为 0** —— 只按算术会把这批已到货的货报成在途，
@@ -513,13 +523,38 @@ def parse_in_transit(rows: list[tuple]) -> tuple[dict[str, list[InTransit]], dic
 class PurchaseTableStale(Exception):
     """采购表陈旧阈值被突破（OQ-5）。★ 拿不到新鲜数据时必须让调用方读成「未知」，
     绝不能悄悄当「在途为 0」或返回上一轮缓存的数字——同 ChDataUnusable 一个理由。
-    由 Task 5 翻成 503。"""
+    由 Task 5 翻成 503。
 
-    def __init__(self, captured: dt.date, age_days: int, threshold_days: int) -> None:
-        self.captured, self.age_days, self.threshold_days = captured, age_days, threshold_days
+    ★ Task 7：在途由两张表合成（行项表给数量，单据表给 status），年龄各自算、
+    取**更老的那个**跟阈值比——两张表的处置不同（行项表停了是没有新采购，
+    单据表停了是状态冻住），所以异常必须点名 `stale_table` 是哪一张，而不是
+    只报一个日期。`captured`/`age_days` 两个属性保留给 `api/ui/plans.py`
+    （本轮不改它）——指向触发本次陈旧判定的那张表（`stale_table`），
+    两张表各自的日期与年龄仍然全部留在 `items_*`/`order_*` 属性与消息里，
+    不因为兼容旧属性名就丢掉另一张表的证据。"""
+
+    def __init__(self, *, items_captured: dt.date, items_age_days: int,
+                 order_captured: dt.date, order_age_days: int,
+                 threshold_days: int) -> None:
+        self.items_captured, self.items_age_days = items_captured, items_age_days
+        self.order_captured, self.order_age_days = order_captured, order_age_days
+        self.threshold_days = threshold_days
+        # ★ 取更老的那个作为判定依据（判据三：谁新谁旧不是重点，年龄才是）；
+        #   两个年龄相等时不分先后，指向行项表（历史上 captured/age_days 就是
+        #   行项表的语义，避免无谓改动 api/ui/plans.py 已经在读的字段含义）。
+        if order_age_days > items_age_days:
+            self.stale_table = PURCHASE_ORDER_TABLE
+            self.captured, self.age_days = order_captured, order_age_days
+        else:
+            self.stale_table = PURCHASE_ITEMS_TABLE
+            self.captured, self.age_days = items_captured, items_age_days
         super().__init__(
-            f"purchase_table_stale captured={captured} age_days={age_days} "
-            f"threshold_days={threshold_days}")
+            f"purchase_table_stale stale_table={self.stale_table} "
+            f"threshold_days={threshold_days} "
+            f"items_table={PURCHASE_ITEMS_TABLE} items_captured={items_captured} "
+            f"items_age_days={items_age_days} "
+            f"order_table={PURCHASE_ORDER_TABLE} order_captured={order_captured} "
+            f"order_age_days={order_age_days}")
 
 
 def is_overdue(period: str, as_of: dt.date) -> bool:
@@ -831,6 +866,14 @@ class ChSource:
         快照日）比较年龄，超过 `purchase_staleness_days` 就 `PurchaseTableStale`，
         不许把陈旧数据读成「在途为 0」或悄悄返回上一轮缓存的数字。
 
+        ★ Task 7：在途的数量与状态分别来自两张表（行项表给 `quantity_*`，
+        单据表给 `status`），陈旧守卫原先只量了行项表——单据表可以自己停摆
+        而行项表照常采集（09-22 实测：行项表当天、单据表停在两天前），后果
+        与 E-12 同形：status=9/-1 的单子继续被读成「status=2 待到货」。
+        两张表**都**量年龄，取更老的那个跟阈值比；返回值仍是**行项表**的
+        快照日不变（在途数量按它取，`source_notes.purchase_as_of` 的含义
+        不许变——单据表只贡献 status 过滤，不贡献这个日期）。
+
         ★ 终审 C-3：缓存键是**参照的 `as_of()`**，不是「查过一次就完事」。
         参照物一往前走，同一个 captured 的年龄就变了，闸必须重新判一次 ——
         否则采购采集停摆之后，每一张 grid 都在一个悄悄老了好几天的
@@ -839,33 +882,60 @@ class ChSource:
         reference = self.as_of()
         if self._purchase_as_of is not None and self._purchase_as_of[0] == reference:
             return self._purchase_as_of[1]
+
+        items_captured = self._purchase_table_captured(
+            SQL_PURCHASE_AS_OF, PURCHASE_ITEMS_TABLE)
+        order_captured = self._purchase_table_captured(
+            SQL_PURCHASE_ORDER_AS_OF, PURCHASE_ORDER_TABLE)
+
+        # ★ 陈旧比较的参照基准是 fba_detail 的快照日（`as_of()`，上面已取），不是
+        #   本机 wall clock——三张表都是「采集副本」，比较它们各自的 CH 时点才有意义。
+        items_age_days = (reference - items_captured).days
+        order_age_days = (reference - order_captured).days
+        # ★ 判据一：两张表各自的 max(_captured_date) 都要进日志——不管有没有
+        #   触发陈旧，缺一张就得重新连一次 CH 才查得出当时的形状。
+        log.info("op=ch_purchase_as_of outcome=check items_table=%s items_captured=%s "
+                 "items_age_days=%d order_table=%s order_captured=%s order_age_days=%d "
+                 "reference=%s threshold_days=%d",
+                 PURCHASE_ITEMS_TABLE, items_captured, items_age_days,
+                 PURCHASE_ORDER_TABLE, order_captured, order_age_days,
+                 reference, self._purchase_staleness_days)
+        # ★ 判据三：年龄取更老的那个跟阈值比——单据表比行项表新不是错（今天
+        #   09-23 就是两表同日，09-22 时反过来），守卫判的是年龄不是谁新谁旧。
+        if max(items_age_days, order_age_days) > self._purchase_staleness_days:
+            exc = PurchaseTableStale(
+                items_captured=items_captured, items_age_days=items_age_days,
+                order_captured=order_captured, order_age_days=order_age_days,
+                threshold_days=self._purchase_staleness_days)
+            log.warning("op=ch_purchase_as_of outcome=stale stale_table=%s "
+                        "items_captured=%s items_age_days=%d order_captured=%s "
+                        "order_age_days=%d threshold_days=%d",
+                        exc.stale_table, items_captured, items_age_days,
+                        order_captured, order_age_days, self._purchase_staleness_days)
+            raise exc
+        log.info("op=ch_purchase_as_of outcome=ok captured=%s age_days=%d reference=%s",
+                 items_captured, items_age_days, reference)
+        self._purchase_as_of = (reference, items_captured)
+        return items_captured
+
+    def _purchase_table_captured(self, sql: str, target: str) -> dt.date:
+        """采购相关某一张表自己的 `max(_captured_date)`。★ 两张表分开查，
+        是为了查询失败时 `ChUnavailable.target` 能点名到底是哪张——合并成
+        一条 SQL 就分不清「打的谁」了（同 `as_of()`/`_onhand()` 的三问）。"""
         t0 = time.perf_counter()
         try:
-            rows = self._q(SQL_PURCHASE_AS_OF)
+            rows = self._q(sql)
         except Exception as e:
             elapsed_ms = (time.perf_counter() - t0) * 1000
             cause = self._classify(e)
             log.warning("op=ch_purchase_as_of outcome=fail target=%s elapsed_ms=%d cause=%s",
-                       PURCHASE_ITEMS_TABLE, elapsed_ms, cause)
-            raise ChUnavailable(target=PURCHASE_ITEMS_TABLE, cause=cause) from e
-        elapsed_ms = (time.perf_counter() - t0) * 1000
+                       target, elapsed_ms, cause)
+            raise ChUnavailable(target=target, cause=cause) from e
         if not rows or rows[0][0] is None:
             raise UnknownShape(
-                f"{PURCHASE_ITEMS_TABLE} 一个采集日都没有 —— "
+                f"{target} 一个采集日都没有 —— "
                 "把采集缺口读成「没有在途」会让计划看起来不缺货")
-        captured = rows[0][0]
-        # ★ 陈旧比较的参照基准是 fba_detail 的快照日（`as_of()`，上面已取），不是
-        #   本机 wall clock——两张表都是「采集副本」，比较它们各自的 CH 时点才有意义。
-        age_days = (reference - captured).days
-        if age_days > self._purchase_staleness_days:
-            log.warning("op=ch_purchase_as_of outcome=stale captured=%s age_days=%d "
-                        "threshold_days=%d elapsed_ms=%d",
-                        captured, age_days, self._purchase_staleness_days, elapsed_ms)
-            raise PurchaseTableStale(captured, age_days, self._purchase_staleness_days)
-        log.info("op=ch_purchase_as_of outcome=ok captured=%s age_days=%d reference=%s"
-                 " elapsed_ms=%d", captured, age_days, reference, elapsed_ms)
-        self._purchase_as_of = (reference, captured)
-        return captured
+        return rows[0][0]
 
     def _in_transit(self) -> dict[str, list[InTransit]]:
         """按 `purchase_as_of()` 的快照日批量取一次并缓存（同 `_onhand()` 的

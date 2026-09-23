@@ -55,9 +55,16 @@ _SALES_ROWS = [(dt.date(2026, 6, 1), 561), (dt.date(2026, 7, 1), 254),
 class FakeCh:
     """按 SQL 文本分派。`gate` 可选，用来把并发请求钉在同一时刻上。"""
 
-    def __init__(self, capture_days=None, purchase_captured=dt.date(2026, 9, 23), gate=None):
+    def __init__(self, capture_days=None, purchase_captured=dt.date(2026, 9, 23),
+                 purchase_order_captured=None, gate=None):
         self.capture_days = capture_days or [dt.date(2026, 9, 23)]
         self.purchase_captured = purchase_captured
+        # ★ Task 7（残留后追加，09-23）：purchase_as_of() 陈旧守卫现在两张表
+        #   都量——不显式传参时单据表跟行项表同一天，不改变原先只盯着
+        #   purchase_captured 的旧测试的假设（同 test_dim_ch_source_forecast.py
+        #   purchase_query() 的 order_captured 默认值同一个理由）。
+        self.purchase_order_captured = (purchase_captured if purchase_order_captured is None
+                                        else purchase_order_captured)
         self.gate = gate
         self.calls: list[str] = []
 
@@ -72,6 +79,12 @@ class FakeCh:
         if "max(_captured_date)" in one and cs.PURCHASE_ITEMS_TABLE in one and "JOIN" not in one:
             self.calls.append("purchase_as_of")
             return [(self.purchase_captured,)]
+        # ★ 必须排在上面那条之后——PURCHASE_ORDER_TABLE 的表名是
+        #   PURCHASE_ITEMS_TABLE 的前缀子串（少了 "_items"），先查更具体的
+        #   那条才不会被这里截胡（同 test_dim_ch_source_forecast.py 里的注释）。
+        if "max(_captured_date)" in one and cs.PURCHASE_ORDER_TABLE in one and "JOIN" not in one:
+            self.calls.append("purchase_order_as_of")
+            return [(self.purchase_order_captured,)]
         if "INNER JOIN o" in one:
             self.calls.append("in_transit")
             return [("DCC1800264G1", "2026-07", 40, "PO-OLD")]

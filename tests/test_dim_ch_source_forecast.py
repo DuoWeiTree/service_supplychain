@@ -411,14 +411,21 @@ PURCHASE_ROWS = [
 ]
 
 
-def purchase_query(captured=dt.date(2026, 9, 22), fba_days=None, rows=None,
-                    fail_as_of=None, fail_in_transit=None):
+def purchase_query(captured=dt.date(2026, 9, 22), order_captured=None, fba_days=None, rows=None,
+                    fail_as_of=None, fail_order_as_of=None, fail_in_transit=None):
     """★ 与 onhand_query 同一个思路：按 SQL 的关键字分发，不真连 CH。
 
     `_captured_date >=` 命中 fba_detail 的候选日 SQL（`as_of()` 用它做陈旧比较
     的参照基准）；`max(_captured_date)` + `purchase_order_list_items` 命中
-    `purchase_as_of()`；`quantity_receive` 命中 `purchase_in_transit` 的批量取数。
+    行项表那一半 `purchase_as_of()`；`max(_captured_date)` + `purchase_order_list`
+    （不含 `_items`，Task 7 新增）命中单据表那一半；`quantity_receive` 命中
+    `purchase_in_transit` 的批量取数。
+
+    ★ `order_captured` 默认与 `captured` 同一天——不显式传参时两张表同龄，
+    不改变原先只盯着 `captured` 的旧测试的假设（它们现在同时喂给两张表）。
     """
+    resolved_order_captured = captured if order_captured is None else order_captured
+
     def q(sql: str, parameters: dict | None = None):
         if "_captured_date >=" in sql:
             return fba_days if fba_days is not None else [day(23), day(22)]
@@ -426,6 +433,12 @@ def purchase_query(captured=dt.date(2026, 9, 22), fba_days=None, rows=None,
             if fail_as_of is not None:
                 raise fail_as_of
             return [(captured,)]
+        # ★ 必须排在上面那条之后——"purchase_order_list_items" 本身就包含
+        #   "purchase_order_list" 这个子串，先查更具体的那条才不会被这里截胡。
+        if "max(_captured_date)" in sql and "purchase_order_list" in sql:
+            if fail_order_as_of is not None:
+                raise fail_order_as_of
+            return [(resolved_order_captured,)]
         if "quantity_receive" in sql:
             if fail_in_transit is not None:
                 raise fail_in_transit
@@ -592,6 +605,87 @@ def test_purchase_staleness_days_is_wired_into_the_check():
         src.purchase_as_of()
     assert e.value.age_days == 2
     assert e.value.threshold_days == 1
+
+
+# ---------------------------------------------------------------------------
+# Task 7（残留后追加，09-23）：陈旧守卫原先只量了行项表——在途由两张表合成
+# （行项表给数量，单据表给 status），单据表可以自己停摆而行项表照常采集
+# （09-22 实测：行项表当天、单据表停在两天前）。守卫必须两张表都量，年龄
+# 取更老的那个，且异常/日志必须点名是哪张表老了。
+# ---------------------------------------------------------------------------
+
+def test_purchase_table_stale_names_the_order_table_when_it_is_the_older_one():
+    """★ 09-22 实测的那个方向：行项表新鲜（age=1）不能掩盖单据表冻住
+    （age=5）——status 停在冻结的那一刻，status=9/-1 的单子会继续被读成
+    「status=2 待到货」（design §1.3 E-12 同形）。这是本条追加任务要修的
+    真缺陷：把这一行守卫删掉/退回成只看行项表，这条测试必须红
+    （报告里贴变异证据）。"""
+    src = cs.ChSource(purchase_query(captured=dt.date(2026, 9, 22),
+                                      order_captured=dt.date(2026, 9, 18)))
+    with pytest.raises(cs.PurchaseTableStale) as e:
+        src.purchase_as_of()
+    assert e.value.stale_table == cs.PURCHASE_ORDER_TABLE, (
+        "行项表自己没超阈值——点名的必须是单据表，不能笼统地报行项表")
+    assert e.value.order_captured == dt.date(2026, 9, 18)
+    assert e.value.order_age_days == 5
+    assert e.value.items_captured == dt.date(2026, 9, 22)
+    assert e.value.items_age_days == 1
+    assert e.value.threshold_days == 3
+    # ★ 判据一：消息里必须能分辨两张表各自的日期，不是只留一个日期让人猜。
+    msg = str(e.value)
+    assert f"stale_table={cs.PURCHASE_ORDER_TABLE}" in msg
+    assert f"items_captured={dt.date(2026, 9, 22)}" in msg
+    assert f"order_captured={dt.date(2026, 9, 18)}" in msg
+
+
+def test_purchase_table_stale_names_the_items_table_when_it_is_the_older_one():
+    """★ 反过来也要点对名字——行项表停摆、单据表照常，异常不能仍然说是
+    单据表老（同上一条测试互为镜像）。"""
+    src = cs.ChSource(purchase_query(captured=dt.date(2026, 9, 17),
+                                      order_captured=dt.date(2026, 9, 22)))
+    with pytest.raises(cs.PurchaseTableStale) as e:
+        src.purchase_as_of()
+    assert e.value.stale_table == cs.PURCHASE_ITEMS_TABLE
+    assert e.value.items_age_days == 6
+    assert e.value.order_age_days == 1
+    assert f"stale_table={cs.PURCHASE_ITEMS_TABLE}" in str(e.value)
+
+
+def test_purchase_table_not_stale_when_both_tables_differ_but_within_threshold():
+    """★ 反向靶子：两张表日期不同、都在阈值内 —— 不许被「两表不同日」本身
+    误伤（判据三：单据表比行项表新不是错，年龄各自跟阈值比才是判据）。
+    返回值仍是行项表的快照日，口径不变。"""
+    src = cs.ChSource(purchase_query(captured=dt.date(2026, 9, 21),
+                                      order_captured=dt.date(2026, 9, 23)))
+    assert src.purchase_as_of() == dt.date(2026, 9, 21)
+
+
+def test_purchase_order_table_query_failure_becomes_ch_unavailable():
+    """★ 同行项表那条的镜像——单据表查询本身也可能连不上/超时，target 必须
+    点名是它，不能笼统地报 PURCHASE_ITEMS_TABLE（三问之一：打的谁）。"""
+    exc = ConnectionRefusedError(111, "Connection refused")
+    src = cs.ChSource(purchase_query(fail_order_as_of=exc), classify_failure=describe_failure)
+    with pytest.raises(cs.ChUnavailable) as e:
+        src.purchase_as_of()
+    assert e.value.cause["kind"] == "connect_refused"
+    assert e.value.target == cs.PURCHASE_ORDER_TABLE
+
+
+def test_purchase_order_table_never_collected_is_unknown_shape():
+    """★ 同行项表「一个采集日都没有」的判据（`UnknownShape`）——单据表从未
+    采集过，同样不许被读成「没有在途」。"""
+    def q(sql: str, parameters: dict | None = None):
+        if "_captured_date >=" in sql:
+            return [day(23), day(22)]
+        if "max(_captured_date)" in sql and "purchase_order_list_items" in sql:
+            return [(dt.date(2026, 9, 22),)]
+        if "max(_captured_date)" in sql and "purchase_order_list" in sql:
+            return [(None,)]
+        raise AssertionError(f"没预料到的 SQL：{sql[:80]}")
+    src = cs.ChSource(q)
+    with pytest.raises(cs.UnknownShape) as e:
+        src.purchase_as_of()
+    assert cs.PURCHASE_ORDER_TABLE in str(e.value)
 
 
 def test_is_overdue_true_for_a_past_month():
