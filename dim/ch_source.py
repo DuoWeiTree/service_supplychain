@@ -405,19 +405,35 @@ SELECT i.sku                                                  AS sku,
 """
 
 
-def parse_in_transit(rows: list[tuple]) -> tuple[dict[str, list[InTransit]], dict[str, int]]:
+#: ★ WARNING 日志里最多展开几个 order_sn——丢弃行一多，日志行本身不能被撑爆。
+#:   `stats()` 里的 `missing_eta_refs` 不受这个上限限制，截断只发生在日志文本。
+_MAX_REFS_IN_LOG = 20
+
+
+def _format_refs(refs: list[str]) -> str:
+    """★ 点名 order_sn，多了就截断加「+N more」尾巴——同一个理由：日志要能读，
+    不是要把全部丢弃行原样倒出来。"""
+    shown = refs[:_MAX_REFS_IN_LOG]
+    tail = f", +{len(refs) - _MAX_REFS_IN_LOG} more" if len(refs) > _MAX_REFS_IN_LOG else ""
+    return f"[{', '.join(shown)}{tail}]"
+
+
+def parse_in_transit(rows: list[tuple]) -> tuple[dict[str, list[InTransit]], dict]:
     """纯变换：CH 行 → `sku -> [InTransit]` + 丢弃计数。
 
     ★ `period` 为 NULL 的行（`expect_arrive_time` 缺失，E-14）不许落进
-    `else ''` 再被下游过滤掉——丢弃必须点名行数与件数（判据五）。
+    `else ''` 再被下游过滤掉——丢弃必须点名 **order_sn 与件数**（design §4.4），
+    不能只留一个计数：只知道「丢了几行」，下次复现还得手工连一次 CH 才查得出
+    是哪张单少了到货日，这正是这条规则要省掉的成本（review fix round 1）。
     """
     out: dict[str, list[InTransit]] = {}
-    dropped: dict[str, int] = {}
+    dropped: dict = {}
     for sku, period, units, ref in rows:
         units = int(units)
         if not period:
             dropped["missing_eta_rows"] = dropped.get("missing_eta_rows", 0) + 1
             dropped["missing_eta_units"] = dropped.get("missing_eta_units", 0) + units
+            dropped.setdefault("missing_eta_refs", []).append(ref)
             continue
         out.setdefault(sku, []).append(InTransit(period, units, ref))
     return out, dropped
@@ -536,8 +552,9 @@ def pick_snapshot_date(rows: list[tuple], threshold: float,
 class ChSource:
     """真 CH 取数。★ 客户端由调用方注入 —— dim/ 不许 import shared.ch_client。
 
-    `as_of()`（Task 1）与 `onhand_available()`（Task 2）已接真取数；其余两个
-    方法仍显式 `NotImplementedError`，留给 Task 3~4。
+    `as_of()`（Task 1）、`onhand_available()`（Task 2）、`purchase_in_transit()`
+    （Task 3）已接真取数；只剩 `monthly_sales_history` 仍显式
+    `NotImplementedError`，留给 Task 4。
 
     ★ `min_rows`/`min_distinct_sid`/`lookback_days`/`settle_minutes` 的默认值
     = `shared.config._FORECAST_DEFAULTS` 里同名键（`min_rows`/`min_distinct_sid`
@@ -726,8 +743,13 @@ class ChSource:
                  "dropped=%s elapsed_ms=%d",
                  purchase_as_of, len(by_sku), total, dropped, elapsed_ms)
         if dropped:
-            log.warning("op=ch_in_transit outcome=partial dropped=%s —— "
-                        "这些行没有预计到货日，已丢弃", dropped)
+            # ★ design §4.4：丢弃 + WARNING 点名 order_sn 与件数——只留计数
+            #   (missing_eta_rows/units) 复现时还得手工连一次 CH 才查得出是
+            #   哪张单（review fix round 1）。
+            log.warning("op=ch_in_transit outcome=partial missing_eta_rows=%d "
+                        "missing_eta_units=%d order_sn=%s —— 这些行没有预计到货日，已丢弃",
+                        dropped.get("missing_eta_rows", 0), dropped.get("missing_eta_units", 0),
+                        _format_refs(dropped.get("missing_eta_refs", [])))
         self._transit_cache = (purchase_as_of, by_sku)
         self._stats["in_transit"] = dropped
         return by_sku

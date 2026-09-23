@@ -412,10 +412,13 @@ def purchase_query(captured=dt.date(2026, 9, 22), fba_days=None, rows=None,
 
 
 def test_missing_eta_is_dropped_loudly_not_silently():
-    """★ 认不出的形态不许落进 else '' 再被下游过滤掉 —— 丢了必须数得出来。"""
+    """★ 认不出的形态不许落进 else '' 再被下游过滤掉 —— 丢了必须数得出来，
+    且必须点名 order_sn（design §4.4，review fix round 1）——只留计数意味着
+    复现时还得手工连一次 CH 才查得出是哪张单丢的。"""
     by_sku, dropped = cs.parse_in_transit(PURCHASE_ROWS)
     assert "NO-ETA-SKU" not in by_sku
-    assert dropped == {"missing_eta_rows": 1, "missing_eta_units": 50}
+    assert dropped == {"missing_eta_rows": 1, "missing_eta_units": 50,
+                       "missing_eta_refs": ["PO260514011"]}
 
 
 def test_in_transit_rows_keep_their_order_number():
@@ -492,10 +495,48 @@ def test_in_transit_query_failure_becomes_ch_unavailable():
 
 
 def test_stats_reports_in_transit_dropped_from_the_last_batch():
-    """★ Task 2 的教训：计数器不写测试就是装饰——这条证明真的写进了 stats()。"""
+    """★ Task 2 的教训：计数器不写测试就是装饰——这条证明真的写进了 stats()，
+    且带着 order_sn（review fix round 1）。"""
     src = cs.ChSource(purchase_query())
     src.purchase_in_transit("DVCD105013L1")
-    assert src.stats()["in_transit"] == {"missing_eta_rows": 1, "missing_eta_units": 50}
+    assert src.stats()["in_transit"] == {"missing_eta_rows": 1, "missing_eta_units": 50,
+                                         "missing_eta_refs": ["PO260514011"]}
+
+
+def test_missing_eta_warning_names_the_order_sn_not_just_a_count(scm_log):
+    """★ design §4.4：丢弃 + WARNING 点名 order_sn 与件数，不是只留一个计数——
+    只留计数意味着复现时还得手工连一次 CH 才查得出是哪张单丢的（review fix
+    round 1）。这条测试专门守「count 有、ref 没有」这种退化：只要实现退回成
+    只记 missing_eta_rows/units 而不把 ref 带进日志，下面的断言就会因为日志
+    文本里找不到 order_sn 而红。★ 用 `scm_log` 而不是裸 `caplog`——`scm.dim`
+    挂在 `scm` 下面，一旦本进程别的测试先跑过 `setup_logging()`（`scm.propagate
+    = False`），裸 caplog 对着 root 的 handler 就再也抓不到，会静默变成
+    「谁先跑就谁绿」（conftest.py `scm_log` 文档已经点名这个坑）。"""
+    src = cs.ChSource(purchase_query())
+    src.purchase_in_transit("DVCD105013L1")
+    warnings = [r.getMessage() for r in scm_log.records if r.levelname == "WARNING"]
+    text = " ".join(warnings)
+    assert "PO260514011" in text, (
+        f"NULL-ETA 那行的 order_sn（PO260514011）必须出现在 WARNING 里——"
+        f"实际 WARNING 内容：{warnings!r}")
+
+
+def test_missing_eta_warning_caps_a_long_ref_list_with_a_tail(scm_log):
+    """★ 丢弃行一多，日志行本身不能被撑爆——超过上限截断并附「+N more」尾巴，
+    但 `stats()` 里的计数与 refs 列表仍是完整的，截断只发生在日志文本里。"""
+    many_rows = [(f"SKU-{i}", None, 1, f"PO-{i:03d}") for i in range(25)]
+    src = cs.ChSource(purchase_query(rows=many_rows))
+    src.purchase_in_transit("ANY-SKU")
+    assert src.stats()["in_transit"]["missing_eta_rows"] == 25
+    assert len(src.stats()["in_transit"]["missing_eta_refs"]) == 25, (
+        "stats() 不许被截断——截断只应该发生在日志文本，不是丢弃计数本身")
+    warnings = [r.getMessage() for r in scm_log.records if r.levelname == "WARNING"]
+    text = " ".join(warnings)
+    assert "+5 more" in text, (
+        f"25 个 order_sn 超过展开上限 20，日志必须截断并留下「+5 more」尾巴，"
+        f"不能把全部 25 个原样倒出来：实际 WARNING 内容：{warnings!r}")
+    assert "PO-000" in text and "PO-019" in text, "截断前的那 20 个应当原样出现"
+    assert "PO-024" not in text, "第 21~25 个应当被截断掉，不在展开列表里"
 
 
 def test_purchase_table_stale_raises_instead_of_reading_as_zero():
