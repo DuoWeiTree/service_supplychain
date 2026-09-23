@@ -585,3 +585,124 @@ def test_is_overdue_false_for_a_future_month():
 
 def test_is_overdue_false_for_a_future_year():
     assert cs.is_overdue("2027-01", dt.date(2026, 9, 23)) is False
+
+
+# ---------------------------------------------------------------------------
+# Task 4: monthly_sales_history —— 去重 · store→sid 映射 · 只取完整月
+# （design §4.2，controller 裁定 09-23，见 §8 OQ-1）
+# ---------------------------------------------------------------------------
+
+def test_month_window_never_includes_the_current_month():
+    """★ 当月是半个月 —— 实测 2026-09 只有 9,130 件 vs 8 月 11,906 件，
+    混进去会被读成 23% 的下滑。"""
+    got = cs.month_window(dt.date(2026, 9, 23), 3)
+    assert got == [dt.date(2026, 6, 1), dt.date(2026, 7, 1), dt.date(2026, 8, 1)]
+
+
+def test_interior_empty_months_are_filled_with_zero_and_counted():
+    """★ 补 0 是为了 monthly_estimate 不抛 HistoryGap（forecast/estimate.py:57），
+    而「这个月一件没卖」与「这个月没数据」是两件事 —— 后者不许补，要截短窗口。"""
+    window = [dt.date(2026, 6, 1), dt.date(2026, 7, 1), dt.date(2026, 8, 1)]
+    series, filled = cs.fill_months(window, {dt.date(2026, 6, 1): 561,
+                                             dt.date(2026, 8, 1): 318})
+    assert series == [(dt.date(2026, 6, 1), 561), (dt.date(2026, 7, 1), 0),
+                      (dt.date(2026, 8, 1), 318)]
+    assert filled == 1
+
+
+def test_no_rows_at_all_returns_empty_not_zeros():
+    """★ 协议原话：没有行就返回空列表 —— 不补 0（dim/source.py:25）。
+    新品没数据与卖了 0 件必须分得开（forecast/estimate.py:22）。"""
+    series, filled = cs.fill_months([dt.date(2026, 8, 1)], {})
+    assert series == []
+    assert filled == 0
+
+
+def test_sql_dedupes_by_order_item():
+    """★ 实测 8,980 组 (amazon_order_id, order_item_id) 出现两次，跨采集日状态会变
+    （Pending → Shipped）。不去重时 2026-08 是 13,611 件、去重后 11,906（−12.5%），
+    2026-09 是 11,331 → 9,130（−19.4%）。兄弟仓那条 SQL 没有这一步。"""
+    sql = " ".join(cs.SQL_MONTHLY_SALES.split())
+    assert "GROUP BY amazon_order_id, order_item_id" in sql
+    assert "argMax(order_status" in sql and "argMax(quantity" in sql
+    assert "'Cancelled'" in sql and "'Pending'" in sql
+
+
+def _sales_query(rows=None, fail=None, as_of_days=None):
+    """★ 同 onhand_query/purchase_query 的思路：按 SQL 关键字分发，不真连 CH。
+    `_captured_date >=` 命中 `as_of()` 的候选日 SQL；`toStartOfMonth` 命中
+    月销量批量取数。让 `as_of()` 走正常路径解析出 2026-09-23，而不是直接戳
+    ChSource 的私有属性。"""
+    def q(sql: str):
+        if "_captured_date >=" in sql:
+            return as_of_days if as_of_days is not None else [day(23), day(22)]
+        if "toStartOfMonth" in sql:
+            if fail is not None:
+                raise fail
+            return rows if rows is not None else []
+        raise AssertionError(f"没预料到的 SQL：{sql[:80]}")
+    return q
+
+
+def test_monthly_sales_history_looks_up_store_via_sid_and_returns_full_months():
+    """★ sid → (store, sales_channel) 走 dim/order_store_map.py，不在这里解析。
+    窗口 = as_of 所在月往前数 months 个完整自然月，升序、月初。"""
+    rows = [(dt.date(2026, 6, 1), 561), (dt.date(2026, 7, 1), 254),
+            (dt.date(2026, 8, 1), 318)]
+    src = cs.ChSource(_sales_query(rows), now=lambda: dt.datetime(2026, 9, 23, 12))  # noqa: DTZ001
+    got = src.monthly_sales_history("DCC1800264G1Z2B", "11072", 3)
+    assert got == [(dt.date(2026, 6, 1), 561), (dt.date(2026, 7, 1), 254),
+                   (dt.date(2026, 8, 1), 318)]
+
+
+def test_monthly_sales_history_rejects_an_unmapped_sid():
+    """★ store_for() 认不出的 sid 必须硬失败 —— 不猜一个店垫上（同 order_store_map
+    的判据，UnknownStore 就是给这条用的）。"""
+    from dim.order_store_map import UnknownStore
+    src = cs.ChSource(_sales_query())
+    with pytest.raises(UnknownStore, match="11100"):
+        src.monthly_sales_history("ANY-MSKU", "11100", 3)
+
+
+def test_monthly_sales_history_rows_outside_the_window_hard_fail():
+    """★ SQL 自己算错了月份边界（或调用方传错窗口）不许被悄悄吞掉 —— 落在窗口
+    外的一行意味着这条 SQL 或 month_window 本身的形态变了。"""
+    rows = [(dt.date(2026, 5, 1), 100)]  # ← 窗口只到 2026-06，5 月不该出现
+    src = cs.ChSource(_sales_query(rows))
+    with pytest.raises(cs.UnknownShape, match="2026-05"):
+        src.monthly_sales_history("DCC1800264G1Z2B", "11072", 3)
+
+
+def test_monthly_sales_history_records_the_lag_marker_in_history_window():
+    """★ 控制器裁定：口径标记随数走，且不许是可有可无的装饰字符串 ——
+    Task 5 要把 lag_note 原样透传进 claims 响应。这里守它真的被写进
+    history_window()，且带上补 0 的月份与最新月龄。"""
+    rows = [(dt.date(2026, 6, 1), 561), (dt.date(2026, 8, 1), 318)]  # 7 月缺
+    src = cs.ChSource(_sales_query(rows))
+    got = src.monthly_sales_history("DCC1800264G1Z2B", "11072", 3)
+    assert got == [(dt.date(2026, 6, 1), 561), (dt.date(2026, 7, 1), 0),
+                   (dt.date(2026, 8, 1), 318)]
+    window = src.history_window()
+    assert window["zero_filled"] == ["2026-07-01"]
+    assert window["newest_month"] == "2026-08-01"
+    assert window["newest_month_age_days"] == (dt.date(2026, 9, 23) - dt.date(2026, 8, 1)).days
+    assert window["lag_note"], "口径标记不许是空字符串或缺失 —— 没有标记的数字比没有数字更坏"
+    assert window["store"] == "PETSFIT_NORTH_AMERICA"
+    assert window["sales_channel"] == "Amazon.com"
+
+
+def test_monthly_sales_history_no_rows_returns_empty_and_does_not_zero_fill():
+    """★ 协议原话：没有行就返回空列表，不补 0（dim/source.py:25）。"""
+    src = cs.ChSource(_sales_query([]))
+    got = src.monthly_sales_history("NEVER-SOLD", "11072", 3)
+    assert got == []
+
+
+def test_monthly_sales_history_query_failure_becomes_ch_unavailable():
+    """★ 同 onhand_available/purchase_in_transit 的模式 —— 查询失败必须分类后抛
+    ChUnavailable，不许让裸 driver 异常从这里漏出去。"""
+    exc = ConnectionRefusedError(111, "Connection refused")
+    src = cs.ChSource(_sales_query(fail=exc), classify_failure=describe_failure)
+    with pytest.raises(cs.ChUnavailable) as e:
+        src.monthly_sales_history("DCC1800264G1Z2B", "11072", 3)
+    assert e.value.cause["kind"] == "connect_refused"

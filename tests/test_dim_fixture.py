@@ -60,17 +60,25 @@ def test_as_of_missing_file_fails_loudly(tmp_path):
     assert str(tmp_path / "as_of.txt") in str(ei.value)
 
 
-def test_ch_source_still_undone_methods_stay_explicit():
+def test_ch_source_has_no_remaining_stub_methods():
     """★ 空实现会让「该做没做」和「本来就不用做」长得一模一样（规则五）。
 
-    ★ `as_of()`（Task 1）、`onhand_available()`（Task 2）、`purchase_in_transit()`
-    （Task 3）已接真取数（不再是本测试原先覆盖的「四个方法全部占位」——构造也
-    不再是无参 `ChSource()`，而是注入 `query`），详见
-    `docs/superpowers/specs/2026-09-23-chsource-design.md`。这里只继续守仍未
-    实现的那一个方法（留给 Task 4）；其余三个的真实行为都在
-    `tests/test_dim_ch_source_forecast.py` 覆盖（`purchase_in_transit` 还有
-    按状态过滤/陈旧阈值/NULL 到货日丢弃各自的判据测试）。"""
-    ch = ChSource(lambda sql: [])
-    with pytest.raises(NotImplementedError) as ei:
-        ch.monthly_sales_history("MSKU-A", "11072", 3)
-    assert "阶段" in str(ei.value)
+    ★ 这条测试原先守的是「`monthly_sales_history` 仍显式抛 `NotImplementedError`」——
+    Task 4（2026-09-23）把它也接上真取数之后，`as_of()`/`onhand_available()`/
+    `purchase_in_transit()`/`monthly_sales_history()` 四个协议方法（`dim/source.py`）
+    没有一个还留着占位实现，原断言（「调用它、断言抛 NotImplementedError」）已经
+    无的放矢——继续留着只会在下一次有人真的加占位方法时保持沉默。
+
+    诚实的替代：不再挑某一个方法「还没做」，改为扫全部四个协议方法的源码，断言
+    没有一处 `raise NotImplementedError`——这样无论将来占位的是哪一个新方法，
+    这条测试都会红，而不是像原来那样只盯着一个已经写完的名字。四个方法各自的
+    真实行为（含丢弃计数、口径标记）都在 `tests/test_dim_ch_source_forecast.py`
+    与 `tests/test_dim_ch_source_live.py` 覆盖，这里只守「别再悄悄留占位」这一条。
+    """
+    import inspect
+
+    for name in ("as_of", "monthly_sales_history", "onhand_available", "purchase_in_transit"):
+        src = inspect.getsource(getattr(ChSource, name))
+        assert "NotImplementedError" not in src, (
+            f"ChSource.{name} 仍是占位实现——空实现会让「该做没做」和"
+            "「本来就不用做」长得一模一样")

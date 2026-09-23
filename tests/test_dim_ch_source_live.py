@@ -250,3 +250,120 @@ def test_purchase_in_transit_matches_a_hand_written_sum(live_query_raw):
     assert hand and hand[0][0] == want, (
         f"独立手写 SQL 对 sku={sku} 算出 {hand}，与批量结果合计 {want} 对不上"
         "——两条路径本该读同一批快照")
+
+
+#: ---------------------------------------------------------------------------
+#: Task 4（monthly_sales_history，design §4.2 / §7 / §8 OQ-1）：`SQL_MONTHLY_SALES`
+#: 是新 SQL，带一层子查询 + `GROUP BY amazon_order_id, order_item_id` 去重——
+#: 同前几个 Task 的坑一个形状，只有真的连一次 CH 才测得出结构性问题（比如
+#: ClickHouse 对嵌套聚合 / `argMax` 组合的实际支持形态）。★ live 覆盖是必需项，
+#: 不是可选项（Task 1/2 都因为漏了这条被打回）。
+#: ---------------------------------------------------------------------------
+
+#: ★ design §7 冻结的真值对账样本：msku DCC1800264G1Z2B / sid 11072
+#: （store=PETSFIT_NORTH_AMERICA, channel=Amazon.com）。2026-09-23 实测两个
+#: 已完结月份：2026-06 = 561、2026-07 = 254（去重后）。
+FROZEN_MSKU = "DCC1800264G1Z2B"
+FROZEN_SID = "11072"
+FROZEN_MONTHS = {dt.date(2026, 6, 1): 561, dt.date(2026, 7, 1): 254}
+
+
+def test_monthly_sales_sql_runs_on_real_clickhouse_and_row_shape_is_sane(live_query_raw):
+    """★ 真跑一次 `SQL_MONTHLY_SALES`（不是回放），验证行宽——(month, units)。"""
+    from dim import order_store_map as m
+    store, channel = m.store_for(FROZEN_SID)
+    sql = cs.SQL_MONTHLY_SALES.format(
+        store=store, channel=channel, seller_sku=FROZEN_MSKU,
+        start="2026-06-01", end="2026-09-01")
+    rows = live_query_raw(sql)
+    assert rows, (
+        f"{cs.ORDERS_TABLE} 对 (store={store}, channel={channel}, sku={FROZEN_MSKU}) "
+        "真实 CH 上一行月销量都没取到——下面的断言就是空转的")
+    assert all(len(r) == 2 for r in rows), (
+        f"SQL_MONTHLY_SALES 的行宽应为 2（month, units）：real row={rows[:1]}")
+    assert all(isinstance(r[0], dt.date) for r in rows)
+
+
+def test_monthly_sales_dedupe_reduces_the_total_by_the_measured_magnitude(live_query_raw):
+    """★ OQ-1 裁定的先决条件本身在真实数据上的证据：按 (amazon_order_id,
+    order_item_id) 去重必须真的让总量变小，且量级要跟 design §1.3 E-9 冻结的
+    12.5%（2026-08）/ 19.4%（2026-09）对得上——不是随便小一点就算数，如果两者
+    相等或去重后反而更大，说明去重逻辑已经不起作用了。手写一条不带
+    `GROUP BY amazon_order_id, order_item_id` 的裸算术版本做对比，同
+    `SQL_PURCHASE_IN_TRANSIT` 那条 status 过滤的 live 对比是同一个手法。"""
+    from dim import order_store_map as m
+    store, channel = m.store_for(FROZEN_SID)
+    for month, start, end, want_pct in (
+        ("2026-08", "2026-08-01", "2026-09-01", 12.5),
+        ("2026-09", "2026-09-01", "2026-10-01", 19.4),
+    ):
+        raw = live_query_raw(f"""
+            SELECT toInt64(sum(quantity))
+              FROM {cs.ORDERS_TABLE}
+             WHERE store = '{store}' AND sales_channel = '{channel}'
+               AND order_status NOT IN ('Cancelled', 'Pending')
+               AND toDate(purchase_date) >= toDate('{start}')
+               AND toDate(purchase_date) < toDate('{end}')
+        """)[0][0]
+        # ★ SQL_MONTHLY_SALES 是按单个 seller_sku 设计的（grid 逐 msku 调用）；
+        #   这里要的是整个 (store, channel) 的去重效果，所以另写一条同样的去重
+        #   逻辑但不按 sku 过滤——去重/状态过滤的判据与 SQL_MONTHLY_SALES 逐字
+        #   相同，只是去掉了 `AND sku = '{{seller_sku}}'` 这一层。
+        dedup = live_query_raw(f"""
+            SELECT toInt64(sum(units)) FROM (
+                SELECT if(argMax(order_status, _captured_date) NOT IN ('Cancelled', 'Pending'),
+                          argMax(quantity, _captured_date), 0) AS units
+                  FROM {cs.ORDERS_TABLE}
+                 WHERE store = '{store}' AND sales_channel = '{channel}'
+                   AND toDate(purchase_date) >= toDate('{start}')
+                   AND toDate(purchase_date) < toDate('{end}')
+                 GROUP BY amazon_order_id, order_item_id
+            )
+        """)[0][0]
+        assert raw is not None and dedup is not None, (
+            f"{month}: raw={raw} dedup={dedup}——下面的断言就是空转的")
+        assert dedup < raw, (
+            f"{month}: 去重后 {dedup} 应当明显小于裸算术 {raw}——如果两者相等，"
+            "说明 GROUP BY amazon_order_id, order_item_id 这一步在真实 SQL 里"
+            "已经不起作用了")
+        pct = (raw - dedup) / raw * 100
+        assert abs(pct - want_pct) < 3, (
+            f"{month}: 去重降幅 {pct:.1f}% 与 design §1.3 E-9 冻结的 {want_pct}% "
+            "差太多——量级本身可能已经变了（不是「小一点就算数」）")
+
+
+def test_monthly_sales_history_matches_the_frozen_hand_checked_numbers(live_query_raw):
+    """★ 真值对账（design §7）：不用 `ChSource` 自己那条 SQL 自己对自己——
+    两个已完结月份的数字是设计阶段冻结的（2026-06=561、2026-07=254），这里
+    只验证 `ChSource.monthly_sales_history()` 今天在真实 CH 上仍然吐出同样的
+    数字。窗口取 4 个月，只断言这两个已知月份，不断言整个窗口的长度/内容——
+    `as_of()` 落在哪个月由今天的日期决定，写死整条 window 会在月份翻篇后变成
+    一条莫名其妙红掉的测试。"""
+    src = cs.ChSource(live_query_raw, classify_failure=describe_failure)
+    got = dict(src.monthly_sales_history(FROZEN_MSKU, FROZEN_SID, 4))
+    missing = [m.isoformat() for m in FROZEN_MONTHS if m not in got]
+    assert not missing, (
+        f"冻结月份 {missing} 不在今天的窗口 {sorted(d.isoformat() for d in got)} 里——"
+        "如果这是因为窗口已经滑过去了（说明这条测试到了该换一对新冻结月份的时候），"
+        "而不是代码本身的问题，去 design §7 和这条测试一起换成新的已完结月份")
+    for month, want in FROZEN_MONTHS.items():
+        assert got[month] == want, (
+            f"{month}: ChSource.monthly_sales_history 给出 {got[month]}，"
+            f"与 design §7 冻结的真值 {want} 对不上")
+
+    window = src.history_window()
+    assert window["store"] == "PETSFIT_NORTH_AMERICA"
+    assert window["sales_channel"] == "Amazon.com"
+    assert window["lag_note"], "口径标记不许是空字符串——没有标记的数比没有数更坏"
+
+
+def test_monthly_sales_history_excludes_the_current_month(live_query_raw):
+    """★ 当月绝不入选（month_window）——今天真实调用一次，断言窗口最新一个月
+    早于本月月初。"""
+    src = cs.ChSource(live_query_raw, classify_failure=describe_failure)
+    as_of = src.as_of()
+    this_month = dt.date(as_of.year, as_of.month, 1)
+    got = src.monthly_sales_history(FROZEN_MSKU, FROZEN_SID, 3)
+    assert all(m < this_month for m, _ in got), (
+        f"窗口里出现了当月或未来月份：{got}（as_of={as_of}）——"
+        "当月是半个月，混进去会把销量读成骤降")

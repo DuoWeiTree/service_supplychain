@@ -1,8 +1,7 @@
-"""真 CH 取数。★ 预测取数（`as_of` / `onhand_available` / `purchase_in_transit`）已在
-2026-09-23 ChSource 设计里接真 CH——
-
-只剩 `monthly_sales_history` 仍刻意抛 `NotImplementedError`，不给空实现：空实现会让
-「该做没做」和「本来就不用做」长得一模一样（01 规则五）。取数口径在
+"""真 CH 取数。★ 预测取数（`as_of` / `onhand_available` / `purchase_in_transit` /
+`monthly_sales_history`）在 2026-09-23 ChSource 设计里全部接了真 CH——四个协议
+方法（`dim/source.py`）没有一个还留着占位实现（01 规则五：空实现会让「该做没做」
+和「本来就不用做」长得一模一样）。取数口径在
 `docs/superpowers/specs/2026-09-23-chsource-design.md` 与 CLAUDE.md「取数的四条铁律」里；
 `ChSource` 类的完整定义在本文件末尾「预测取数」段（与下面的镜像刷新取数层是两件事，
 见该段落开头的说明）。
@@ -265,6 +264,7 @@ def fetch_seller(query: Query) -> Fetched:
 #   这里是带时点的量 —— 每个数都要能回答「它是关于什么的」。
 # ---------------------------------------------------------------------------
 
+from dim import order_store_map  # ★ 只有 monthly_sales_history 需要它
 from dim.source import InTransit  # ★ 只有本段的 ChSource 需要它
 
 #: ★ ChUnavailable 的 target 与 SQL 的 FROM 共用同一个字面量——写两遍会有
@@ -296,11 +296,70 @@ SELECT _captured_date, count() AS rows, uniq(sid) AS uniq_sid,
 SETTLE_MINUTES = 30
 LOOKBACK_DAYS = 7
 
-#: ★ `monthly_sales_history` 仍未实现，留给后续任务（Task 4）——与文件顶部旧占位类
-#:   的道理一样：空实现要能被认出来，不许悄悄返回假数据。
-_STUB_MSG = ("CH 取数属后续阶段任务：请按 docs/superpowers/specs/2026-09-23-chsource-design.md"
-             " §4 实现（商品目录 LEFT JOIN 快照、msku→货号按 as_of argMax 但 sid 不参与、"
-             "日报先按 _captured_date 去重并比对覆盖面）")
+
+# ---------------------------------------------------------------------------
+# monthly_sales_history（design §4.2，controller 裁定 09-23，§8 OQ-1）
+# ★ 三个口径决定，每一个都是实测踩出来的：
+#   ① 按 (amazon_order_id, order_item_id) 去重，取 argMax(_captured_date) 的那一版。
+#      实测 8,980 组出现两次，跨采集日状态会变（Pending → Shipped）。不去重时
+#      2026-08 = 13,611 件、去重后 11,906（−12.5%），2026-09 = 11,331 → 9,130（−19.4%）。
+#      去重后与独立源 lingxing_multiplatform_sales_stats 对上（2026-06 差 0.06%）。
+#      ★ 兄弟仓的 [demand_history] 没有这一步 —— 这是本仓实测追加的。
+#   ② 排除 Cancelled / Pending（沿用兄弟仓口径）。实测 Pending 在已完结的月份
+#      残留很少（2026-07 为 165/25,772）。
+#   ③ 只统计一个 (store, sales_channel) —— sid 由 dim/order_store_map.py 声明，
+#      不在 SQL 里解析店名。
+# ---------------------------------------------------------------------------
+
+#: ★ ChUnavailable 的 target 与 SQL 的 FROM 共用同一个字面量——写两遍会有
+#:   一天悄悄对不上（同 FBA_DETAIL_TABLE / PURCHASE_ITEMS_TABLE 那条理由）。
+ORDERS_TABLE = "jxd_raw.amazon_sp_api_report_all_orders"
+
+SQL_MONTHLY_SALES = f"""
+SELECT toStartOfMonth(d) AS month, toInt64(sum(units)) AS units
+  FROM (
+    SELECT toDate(any(purchase_date)) AS d,
+           if(argMax(order_status, _captured_date) NOT IN ('Cancelled', 'Pending'),
+              argMax(quantity, _captured_date), 0) AS units
+      FROM {ORDERS_TABLE}
+     WHERE store = '{{store}}' AND sales_channel = '{{channel}}' AND sku = '{{seller_sku}}'
+       AND toDate(purchase_date) >= toDate('{{start}}')
+       AND toDate(purchase_date) < toDate('{{end}}')
+     GROUP BY amazon_order_id, order_item_id
+  )
+ GROUP BY month
+ ORDER BY month
+"""
+
+
+def month_window(as_of: dt.date, months: int) -> list[dt.date]:
+    """最近 `months` 个**完整**自然月，升序。★ 当月绝不入选 ——
+    实测 2026-09 只有 9,130 件 vs 8 月 11,906 件，混进去会被读成 23% 的下滑。"""
+    if not isinstance(months, int) or isinstance(months, bool) or months < 1:
+        raise ValueError(f"months 必须是正整数，收到 {months!r}")
+    out: list[dt.date] = []
+    y, m = as_of.year, as_of.month
+    for _ in range(months):
+        m -= 1
+        if m == 0:
+            y, m = y - 1, 12
+        out.append(dt.date(y, m, 1))
+    return sorted(out)
+
+
+def fill_months(window: list[dt.date],
+                hits: dict[dt.date, int]) -> tuple[list[tuple[dt.date, int]], int]:
+    """窗口内空月补 0 并计数。★ 一条命中都没有 → 返回 `[]`（协议：不补 0）——
+    「新品没数据」与「卖了 0 件」必须分得开（forecast/estimate.py:22）。"""
+    if not hits:
+        return [], 0
+    series = [(m, int(hits.get(m, 0))) for m in window]
+    return series, sum(1 for m in window if m not in hits)
+
+
+def _next_month(d: dt.date) -> dt.date:
+    return dt.date(d.year + d.month // 12, d.month % 12 + 1, 1)
+
 
 #: ★ 列裁定（design §4.3 / OQ-4 裁定）：`afn_fulfillable_quantity` = 可售在仓。
 #:   不用 `available_total`（实测 972/8,080 行更大，含预留与不可售，OQ-4：差额
@@ -553,8 +612,8 @@ class ChSource:
     """真 CH 取数。★ 客户端由调用方注入 —— dim/ 不许 import shared.ch_client。
 
     `as_of()`（Task 1）、`onhand_available()`（Task 2）、`purchase_in_transit()`
-    （Task 3）已接真取数；只剩 `monthly_sales_history` 仍显式
-    `NotImplementedError`，留给 Task 4。
+    （Task 3）、`monthly_sales_history()`（Task 4）均已接真取数——四个方法
+    没有一个还留着 `NotImplementedError`。
 
     ★ `min_rows`/`min_distinct_sid`/`lookback_days`/`settle_minutes` 的默认值
     = `shared.config._FORECAST_DEFAULTS` 里同名键（`min_rows`/`min_distinct_sid`
@@ -604,6 +663,12 @@ class ChSource:
         self._transit_cache: tuple[dt.date, dict[str, list[InTransit]]] | None = None
         #: ★ 最近一批取数的丢弃计数，供上层写进日志与响应（`source_notes.dropped`）。
         self._stats: dict = {}
+        #: ★ 最近一次 `monthly_sales_history()` 调用的窗口留痕（口径标记，OQ-1
+        #:   裁定）——Task 5 把它原样透传进 `POST /plans/{id}/claims` 响应，
+        #:   不许在装配层丢弃或改写。调用前是空字典，不是 None：`history_window()`
+        #:   在没调用过 `monthly_sales_history()` 时返回 `{}`，而不是抛错——
+        #:   这是「还没问过」，不是「问了但没有答案」。
+        self._history_window: dict = {}
 
     def as_of(self) -> dt.date:
         now = self._now()
@@ -635,7 +700,63 @@ class ChSource:
 
     def monthly_sales_history(self, seller_sku: str, sid: str, months: int
                               ) -> list[tuple[dt.date, int]]:
-        raise NotImplementedError(_STUB_MSG)
+        """最近 `months` 个完整自然月的实际销量，按月升序（协议：dim/source.py:23）。
+
+        ★ sid → (store, sales_channel) 走 `dim/order_store_map.py` 的声明表，
+        不在这里解析店名——认不出的 sid 由 `store_for()` 抛 `UnknownStore`，
+        不猜一个店垫上。★ 只统计完整自然月，当月绝不入选（`month_window`）。
+        ★ 去重在 `SQL_MONTHLY_SALES` 里做（按 order_item argMax，OQ-1 裁定的
+        先决条件），本方法不重复这一步，只做窗口对齐 + 补 0 + 留痕。"""
+        store, channel = order_store_map.store_for(str(sid))
+        window = month_window(self.as_of(), months)
+        start, end = window[0], _next_month(window[-1])
+        sql = SQL_MONTHLY_SALES.format(
+            store=store, channel=channel, seller_sku=seller_sku,
+            start=start.isoformat(), end=end.isoformat())
+        t0 = time.perf_counter()
+        try:
+            rows = self._q(sql)
+        except Exception as e:
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            cause = self._classify(e)
+            log.warning("op=ch_sales outcome=fail target=%s store=%s channel=%s "
+                       "msku=%s elapsed_ms=%d cause=%s",
+                       ORDERS_TABLE, store, channel, seller_sku, elapsed_ms, cause)
+            raise ChUnavailable(target=ORDERS_TABLE, cause=cause) from e
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        hits = {r[0]: int(r[1]) for r in rows}
+        window_set = set(window)
+        extra = sorted(m.isoformat() for m in hits if m not in window_set)
+        if extra:
+            raise UnknownShape(
+                f"月销量落在窗口之外：{extra}（窗口 {[w.isoformat() for w in window]}）。"
+                "静默忽略就是漏了一段历史，或者 month_window/SQL 的边界算错了")
+        series, filled = fill_months(window, hits)
+        newest_age = (self.as_of() - window[-1]).days
+        self._history_window = {
+            "store": store, "sales_channel": channel,
+            "months": [m.isoformat() for m in window],
+            "zero_filled": [m.isoformat() for m in window if m not in hits],
+            "newest_month": window[-1].isoformat(),
+            "newest_month_age_days": newest_age,
+            # ★ L-3：订单是滞后采集的。去重已经消掉「重复采集」那一成因，
+            #   残余的「真·晚到订单」本期未测（design §8 OQ-1）—— 所以把口径
+            #   说出去，而不是给一个没有标记的数。控制器裁定：这个字符串必须
+            #   原样透传进 claims 响应，不许在装配层丢弃或改写。
+            "lag_note": "orders_are_lagging_collected; deduped_by_order_item; "
+                        "true_late_arrival_share_unmeasured_see_design_oq1",
+        }
+        log.info("op=ch_sales outcome=ok store=%s channel=%s msku=%s months=%d hits=%d"
+                 " zero_filled=%d newest_age_days=%d elapsed_ms=%d",
+                 store, channel, seller_sku, months, len(hits), filled, newest_age,
+                 elapsed_ms)
+        return series
+
+    def history_window(self) -> dict:
+        """最近一次 `monthly_sales_history()` 调用的窗口留痕，供 Task 5 写进
+        `POST /plans/{id}/claims` 响应（控制器裁定：原样透传，不许丢弃/改写）。
+        没调用过时返回 `{}`。"""
+        return dict(self._history_window)
 
     def _onhand(self) -> dict[tuple[str, str], int]:
         """按 `as_of()` 的快照日批量取一次并缓存（design §5：21 次 grid 调用
