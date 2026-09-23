@@ -141,6 +141,13 @@ CREATE INDEX dim_refresh_run_by_mirror ON dim_refresh_run (mirror, started_at DE
 **判据**
 
 1. `refreshed_at` **只在成功时**更新，且与 upsert **同一事务**。失败 → 旧镜像原封不动。
+
+   ★ **一个明文例外（M-8，控制器 09-23 裁定）**：取数与 upsert 都成功、只有**留痕那一行**写失败时，
+   镜像数据与 `refreshed_at` **保留**，不回滚。理由：`refreshed_at` 说的是「这批数据有多新」，
+   而它确实是新的；为了一行账把已经取回来的好数据扔掉，等于把记账故障升级成一次拒绝服务
+   （`require_fresh_mirrors` 会继续 503）。代价是这一轮没有 `dim_refresh_run` 行——
+   所以这条路径必须 **ERROR 级日志 + `RunRow.ok=false` + CLI 退出码 1**，操作者看得见「数据进去了、账没记上」。
+   固定它的测试：`tests/test_jobs_refresh_dims.py::test_provenance_write_failure_is_contained_and_others_still_run`。
 2. 覆盖面校验（`07:485`）：本轮 `rows_in` 与该镜像**上一条 `ok=true`** 的 `rows_in` 比，
    跌幅 > `coverage_drop_threshold` → **拒绝整批**，写 `ok=false` + `error='coverage_drop'`，
    镜像不动。`msku_bridge` 另比 `distinct sid` —— 整店 0 行是**采集缺口的形状**，行数总量看不出来。
