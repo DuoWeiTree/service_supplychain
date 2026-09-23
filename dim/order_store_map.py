@@ -98,7 +98,7 @@ UNRESOLVED: frozenset[tuple[str, str]] = frozenset({
 #:     11100   A4Pet-BS-JP-JP               34 个        0 单
 #:
 #:   三个都是 `platform='amazon'` 的真店，它们的 179 个 msku 都能被认领 ——
-#:   `source = "ch"` 一开，认领它们就是 503。
+#:   `source = "ch"` 一开，这条取数链路上取不到它们的任何一单。
 #:
 #: ★ 为什么是豁免而不是补映射：`amazon_sp_api_report_all_orders` **有史以来**
 #:   只出现过 5 个 store 值（PETSFIT_NORTH_AMERICA / PETSFIT_EUROPE /
@@ -106,10 +106,14 @@ UNRESOLVED: frozenset[tuple[str, str]] = frozenset({
 #:   该表也没有任何一列带 sid / seller / shop / account（2026-09-23 DESCRIBE 实测）。
 #:   所以不是「忘了抄一行」，是这条取数链路上压根没有它们的数据 —— 硬编一行
 #:   映射过去就是把别人家的销量记到它头上。
-#: ★ 认领它们仍然 503（OQ-3：不猜一个 sid）。**这份名单不改变行为**，它改变的
-#:   是「什么时候知道」：把上线当天的发现变成切换前就红的一条门禁
+#: ★ 认领它们**不是** 503，而是 200 +「不适用」（残留轮次裁定 option 2）：格子照常
+#:   建起来，`system_units` 留空，`reason="not_applicable_no_sales_source"` 带上
+#:   `cause="store_absent_from_order_report"` 和这里的实测出处。**这份名单就是那个
+#:   分叉点** —— `registered_gap` 正是选中 200 那条分支的判据；没登记的 sid 仍然
+#:   503（OQ-3：不猜一个 sid），并被告知补一行映射。
+#: ★ 它同时改变「什么时候知道」：把上线当天的发现变成切换前就红的一条门禁
 #:   （`tests/test_order_store_map_live.py`）。0 单是**采集/链路缺口的形状，
-#:   不是业务的形状** —— 所以是「未知」，不能读成「卖了 0 件」。
+#:   不是业务的形状** —— 所以记成「不适用」并带上成因，绝不能读成「卖了 0 件」。
 NO_ORDER_REPORT_SID: dict[str, str] = {
     "11098": "UNITFREE-GQ-P品牌-US（美国）：msku_bridge 145 个 msku，订单报表 0 单",
     "11099": "DWJ-A品牌-US（美国）：msku_bridge 0 个 msku，订单报表 0 单",
