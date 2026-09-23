@@ -1,11 +1,15 @@
 """装配：配置开关 · 惰性建连 · 取不到数一律 503。"""
 from __future__ import annotations
 
+import datetime as dt
+
 import pytest
 
 from api.ui import source_factory as sf
 from dim import ch_source as cs
 from dim.fixture_source import FixtureSource
+from dim.order_store_map import UnknownStore
+from dim.source import InTransit
 
 
 def test_default_source_is_fixture(monkeypatch):
@@ -104,3 +108,115 @@ def test_claim_returns_the_history_window(client, seed, monkeypatch):
                     headers={"x-actor": seed.actor})
     assert r.status_code == 200
     assert r.json()["history_window"]["zero_filled"] == ["2026-07-01"]
+
+
+def test_unknown_store_becomes_503_naming_it(client, seed, monkeypatch):
+    """★ fix round 1（阻塞项）：design §8 OQ-3 点名的真实缺口 —— 一个 sid 在
+    dim/order_store_map.py::STORE_SID 里没有对应的 (store, sales_channel) 时，
+    monthly_sales_history() 经 order_store_map.store_for() 抛 UnknownStore。
+    这条异常曾经漏在 claim() 的 except 元组外，裸成没有 S-29 形状的 500 ——
+    复核在 TestClient 上实测复现过。补上后必须落成与 ChUnavailable 同一家族的
+    503 forecast_source_unusable，detail 里带着 store_for() 唯一已知的那个量
+    （sid），运维据此去 STORE_SID 补一行。"""
+    from api.ui import plans
+
+    class Src(FixtureSource):
+        def monthly_sales_history(self, *a):
+            raise UnknownStore(
+                "sid='11072' 在订单报表里没有对应的 store —— "
+                "这个店的销量取不到，不能当成「卖了 0 件」")
+
+    monkeypatch.setattr(plans, "SOURCE", Src(plans.FIXTURES))
+    plan = client.post("/v1/plans", json={"title": "t", "period_start": "2026-10-01",
+                                          "months": 3}, headers={"x-actor": seed.actor}).json()
+    r = client.post(f"/v1/plans/{plan['plan_id']}/claims",
+                    json={"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]},
+                    headers={"x-actor": seed.actor})
+    assert r.status_code == 503
+    body = r.json()
+    assert body["error"] == "forecast_source_unusable"
+    assert "11072" in body["detail"], (
+        "detail 必须点名认不出的 sid —— 没点名，运维不知道去 STORE_SID 里补哪一行")
+
+
+def test_grid_wires_dropped_stats_into_source_notes(client, seed, monkeypatch):
+    """★ fix round 1（must #3）：source_notes.dropped 在 tracked 套件里只被
+    fixture 路径断言过恒为 {}（FixtureSource 没有 stats()）——CH 路径下真正
+    非空的取值此前零覆盖。钉住 SOURCE.stats() 原样透传进响应，不是被悄悄
+    改写或丢弃。"""
+    from api.ui import plans
+
+    class ChStub:
+        def as_of(self):
+            return dt.date(2026, 9, 21)
+
+        def monthly_sales_history(self, *a):
+            return []                      # → InsufficientHistory，claim() 照旧建格
+
+        def onhand_available(self, *a):
+            return None
+
+        def purchase_in_transit(self, sku):
+            return []
+
+        def purchase_as_of(self):
+            return dt.date(2026, 9, 20)
+
+        def stats(self):
+            # ★ 键名与取值形状照抄 design §1.3 E-4/parse_onhand 的真实产出——
+            #   不是随手编的字典。
+            return {"onhand": {"shared_pool_excluded": {"rows": 1114, "units": 14073}}}
+
+    monkeypatch.setattr(plans, "SOURCE", ChStub())
+    plan = client.post("/v1/plans", json={"title": "t", "period_start": "2026-10-01",
+                                          "months": 2}, headers={"x-actor": seed.actor}).json()
+    client.post(f"/v1/plans/{plan['plan_id']}/claims",
+               json={"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]},
+               headers={"x-actor": seed.actor})
+    r = client.get(f"/v1/plans/{plan['plan_id']}/grid", headers={"x-actor": seed.actor})
+    assert r.status_code == 200
+    assert r.json()["source_notes"]["dropped"] == {
+        "onhand": {"shared_pool_excluded": {"rows": 1114, "units": 14073}}}, (
+        "source_notes.dropped 必须原样透传 SOURCE.stats()，不是猜的默认值 {}")
+
+
+def test_grid_computes_bucket_from_purchase_as_of(client, seed, monkeypatch):
+    """★ fix round 1（must #3）：sku_pipeline[].bucket 的 'overdue'/'future' 取值
+    在 tracked 套件里此前零覆盖 —— fixture 路径下 purchase_as_of 恒 None、
+    bucket 因此恒 null，从没有一条测试验过「传对了 purchase_as_of、算出了对的
+    bucket 值」这一步（OQ-6 存在的意义正是这个判断）。"""
+    from api.ui import plans
+
+    class ChStub:
+        def as_of(self):
+            return dt.date(2026, 9, 21)
+
+        def monthly_sales_history(self, *a):
+            return []
+
+        def onhand_available(self, *a):
+            return None
+
+        def purchase_in_transit(self, sku):
+            # ★ purchase_as_of 所在月是 2026-09：07 月早于它（逾期），11 月晚于它（未来）。
+            return [InTransit("2026-07", 40, "PO-OLD"), InTransit("2026-11", 25, "PO-FUTURE")]
+
+        def purchase_as_of(self):
+            return dt.date(2026, 9, 20)
+
+        def stats(self):
+            return {}
+
+    monkeypatch.setattr(plans, "SOURCE", ChStub())
+    plan = client.post("/v1/plans", json={"title": "t", "period_start": "2026-10-01",
+                                          "months": 2}, headers={"x-actor": seed.actor}).json()
+    client.post(f"/v1/plans/{plan['plan_id']}/claims",
+               json={"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]},
+               headers={"x-actor": seed.actor})
+    r = client.get(f"/v1/plans/{plan['plan_id']}/grid", headers={"x-actor": seed.actor})
+    assert r.status_code == 200
+    bucket_by_period = {row["period"]: row["bucket"] for row in r.json()["sku_pipeline"]}
+    assert bucket_by_period["2026-07"] == "overdue", \
+        "2026-07 早于 purchase_as_of(2026-09) 所在月，必须是 overdue"
+    assert bucket_by_period["2026-11"] == "future", \
+        "2026-11 晚于 purchase_as_of(2026-09) 所在月，必须是 future"

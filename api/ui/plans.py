@@ -28,6 +28,7 @@ from dim.ch_source import (
     UnknownShape,
     is_overdue,
 )
+from dim.order_store_map import UnknownStore
 from forecast.estimate import InsufficientHistory, monthly_estimate
 from forecast.projection import inventory_projection
 from rules.effective import effective_demand
@@ -63,7 +64,22 @@ def _source_error(e: Exception) -> ApiError:
     if isinstance(e, UnknownShape):
         return ApiError(503, "forecast_source_unusable", "取数源出现认不出的形态",
                         {"detail": str(e)})
-    raise e   # ★ 认不出的异常不许被兜成这四种之一——同 CLAUDE.md「不许 else 兜底」
+    if isinstance(e, UnknownStore):
+        # ★ fix round 1：design §8 OQ-3 点名的真实缺口（6 组 (store, sales_channel)、
+        #   近 90 天 21 单没有对应 sid）会从 monthly_sales_history() → store_for()
+        #   一路抛到这里。与 UnknownShape 同一类「认不出的形态」，不新开错误码；
+        #   detail 里带着 store_for() 原样写出的 sid（它是唯一已知量——正因为它没有
+        #   对应的 (store, channel) 才会抛这个异常），运维据此去补
+        #   dim/order_store_map.py::STORE_SID 那一行。
+        return ApiError(503, "forecast_source_unusable",
+                        "这个店没有声明取数映射（dim/order_store_map.py 缺一行）"
+                        "—— 销量取不到，不能当成「卖了 0 件」",
+                        {"detail": str(e)})
+    # ★ 复核裁定（fix round 1，不改）：这支 raise e 目前不可达——claim()/grid() 的
+    #   except 元组已经收窄到本函数认识的全部五种类型，元组之外的异常根本不会走
+    #   到这里。签名标 -> ApiError 与这一支的行为因此有点不对称，留着不改：
+    #   真正要防的洞不在这里，是"except 元组要跟上 ChSource 实际会抛的异常集合"。
+    raise e   # ★ 认不出的异常不许被兜成这五种之一——同 CLAUDE.md「不许 else 兜底」
 
 
 def _date(s: str, field: str) -> dt.date:
@@ -203,7 +219,11 @@ def claim(plan_id: int, body: dict, request: Request, who: str = Depends(actor))
             est = None
             no_history.append({"seller_sku": seller_sku, "sid": sid,
                                "reason": "no_sales_history"})
-        except (ChUnavailable, ChDataUnusable, UnknownShape) as e:
+        except (ChUnavailable, ChDataUnusable, UnknownShape, UnknownStore) as e:
+            # ★ fix round 1：UnknownStore 曾经漏在这个元组外——monthly_sales_history()
+            #   → order_store_map.store_for() 抛的这个异常会裸着冒成无 S-29 形状的 500。
+            #   claim() 不碰采购表，所以这里不需要 PurchaseTableStale（同 grid() 不需要
+            #   UnknownStore 一个道理——见 _source_error() 上面的审计注释）。
             raise _source_error(e) from e
         # ★ 用了哪几个月、哪些是补 0、最新那个月距今多少天 —— 订单是滞后采集的
         #   （CLAUDE.md 铁律三），一个没有标记的数比没有数更坏。
@@ -378,6 +398,11 @@ def grid(plan_id: int, request: Request, who: str | None = Depends(actor_optiona
         #   sku_pipeline 形状因此逐字节不变（tests/test_grid_fixture.py 核实）。
         purchase_as_of = SOURCE.purchase_as_of() if hasattr(SOURCE, "purchase_as_of") else None
         dropped_stats = SOURCE.stats() if hasattr(SOURCE, "stats") else {}
+    # ★ fix round 1 审计（team-lead 要求逐一核对 ChSource 实际会抛的异常集合是否都
+    #   进了这个元组）：grid() 只调用 as_of/onhand_available/purchase_in_transit/
+    #   purchase_as_of/stats——没有一个会走 order_store_map（那是 monthly_sales_history
+    #   专属，只有 claim() 会碰），所以这里不需要 UnknownStore；PurchaseTableStale
+    #   只从 purchase_as_of() 抛，grid() 确实会调用它，必须在。
     except (ChUnavailable, ChDataUnusable, PurchaseTableStale, UnknownShape) as e:
         raise _source_error(e) from e
 
