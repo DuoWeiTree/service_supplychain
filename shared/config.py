@@ -64,6 +64,12 @@ def freshness() -> dict:
 
 #: ★ 设计取值。`source` 默认 "fixture" —— 默认值必须是离线跑得通的那个，
 #:   否则任何一次漏配都会变成「测试去连生产 CH」。
+#: ★ Fix round 1（团队负责人裁定 2026-09-23）：绝对地板从 `dim/ch_source.py`
+#:   的硬编码模块常量搬到这里——常量焊在代码里会在业务量变化后腐烂成「再也
+#:   不会触发」或「永远触发」，配置化才能跟着实际量级调。
+#:   出处：`SQL_FBA_CAPTURE_DAYS`（`dim/ch_source.py`）对
+#:   `jxd_raw.lingxing_inventory_fba_detail` 近 20 个采集日的实测（design §1.3
+#:   E-1，2026-09-23）——行数 7,934~8,080，uniq(sid) 恒为 21。取区间下限。
 _FORECAST_DEFAULTS = {
     "source": "fixture",
     "snapshot_lookback_days": 7,
@@ -71,6 +77,8 @@ _FORECAST_DEFAULTS = {
     "cache_ttl_seconds": 300,
     "sales_months_max": 24,
     "drop_threshold": 0.30,
+    "min_rows": 7934,
+    "min_distinct_sid": 21,
 }
 
 

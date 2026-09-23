@@ -64,3 +64,13 @@ sales_months_max = 24
 
 # 掉档阈值。★ 实测该表日间波动 < 2%、每日恰好 21 个 sid，所以 0.30 已经很松。
 drop_threshold = 0.30
+
+# 绝对地板：纯粹「比对相邻候选日」测不出「整窗口同步塌陷」——如果连续几天
+# 都只写回同样少的行数，相邻两日互相看起来完全没「掉」。这两个数字不随
+# 候选集本身浮动，是最后一道底线。
+# ★ 实测出处：SQL_FBA_CAPTURE_DAYS（dim/ch_source.py）对
+#   jxd_raw.lingxing_inventory_fba_detail 近 20 个采集日的查询（design §1.3
+#   E-1，2026-09-23，控制器实测）——行数 7,934~8,080，uniq(sid) 恒为 21。
+#   取区间下限；业务量级变了要重新实测，不是拍脑袋改数字。
+min_rows         = 7934
+min_distinct_sid = 21

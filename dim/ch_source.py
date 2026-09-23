@@ -266,8 +266,14 @@ def fetch_seller(query: Query) -> Fetched:
 from dim.source import InTransit  # ★ 只有本段的 ChSource 需要它
 
 #: 候选快照日。★ 只问 fba_detail —— as_of 标注的是**在仓数**，它的时点就是这张表的。
+#: ★ Fix round 1（团队负责人裁定）：「已写完」不再拿 Python 端的 wall clock 去比
+#:   CH 的 `_captured_at`——两台机器的时钟不是同一个时钟，naive datetime 相减
+#:   看起来能跑，实际比的是两个可能不同时区的「本地时间」，静默算错还不报错
+#:   （这正是本仓 CLAUDE.md 明令禁止的「静默兜底」）。改成让 CH 用它自己的
+#:   `now()` 就地算好 `settled`，随行一起回来，Python 侧只回放这个布尔值。
 SQL_FBA_CAPTURE_DAYS = """
-SELECT _captured_date, count() AS rows, uniq(sid) AS uniq_sid, max(_captured_at) AS done_at
+SELECT _captured_date, count() AS rows, uniq(sid) AS uniq_sid,
+       now() - INTERVAL {settle} MINUTE > max(_captured_at) AS settled
   FROM jxd_raw.lingxing_inventory_fba_detail
  WHERE _captured_date >= today() - {lookback}
  GROUP BY _captured_date
@@ -278,14 +284,6 @@ SELECT _captured_date, count() AS rows, uniq(sid) AS uniq_sid, max(_captured_at)
 #:   就排在 06:30 —— 半写窗口是真实存在的。30 分钟 = 实测时长的 30 倍。
 SETTLE_MINUTES = 30
 LOOKBACK_DAYS = 7
-
-#: ★ E-1 实测下限（近 20 个采集日 7,934~8,080 行、每日恰好 21 个 sid）。
-#:   纯「比对相邻候选日」有个洞：如果整个候选窗口同步塌陷到同一个低值
-#:   （例如某次故障连续几天都只写回同样少的行数），相邻两日互相看起来
-#:   完全没有「掉」，掉档守卫会对着一堆同样坏的日子视而不见。这条绝对
-#:   下限与相邻比较是「或」的关系：任一条不过都算掉档，堵上这个洞。
-NOMINAL_ROWS = 7934
-NOMINAL_SID = 21
 
 #: ★ 其余三个方法在本任务（Task 1）仍未实现，留给后续任务（Task 2~4）——
 #:   与文件顶部旧占位类的道理一样：空实现要能被认出来，不许悄悄返回假数据。
@@ -310,21 +308,31 @@ class ChDataUnusable(Exception):
         super().__init__(f"ch_data_unusable rejected={rejected}")
 
 
-def _utc_now() -> dt.datetime:
-    # ★ 全仓（CH 的 _captured_at、本模块的比较）一律用 naive datetime——
-    #   与一个 tz-aware 的 now() 相减会直接抛 TypeError，不是更安全，是更脆。
+def _default_now() -> dt.datetime:
+    """★ 只用于 `ChSource` 的 TTL 缓存自比（同一个 clock 前后两次读数相减），
+    不再用于任何跨机器比较——那条已经随「已写完」判定一起搬进 CH 自己的
+    `now()` 了（见 `SQL_FBA_CAPTURE_DAYS`）。自比安全：不管系统时区是什么，
+    同一个 `dt.datetime.now()` 前后两次调用的差值就是真实流逝的时间。"""
     return dt.datetime.now()  # noqa: DTZ005
 
 
-def pick_snapshot_date(rows: list[tuple], now: dt.datetime,
-                       threshold: float) -> tuple[dt.date, list[dict]]:
+def pick_snapshot_date(rows: list[tuple], threshold: float,
+                       min_rows: int, min_distinct_sid: int
+                       ) -> tuple[dt.date, list[dict]]:
     """从新到旧挑第一个「已采完 + 没掉档」的采集日。返回 (日期, 被拒清单)。
 
     ★ 被拒清单不是可选的返回值 —— 回退可以，必须有声（CLAUDE.md 判据五）。
-    ★ 掉档比的是**下一个更旧的候选日**，不是历史最大值：只往上爬的阈值会把
-      「一直在掉」读成「一直没掉」。但只比相邻日会漏掉「整窗口同步塌陷」
-      （相邻两天一样低，互相看不出掉档）——所以还要 OR 上 `NOMINAL_ROWS` /
-      `NOMINAL_SID`（E-1 实测下限）这条不随候选集本身浮动的绝对底线。
+    ★ 每行的第 4 项 `settled` 是 CH 自己算好的布尔值（`now() - INTERVAL
+      {settle} MINUTE > max(_captured_at)`），本函数不再持有任何时钟。
+    ★ 掉档分两种，判据不同、留痕也不同（Fix round 1 团队负责人裁定）：
+      · `*_drop_vs_neighbour`：跟**下一个更旧的候选日**比掉了——不是历史
+        最大值，只往上爬的阈值会把「一直在掉」读成「一直没掉」。
+      · `*_below_floor`：压根没到过 `min_rows`/`min_distinct_sid`（调用方从
+        `[forecast]` 配置传入的 E-1 实测下限），哪怕邻居也一样低、比不出
+        「掉」——纯相邻比较有个洞：整个候选窗口同步塌陷到同一个低值时，
+        相邻两日互相看起来完全没「掉」，这条不随候选集本身浮动的地板兜住它。
+      优先报 `drop_vs_neighbour`：能跟邻居比出「掉」，说明是这一天出的事，
+      比「压根没到过地板」更具体、更能定位到哪天开始坏的。
     """
     if not rows:
         raise UnknownShape(
@@ -333,20 +341,20 @@ def pick_snapshot_date(rows: list[tuple], now: dt.datetime,
     ordered = sorted(rows, key=lambda r: r[0], reverse=True)
     limit = 1.0 - threshold
     rejected: list[dict] = []
-    for i, (date, n_rows, n_sid, done_at) in enumerate(ordered):
+    for i, (date, n_rows, n_sid, settled) in enumerate(ordered):
         reason = None
-        if done_at is None or now - done_at < dt.timedelta(minutes=SETTLE_MINUTES):
+        if not settled:
             reason = "not_settled"
         else:
             nxt = ordered[i + 1] if i + 1 < len(ordered) else None
-            rows_drop = n_rows < NOMINAL_ROWS * limit or (
-                nxt is not None and n_rows < nxt[1] * limit)
-            sid_drop = n_sid < NOMINAL_SID * limit or (
-                nxt is not None and n_sid < nxt[2] * limit)
-            if rows_drop:
-                reason = "coverage_drop_rows"
-            elif sid_drop:
-                reason = "coverage_drop_uniq_sid"
+            if nxt is not None and n_rows < nxt[1] * limit:
+                reason = "rows_drop_vs_neighbour"
+            elif nxt is not None and n_sid < nxt[2] * limit:
+                reason = "sid_drop_vs_neighbour"
+            elif n_rows < min_rows * limit:
+                reason = "rows_below_floor"
+            elif n_sid < min_distinct_sid * limit:
+                reason = "sid_below_floor"
         if reason is None:
             return date, rejected
         rejected.append({"date": date.isoformat(), "rows": int(n_rows),
@@ -359,22 +367,34 @@ class ChSource:
 
     只有 `as_of()` 在本任务（Task 1）接了真取数；其余三个方法仍显式
     `NotImplementedError`，留给 Task 2~4。
+
+    ★ `min_rows`/`min_distinct_sid` 的默认值 = `shared.config._FORECAST_DEFAULTS`
+    里同名键的默认值（E-1 实测：`SQL_FBA_CAPTURE_DAYS` 近 20 个采集日
+    2026-09-23 测得 7,934~8,080 行、uniq(sid) 恒为 21）。与 `drop_threshold` /
+    `cache_ttl_s` 同一个理由，不是 import 被禁：这两个数字跟着 `[forecast]`
+    配置走，`dim/` 层只做纯变换、不读配置文件——真正的配置来源由未来的装配层
+    （`api/ui/source_factory.py`，Task 5）读出来再作为构造参数传进来，这里
+    只重复一次默认值，保证不传时离线也能用同一批 E-1 数字跑起来。
     """
 
-    def __init__(self, query: Query, *, now: Callable[[], dt.datetime] = _utc_now,
-                 drop_threshold: float = 0.30, cache_ttl_s: int = 300) -> None:
+    def __init__(self, query: Query, *, now: Callable[[], dt.datetime] = _default_now,
+                 drop_threshold: float = 0.30, cache_ttl_s: int = 300,
+                 min_rows: int = 7934, min_distinct_sid: int = 21) -> None:
         self._q = query
         self._now = now
         self._threshold = drop_threshold
         self._ttl = dt.timedelta(seconds=cache_ttl_s)
+        self._min_rows = min_rows
+        self._min_distinct_sid = min_distinct_sid
         self._as_of: tuple[dt.datetime, dt.date] | None = None
 
     def as_of(self) -> dt.date:
         now = self._now()
         if self._as_of is not None and now - self._as_of[0] < self._ttl:
             return self._as_of[1]
-        rows = self._q(SQL_FBA_CAPTURE_DAYS.format(lookback=LOOKBACK_DAYS))
-        date, rejected = pick_snapshot_date(rows, now, self._threshold)
+        rows = self._q(SQL_FBA_CAPTURE_DAYS.format(lookback=LOOKBACK_DAYS, settle=SETTLE_MINUTES))
+        date, rejected = pick_snapshot_date(
+            rows, self._threshold, self._min_rows, self._min_distinct_sid)
         for r in rejected:
             log.warning("op=ch_as_of outcome=rejected %s accepted=%s —— "
                         "回退了一天，这条就是它的证据", r, date)
