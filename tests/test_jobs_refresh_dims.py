@@ -1,5 +1,7 @@
 """刷新作业。★ 掉档拒批、旧镜像不动、留痕写全。"""
+import datetime as dt
 import logging
+import time
 
 import pytest
 
@@ -152,7 +154,7 @@ def test_provenance_write_failure_is_contained_and_others_still_run(seed, monkey
         rd, "_PROVENANCE_SQL",
         "INSERT INTO dim_refresh_run (mirror, trigger, actor, started_at, finished_at,"
         " source_max_captured, rows_in, rows_dropped, drop_reasons, ok, nonexistent_column)"
-        " VALUES (%s, %s, %s, %s, now(), %s, %s, %s, %s, %s, %s) RETURNING run_id")
+        " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING run_id")
 
     got = rd.refresh_all("cli", query=_mixed_query_all_good())
     assert len(got) == 4, "四张镜像都要跑到——留痕写不出来不能打断循环"
@@ -166,6 +168,89 @@ def test_provenance_write_failure_is_contained_and_others_still_run(seed, monkey
         assert _rows(cur, "SELECT count(*) FROM sku_catalog WHERE sku = 'DCC1800264G1'") == [(1,)]
         assert _rows(cur, "SELECT count(*) FROM dim_refresh_run") == [(0,)], (
             "留痕 INSERT 本身失败——不该有任何一行落进 dim_refresh_run")
+
+
+def test_finished_at_is_the_end_of_the_work_not_the_start_of_the_transaction(seed):
+    """★ 终审 I-4：PG 的 `now()` 是 `transaction_timestamp()`，在一个事务里是
+    **冻结**的，而这条留痕 INSERT 与 `SAVEPOINT`/`_upsert` 同在一个事务里 ——
+    它记的是**取数开始之前**那一刻。`started_at` 又是应用机的 Python 时钟，
+    与 PG 服务器有毫秒级偏移，于是差值直接为负（实测四行全部 -0.012s）。
+    一次真跑了 40 秒的刷新会在证据表里显示「早 40 秒完成」。
+
+    ★ 三条断言缺一不可，为的是不依赖两台机器的钟差方向：
+      ① `finished >= started`；② 整个区间落在应用侧 before/after 之内
+      （PG 的钟若快若慢都会把冻结时刻甩出这个窗口）；③ 差值覆盖得住真实耗时
+      —— 只有 ①② 的话，一次「快得测不出」的刷新会让冻结时刻恰好蒙混过关。
+      `test_refresh_writes_rows_and_bumps_refreshed_at` 只断
+      `finished_at IS NOT NULL`，所以它永远绿。
+    """
+    def slow(sql):
+        time.sleep(0.3)                 # ★ 事务里真的过了这么久，冻结的 now() 看不见
+        return list(R.SKU_CATALOG)
+
+    before = dt.datetime.now(dt.UTC)
+    rd.refresh_all("cli", only="sku_catalog", query=slow)
+    after = dt.datetime.now(dt.UTC)
+
+    with pg_conn() as c, c.cursor() as cur:
+        started, finished = _rows(
+            cur, "SELECT started_at, finished_at FROM dim_refresh_run")[0]
+    assert finished >= started, f"完成早于开始：finished={finished} started={started}"
+    assert before <= started and finished <= after, (
+        f"留痕的时刻不在这次调用的区间内：[{before}, {after}] vs [{started}, {finished}]")
+    assert (finished - started).total_seconds() >= 0.25, (
+        f"finished_at 没跟着真实耗时走（取数睡了 0.3s）："
+        f"{(finished - started).total_seconds()}s")
+
+
+def test_a_batch_where_every_row_was_dropped_is_a_refusal_not_a_success(seed):
+    """★ 终审 I-6：`execute_values` 对空列表是空操作，于是「刷成功了」与
+    「一行都没写」长得一模一样。运维为了修一个陈旧镜像去跑 CLI，看到
+    `ok=True rows_in=0` 和退出码 0 会以为修好了，而接口那边继续 503。
+
+    `_nonempty` 的判据对（「空不是『刷新成功、只是没数据』」），但守的位置在
+    **丢弃之前**，漏掉了「取回来了、全被丢掉了」这一种。
+    """
+    with pg_conn() as c, c.cursor() as cur:
+        before = _rows(cur, "SELECT count(*), max(refreshed_at) FROM sku_catalog")[0]
+
+    got = rd.refresh_all("cli", only="sku_catalog",
+                         query=R.replay([("", "空货号", R.D2)]))
+    assert [r.ok for r in got] == [False], "一行都没存活不许记成成功"
+    assert "all_rows_dropped" in (got[0].error or ""), got[0].error
+    assert "empty_sku" in (got[0].error or ""), f"error 没带上丢弃原因：{got[0].error}"
+
+    with pg_conn() as c, c.cursor() as cur:
+        assert _rows(cur, "SELECT count(*), max(refreshed_at) FROM sku_catalog")[0] == before, (
+            "拒批了却动了镜像 —— 旧镜像与 refreshed_at 必须原封不动")
+        run = _rows(cur, "SELECT ok, rows_in, rows_dropped, drop_reasons"
+                         " FROM dim_refresh_run ORDER BY run_id DESC LIMIT 1")[0]
+    assert run[0] is False and run[1] == 0 and run[2] == 1
+    assert run[3].get("empty_sku") == 1, f"drop_reasons 没留下丢弃原因：{run[3]}"
+
+
+def test_an_all_dropped_batch_does_not_become_the_next_coverage_baseline(seed):
+    """★ 附带那条同样要修：`_check_coverage` 里 `if prev_rows and …` 把 0
+    当成假值，整条掉档比较被跳过 —— 全丢光的那一轮若被写成基线，下一轮就
+    再也没有掉档保护了。基线只认 `ok` 的行，所以这里应当报「首轮无基线」，
+    而不是拿 0 来比。"""
+    rd.refresh_all("cli", only="sku_catalog", query=R.replay([("", "空", R.D2)]))
+    got = rd.refresh_all("cli", only="sku_catalog", query=R.replay(R.SKU_CATALOG))
+    assert [r.ok for r in got] == [True]
+    with pg_conn() as c, c.cursor() as cur:
+        reasons = _rows(cur, "SELECT drop_reasons FROM dim_refresh_run"
+                             " WHERE ok ORDER BY run_id DESC LIMIT 1")[0][0]
+    assert reasons.get("no_baseline") == 1, (
+        f"上一轮全丢光却被当成了基线：{reasons}")
+
+
+def test_cli_exits_1_when_every_row_of_a_batch_was_dropped(seed, monkeypatch, capsys):
+    """★ 走真的 `main()`：退出码是运维与调度器唯一会看的东西。"""
+    monkeypatch.setattr(rd, "ch_client", lambda: object())
+    monkeypatch.setattr(rd, "ch_query",
+                        lambda client: R.replay([("", "空货号", R.D2)]))
+    assert rd.main(["--only", "sku_catalog"]) == 1
+    assert "all_rows_dropped" in capsys.readouterr().out
 
 
 def test_unreachable_ch_still_leaves_one_ok_false_row_per_mirror(seed, monkeypatch):

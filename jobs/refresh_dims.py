@@ -40,6 +40,23 @@ class CoverageDrop(Exception):
     pass
 
 
+class AllRowsDropped(Exception):
+    """取回来了，但一行都没活下来。
+
+    ★ 终审 I-6：`execute_values` 对空列表是空操作，于是「刷成功了」与「一行都
+    没写」长得一模一样 —— 运维为了修一个陈旧镜像去跑 CLI，看到
+    `ok=True rows_in=0` 和退出码 0 会以为修好了，而接口那边继续 503。
+    `dim/ch_source.py::_nonempty` 的判据对（空不是「刷新成功、只是没数据」），
+    但它守在**丢弃之前**，漏掉了「取回来了、全被丢掉了」这一种。
+    零存活行一律当拒绝：旧镜像原封不动、`refreshed_at` 不前移、退出码 1。
+    """
+
+    def __init__(self, mirror: str, rows_dropped: int, reasons: dict):
+        super().__init__(
+            f"all_rows_dropped mirror={mirror} rows_dropped={rows_dropped}"
+            f" drop_reasons={reasons}")
+
+
 class UnknownTrigger(ValueError):
     """★ review 09-22 二轮：调用方传错 trigger 必须在碰任何镜像之前就地爆炸，
     不能长得像"这批镜像刷新失败了"——运维会去查错镜像，而真正的 bug
@@ -114,7 +131,11 @@ def _check_coverage(cur, m: registry.Mirror, fetched: ch_source.Fetched,
         prev_reasons: dict = {}
     else:
         prev_rows, prev_reasons = base
-        if prev_rows and len(fetched.rows) < prev_rows * limit:
+        # ★ 终审 I-6 附带：`if prev_rows and …` 把 0 当成假值，整条掉档比较被
+        #   跳过。基线本身现在不可能是 0（零存活行一律 ok=false，而 `_baseline`
+        #   只认 ok 的行），但判据写成「有没有基线」比写成「基线是不是真值」
+        #   少一种会安静失效的形态。
+        if prev_rows is not None and len(fetched.rows) < prev_rows * limit:
             raise CoverageDrop(f"coverage_drop rows {len(fetched.rows)} < {prev_rows} × {limit:.2f}")
     # ★ 一趟循环做两件事：算出这一轮的 distinct 计数（不管有没有基线都要记，
     #   下一轮要拿它当基线）、再拿它跟上一轮比（没基线就跳过比较，不跳过记录）。
@@ -126,7 +147,7 @@ def _check_coverage(cur, m: registry.Mirror, fetched: ch_source.Fetched,
         now = len({r[idx] for r in fetched.rows})
         reasons[f"distinct_{col}"] = now
         prev = prev_reasons.get(f"distinct_{col}")
-        if prev and now < prev * limit:
+        if prev is not None and now < prev * limit:
             raise CoverageDrop(
                 f"coverage_drop {rule} {now} < {prev} × {limit:.2f} —— "
                 "整店 0 行是采集缺口的形状，总行数看不出来")
@@ -162,10 +183,21 @@ def _check_actor(actor: str | None) -> None:
 #: 让 review 09-22 二轮要求的"这条 INSERT 本身在 DB 层失败"测试能直接
 #: monkeypatch 这里，而不必绕开 `refresh_all` 已经挡住的 trigger/actor 校验
 #: 去伪造一个「合法参数、DB 却拒绝」的场景。
+#: ★ 终审 I-4：`finished_at` 原先写的是 PG 的 `now()` —— 它是
+#: `transaction_timestamp()`，在一个事务里**冻结**（实测：同一事务内 sleep 2 秒，
+#: `now()` 移动 0.000s，`clock_timestamp()` 移动 2.001s）。而这条 INSERT 与
+#: `SAVEPOINT`/`_upsert` 同在一个事务里，于是它记的是**取数开始之前**那一刻；
+#: `started_at` 又是应用机的 Python 时钟，与 PG 服务器有毫秒级偏移，差值直接为负
+#: （实测四行全部 -0.012s）。一次真跑了 40 秒的刷新会显示「早 40 秒完成」。
+#:
+#: ★ 两端都用**应用机的同一把** Python 时钟，而不是 `clock_timestamp()`：
+#: 换成库侧就得两端都换（否则还是两把钟），而 `started_at` 要在取数之前取，
+#: 那会为了一个时间戳多一次往返、多一处会失败的 I/O。同一把钟既消掉钟差，
+#: 也让「多久」这一列与 `timed()` 的 elapsed_ms 可以直接对照。
 _PROVENANCE_SQL = (
     "INSERT INTO dim_refresh_run (mirror, trigger, actor, started_at, finished_at,"
     " source_max_captured, rows_in, rows_dropped, drop_reasons, ok, error)"
-    " VALUES (%s, %s, %s, %s, now(), %s, %s, %s, %s, %s, %s) RETURNING run_id"
+    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING run_id"
 )
 
 
@@ -174,8 +206,9 @@ def _write_provenance(cur, mirror: str, trigger: str, actor: str | None,
                       rows_dropped: int, reasons: dict, ok: bool,
                       error: str | None) -> int:
     cur.execute(_PROVENANCE_SQL,
-                (mirror, trigger, actor, started_at, source_max_captured, rows_in,
-                 rows_dropped, json.dumps(reasons, ensure_ascii=False), ok, error))
+                (mirror, trigger, actor, started_at, dt.datetime.now(dt.UTC),
+                 source_max_captured, rows_in, rows_dropped,
+                 json.dumps(reasons, ensure_ascii=False), ok, error))
     return cur.fetchone()[0]
 
 
@@ -265,11 +298,21 @@ def refresh_one(cur, m: registry.Mirror, query, trigger: str, actor: str | None)
         fetched = m.fetch(query)
         rows_in, rows_dropped = len(fetched.rows), fetched.dropped
         reasons = dict(fetched.drop_reasons)
+        # ★ 终审 I-6：排在 `_check_coverage` 之前 —— 掉档比较对 0 行本来就无话可说，
+        #   而这一条要的是「零存活行 = 拒绝」这个判据本身，不该依赖有没有基线。
+        if not fetched.rows:
+            raise AllRowsDropped(m.name, rows_dropped, reasons)
         _check_coverage(cur, m, fetched, reasons)
         _upsert(cur, m, fetched.rows, dt.datetime.now(dt.UTC))
         source_max_captured = fetched.source_max_captured
         ok = True
-    except BaseException as e:  # noqa: BLE001 - 必须兜住一切（CoverageDrop/UnknownShape/
+    except (KeyboardInterrupt, SystemExit):
+        # ★ 终审 M-5：`BaseException` 会把 Ctrl-C 记成该镜像的一次「失败」
+        #   （`error='KeyboardInterrupt: '`）然后**继续刷下一张**。下面那句
+        #   「兜住一切」的意图是「漏一种异常类型就是漏一批沉默失败」，
+        #   而这两种不属于那一批 —— 它们是「人让它停」，必须原样往外走。
+        raise
+    except Exception as e:  # noqa: BLE001 - 必须兜住一切（CoverageDrop/UnknownShape/
         # pg 错误/……）才能保证收尾那条 INSERT 总会写：漏一种异常类型就是漏一批「今天刷过
         # 但没人知道为什么没成」的沉默失败。
         # ★ 出错的这段可能已经把事务弄脏（_upsert 内的原始 DB 异常）——先回滚到
@@ -299,7 +342,9 @@ def refresh_one(cur, m: registry.Mirror, query, trigger: str, actor: str | None)
         run_id = _write_provenance(cur, m.name, trigger, actor, started_at,
                                    source_max_captured, rows_in, rows_dropped,
                                    reasons, ok, error)
-    except BaseException as e:  # noqa: BLE001 - 这是留痕表**唯一**的写入语句；
+    except (KeyboardInterrupt, SystemExit):
+        raise          # ★ 同上一条（终审 M-5）：人让它停，不是一次沉默失败
+    except Exception as e:  # noqa: BLE001 - 这是留痕表**唯一**的写入语句；
         # 它失败时必须兜住一切异常类型，否则就是让"今天刷过但一行证据都没留下"
         # 的批次同时炸断 refresh_all 的循环——两条 binding 判据一次性都破。
         cur.execute(f"ROLLBACK TO SAVEPOINT {prov_savepoint}")
