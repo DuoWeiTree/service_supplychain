@@ -111,3 +111,32 @@ def test_criterion_5_the_back_edge_exists_and_terminal_states_are_sealed(client,
                          headers=H(seed.actor))
     assert sealed.status_code == 422 and sealed.json()["error"] == "terminal_state"
     assert sealed.json()["state"] == "已撤销" and sealed.json()["line_id"] == line
+
+
+def test_mirror_refresh_end_to_end(wipe, seed):
+    """CLI 刷一轮 → 镜像有数 → 留痕可查 → 陈旧闸放行。
+
+    ★ 用注入的假 CH 行，不连内网 —— 连 CH 的那条在
+      test_jobs_refresh_dims_live.py 里，CH 不可达时**吵着跳过**。
+
+    ★ `seed` 已种下 wid=1（kind='local'）当「阶段 A 外键地基」，而
+      `R.WAREHOUSE` 第一行也是 wid=1（type=1/sub=0 → 同样是 'local'）——
+      两者共享同一个 PK，所以这一轮刷新是**在原地 upsert 掉种子行**，
+      不是新增第四行。真实结果是 3 行（1/2/3），不是 4 行；断言按这个
+      实测行为写，而不是抄 brief 草稿里没考虑到这次 PK 碰撞的 4 行版本。
+    """
+    from jobs import refresh_dims as rd
+    from shared.pg_client import pg_conn
+    from tests.fixtures import ch_rows as R
+
+    runs = rd.refresh_all("cli", actor=seed.actor, only="warehouse",
+                          query=R.replay(R.WAREHOUSE))
+    assert [r.ok for r in runs] == [True]
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT wid, kind FROM warehouse ORDER BY wid")
+        assert cur.fetchall() == [(1, "local"), (2, "oversea_self"), (3, "oversea_3pl")]
+        cur.execute("SELECT refreshed_at FROM v_mirror_freshness WHERE mirror = 'warehouse'")
+        assert cur.fetchone()[0] is not None
+        cur.execute("SELECT ok, drop_reasons FROM dim_refresh_run WHERE mirror = 'warehouse'")
+        ok, reasons = cur.fetchone()
+    assert ok and reasons["no_baseline"] == 1
