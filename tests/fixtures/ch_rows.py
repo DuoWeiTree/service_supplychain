@@ -11,8 +11,13 @@ SKU_CATALOG = [("DCC1800264G1", "猫爬架", D2), ("", "无名氏", D2)]        
 #:   market 改用 country；platform 该表压根没有，不再是源列。假行按新
 #:   SQL_SELLER 的 5 列排布：(seller_id, name, country, captured, has_fba_flag)。
 #:   11072 名下有条 FBA listing、11094 没有。
-SELLER = [("11072", "A4Pet-US", "US", D2, 1),
-          ("11094", "A4Pet-BS-UK", "UK", D1, 0)]
+#: ★ 09-23 真实缺陷修复：country **不是**代码——2026-09-23 实测
+#:   `lingxing_seller_list.country`（21 个 sid 全量）给的是中文国名（美国/英国/…），
+#:   不是 "US"/"UK"。这两行原先直接写英文码，等于假装 `fetch_seller` 已经做了
+#:   翻译——真正没做，之前测不出来正是因为这里数据不真实。改成真实的中文国名，
+#:   `fetch_seller` 必须把它们译成 001_foundation.sql:27 约定的代码。
+SELLER = [("11072", "A4Pet-US", "美国", D2, 1),
+          ("11094", "A4Pet-BS-UK", "英国", D1, 0)]
 
 #: ★ 控制器 09-22 追加裁定：seller_sku 形如 amzn.gr.* 是亚马逊虚拟促销组，
 #:   不是真 listing，必须丢弃且计数（不是静默滤掉的那一侧）。

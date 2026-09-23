@@ -71,8 +71,38 @@ def test_seller_market_is_country_and_platform_is_constant_amazon():
     默认值。非 Amazon 平台店归阶段 B。"""
     got = cs.fetch_seller(R.replay(R.SELLER))
     by_id = {r[0]: r for r in got.rows}
-    assert by_id["11072"][2] == "US"        # market ← country
+    assert by_id["11072"][2] == "US"        # market ← country（中文国名译码）
+    assert by_id["11094"][2] == "UK"
     assert by_id["11072"][4] == "amazon"    # platform ← 常量
+
+
+def test_seller_country_that_is_not_in_the_market_map_fails_loudly():
+    """★ 09-23 两个真实缺陷之二：`seller.market` 在 001_foundation.sql:27 的注释
+    写的是代码（US / UK / DE …），而 `lingxing_seller_list.country` 给的是中文
+    国名。阶段 C（排货/FBA 站点）要按代码匹配，中文名直接落库会让下游连不上。
+    解析只能在一个地方（这里），且认不出的国名必须硬失败 —— 不许落进 `else ''`
+    再被下游过滤掉（CLAUDE.md「中文仓名可以解析，但只能在一个地方、必须落到
+    确定的字段」同一条铁律，这里落到 market 代码）。"""
+    with pytest.raises(cs.UnknownShape) as ei:
+        cs.fetch_seller(R.replay([("99999", "某新店", "火星", R.D2, 0)]))
+    assert "火星" in str(ei.value)
+
+
+def test_seller_country_map_covers_every_value_seen_live():
+    """★ 2026-09-23 实测 `lingxing_seller_list`（21 个 sid 全量，`argMax(country,
+    _captured_date)` 按 sid 去重后）的全部分布 —— 15 个不同的中文国名。覆盖不全，
+    生产刷新时随时会在没见过的国家上硬失败（这是设计意图，但地图必须先把已知的
+    全部收进来，不能让常见国家也炸）。"""
+    live_countries = ["美国", "加拿大", "日本", "德国", "英国", "爱尔兰",
+                      "墨西哥", "西班牙", "意大利", "瑞典", "波兰", "巴西",
+                      "比利时", "荷兰", "法国"]
+    rows = [(str(100 + i), f"店{i}", country, R.D2, 0)
+           for i, country in enumerate(live_countries)]
+    got = cs.fetch_seller(R.replay(rows))
+    codes = {r[2] for r in got.rows}
+    assert codes == {"US", "CA", "JP", "DE", "UK", "IE", "MX", "ES", "IT",
+                     "SE", "PL", "BR", "BE", "NL", "FR"}, codes
+    assert len(codes) == len(live_countries), "15 个国家不许被映射成同一个代码"
 
 
 def test_both_listing_reads_use_the_same_capture_window():

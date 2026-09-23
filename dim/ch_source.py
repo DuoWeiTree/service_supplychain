@@ -219,17 +219,54 @@ def fetch_warehouse(query: Query) -> Fetched:
     return Fetched(rows, 0, reasons, max(r[4] for r in raw))
 
 
+#: ★ 09-23 裁定（负责人真实数据下撞见的第二个缺陷）：`lingxing_seller_list.country`
+#:   给的是中文国名，不是代码 —— 2026-09-23 实测（21 个 sid 全量，按 sid 去重）
+#:   共 15 个不同值。而 `migrations/pg/001_foundation.sql:27` 的 `seller.market`
+#:   注释写的是 "US / UK / DE …"，阶段 C（排货/FBA 站点）要按代码匹配，中文名
+#:   直接落库会让下游连不上。解析只能在一个地方（这里），且认不出的国名必须
+#:   硬失败 —— 不许落进 `else ''` 再被下游过滤掉（同 CLAUDE.md「中文仓名解析
+#:   集中在一处 + 未匹配必须硬失败」那条铁律，这里落到 market 代码这一处）。
+_COUNTRY_TO_MARKET = {
+    "美国": "US", "加拿大": "CA", "日本": "JP", "德国": "DE", "英国": "UK",
+    "爱尔兰": "IE", "墨西哥": "MX", "西班牙": "ES", "意大利": "IT",
+    "瑞典": "SE", "波兰": "PL", "巴西": "BR", "比利时": "BE",
+    "荷兰": "NL", "法国": "FR",
+}
+
+
+def _market_code(country: str) -> str:
+    """把 `country` 的中文国名译成 001:27 约定的代码。
+
+    ★ 只在这里判空是不对的 —— 空值已经由调用方的 `_coerce_empty` 处理过
+    （留痕 `coerced_empty_market`，OQ-5 那条「留空是还没到」的规矩）；这里收到
+    的 `""` 直接放行，不当成「认不出的国家」再报一次错。真正非空但不在地图里
+    的国名才是「认不出的形态」，必须硬失败并点名，不许悄悄落成 `''`。
+    """
+    if not country:
+        return ""
+    code = _COUNTRY_TO_MARKET.get(country)
+    if code is None:
+        raise UnknownShape(
+            f"country={country!r} 认不出是哪个市场代码。"
+            "★ 新国家要在 dim/ch_source.py 的 _COUNTRY_TO_MARKET 里显式加，"
+            "不许落进 else '' 再被下游过滤掉")
+    return code
+
+
 def fetch_seller(query: Query) -> Fetched:
     """★ OQ-3 裁定（控制器 09-22）：has_fba 不是「无源刻意抛」，是派生列——
     SQL_SELLER 已经 join 出 has_fba_flag，这里只做类型收敛。market/platform
     的取法按同日另一条裁定（探针 §7.0 之后）：market ← country；platform
-    该源表没有列，写常量 'amazon'。"""
+    该源表没有列，写常量 'amazon'。
+
+    ★ 09-23 追加：country 是中文国名，必须经 `_market_code` 译成代码 ——
+    见上面 `_COUNTRY_TO_MARKET` 的注释。"""
     raw = query(SQL_SELLER)
     _nonempty(raw, "lingxing_seller_list")
     rows, reasons = [], {}
     for seller_id, name, market, _cap, has_fba_flag in raw:
         rows.append((seller_id,
                      _coerce_empty(reasons, "name", name),
-                     _coerce_empty(reasons, "market", market),
+                     _market_code(_coerce_empty(reasons, "market", market)),
                      bool(has_fba_flag), "amazon"))
     return Fetched(rows, 0, reasons, max(r[3] for r in raw))
