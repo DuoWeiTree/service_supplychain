@@ -47,7 +47,8 @@
 | E-12 | ★ **采购单 `status=9（已完成）` 的行项 `quantity_receive` 全为 0**：966 行 / 104,479 件。只按 `quantity_real − quantity_receive > 0` 取在途会凭空多出 104,479 件，是真实开口量 **28,561 件的 3.7 倍** | 必须按 `status` 过滤 |
 | E-13 | 真实开口在途（`status=2 待到货`）：166 行 / **28,561 件** / 41 个货号，全部来自 **2 张采购单**（PO260514011、PO260721011）。按 `expect_arrive_time` 分月：2026-06 10,199 · 07 6,594 · 08 6,098 · 09 5,325 · **10 仅 345**，**10 月之后为 0** | 绝大多数已逾期 |
 | E-14 | `expect_arrive_time` 有 **1 行为 NULL**（50 件）。两张采购表是覆盖型，只有 4 个采集日（2026-09-19~22），`max(_captured_date)=2026-09-22`，比 fba_detail 晚一天 | 认不出的形态 + 两个 as_of |
-| E-16 | `(store, sales_channel)` 近 90 天共 **37 组**，其中 Amazon 渠道 23 组：**17 组能映射到 sid**，**6 组映射不到**（`A4PET_EUROPE` 的 es/fr/ie/it/pl/com.be —— A4Pet 欧洲只有 UK 11094 与 DE 11095 两个 sid，共 21 单）；另有 14 组 `Non-Amazon*` | 未映射必须点名 |
+| E-16 | `(store, sales_channel)` 近 90 天共 **37 组**，其中 Amazon 渠道 **24 组：18 组能映射到 sid**，**6 组映射不到**（`A4PET_EUROPE` 的 es/fr/ie/it/pl/com.be —— A4Pet 欧洲只有 UK 11094 与 DE 11095 两个 sid，共 21 单）；另有 **13 组** `Non-Amazon*` | 未映射必须点名 |
+| E-16a | ★ **本表初稿漏了 `(A4PET_EUROPE, Amazon.de) → 11095`**（Task 4 实现时按 live 查出：`lingxing_seller_list` 里 11095 = `A4Pet-BS-DE`、德国、在用，近 90 天数百单）。它**不是** OQ-3 那 6 组无主渠道——那 6 组在 `seller_list` 里根本没有行。漏掉的后果不是报错而是**这家店的销量历史永远取不到、界面永远偏低**。18/6/13 合计 37 已复核 | 声明表必须有回归测试钉住（`tests/test_order_store_map.py`） |
 | E-17 | 同一 marketplace 下 msku 几乎唯一：US 四个 sid（11072/11093/11098/11099）共 1,589 个 msku，**只有 2 个跨 sid**（`DHWC007036Y1Z2B`、`DHWC007036N1Z2B`，均 11072∩11098）| 0.13% |
 | E-18 | 全快照聚合查询实测 **23 ms**（8,080 行 / 21 个 sid）；单店 16 ms。`order_status` 只有 Shipped / Shipping / Cancelled / Pending，Pending 在已完结月份残留很少（2026-07 为 165/25,772） | 批量与单查同价 |
 
@@ -126,7 +127,7 @@ class ChSource:
 1. **按 (amazon_order_id, order_item_id) 去重**，取 `argMax(_captured_date)` 的那一版状态与数量。
    依据 E-9：不去重时近月被高估 12.5%~19.4%。去重后与独立源对上（E-10）。
    ★ 兄弟仓那条 SQL 没有这一步（`inventory_forecast.ch.toml:129-155`）—— 这是本仓实测追加的。
-2. **`store`→`sid` 用声明的字面映射表** `dim/order_store_map.py`，17 组（E-16）。
+2. **`store`→`sid` 用声明的字面映射表** `dim/order_store_map.py`，**18 组**（E-16 + E-16a：初稿漏了 Amazon.de→11095）。
    不解析店名、不猜。**任何近 90 天出现过、却不在映射且未被显式声明排除的 (store, sales_channel) 一律硬失败**
    （守卫测试见 §8）。`Non-Amazon*` 14 组显式排除并计数 —— 它们不是这个 Amazon 店的需求。
    ★ 不用「marketplace + msku 唯一」这条近路：E-17 实测仍有 2 个 msku 跨 sid，0.13% 的静默错账。
