@@ -1,10 +1,13 @@
 """刷新作业。★ 掉档拒批、旧镜像不动、留痕写全。"""
+import logging
+
 import pytest
 
 from jobs import refresh_dims as rd
 from jobs.lock import RefreshInFlight, advisory_lock
 from shared.pg_client import pg_conn
 from tests.fixtures import ch_rows as R
+from tests.helpers import make_ch_unreachable
 
 
 def _rows(cur, sql, *a):
@@ -163,6 +166,58 @@ def test_provenance_write_failure_is_contained_and_others_still_run(seed, monkey
         assert _rows(cur, "SELECT count(*) FROM sku_catalog WHERE sku = 'DCC1800264G1'") == [(1,)]
         assert _rows(cur, "SELECT count(*) FROM dim_refresh_run") == [(0,)], (
             "留痕 INSERT 本身失败——不该有任何一行落进 dim_refresh_run")
+
+
+def test_unreachable_ch_still_leaves_one_ok_false_row_per_mirror(seed, monkeypatch):
+    """★ 终审 I-3：建连原先排在 `advisory_lock()` 与任何 `try` 之外，CH 连不上时
+    整轮在进锁之前就炸掉，`dim_refresh_run` **一行都不留**。于是「昨晚 06:30
+    连不上 CH」这件事在证据表里完全不存在，第二天早上最新一行还是前天那次成功
+    —— 看起来像「昨天根本没排过班」。
+
+    设计 §6 的判据是「失败也要写完整的一行」，而它原先只在**进了循环之后**成立。
+    """
+    target = make_ch_unreachable(monkeypatch)
+    with pytest.raises(rd.ChUnreachable) as exc:
+        rd.refresh_all("cli", actor=seed.actor)
+
+    order = [m.name for m in rd.registry.refresh_order()]
+    assert [r.mirror for r in exc.value.runs] == order, "四张目标镜像都要留一行"
+    assert all(r.ok is False for r in exc.value.runs)
+
+    with pg_conn() as c, c.cursor() as cur:
+        rows = _rows(cur, "SELECT mirror, ok, error, rows_in, rows_dropped"
+                          " FROM dim_refresh_run ORDER BY mirror")
+    assert [r[0] for r in rows] == sorted(order), (
+        f"证据表里不是四行 —— CH 连不上的那一轮必须留痕：{rows}")
+    assert all(r[1] is False for r in rows), "连不上不许记成 ok=true"
+    assert all("ch_unreachable" in (r[2] or "") for r in rows), (
+        f"error 没点名成因：{rows}")
+    assert all(target in (r[2] or "") for r in rows), f"error 没点名打的谁：{rows}"
+    assert all("connect_refused" in (r[2] or "") for r in rows), (
+        f"error 没分清「连不上」与「超时」：{rows}")
+
+
+def test_unreachable_ch_logs_the_three_questions_before_giving_up(seed, monkeypatch, scm_log):
+    """★ `ch_client()` 的建连失败原先**不走** `scm.*` 的三问日志（`ch_query` 只
+    包住查询本身），能看到的只有 urllib3 / clickhouse_connect 自己那两条
+    第三方 WARNING —— 打的谁、多久、怎么失败的，一条都答不上来。"""
+    target = make_ch_unreachable(monkeypatch)
+    with scm_log.at_level(logging.INFO, logger="scm.jobs"), pytest.raises(rd.ChUnreachable):
+        rd.refresh_all("cli", actor=seed.actor)
+    text = scm_log.text
+    assert "op=ch_connect" in text and "outcome=fail" in text, f"没有这条日志：{text!r}"
+    assert target in text, f"没说打的谁：{text!r}"
+    assert "elapsed_ms=" in text, f"没说多久：{text!r}"
+    assert "connect_refused" in text, f"没说怎么失败的：{text!r}"
+
+
+def test_cli_exits_1_on_an_unreachable_ch_instead_of_a_traceback(seed, monkeypatch, capsys):
+    """★ 运维为了修一个陈旧镜像去跑 CLI，拿到的应当是一个约定的退出码，
+    不是一页 traceback —— 调度器与人都按退出码分叉。"""
+    make_ch_unreachable(monkeypatch)
+    assert rd.main([]) == 1
+    err = capsys.readouterr().err
+    assert "ch_unreachable" in err or "CH 连不上" in err, f"stderr 没说清成因：{err!r}"
 
 
 def _mixed_query():

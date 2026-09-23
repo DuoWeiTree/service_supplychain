@@ -10,6 +10,7 @@ import datetime as dt
 import json
 import logging
 import sys
+import time
 from typing import NamedTuple
 
 import psycopg2
@@ -17,8 +18,8 @@ from psycopg2.extras import execute_values
 
 from dim import ch_source, registry
 from jobs.lock import RefreshInFlight, advisory_lock
-from shared.ch_client import ch_client, ch_query
-from shared.config import freshness
+from shared.ch_client import ch_client, ch_query, describe_failure
+from shared.config import clickhouse, freshness
 from shared.pg_client import pg_conn, pg_error_fields, timed
 
 log = logging.getLogger("scm.jobs")
@@ -63,6 +64,21 @@ class RunRow(NamedTuple):
     rows_in: int
     rows_dropped: int
     error: str | None
+
+
+class ChUnreachable(Exception):
+    """CH 建连失败：这一轮一张镜像都刷不了。
+
+    ★ 终审 I-3：原先建连排在 `advisory_lock()` 与任何 `try` 之外，于是整轮在
+    进锁之前就炸掉，`dim_refresh_run` **一行都不留** —— 「昨晚 06:30 连不上
+    CH」这件事在证据表里完全不存在，第二天最新一行还是前天那次成功，看起来
+    像「昨天根本没排过班」。所以这个异常只在**给每张目标镜像都留过一行
+    `ok=false` 之后**才抛，`runs` 带着那几行，让三个入口各自照自己的方式收场。
+    """
+
+    def __init__(self, target: str, cause: dict, runs: list[RunRow]):
+        self.target, self.cause, self.runs = target, cause, runs
+        super().__init__(f"ch_unreachable target={target} cause={cause}")
 
 
 def _threshold() -> float:
@@ -161,6 +177,62 @@ def _write_provenance(cur, mirror: str, trigger: str, actor: str | None,
                 (mirror, trigger, actor, started_at, source_max_captured, rows_in,
                  rows_dropped, json.dumps(reasons, ensure_ascii=False), ok, error))
     return cur.fetchone()[0]
+
+
+def _record_ch_failure(m: registry.Mirror, trigger: str, actor: str | None,
+                       started_at: dt.datetime, error: str) -> RunRow:
+    """给一张镜像补一行「这一轮压根没连上 CH」的证据。
+
+    ★ 自己一条短事务：连不上 CH 时四张镜像的失败原因完全相同，但留痕仍要
+    一张一行 —— 证据表的粒度是镜像，合并成一行会让「哪几张本该刷」这个问题
+    第二天没有答案。留痕本身再失败也不许让这一轮悄悄消失（同 `refresh_one`
+    的 provenance 兜底判据）：记一条 error 日志 + 哨兵 run_id。
+    """
+    try:
+        with pg_conn() as conn, conn.cursor() as cur:
+            run_id = _write_provenance(cur, m.name, trigger, actor, started_at,
+                                       None, 0, 0, {"ch_unreachable": 1}, False, error)
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as e:  # noqa: BLE001 - 见上：留痕写不出来也不能让异常改道
+        if isinstance(e, psycopg2.Error):
+            log.error("op=refresh_provenance mirror=%s trigger=%s outcome=fail"
+                      " reason=ch_unreachable err_type=%s pg=%s",
+                      m.name, trigger, type(e).__name__, pg_error_fields(e))
+        else:
+            log.error("op=refresh_provenance mirror=%s trigger=%s outcome=fail"
+                      " reason=ch_unreachable err_type=%s err=%s",
+                      m.name, trigger, type(e).__name__, e)
+        run_id = NO_PROVENANCE_ROW
+    return RunRow(m.name, run_id, False, 0, 0, error)
+
+
+def _ch_query_or_record(targets: list[registry.Mirror], trigger: str,
+                        actor: str | None):
+    """建连，失败就先把证据写全再抛 `ChUnreachable`。
+
+    ★ `ch_query()` 只包住**查询**，建连失败原先一条 `scm.*` 日志都没有 ——
+    能看到的只有 urllib3 / clickhouse_connect 自己那两条第三方 WARNING，
+    三问（打的谁 · 多久 · 怎么失败的）一条都答不上来。
+    """
+    c = clickhouse()
+    target = f"{c['host']}:{c.get('port', 8123)}/{c.get('database', 'jxd_raw')}"
+    t0 = time.perf_counter()
+    try:
+        query = ch_query(ch_client())
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as e:  # 建连失败的类型由驱动决定，分类交给 describe_failure
+        cause = describe_failure(e)
+        log.error("op=ch_connect target=%s elapsed_ms=%d outcome=fail %s",
+                  target, (time.perf_counter() - t0) * 1000, cause)
+        error = f"ch_unreachable target={target} {cause}"[:2000]
+        started_at = dt.datetime.now(dt.UTC)
+        runs = [_record_ch_failure(m, trigger, actor, started_at, error) for m in targets]
+        raise ChUnreachable(target, cause, runs) from e
+    log.info("op=ch_connect target=%s elapsed_ms=%d outcome=ok",
+             target, (time.perf_counter() - t0) * 1000)
+    return query
 
 
 def refresh_one(cur, m: registry.Mirror, query, trigger: str, actor: str | None) -> RunRow:
@@ -262,10 +334,13 @@ def refresh_all(trigger: str, actor: str | None = None, only: str | None = None,
     if only and targets[0].pending:
         raise KeyError(f"{only} 是 pending 条目，本阶段没有取数实现")
     own_query = query is None
-    if own_query:
-        query = ch_query(ch_client())
     out: list[RunRow] = []
     with advisory_lock(), timed("refresh_dims", trigger=trigger, only=only or "all"):
+        # ★ 终审 I-3：建连必须在锁内、在保护区内。放在外面时 CH 连不上就是
+        #   「整轮在进锁之前炸掉、证据表一行不留」——而镜像陈旧多半**就是因为**
+        #   CH 连不上，那一轮恰恰是最该留痕的一轮。
+        if own_query:
+            query = _ch_query_or_record(targets, trigger, actor)
         for m in targets:
             # ★ 一个镜像一个短事务：一批失败不影响其它批（07:486）
             with pg_conn() as conn, conn.cursor() as cur:
@@ -282,6 +357,12 @@ def main(argv: list[str] | None = None) -> int:
     except RefreshInFlight as e:
         print(e, file=sys.stderr)
         return 3
+    except ChUnreachable as e:
+        # ★ 终审 I-3：运维为了修一个陈旧镜像来跑这条命令，该拿到的是一个约定的
+        #   退出码 + 一条说清成因的话，不是一页 traceback。日志三问那一行已经由
+        #   `_ch_query_or_record` 打过，这里只负责收场。
+        print(e, file=sys.stderr)
+        return 1
     for r in rows:
         print(f"{r.mirror:22s} ok={r.ok} rows_in={r.rows_in} dropped={r.rows_dropped}"
               f"{' ' + r.error if r.error else ''}")

@@ -30,6 +30,33 @@ def H(actor: str) -> dict:
     return {"x-actor": actor}
 
 
+def make_ch_unreachable(monkeypatch) -> str:
+    """让 `ch_client()` 去打本机一个没人听的端口，返回它的 target 串。
+
+    ★ 不 monkeypatch `ch_client` 去抛一个手搓的异常：那验的是「假异常怎么走」，
+      而 I-2 的整条教训正是**手搓的形状与真驱动抛的不是一回事**。这里让
+      `clickhouse_connect` 真的去连、真的被拒，拿到真的
+      `OperationalError ← MaxRetryError ← NewConnectionError ← ConnectionRefusedError`。
+      loopback，不依赖内网、不依赖超时。
+
+    ★ 两处 `clickhouse` 名字都要覆盖：`shared/ch_client.py` 与
+      `jobs/refresh_dims.py` 各自 `from shared.config import clickhouse` 绑过
+      一次，只盖一个会出现「日志里写着打 192.168.66.211、实际打的是别处」——
+      那正是「一个数要能回答它是关于什么的」要防的形状。生产里两者同源，
+      所以覆盖两个才是忠实的模拟，不是迁就实现。
+    """
+    from jobs import refresh_dims as rdmod
+    from shared import ch_client as chmod
+
+    def dead():
+        return {"host": "127.0.0.1", "port": 9, "user": "default", "password": "",
+                "database": "jxd_raw", "secure": False}
+
+    monkeypatch.setattr(chmod, "clickhouse", dead)
+    monkeypatch.setattr(rdmod, "clickhouse", dead)
+    return "127.0.0.1:9/jxd_raw"
+
+
 def _ok(r):
     """★ 静默丢失已在本仓踩过六次：半路一次 409/404 不许被吞掉，
     否则 prepared() 造出的是一张半填的计划，后面的断言会因不相干的原因红或绿。"""
