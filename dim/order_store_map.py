@@ -120,12 +120,26 @@ def sid_for(store: str, channel: str) -> str | None:
 
 
 def sid_for_or_raise(store: str, channel: str) -> str:
+    """★ 终审 M-4：报错文案分开三种成因。原先一律说「新开的店请补进 STORE_SID」，
+    而对一个**显式排除**的非 Amazon 渠道，那是错的建议 —— 按它去做就会把
+    Walmart / Chewy 的单记成某个 Amazon 店的销量，正是这张表存在的理由的反面。
+
+    ★ 本函数目前生产无调用点（只有 `store_for()` 有）。留着而不删，是因为反向
+    查询在接新平台时会需要它；但一个会给出错误建议的报错比没有这个函数更坏，
+    所以先把文案修对。
+    """
     sid = sid_for(store, channel)
     if sid is None:
+        if _excluded(channel):
+            why = ("这是**显式排除**的非 Amazon 渠道（EXCLUDED_CHANNELS）——"
+                   "不许为它补一行 STORE_SID，那会把别的平台的单记成这个 Amazon 店的销量")
+        elif (store, channel) in UNRESOLVED:
+            why = "这是 design §8 OQ-3 已登记的缺口（有单但 lingxing_seller_list 里没有对应 sid）"
+        else:
+            why = "新开的店请补进 dim/order_store_map.py::STORE_SID"
         raise UnknownStore(
-            f"(store={store!r}, sales_channel={channel!r}) 不在映射表里。"
-            "★ 不猜 —— 猜一个 sid 就是把一家店的销量记到另一家头上。"
-            "新开的店请补进 dim/order_store_map.py::STORE_SID")
+            f"(store={store!r}, sales_channel={channel!r}) 取不到 sid。"
+            f"★ 不猜 —— 猜一个 sid 就是把一家店的销量记到另一家头上。{why}")
     return sid
 
 

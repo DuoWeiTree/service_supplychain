@@ -48,3 +48,24 @@ def test_reverse_lookup_is_one_to_one():
     assert m.store_for("11095") == ("A4PET_EUROPE", "Amazon.de")
     with pytest.raises(m.UnknownStore, match="11100"):
         m.store_for("11100")     # A4Pet-BS-JP-JP：SP-API 采集里根本没有它的 store
+
+
+def test_an_excluded_channel_is_not_told_to_add_a_store_sid_row():
+    """★ 终审 M-4：`sid_for_or_raise()` 对一个**显式排除**的非 Amazon 渠道
+    原先也说「新开的店请补进 STORE_SID」—— 按那条建议去做，就会把 Walmart /
+    Chewy 的单记成某个 Amazon 店的销量，正是这张表存在的理由的反面。
+
+    三种成因的文案必须分得开：显式排除 / OQ-3 已登记的缺口 / 真的没人声明过。
+    """
+    with pytest.raises(m.UnknownStore, match="显式排除") as excluded:
+        m.sid_for_or_raise("PETSFIT_NORTH_AMERICA", "Non-Amazon US")
+    assert "不许为它补一行" in str(excluded.value), (
+        f"给排除渠道的建议里没有明确的「不许补」：{excluded.value}")
+    assert "新开的店" not in str(excluded.value), (
+        f"给排除渠道的建议还是「新开的店请补进 STORE_SID」：{excluded.value}")
+
+    with pytest.raises(m.UnknownStore, match="OQ-3"):
+        m.sid_for_or_raise("A4PET_EUROPE", "Amazon.fr")
+
+    with pytest.raises(m.UnknownStore, match="新开的店"):
+        m.sid_for_or_raise("BRAND_NEW_STORE", "Amazon.com")
