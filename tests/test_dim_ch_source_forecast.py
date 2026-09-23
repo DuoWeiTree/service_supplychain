@@ -21,6 +21,19 @@ Fix round 2（团队负责人裁定 2026-09-23）：
 · `[forecast]` 的 `snapshot_lookback_days`/`snapshot_settle_minutes` 之前
   声明了没人读，现在真的接进 `ChSource.__init__`（`lookback_days`/
   `settle_minutes`），下面补「改了会变」的测试。
+
+Task 3（`purchase_in_transit`，controller 裁定 09-23，design §4.4 / §8 OQ-5 OQ-6）：
+· ★★ 必须按采购单 `status` 过滤，不能只靠 `quantity_real > quantity_receive`——
+  E-12 实测 `status=9（已完成）` 的行项 `quantity_receive` 全为 0，只按算术
+  会多出真实开口量的 3.7 倍。
+· `expect_arrive_time` 为 NULL 的行（E-14）：丢弃 + 计数，不许落进 `else ''`
+  再被下游过滤掉。
+· `purchase_as_of` 用采购表自己的 `max(_captured_date)`（覆盖型表，没有历史
+  快照，E-14 实测比 fba_detail 晚一天）——陈旧阈值（OQ-5）与 fba_detail 的
+  `as_of()` 比较年龄，超过 `purchase_staleness_days` 就 `PurchaseTableStale`，
+  不许把陈旧数据读成「在途为 0」。
+· `is_overdue`（OQ-6）是纯函数：`period` 早于 `as_of` 所在月即逾期——不重新
+  定日期，归桶留给装配层（Task 5）。
 """
 from __future__ import annotations
 
@@ -356,3 +369,178 @@ def test_onhand_cache_rebuilds_when_as_of_moves_to_a_new_day():
     calls.clear()
     assert src.onhand_available("X", "11072") == 2
     assert sum("afn_fulfillable_quantity" in c for c in calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# Task 3: purchase_in_transit —— 按采购单状态过滤，不按数量算术（design §4.4）
+# ---------------------------------------------------------------------------
+
+#: ★ 实测形状（design §1.3 E-12/E-13/E-14）：
+#:   · status=9（已完成）的行项 quantity_receive **全为 0** —— 966 行 / 104,479 件。
+#:     只按 `quantity_real - quantity_receive > 0` 取在途，会多出真实开口量的 3.7 倍。
+#:     SQL 端已经按 `o.st = 2` 过滤掉这批，所以下面的假行只出现「待到货」形态的数据。
+#:   · expect_arrive_time 有 1 行为 NULL（50 件）。
+PURCHASE_ROWS = [
+    ("DVCD105013L1", "2026-10", 600, "PO260514011"),
+    ("DVCD105013L1", "2026-11", 240, "PO260514011"),
+    ("DVCD105013AL", "2026-10", 500, "PO260721011"),
+    ("NO-ETA-SKU", None, 50, "PO260514011"),      # ← expect_arrive_time 为 NULL
+]
+
+
+def purchase_query(captured=dt.date(2026, 9, 22), fba_days=None, rows=None,
+                    fail_as_of=None, fail_in_transit=None):
+    """★ 与 onhand_query 同一个思路：按 SQL 的关键字分发，不真连 CH。
+
+    `_captured_date >=` 命中 fba_detail 的候选日 SQL（`as_of()` 用它做陈旧比较
+    的参照基准）；`max(_captured_date)` + `purchase_order_list_items` 命中
+    `purchase_as_of()`；`quantity_receive` 命中 `purchase_in_transit` 的批量取数。
+    """
+    def q(sql: str):
+        if "_captured_date >=" in sql:
+            return fba_days if fba_days is not None else [day(23), day(22)]
+        if "max(_captured_date)" in sql and "purchase_order_list_items" in sql:
+            if fail_as_of is not None:
+                raise fail_as_of
+            return [(captured,)]
+        if "quantity_receive" in sql:
+            if fail_in_transit is not None:
+                raise fail_in_transit
+            return rows if rows is not None else PURCHASE_ROWS
+        raise AssertionError(f"没预料到的 SQL：{sql[:80]}")
+    return q
+
+
+def test_missing_eta_is_dropped_loudly_not_silently():
+    """★ 认不出的形态不许落进 else '' 再被下游过滤掉 —— 丢了必须数得出来。"""
+    by_sku, dropped = cs.parse_in_transit(PURCHASE_ROWS)
+    assert "NO-ETA-SKU" not in by_sku
+    assert dropped == {"missing_eta_rows": 1, "missing_eta_units": 50}
+
+
+def test_in_transit_rows_keep_their_order_number():
+    by_sku, _ = cs.parse_in_transit(PURCHASE_ROWS)
+    assert by_sku["DVCD105013L1"] == [
+        cs.InTransit("2026-10", 600, "PO260514011"),
+        cs.InTransit("2026-11", 240, "PO260514011"),
+    ]
+
+
+def test_sql_filters_on_order_status_not_on_quantity_arithmetic():
+    """★ 这条守的是 E-12 那个坑：已完成单的 quantity_receive 全是 0。
+    光靠 `real > receive` 会把 104,479 件已到货的货算成在途。"""
+    sql = " ".join(cs.SQL_PURCHASE_IN_TRANSIT.split())
+    assert "argMax(status" in sql, "必须按采购单当前状态判，不是按行项算术"
+    assert "o.st = 2" in sql, "只有「待到货」算在途"
+    assert "is_delete" in sql
+
+
+def test_unknown_sku_returns_empty_list_not_none():
+    src = cs.ChSource(purchase_query())
+    assert src.purchase_in_transit("NOT-A-SKU") == []
+    assert src.purchase_as_of() == dt.date(2026, 9, 22)
+
+
+def test_in_transit_reads_the_batch_once_for_many_skus():
+    """★ 同 onhand_available 的批量道理：grid 逐货号调用，不能每次都打一次 CH。"""
+    calls = []
+    base = purchase_query()
+
+    def q(sql):
+        calls.append(sql)
+        return base(sql)
+
+    src = cs.ChSource(q)
+    for sku in ("DVCD105013L1", "DVCD105013AL", "NOT-A-SKU"):
+        src.purchase_in_transit(sku)
+    assert sum("quantity_receive" in c for c in calls) == 1
+
+
+def test_purchase_as_of_empty_result_is_unknown_shape_not_silent():
+    """★ 一个采集日都没有 —— 空不是「没有在途」，是采集缺口。"""
+    def q(sql):
+        if "_captured_date >=" in sql:
+            return [day(23), day(22)]
+        if "max(_captured_date)" in sql and "purchase_order_list_items" in sql:
+            return [(None,)]
+        raise AssertionError(f"没预料到的 SQL：{sql[:80]}")
+
+    src = cs.ChSource(q)
+    with pytest.raises(cs.UnknownShape, match="purchase_order_list_items"):
+        src.purchase_as_of()
+
+
+def test_purchase_as_of_query_failure_becomes_ch_unavailable():
+    """★ 同 as_of()/onhand_available 的模式 —— 查询失败必须分类后抛
+    ChUnavailable，不许让原始 driver 异常漏出去。"""
+    exc = ConnectionRefusedError(111, "Connection refused")
+    src = cs.ChSource(purchase_query(fail_as_of=exc), classify_failure=describe_failure)
+    with pytest.raises(cs.ChUnavailable) as e:
+        src.purchase_as_of()
+    assert e.value.cause["kind"] == "connect_refused"
+    assert e.value.target == cs.PURCHASE_ITEMS_TABLE
+
+
+def test_in_transit_query_failure_becomes_ch_unavailable():
+    """★ `purchase_as_of()` 成功之后，批量取数本身仍可能在两次往返之间掉线。"""
+    exc = ConnectionRefusedError(111, "Connection refused")
+    src = cs.ChSource(purchase_query(fail_in_transit=exc), classify_failure=describe_failure)
+    with pytest.raises(cs.ChUnavailable) as e:
+        src.purchase_in_transit("ANY-SKU")
+    assert e.value.cause["kind"] == "connect_refused"
+    assert e.value.target == cs.PURCHASE_ITEMS_TABLE
+
+
+def test_stats_reports_in_transit_dropped_from_the_last_batch():
+    """★ Task 2 的教训：计数器不写测试就是装饰——这条证明真的写进了 stats()。"""
+    src = cs.ChSource(purchase_query())
+    src.purchase_in_transit("DVCD105013L1")
+    assert src.stats()["in_transit"] == {"missing_eta_rows": 1, "missing_eta_units": 50}
+
+
+def test_purchase_table_stale_raises_instead_of_reading_as_zero():
+    """★ OQ-5：采购表比 fba_detail 快照日老太多 —— 必须报「未知」，不能悄悄当 0。
+    fba as_of=2026-09-23（day(23) 结算），采购 captured=2026-09-18，age_days=5，
+    超过默认阈值 3。"""
+    src = cs.ChSource(purchase_query(captured=dt.date(2026, 9, 18)))
+    with pytest.raises(cs.PurchaseTableStale) as e:
+        src.purchase_as_of()
+    assert e.value.captured == dt.date(2026, 9, 18)
+    assert e.value.age_days == 5
+    assert e.value.threshold_days == 3
+
+
+def test_purchase_table_within_threshold_is_not_stale():
+    """★ 边界：age_days 恰好等于阈值（3）不算陈旧 —— E-14 实测本来就常态晚 1 天，
+    3 天是「漏采一天仍可用」的余量，不是「漏采一天就报警」。"""
+    src = cs.ChSource(purchase_query(captured=dt.date(2026, 9, 20)))
+    assert src.purchase_as_of() == dt.date(2026, 9, 20)
+
+
+def test_purchase_staleness_days_is_wired_into_the_check():
+    """★ `[forecast].purchase_staleness_days` 之前不存在——这里证明它是真的
+    构造参数、真的改变判定，不是一个不生效的旋钮（同 lookback_days 那条测试
+    的教训）。captured=2026-09-21，age_days=2：默认阈值 3 不会报，阈值收紧到
+    1 就必须报。"""
+    src = cs.ChSource(purchase_query(captured=dt.date(2026, 9, 21)),
+                       purchase_staleness_days=1)
+    with pytest.raises(cs.PurchaseTableStale) as e:
+        src.purchase_as_of()
+    assert e.value.age_days == 2
+    assert e.value.threshold_days == 1
+
+
+def test_is_overdue_true_for_a_past_month():
+    assert cs.is_overdue("2026-06", dt.date(2026, 9, 23)) is True
+
+
+def test_is_overdue_false_for_the_current_month():
+    assert cs.is_overdue("2026-09", dt.date(2026, 9, 23)) is False
+
+
+def test_is_overdue_false_for_a_future_month():
+    assert cs.is_overdue("2026-10", dt.date(2026, 9, 23)) is False
+
+
+def test_is_overdue_false_for_a_future_year():
+    assert cs.is_overdue("2027-01", dt.date(2026, 9, 23)) is False

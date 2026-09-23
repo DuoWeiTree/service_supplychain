@@ -159,3 +159,94 @@ def test_onhand_available_runs_on_real_clickhouse_and_matches_a_hand_written_sum
     assert hand and hand[0][0] == want, (
         f"独立手写 SQL 对 (sid={sid}, seller_sku={seller_sku}) 算出 {hand}，"
         f"与 onhand_available 的 {want} 对不上——两条路径本该读同一批快照")
+
+
+#: ---------------------------------------------------------------------------
+#: Task 3（purchase_in_transit，design §4.4 / §8 OQ-5）：`SQL_PURCHASE_AS_OF`/
+#: `SQL_PURCHASE_IN_TRANSIT` 是新 SQL，且 `WITH o AS (...)` 里的 `argMax(status,
+#: _captured_date)` 与主查询的 `INNER JOIN` 同 `SQL_SELLER` 当年的坑一个形状——
+#: 结构性问题只有真的连一次 CH 才测得出来。★ Task 3 review 要求：live 覆盖是
+#: 必需项，不是可选项（Task 2 曾因为漏了这条被打回）。
+#: ---------------------------------------------------------------------------
+
+def test_purchase_as_of_sql_runs_on_real_clickhouse(live_query_raw):
+    """★ `SQL_PURCHASE_AS_OF` 真跑一次，拿到一个非空的候选日——采购表是覆盖型、
+    没有历史快照（docs/01:94），所以这里只断言「有值」，不断言具体日期。"""
+    rows = live_query_raw(cs.SQL_PURCHASE_AS_OF)
+    assert rows and rows[0][0] is not None, (
+        f"{cs.PURCHASE_ITEMS_TABLE} 真实 CH 上 max(_captured_date) 是空的——"
+        "采购表这批可能整个没采到")
+    assert isinstance(rows[0][0], dt.date)
+
+
+def test_purchase_in_transit_sql_runs_on_real_clickhouse_and_row_shape_is_sane(live_query_raw):
+    """★ 真跑一次 `SQL_PURCHASE_IN_TRANSIT`（不是回放），验证行宽与「按状态过滤
+    确实生效」——E-12 那个坑（`status=9` 已完成单 `quantity_receive` 全为 0）在
+    真实数据上仍然存在：手写一条**不带 `o.st = 2`** 的算术版本对比，真实开口量
+    必须明显小于裸算术版本，否则说明 `o.st = 2` 这个过滤条件已经在真实 SQL 里
+    失效了（这条断言就是「必须按状态过滤」这条判据本身在真实数据上的证据）。
+    """
+    src = cs.ChSource(live_query_raw, classify_failure=describe_failure)
+    purchase_as_of = src.purchase_as_of()
+    sql = cs.SQL_PURCHASE_IN_TRANSIT.format(purchase_as_of=purchase_as_of.isoformat())
+    rows = live_query_raw(sql)
+    assert rows, (
+        f"{cs.PURCHASE_ITEMS_TABLE} 在 purchase_as_of={purchase_as_of} 真实 CH 上"
+        "一行开口在途都没取到——下面的断言就是空转的")
+    assert all(len(r) == 4 for r in rows), (
+        f"SQL_PURCHASE_IN_TRANSIT 的行宽应为 4（sku, period, units, ref）："
+        f"real row={rows[:1]}")
+    true_total = sum(int(r[2]) for r in rows)
+
+    naive_sql = f"""
+        SELECT toInt64(sum(i.quantity_real - i.quantity_receive)) AS units
+          FROM {cs.PURCHASE_ITEMS_TABLE} AS i
+         WHERE i._captured_date = toDate('{purchase_as_of.isoformat()}')
+           AND ifNull(i.is_delete, 0) = 0
+           AND i.quantity_real > i.quantity_receive
+    """
+    naive_total = live_query_raw(naive_sql)[0][0]
+    assert naive_total > true_total, (
+        f"裸算术（不按 status 过滤）算出 {naive_total}，应当明显大于按 "
+        f"o.st=2 过滤后的真实开口量 {true_total}（E-12：已完成单 "
+        f"quantity_receive 全为 0）——如果两者相等，说明 status 过滤在真实 "
+        f"SQL 里已经不起作用了")
+
+
+def test_purchase_in_transit_matches_a_hand_written_sum(live_query_raw):
+    """★ 真值对账（同 onhand 那条的道理）：从真实批量结果里随手取一个货号，
+    分别用 `ChSource.purchase_in_transit` 与独立手写 SQL 各查一次，断言两者
+    的合计相等——不硬编码某个具体货号，避免该货号未来到货/单据关闭后变成一条
+    莫名其妙红掉的测试。"""
+    src = cs.ChSource(live_query_raw, classify_failure=describe_failure)
+    purchase_as_of = src.purchase_as_of()
+    rows = live_query_raw(cs.SQL_PURCHASE_IN_TRANSIT.format(
+        purchase_as_of=purchase_as_of.isoformat()))
+    by_sku, _dropped = cs.parse_in_transit(rows)
+    assert by_sku, f"{cs.PURCHASE_ITEMS_TABLE} 在 purchase_as_of={purchase_as_of} 批量结果为空——对账无从做起"
+    sku = next(iter(by_sku))
+    want = sum(t.units for t in by_sku[sku])
+
+    got_rows = src.purchase_in_transit(sku)
+    got = sum(t.units for t in got_rows)
+    assert got == want, (
+        f"ChSource.purchase_in_transit({sku!r}) 合计={got} 与批量结果合计"
+        f"{want} 对不上——两条路径本该读同一批缓存")
+
+    hand = live_query_raw(f"""
+        WITH o AS (
+            SELECT order_sn, argMax(status, _captured_date) AS st
+              FROM {cs.PURCHASE_ORDER_TABLE}
+             GROUP BY order_sn
+        )
+        SELECT toInt64(sum(i.quantity_real - i.quantity_receive))
+          FROM {cs.PURCHASE_ITEMS_TABLE} AS i
+         INNER JOIN o ON o.order_sn = i.order_sn
+         WHERE i._captured_date = toDate('{purchase_as_of.isoformat()}')
+           AND o.st = 2 AND ifNull(i.is_delete, 0) = 0
+           AND i.quantity_real > i.quantity_receive
+           AND i.sku = '{sku}'
+    """)
+    assert hand and hand[0][0] == want, (
+        f"独立手写 SQL 对 sku={sku} 算出 {hand}，与批量结果合计 {want} 对不上"
+        "——两条路径本该读同一批快照")

@@ -79,6 +79,7 @@ _FORECAST_DEFAULTS = {
     "drop_threshold": 0.30,
     "min_rows": 7934,
     "min_distinct_sid": 21,
+    "purchase_staleness_days": 3,
 }
 
 

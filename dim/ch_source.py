@@ -1,10 +1,11 @@
-"""真 CH 取数。★ 预测取数（`as_of` / `onhand_available`）已在 2026-09-23 ChSource 设计里接真 CH——
+"""真 CH 取数。★ 预测取数（`as_of` / `onhand_available` / `purchase_in_transit`）已在
+2026-09-23 ChSource 设计里接真 CH——
 
-其余两个方法（`monthly_sales_history` / `purchase_in_transit`）仍刻意抛
-`NotImplementedError`，不给空实现：空实现会让「该做没做」和「本来就不用做」
-长得一模一样（01 规则五）。取数口径在 `docs/superpowers/specs/2026-09-23-chsource-design.md`
-与 CLAUDE.md「取数的四条铁律」里；`ChSource` 类的完整定义在本文件末尾「预测取数」段
-（与下面的镜像刷新取数层是两件事，见该段落开头的说明）。
+只剩 `monthly_sales_history` 仍刻意抛 `NotImplementedError`，不给空实现：空实现会让
+「该做没做」和「本来就不用做」长得一模一样（01 规则五）。取数口径在
+`docs/superpowers/specs/2026-09-23-chsource-design.md` 与 CLAUDE.md「取数的四条铁律」里；
+`ChSource` 类的完整定义在本文件末尾「预测取数」段（与下面的镜像刷新取数层是两件事，
+见该段落开头的说明）。
 """
 from __future__ import annotations
 
@@ -295,9 +296,8 @@ SELECT _captured_date, count() AS rows, uniq(sid) AS uniq_sid,
 SETTLE_MINUTES = 30
 LOOKBACK_DAYS = 7
 
-#: ★ 其余两个方法（`monthly_sales_history` / `purchase_in_transit`）仍未实现，
-#:   留给后续任务（Task 3~4）——与文件顶部旧占位类的道理一样：空实现要能被
-#:   认出来，不许悄悄返回假数据。
+#: ★ `monthly_sales_history` 仍未实现，留给后续任务（Task 4）——与文件顶部旧占位类
+#:   的道理一样：空实现要能被认出来，不许悄悄返回假数据。
 _STUB_MSG = ("CH 取数属后续阶段任务：请按 docs/superpowers/specs/2026-09-23-chsource-design.md"
              " §4 实现（商品目录 LEFT JOIN 快照、msku→货号按 as_of argMax 但 sid 不参与、"
              "日报先按 _captured_date 去重并比对覆盖面）")
@@ -357,6 +357,93 @@ def parse_onhand(rows: list[tuple]) -> tuple[dict[tuple[str, str], int], dict]:
             dropped["rows_collapsed"] = dropped.get("rows_collapsed", 0) + 1
         out[key] = out.get(key, 0) + units
     return out, dropped
+
+
+# ---------------------------------------------------------------------------
+# purchase_in_transit（design §4.4，controller 裁定 09-23，OQ-5/OQ-6）
+# ★ 采购表是覆盖型、没有历史快照（docs/01-架构设计.md:94「CH 的三种病」②），
+#   且实测比 fba_detail 晚一天（2026-09-22 vs 09-23，E-14）。所以它用自己的
+#   `max(_captured_date)` 作快照日：强行对齐 fba_detail 的 as_of 会在采购表
+#   没采完的那天返回空，而「空」与「真的没有在途」长得一模一样。
+# ---------------------------------------------------------------------------
+
+#: ★ ChUnavailable 的 target 与两条 SQL 的 FROM 共用同一个字面量——写两遍会
+#:   有一天悄悄对不上（同 FBA_DETAIL_TABLE 那条理由）。
+PURCHASE_ITEMS_TABLE = "jxd_raw.lingxing_purchase_order_list_items"
+PURCHASE_ORDER_TABLE = "jxd_raw.lingxing_purchase_order_list"
+
+SQL_PURCHASE_AS_OF = f"""
+SELECT max(_captured_date) FROM {PURCHASE_ITEMS_TABLE}
+"""
+
+#: ★★ 必须按采购单 `status` 过滤，不能只靠 `quantity_real > quantity_receive`。
+#:    实测（design §1.3 E-12）：status=9（已完成）的 966 行 / 104,479 件，行项
+#:    `quantity_receive` **全为 0** —— 只按算术会把这批已到货的货报成在途，
+#:    是真实开口量 28,561 件的 3.7 倍。status=-1（已作废）468 行 / 39,375 件
+#:    同样显式排除，不依赖「它恰好净为 0」。
+#: ★ `expect_arrive_time` 为 NULL 的行（E-14，1 行 / 50 件）不在 SQL 里过滤掉——
+#:   过滤会让它悄悄消失，必须留给 `parse_in_transit` 数出来再丢弃（判据五）。
+SQL_PURCHASE_IN_TRANSIT = f"""
+WITH o AS (
+    SELECT order_sn, argMax(status, _captured_date) AS st
+      FROM {PURCHASE_ORDER_TABLE}
+     GROUP BY order_sn
+)
+SELECT i.sku                                                  AS sku,
+       if(i.expect_arrive_time IS NULL, NULL,
+          formatDateTime(i.expect_arrive_time, '%Y-%m'))      AS period,
+       toInt64(sum(i.quantity_real - i.quantity_receive))     AS units,
+       i.order_sn                                             AS ref
+  FROM {PURCHASE_ITEMS_TABLE} AS i
+ INNER JOIN o ON o.order_sn = i.order_sn
+ WHERE i._captured_date = toDate('{{purchase_as_of}}')
+   AND o.st = 2
+   AND ifNull(i.is_delete, 0) = 0
+   AND i.quantity_real > i.quantity_receive
+ GROUP BY sku, period, ref
+ ORDER BY sku, period, ref
+"""
+
+
+def parse_in_transit(rows: list[tuple]) -> tuple[dict[str, list[InTransit]], dict[str, int]]:
+    """纯变换：CH 行 → `sku -> [InTransit]` + 丢弃计数。
+
+    ★ `period` 为 NULL 的行（`expect_arrive_time` 缺失，E-14）不许落进
+    `else ''` 再被下游过滤掉——丢弃必须点名行数与件数（判据五）。
+    """
+    out: dict[str, list[InTransit]] = {}
+    dropped: dict[str, int] = {}
+    for sku, period, units, ref in rows:
+        units = int(units)
+        if not period:
+            dropped["missing_eta_rows"] = dropped.get("missing_eta_rows", 0) + 1
+            dropped["missing_eta_units"] = dropped.get("missing_eta_units", 0) + units
+            continue
+        out.setdefault(sku, []).append(InTransit(period, units, ref))
+    return out, dropped
+
+
+class PurchaseTableStale(Exception):
+    """采购表陈旧阈值被突破（OQ-5）。★ 拿不到新鲜数据时必须让调用方读成「未知」，
+    绝不能悄悄当「在途为 0」或返回上一轮缓存的数字——同 ChDataUnusable 一个理由。
+    由 Task 5 翻成 503。"""
+
+    def __init__(self, captured: dt.date, age_days: int, threshold_days: int) -> None:
+        self.captured, self.age_days, self.threshold_days = captured, age_days, threshold_days
+        super().__init__(
+            f"purchase_table_stale captured={captured} age_days={age_days} "
+            f"threshold_days={threshold_days}")
+
+
+def is_overdue(period: str, as_of: dt.date) -> bool:
+    """纯函数（OQ-6）：`period`（`YYYY-MM`）早于 `as_of` 所在月即逾期。
+
+    ★ 不重新定日期——猜一个新日期就是发明数据。归桶标记只在装配层
+    （`api/ui/plans.py`，Task 5）现算，`InTransit` 本身不加字段。
+    """
+    year_s, month_s = period.split("-")
+    year, month = int(year_s), int(month_s)
+    return (year, month) < (as_of.year, as_of.month)
 
 
 class ChUnavailable(Exception):
@@ -473,6 +560,7 @@ class ChSource:
                  drop_threshold: float = 0.30, cache_ttl_s: int = 300,
                  min_rows: int = 7934, min_distinct_sid: int = 21,
                  lookback_days: int = LOOKBACK_DAYS, settle_minutes: int = SETTLE_MINUTES,
+                 purchase_staleness_days: int = 3,
                  classify_failure: Callable[[BaseException], dict] = _unclassified_failure
                  ) -> None:
         self._q = query
@@ -483,12 +571,20 @@ class ChSource:
         self._min_distinct_sid = min_distinct_sid
         self._lookback_days = lookback_days
         self._settle_minutes = settle_minutes
+        #: ★ `[forecast].purchase_staleness_days`（OQ-5）——年龄单位是天，与
+        #:   `ChSource.as_of()`（fba_detail 快照日）比较，不是与本机 wall clock 比。
+        self._purchase_staleness_days = purchase_staleness_days
         self._classify = classify_failure
         self._as_of: tuple[dt.datetime, dt.date] | None = None
         #: ★ 缓存键是解析出来的快照日，不是 TTL——同一 `_captured_date` 的快照
         #:   不可变（E-1/E-3：一天写一次、60 秒写完），日期一变整份丢弃重建
         #:   （不合并，记忆 `defaults-preserve-staleness`）。
         self._onhand_cache: tuple[dt.date, dict[tuple[str, str], int]] | None = None
+        #: ★ 采购表是覆盖型、没有历史快照（docs/01:94）——一旦解析出
+        #:   `purchase_as_of()` 就不会再变（同一批快照的生命周期内不可变，
+        #:   同 `_onhand_cache` 一个理由，只是没有第二个候选日可切换）。
+        self._purchase_as_of: dt.date | None = None
+        self._transit_cache: tuple[dt.date, dict[str, list[InTransit]]] | None = None
         #: ★ 最近一批取数的丢弃计数，供上层写进日志与响应（`source_notes.dropped`）。
         self._stats: dict = {}
 
@@ -566,5 +662,75 @@ class ChSource:
         """最近一次批量取数的丢弃计数，供上层写进日志与响应（`source_notes.dropped`）。"""
         return dict(self._stats)
 
+    def purchase_as_of(self) -> dt.date:
+        """采购表自己的 `max(_captured_date)`（覆盖型表，没有历史快照，E-14
+        实测比 fba_detail 晚一天）。★ 陈旧阈值（OQ-5）：与 `as_of()`（fba_detail
+        快照日）比较年龄，超过 `purchase_staleness_days` 就 `PurchaseTableStale`，
+        不许把陈旧数据读成「在途为 0」或悄悄返回上一轮缓存的数字。"""
+        if self._purchase_as_of is not None:
+            return self._purchase_as_of
+        t0 = time.perf_counter()
+        try:
+            rows = self._q(SQL_PURCHASE_AS_OF)
+        except Exception as e:
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            cause = self._classify(e)
+            log.warning("op=ch_purchase_as_of outcome=fail target=%s elapsed_ms=%d cause=%s",
+                       PURCHASE_ITEMS_TABLE, elapsed_ms, cause)
+            raise ChUnavailable(target=PURCHASE_ITEMS_TABLE, cause=cause) from e
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        if not rows or rows[0][0] is None:
+            raise UnknownShape(
+                f"{PURCHASE_ITEMS_TABLE} 一个采集日都没有 —— "
+                "把采集缺口读成「没有在途」会让计划看起来不缺货")
+        captured = rows[0][0]
+        # ★ 陈旧比较的参照基准是 fba_detail 的快照日（`as_of()`），不是本机
+        #   wall clock——两张表都是「采集副本」，比较它们各自的 CH 时点才有意义。
+        reference = self.as_of()
+        age_days = (reference - captured).days
+        if age_days > self._purchase_staleness_days:
+            log.warning("op=ch_purchase_as_of outcome=stale captured=%s age_days=%d "
+                        "threshold_days=%d elapsed_ms=%d",
+                        captured, age_days, self._purchase_staleness_days, elapsed_ms)
+            raise PurchaseTableStale(captured, age_days, self._purchase_staleness_days)
+        log.info("op=ch_purchase_as_of outcome=ok captured=%s age_days=%d elapsed_ms=%d",
+                 captured, age_days, elapsed_ms)
+        self._purchase_as_of = captured
+        return self._purchase_as_of
+
+    def _in_transit(self) -> dict[str, list[InTransit]]:
+        """按 `purchase_as_of()` 的快照日批量取一次并缓存（同 `_onhand()` 的
+        批量道理：grid 逐货号调用，不能每次都打一次 CH）。★ 查询失败必须
+        分类后抛 `ChUnavailable`——`purchase_as_of()` 成功之后，批量取数
+        本身仍可能在两次往返之间掉线。"""
+        purchase_as_of = self.purchase_as_of()
+        if self._transit_cache is not None and self._transit_cache[0] == purchase_as_of:
+            return self._transit_cache[1]
+        sql = SQL_PURCHASE_IN_TRANSIT.format(purchase_as_of=purchase_as_of.isoformat())
+        t0 = time.perf_counter()
+        try:
+            rows = self._q(sql)
+        except Exception as e:
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            cause = self._classify(e)
+            log.warning("op=ch_in_transit outcome=fail target=%s purchase_as_of=%s "
+                       "elapsed_ms=%d cause=%s",
+                       PURCHASE_ITEMS_TABLE, purchase_as_of, elapsed_ms, cause)
+            raise ChUnavailable(target=PURCHASE_ITEMS_TABLE, cause=cause) from e
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        by_sku, dropped = parse_in_transit(rows)
+        total = sum(t.units for v in by_sku.values() for t in v)
+        # ★ E-13 实测开口在途 28,561 件里 2026-10 只有 345 件、之后为 0 —— 计划
+        #   窗口内几乎一件都不落。这是数据的形状，不是「没取到」，总量要打出来。
+        log.info("op=ch_in_transit outcome=ok purchase_as_of=%s skus=%d units=%d "
+                 "dropped=%s elapsed_ms=%d",
+                 purchase_as_of, len(by_sku), total, dropped, elapsed_ms)
+        if dropped:
+            log.warning("op=ch_in_transit outcome=partial dropped=%s —— "
+                        "这些行没有预计到货日，已丢弃", dropped)
+        self._transit_cache = (purchase_as_of, by_sku)
+        self._stats["in_transit"] = dropped
+        return by_sku
+
     def purchase_in_transit(self, sku: str) -> list[InTransit]:
-        raise NotImplementedError(_STUB_MSG)
+        return list(self._in_transit().get(sku, ()))

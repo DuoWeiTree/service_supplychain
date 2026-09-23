@@ -74,3 +74,8 @@ drop_threshold = 0.30
 #   取区间下限；业务量级变了要重新实测，不是拍脑袋改数字。
 min_rows         = 7934
 min_distinct_sid = 21
+
+# 采购单快照的陈旧阈值：超过这么多天没有新采集日，整批在途视为「未知」而不是 0。
+# ★ 实测两表（purchase_order_list / _items）比 fba_detail 晚 1 天是常态；3 天留出
+#   「漏采一天仍可用、漏采两天就该报警」的余量（design §8 OQ-5）。
+purchase_staleness_days = 3
