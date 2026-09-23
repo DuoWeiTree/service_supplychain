@@ -75,6 +75,32 @@ def test_readiness_says_erp_is_not_implemented(client, seed):
     assert len(body["mirrors"]) == 4
 
 
+def test_readiness_with_an_unreachable_pg_is_503_with_a_named_cause(client, seed, monkeypatch):
+    """★ 复审残留 ①：PG 连不上时 `/v1/readiness` 给的是**裸 500**（纯文本
+    `Internal Server Error`，不是 S-29 形状、也不是 503）—— 而这恰恰是要用来查
+    「为什么起不来」的那个口子（OQ-8 的原话）。
+
+    成因：`_pg_error` 把「认不出的约束」与「压根连不上」当成同一种放行。
+    后者正是 I-3 为运维端点判定该给 503 的那一类 —— 同一把尺子要量到底。
+
+    ★ 用死端口让 psycopg2 真的去连、真的被拒（loopback），不 monkeypatch 一个
+      假异常：`.pgcode` 是 C 扩展 populate 的，手搓的假货判据对不齐。
+    """
+    from shared import pg_client
+    dead = {**pg_client.business_pg(), "host": "127.0.0.1", "port": 5499}
+    monkeypatch.setattr(pg_client, "business_pg", lambda: dead)
+
+    assert client.get("/health").status_code == 200, "PG 连不上也不许拖垮 /health"
+
+    r = client.get("/v1/readiness", headers={"x-actor": seed.actor})
+    assert r.status_code == 503, f"上游连不上必须是 503，实际 {r.status_code}：{r.text}"
+    body = r.json()
+    assert body["error"] == "database_unavailable", body
+    assert "hint" in body, f"S-29 形状缺 hint：{body}"
+    assert body.get("err_type") == "OperationalError", f"没点名异常类名：{body}"
+    assert "5499" in str(body.get("target")), f"没点名打的谁：{body}"
+
+
 def test_unknown_path_is_404_reshaped(client):
     """★ S-30：框架自己抛的 404 也要走 S-29 的 {error, hint, …} 形状，
     不是 FastAPI 默认的 {"detail": "Not Found"}。"""

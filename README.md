@@ -20,6 +20,24 @@
 `scm.*` 会落进 `logging.lastResort` 被按 WARNING 丢掉 —— 耗时、启动检查、
 写入结果三类日志一条都不会出现。
 
+    uv run python -m jobs.probe_ch              # 探源表列名（只读，需内网）
+    uv run python -m jobs.refresh_dims          # 手动刷一轮四张维度镜像
+    uv run python -m jobs.refresh_dims --only warehouse
+
+镜像刷新平时由进程内的 APScheduler 每日跑一次（`[freshness] refresh_at`，默认
+06:30 Asia/Shanghai，落在 CH 采集窗口之后）。三个入口——调度、上面那条 CLI、
+`POST /v1/jobs/refresh-dims`——共用一把 PG advisory lock，第二个来的会拿到
+409 / 退出码 3，不排队也不假装成功。
+
+刷新失败或掉档超 `coverage_drop_threshold` 时**整批拒绝**、旧镜像原封不动，
+`dim_refresh_run` 里会有一行 `ok=false` 说明是哪一步、丢了多少行、为什么丢。
+
+启动只做记录 + 触发：`[freshness] startup_gate = true` 时，若有维度镜像仍陈旧，
+启动检查会记一条日志并触发一次立即刷新，**不会**阻断进程启动——`/health` 与
+`/v1/readiness` 永远可达（OQ-8 裁定 09-22）。`startup_gate = false` 时只记录，
+不触发刷新。不管哪种配置，业务端点的拒绝服务都只发生在按请求判的
+`require_fresh_mirrors`（`docs/03` §7.1 E-4）。
+
 ## 测试
 
     uv run pytest -q                       # 全部（需要能连到 PG 192.168.66.210）
@@ -33,10 +51,17 @@
     JXD_SCM_CONFIG=/nonexistent uv run pytest -q \
         tests/test_layering.py tests/test_forecast_estimate.py \
         tests/test_forecast_projection.py tests/test_rules_submit.py \
-        tests/test_dim_fixture.py
+        tests/test_dim_fixture.py tests/test_mirror_registry.py \
+        tests/test_dim_ch_source.py tests/test_ch_client.py
 
 `models` / `forecast` / `rules` / `dim` 这几层只喂 fixture 就能跑通，配置文件
 指向一个不存在的路径也不影响——这条命令就是这件事的证明，不是口号。
+
+★ 上面列的每个文件都**不许**有要连库的断言。镜像登记表的门禁 (b)（「登记了
+就得有真表、真视图、真 fetch」）要连 PG，所以它单独放在
+`tests/test_mirror_registry_pg.py`，不在这条命令里——拆文件而不是在命令后面
+挂 `-k "not ..."`，是因为 `-k` 是一句会被人抄漏的话，抄漏之后命令照样「能跑」，
+只是又开始连库；文件边界抄不漏。
 
 ### 前端 mock 用的 fixture
 

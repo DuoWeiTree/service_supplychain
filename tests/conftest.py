@@ -3,6 +3,7 @@
 ★ 测试 schema 是 scm_test。禁止 scm（本服务生产）与 inv（同库另一个在跑的系统）——
   往它们任何一个里写一行都是事故，而这类事故没有任何回声。
 """
+import logging
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ FORBIDDEN_SCHEMAS = {"scm", "inv"}
 #: 每个测试之间要清空的表。★ plan_line_transition 不在其中 ——
 #: 它是白名单（迁移灌的数据），清掉它状态机就没了。
 DATA_TABLES = (
+    "dim_refresh_run",
     "plan_line_event", "plan_submit_skip", "plan_line", "plan_rev",
     "plan_demand_cell", "plan_purchase_cell", "msku_claim", "plan",
     "msku_bridge", "sku_catalog", "warehouse", "seller", "actor",
@@ -45,12 +47,55 @@ def _switch_schema(text: str) -> str:
     return "".join(out)
 
 
+#: ★ 两个键都要在测试里默认关掉——都会让 `create_app()` 在 `_lifespan` 里碰
+#: 外部系统：`scheduler_enabled` 起一个真 APScheduler（task-6-brief Step 7），
+#: `startup_gate` 在镜像陈旧时抢 advisory lock、触发一次真刷新去打真 CH
+#: （task-7 fix round 1 —— 没有这一条，任何一个带 `with TestClient(...)` 对着
+#: 空表/陈旧镜像跑 lifespan 的测试都会在默认值下真的去连 ClickHouse）。
+_FRESHNESS_TEST_PINS = ("scheduler_enabled", "startup_gate")
+
+
+def _disable_scheduler(text: str) -> str:
+    """★ 测试固定 `[freshness]` 里 `_FRESHNESS_TEST_PINS` 这几个键为 false ——
+    不这样，每个 `with TestClient(create_app())` 都会在 `_lifespan` 里碰外部
+    系统（起真调度器 / 抢锁打真 CH）。已有这一行就覆盖成 false，没有就在
+    `[freshness]` 段尾追加一行 —— 两种情况 `config.toml` 都可能出现
+    （新增键 vs 老配置未跟上）。
+
+    ★ 只想验证「真的会触发一次刷新」的测试（tests/test_api_startup_check.py）
+    必须显式 `monkeypatch` 把 `startup_gate` 改回 true —— 默认值保护的是
+    其余全部测试，不是这几个专门测它的用例。
+    """
+    out, in_freshness, seen = [], False, set()
+    for line in text.splitlines(keepends=True):
+        s = line.strip()
+        if s.startswith("["):
+            if in_freshness:
+                for key in _FRESHNESS_TEST_PINS:
+                    if key not in seen:
+                        out.append(f"{key} = false\n")
+            in_freshness = s.startswith("[freshness]")
+            seen = set()
+        matched = next((k for k in _FRESHNESS_TEST_PINS if s.startswith(k)), None)
+        if in_freshness and matched:
+            out.append(f"{matched} = false\n")
+            seen.add(matched)
+            continue
+        out.append(line)
+    if in_freshness:
+        for key in _FRESHNESS_TEST_PINS:
+            if key not in seen:
+                out.append(f"{key} = false\n")
+    return "".join(out)
+
+
 @pytest.fixture(scope="session")
 def business_db(tmp_path_factory):
     from shared import config as config_module
 
     cfg = tmp_path_factory.mktemp("jxd_scm") / "config.toml"
-    cfg.write_text(_switch_schema(CONFIG_TOML.read_text("utf-8")), encoding="utf-8")
+    text = _disable_scheduler(_switch_schema(CONFIG_TOML.read_text("utf-8")))
+    cfg.write_text(text, encoding="utf-8")
     prev = os.environ.get("JXD_SCM_CONFIG")
     os.environ["JXD_SCM_CONFIG"] = str(cfg)
     config_module.reset_cache()
@@ -140,6 +185,30 @@ def seed(wipe):
             "INSERT INTO warehouse (wid, name, kind, market, refreshed_at)"
             " VALUES (%s, %s, %s, %s, now())", (ns.wid, "测试仓", "local", "US"))
     return ns
+
+
+@pytest.fixture
+def scm_log(caplog):
+    """★ 看得见 `scm.*` 日志的 caplog。
+
+    `shared/logging.py` 刻意把 `scm` 的 `propagate` 关掉（root 上挂着什么不归
+    我们管），而 pytest 的 caplog handler 装在 **root** 上 —— 于是裸用 caplog
+    断言 `scm.*` 的日志，抓到的是空字符串。`tests/test_logging.py:80` 已经
+    写明了这一点并用 `addHandler(caplog.handler)` 绕开，但
+    `tests/test_api_startup_check.py` 的几条没跟上：它们**只在别的测试先跑过
+    时才绿**（实测 `pytest tests/test_api_startup_check.py` 全绿，
+    单跑那一条 `caplog.text` 为 `''` 直接红）。
+
+    ★ 这正是本仓点名过的失败形态：断言被旁边的东西托住，看起来和真的守住了
+      一模一样。日志断言不该依赖自己跑在谁后面。
+    """
+    logger = logging.getLogger("scm")
+    logger.addHandler(caplog.handler)
+    caplog.handler.setLevel(logging.INFO)
+    try:
+        yield caplog
+    finally:
+        logger.removeHandler(caplog.handler)
 
 
 @pytest.fixture
