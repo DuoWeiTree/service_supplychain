@@ -150,3 +150,66 @@ def test_the_order_report_has_no_column_that_could_identify_a_sid():
         f"{cs.ORDERS_TABLE} 出现了可能定位到店的列：{hits}。"
         "dim/order_store_map.py 整张声明表的前提是「这张表里没有 sid」——"
         "前提没了就该重做映射，而不是让三条 NO_ORDER_REPORT_SID 豁免继续挂着")
+
+
+def test_the_exemption_list_can_still_expire():
+    """★★ 残留轮次（option 3）：**一张永远不会变红的白名单，就是把「静默少一批货」
+    重新请回来。** 上面那条门禁在豁免登记之后就变绿了，此后它对这三个 sid
+    永远不会再说话 —— 所以豁免本身也要能过期。
+
+    两条过期触发器，都从 CH 推导：
+
+    ① **这家店变得实质更大了**：豁免 sid 名下的 msku 数超过登记值 + 余量。
+       余量 = max(登记值 × 1.20, 登记值 + 5)。出处（2026-09-23 实测，
+       `lingxing_product_listing` 近 31 个采集日）：三个 sid 的 msku 数在整个
+       31 天里**一次都没变过**（145 / 0 / 34），观测到的真实 churn 是 0%。
+       所以 20% 是刻意留宽的 —— 它抓的是「该重新审这条豁免了」，不是日常抖动。
+       ★ 不压得更紧的理由：日采会**整店掉档**（实测 11098 有 4 天、11100 有
+       2 天整店 0 行，那是采集缺口的形状不是业务的形状）。30 天窗口取并集把
+       掉档盖住了，所以窗口聚合值稳定；但贴着实测值设阈值会让这条守卫对采集
+       侧的任何口径变化过度敏感，而一条会假红的守卫是一条会被人删掉的守卫。
+       ★ 绝对底 5 是给 11099（今天 0 个 msku）留的：纯相对余量会让它一有
+       listing 就红，而 1~2 个新 listing 更像上架试水，不是「这家店起来了」。
+
+    ② **出现了一个我们从没见过的账号族**：订单报表的 `store` 取值全集变大。
+       这是「豁免的 sid 开始在订单报表里出现」**唯一能被推导出来的信号** ——
+       那张表里没有 sid 列，直接判定做不到（而那正是它们成为豁免的原因）。
+       ★ 这是**代理信号**，不是直接判定：新 store 值也可能是某个已映射账号族
+       新开的区域。红了要做的是人工确认它属不属于那三家，然后把它记进
+       `ORDER_REPORT_STORES` —— 不是把这条守卫删掉。
+    """
+    q = _live_query()
+
+    # ① msku 数没有越过预算
+    bridge = cs.fetch_msku_bridge(q)
+    now = Counter(str(r[1]) for r in bridge.rows)
+    grown = [(sid, m.NO_ORDER_REPORT_SID_MSKUS[sid], now.get(sid, 0), m.growth_budget(sid))
+             for sid in sorted(m.NO_ORDER_REPORT_SID)
+             if now.get(sid, 0) > m.growth_budget(sid)]
+    assert not grown, (
+        f"这些豁免 sid 名下的 msku 数已经越过预算：{grown}"
+        f"（格式 (sid, 登记值, 现在, 预算)）。豁免是按「这家店在订单报表里一单都"
+        "没有、货也就那么点」登记的 —— 它变大了就该重新确认：是采集侧补上了它的"
+        "订单（那就该补 STORE_SID 并把它从 NO_ORDER_REPORT_SID 里删掉），还是它"
+        "真的只是上了更多 listing（那就更新登记值并重新记一次实测出处）。"
+        "★ 不许只把预算调大了事 —— 那就是把这张白名单改回「永远不会红」")
+
+    # ② 订单报表的 store 取值全集没有变大
+    stores = {s for s, in q("SELECT DISTINCT store FROM "
+                            f"{cs.ORDERS_TABLE} WHERE store != ''")}
+    assert stores, "订单报表一个 store 值都没有 —— 这条规则是空转的"
+    new_stores = sorted(stores - m.ORDER_REPORT_STORES)
+    assert not new_stores, (
+        f"订单报表出现了没见过的 store 值：{new_stores}（已登记的是 "
+        f"{sorted(m.ORDER_REPORT_STORES)}）。NO_ORDER_REPORT_SID 三条豁免成立的"
+        "前提正是「没有任何一个 store 值属于 UNITFREE / DWJ / A4Pet-JP」——"
+        "出现新账号族就必须人工确认它属不属于那三家：属于就补 STORE_SID 并删掉"
+        "对应豁免，不属于就把它记进 ORDER_REPORT_STORES。"
+        "★ 这是那三个 sid「开始出单」唯一推导得出来的信号（这张表没有 sid 列）")
+
+    # ★ 反面靶子：登记的 store 全集必须真的都还在，否则这条断言是在跟一个
+    #   只增不减的超集比 —— 那种比较永远不会红。
+    vanished = sorted(m.ORDER_REPORT_STORES - stores)
+    assert not vanished, (
+        f"登记的 store 值 {vanished} 在订单报表里已经不存在了 —— ORDER_REPORT_STORES "
+        "成了一个只增不减的超集，②那条断言会越来越难红。该重新实测一次全集")

@@ -199,10 +199,26 @@ export interface CatalogResult {
 }
 
 export interface ClaimTarget { seller_sku: string; sid: Sid }
-/** ★ 没有历史 ≠ 预估 0（`api/ui/plans.py:163-166`）：格子照建，`system_units` 留 null 并点名，
- *  不能让「拿不到历史」悄悄长得跟「预估出来是 0」一样。 */
-export type NoHistoryReason = 'no_sales_history';
-export interface NoHistoryEntry { seller_sku: string; sid: Sid; reason: NoHistoryReason }
+/** ★ 没有历史 ≠ 预估 0：格子照建，`system_units` 留 null 并点名，
+ *  不能让「拿不到历史」悄悄长得跟「预估出来是 0」一样。
+ *
+ *  ★ 两个值回答的是**两件不同的事**，不许合并：
+ *  - `no_sales_history` —— 查过了，这个 msku 一行销量都没有（新品）。
+ *  - `not_applicable_no_sales_source` —— **不适用**：这个店压根没有销量取数源，
+ *    这一格只能由人来填。成因在 `cause` 里（后端 `api/ui/plans.py`）。
+ *  「查过了没有」与「压根没得查」长得一样的话，界面就没法告诉人哪一格该自己填。 */
+export type NoHistoryReason = 'no_sales_history' | 'not_applicable_no_sales_source';
+/** `not_applicable_no_sales_source` 的成因。★ 与 reason 分开：reason 是「这一格是什么」，
+ *  cause 是「为什么」。挤进一个字段就会出现一个名字里写着 non_amazon 的标记被贴在
+ *  一个 Amazon 店上 —— 那个标记会如实地撒谎。 */
+export type NoSalesSourceCause = 'non_amazon_platform' | 'store_absent_from_order_report';
+export interface NoHistoryEntry {
+  seller_sku: string;
+  sid: Sid;
+  reason: NoHistoryReason;
+  /** 只在 `reason === 'not_applicable_no_sales_source'` 时出现 */
+  cause?: NoSalesSourceCause;
+}
 export interface ClaimResult {
   claimed: { seller_sku: string; sid: Sid; sku: string };
   /** ★ team-lead 09-22 裁定：`api/ui/plans.py:183-185` 保证返回，两个键都不可选 ——

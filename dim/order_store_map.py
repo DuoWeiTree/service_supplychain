@@ -24,7 +24,22 @@ from __future__ import annotations
 
 class UnknownStore(Exception):
     """认不出的 (store, channel) 或 sid。★ 硬失败 —— 猜一个 sid 就是把一家店的
-    销量记到另一家头上，而两边各自都「没报错」。"""
+    销量记到另一家头上，而两边各自都「没报错」。
+
+    ★ 残留轮次：成因必须**随异常一起走**，不能只留在消息文本里。上层要按成因
+    给出完全相反的建议 —— 「没人声明过」该去补一行映射；「已登记的取数缺口」
+    绝不能去补（补了就是把别人家的销量记到它头上）。让翻译层去 `str(e)` 里
+    捞关键词，就是把判据寄存在一句会被改写的中文上。
+    """
+
+    def __init__(self, message: str, *, sid: str | None = None,
+                 registered_gap: str | None = None) -> None:
+        #: 认不出的那个 sid（`store_for()` 抛时唯一已知量）；`sid_for_or_raise()` 抛时为 None。
+        self.sid = sid
+        #: 非 None ⇒ 这是 `NO_ORDER_REPORT_SID` 里**已登记**的缺口，值就是那条实测出处。
+        #: None ⇒ 没人声明过这个 sid（真正该去补映射的那一种）。
+        self.registered_gap = registered_gap
+        super().__init__(message)
 
 
 #: 2026-09-23 实测：近 90 天出现过 37 组 (store, sales_channel)，其中 24 组以
@@ -101,12 +116,67 @@ NO_ORDER_REPORT_SID: dict[str, str] = {
     "11100": "A4Pet-BS-JP-JP（日本）：msku_bridge 34 个 msku，订单报表 0 单",
 }
 
+#: 登记当天（2026-09-23）各豁免 sid 名下的 msku 数，**给过期守卫用**。
+#: ★ 一张永远不会变红的白名单，就是把「静默少一批货」重新请回来。所以豁免本身
+#:   也要能过期（残留轮次裁定，option 3）。
+NO_ORDER_REPORT_SID_MSKUS: dict[str, int] = {"11098": 145, "11099": 0, "11100": 34}
+
+#: 允许的增长余量：相对 20%，外加 5 个的绝对底。超了就红，要求重新审视豁免。
+#: ★ 出处（2026-09-23 实测，`lingxing_product_listing` 近 31 个采集日）：
+#:   三个 sid 的 msku 数在**整个 31 天里一次都没变过**（145 / 0 / 34）——
+#:   观测到的真实churn 是 **0%**。所以 20% 是**刻意留宽**的，它要抓的是
+#:   「这家店变得实质更大了、豁免该重新审」，不是日常抖动。
+#: ★ 为什么不设得更紧：日采会**整店掉档**（实测 11098 有 4 天、11100 有 2 天
+#:   整店 0 行 —— 那是采集缺口的形状，不是业务的形状）。`SQL_MSKU_BRIDGE` 按
+#:   30 天窗口取并集，掉档被邻日盖住了，所以窗口聚合值稳定；但把阈值压到贴着
+#:   实测值会让这条守卫对采集侧的任何一次口径变化过度敏感，而一条会假红的
+#:   守卫是一条会被人删掉的守卫（同 I-3 的教训）。
+#: ★ 绝对底 5 是给 11099（今天 0 个 msku）留的：纯相对余量会让它一有 listing
+#:   就红，而 1~2 个新 listing 更可能是上架试水而不是「这家店起来了」。
+NO_ORDER_REPORT_GROWTH_RATIO = 0.20
+NO_ORDER_REPORT_GROWTH_FLOOR = 5
+
+#: 订单报表 `store` 列的**取值全集**（2026-09-23 实测，不限时间窗，5 个值）。
+#: ★ 这是三条豁免成立的前提：没有任何一个 store 值属于 UNITFREE / DWJ /
+#:   A4Pet-JP。出现第六个值就意味着「一个我们从没见过的账号族开始出单了」，
+#:   而那正是「豁免的 sid 开始在订单报表里出现」唯一能被推导出来的信号 ——
+#:   这张表里没有 sid 列，直接判定做不到（这也正是它们成为豁免的原因）。
+ORDER_REPORT_STORES: frozenset[str] = frozenset({
+    "PETSFIT_NORTH_AMERICA", "PETSFIT_EUROPE", "PETSFIT_ASIA",
+    "A4PET_NORTH_AMERICA", "A4PET_EUROPE",
+})
+
+
+def no_sales_source(sid: str) -> str | None:
+    """这个 sid **压根没有销量取数源**时，返回登记的实测出处；否则 None。
+
+    ★ 与 `store_for()` 抛 `UnknownStore` 是同一张表的两个问法，区别在调用方要
+    的东西：`store_for()` 要的是「给我 store」，答不上来就硬失败；这里要的是
+    「这个 sid 是不是**已登记**的取数缺口」，答案是一条可以直接回显给人看的
+    出处。★ 判据只有这一处，接口层不许自己再列一遍 sid ——
+    硬编店铺号会让新增豁免时「dim 里加了、接口还说它未知」。
+    """
+    return NO_ORDER_REPORT_SID.get(str(sid))
+
+
+def growth_budget(sid: str) -> int:
+    """豁免 sid 的 msku 数上限（登记值 + 余量）。超了就该重新审视这条豁免。"""
+    recorded = NO_ORDER_REPORT_SID_MSKUS[str(sid)]
+    return max(int(recorded * (1 + NO_ORDER_REPORT_GROWTH_RATIO)),
+               recorded + NO_ORDER_REPORT_GROWTH_FLOOR)
+
 _SID_STORE = {v: k for k, v in STORE_SID.items()}
 assert len(_SID_STORE) == len(STORE_SID), "两组 (store, channel) 指向了同一个 sid"
 #: ★ 一个 sid 不能既「有映射」又「没有订单」—— 两边都占说明某一侧过期了。
 assert not (set(NO_ORDER_REPORT_SID) & set(_SID_STORE)), (
     f"这些 sid 同时出现在 STORE_SID 与 NO_ORDER_REPORT_SID 里："
     f"{sorted(set(NO_ORDER_REPORT_SID) & set(_SID_STORE))}")
+#: ★ 豁免名单与它的登记 msku 数必须逐个对上 —— 加了豁免却忘了登记基数，
+#:   过期守卫就会在那一条上 KeyError 而不是安静放行（要的是前者）。
+assert set(NO_ORDER_REPORT_SID) == set(NO_ORDER_REPORT_SID_MSKUS), (
+    f"豁免名单与登记基数对不上：只在名单里 "
+    f"{sorted(set(NO_ORDER_REPORT_SID) - set(NO_ORDER_REPORT_SID_MSKUS))}，"
+    f"只在基数里 {sorted(set(NO_ORDER_REPORT_SID_MSKUS) - set(NO_ORDER_REPORT_SID))}")
 
 
 def _excluded(channel: str) -> bool:
@@ -148,11 +218,13 @@ def store_for(sid: str) -> tuple[str, str]:
     if key not in _SID_STORE:
         # ★ 已知缺口与「没人声明过」在留痕里必须分得开：前者是这条取数链路上
         #   真的没有数据（NO_ORDER_REPORT_SID，带实测出处），后者是该补一行。
-        #   两者都硬失败、都 503，但运维要做的事完全不同。
+        #   ★ 成因随异常一起走（`registered_gap`），不留给上层去消息文本里捞
+        #   关键词 —— 两者的处置**相反**，判据不能寄存在一句会被改写的中文上。
         known = NO_ORDER_REPORT_SID.get(key)
         why = (f"这是已登记的取数缺口：{known}" if known else
                "新开的店请补进 dim/order_store_map.py::STORE_SID")
         raise UnknownStore(
             f"sid={sid!r} 在订单报表里没有对应的 store —— "
-            f"这个店的销量取不到，不能当成「卖了 0 件」。{why}")
+            f"这个店的销量取不到，不能当成「卖了 0 件」。{why}",
+            sid=key, registered_gap=known)
     return _SID_STORE[key]

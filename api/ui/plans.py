@@ -22,6 +22,7 @@ from api.ui.source_factory import (  # noqa: F401 - 供测试用 plans.FIXTURES 
     FIXTURES,
     source_dep,
 )
+from dim import order_store_map
 from dim.ch_source import (
     ChDataUnusable,
     ChUnavailable,
@@ -56,6 +57,18 @@ router = APIRouter(dependencies=[Depends(require_fresh_mirrors)])
 #: 接进来时改的是这一行，不是散落各处的 if。平台的销量源到位了就把它加进来。
 _SALES_PLATFORM = ("amazon",)
 
+#: 「这个 msku 压根没有销量取数源」这**一个事实**的唯一说法。
+#: ★★ 残留轮次裁定：同一件事不许有两套词汇。两种成因（下面的 `cause`）都落在
+#:   这一个 `reason` 上 —— 前端判「要不要让人来填这一格」只看 `reason`，
+#:   不必跟着后端每接一个新平台就加一个分支。
+NOT_APPLICABLE = "not_applicable_no_sales_source"
+#: 成因。★ 与 `reason` 分开是因为它们回答的是两个问题：`reason` 是「这一格
+#:   是什么」（事实），`cause` 是「为什么」（出处）。挤进一个字段，就会出现
+#:   `not_applicable_non_amazon_platform` 被用在一个 **Amazon** 店上 ——
+#:   那个标记会如实地撒谎。
+CAUSE_NON_AMAZON_PLATFORM = "non_amazon_platform"
+CAUSE_STORE_ABSENT_FROM_ORDER_REPORT = "store_absent_from_order_report"
+
 
 def _source_error(e: Exception) -> ApiError:
     """把 ChSource 的失败翻成 ApiError —— 同 jobs/refresh_dims.ChUnreachable → refresh_failed
@@ -84,12 +97,24 @@ def _source_error(e: Exception) -> ApiError:
         #   近 90 天 21 单没有对应 sid）会从 monthly_sales_history() → store_for()
         #   一路抛到这里。与 UnknownShape 同一类「认不出的形态」，不新开错误码；
         #   detail 里带着 store_for() 原样写出的 sid（它是唯一已知量——正因为它没有
-        #   对应的 (store, channel) 才会抛这个异常），运维据此去补
-        #   dim/order_store_map.py::STORE_SID 那一行。
+        #   对应的 (store, channel) 才会抛这个异常）。
+        # ★★ 残留轮次：hint 必须**按成因分开**。两种成因的处置是**相反**的：
+        #   · 没人声明过 → 去 STORE_SID 补一行，这是对的建议；
+        #   · 已登记的取数缺口（NO_ORDER_REPORT_SID）→ **绝不能补**。补了就是
+        #     硬编一行不存在的映射，把另一家店的销量记到它头上 —— 正是 M-4
+        #     刚从 `sid_for_or_raise` 里拿掉的那条错建议，原样留在了运维**先读到**
+        #     的那个字段里（detail 说对了，hint 说反了，而人先看 hint）。
+        if e.registered_gap:
+            return ApiError(503, "forecast_source_unusable",
+                            "这个店在订单报表里压根没有销量来源 —— 数必须由人填，"
+                            "**不要**去改 dim/order_store_map.py 的映射表：硬编一行"
+                            "就是把另一家店的销量记到它头上",
+                            {"detail": str(e), "sid": e.sid,
+                             "registered_gap": e.registered_gap})
         return ApiError(503, "forecast_source_unusable",
                         "这个店没有声明取数映射（dim/order_store_map.py 缺一行）"
                         "—— 销量取不到，不能当成「卖了 0 件」",
-                        {"detail": str(e)})
+                        {"detail": str(e), "sid": e.sid})
     # ★ 复核裁定（fix round 1，不改）：这支 raise e 目前不可达——claim()/grid() 的
     #   except 元组已经收窄到本函数认识的全部五种类型，元组之外的异常根本不会走
     #   到这里。签名标 -> ApiError 与这一支的行为因此有点不对称，留着不改：
@@ -233,6 +258,10 @@ def claim(plan_id: int, body: dict, request: Request,
         no_history = []
         history_window = None
         est = None
+        # ★ 「这个 msku 有没有销量取数源」先问清楚，再决定要不要去取数。
+        #   两种成因、一个结论：不适用。★ 判据都不在这里硬编 —— 平台看
+        #   `seller.platform` 镜像列，店铺缺口看 dim 的登记表。
+        registered_gap = order_store_map.no_sales_source(sid)
         if platform not in _SALES_PLATFORM:
             # ★ 终审 I-2：「这个店压根没有 Amazon 销量源」是**不适用**，不是未知。
             #   走到 monthly_sales_history 的话，CH 档会在 store_for() 上抛
@@ -241,8 +270,21 @@ def claim(plan_id: int, body: dict, request: Request,
             #   闸放在调用方，与 grid() 里 `has_fba` 那一闸同一个位置、同一个理由：
             #   ★ 不适用 ≠ 0，也 ≠ 未知（CLAUDE.md 判据一），三者必须分得开。
             no_history.append({"seller_sku": seller_sku, "sid": sid,
-                               "reason": "not_applicable_non_amazon_platform",
+                               "reason": NOT_APPLICABLE,
+                               "cause": CAUSE_NON_AMAZON_PLATFORM,
                                "platform": platform})
+        elif registered_gap:
+            # ★★ 残留轮次裁定：`NO_ORDER_REPORT_SID` 上的 179 个 msku 原先一律
+            #   503，于是一家**活着的美国店**的货整个上不了计划。而这件事的形状
+            #   与上面那一支**一模一样**：这个 msku 没有销量取数源。既然一周前
+            #   已经为 Walmart 那一种裁定过「格子照建、system_units 留 NULL、
+            #   标记点名」，这一种就用同一个答案 —— 145 个 msku 认领不了，比
+            #   一格等人来填的 NULL 坏得多。
+            #   ★ 未知/0 的保证不变：绝不是 0，也绝不是编出来的预估。
+            no_history.append({"seller_sku": seller_sku, "sid": sid,
+                               "reason": NOT_APPLICABLE,
+                               "cause": CAUSE_STORE_ABSENT_FROM_ORDER_REPORT,
+                               "detail": registered_gap})
         else:
             try:
                 est = monthly_estimate(

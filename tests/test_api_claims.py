@@ -2,6 +2,7 @@ import threading
 
 import psycopg2.errors
 
+from dim import order_store_map as m
 from shared.pg_client import pg_conn
 
 
@@ -141,7 +142,8 @@ def test_a_store_with_no_amazon_sales_source_is_not_applicable_not_unknown(clien
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["no_history"] == [{"seller_sku": seed.msku_nofba[0], "sid": seed.msku_nofba[1],
-                                   "reason": "not_applicable_non_amazon_platform",
+                                   "reason": "not_applicable_no_sales_source",
+                                   "cause": "non_amazon_platform",
                                    "platform": "walmart"}], body
     assert body["history_window"] is None, (
         "不适用就不该有口径标记 —— 有标记意味着「查过了」，而这条链路压根没查")
@@ -308,3 +310,189 @@ def test_reclaiming_in_the_same_plan_revives_the_row(client, seed):
     with pg_conn() as c, c.cursor() as cur:
         cur.execute("SELECT count(*) FROM msku_claim WHERE plan_id = %s", (p,))
         assert cur.fetchone()[0] == 1, "★ 复认领是复活那一行，不是新插一行（主键就在那）"
+
+
+#: ---------------------------------------------------------------------------
+#: 残留轮次：没有销量来源的店 —— 两种成因，一个答案（不适用），一套词汇。
+#: ---------------------------------------------------------------------------
+
+#: `dim/order_store_map.py::NO_ORDER_REPORT_SID` 里的一个真实 sid。
+#: ★ 不另编一个假 sid：这条测试要验的正是「**登记在册的那几个**能不能认领」，
+#:   用一个不在名单里的号码会走到另一条分支上，测试就成了空转的。
+GAP_SID = "11098"
+
+
+def _seed_gap_store(seed, seller_sku="MSKU-GAP"):
+    """种一个 `NO_ORDER_REPORT_SID` 上的店 + 一个它名下的 msku。
+
+    ★ 种在用例里而不是共享 `seed` 夹具里：加进 `seed` 会让每张网格、每个目录
+      查询都多出一个 msku，把一批与本条无关的断言一起改掉。
+    """
+    from shared.pg_client import pg_conn
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute(
+            "INSERT INTO seller (seller_id, name, market, has_fba, platform, refreshed_at)"
+            " VALUES (%s, %s, %s, %s, %s, now())",
+            (GAP_SID, "UNITFREE-GQ-P品牌-US", "US", True, "amazon"))
+        cur.execute("INSERT INTO msku_bridge VALUES (%s, %s, %s, now())",
+                    (seller_sku, GAP_SID, seed.sku_a))
+    return seller_sku, GAP_SID
+
+
+def test_a_store_with_no_order_report_data_can_still_be_claimed(client, seed, use_source):
+    """★★ 残留轮次裁定：`NO_ORDER_REPORT_SID` 上的 179 个 msku 原先一律 503，
+    于是一家**活着的美国店**（11098，145 个 msku）的货整个上不了计划。
+
+    这件事的形状与 Walmart 那一种一模一样：**这个 msku 没有销量取数源**。
+    一周前已经为那一种裁定过「格子照建、`system_units` 留 NULL、标记点名」，
+    这一种就该拿到同一个答案 —— 145 个 msku 认领不了，比一格等人来填的 NULL
+    坏得多。
+
+    ★ 未知/0 的保证不变：`system_units` 是 **NULL**，不是 0，也不是编出来的预估。
+    ★ **必须跑在 CH 档上**：503 只发生在 CH 档（fixture 档压根不查
+      `store_for()`，它对这个 msku 给的是「查过了、没有历史」）。拿 fixture 档
+      验这条，就是在一个从来不会 503 的路径上证明「不再 503」。
+      用真 `ChSource`，它的 `query` 是一条**一被调用就炸**的桩 —— 闸没拦住就会
+      去查一个不存在的取数源。
+    """
+    from dim import ch_source as cs
+
+    def must_not_be_called(sql, parameters=None):
+        raise AssertionError(
+            f"没有销量来源的店去查了 CH —— 闸没拦住。SQL={' '.join(sql.split())[:120]}")
+
+    ms = _seed_gap_store(seed)
+    use_source(lambda: cs.ChSource(must_not_be_called))
+    p = mk(client, seed)
+    r = client.post(f"/v1/plans/{p}/claims",
+                    json={"seller_sku": ms[0], "sid": ms[1]}, headers=H(seed.actor))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["seeded"] == {"demand_cells": 3, "purchase_cells": 3}
+    assert body["no_history"] == [{
+        "seller_sku": ms[0], "sid": ms[1],
+        "reason": "not_applicable_no_sales_source",
+        "cause": "store_absent_from_order_report",
+        "detail": m.NO_ORDER_REPORT_SID[GAP_SID]}], body
+    assert body["history_window"] is None, (
+        "不适用就不该有口径标记 —— 有标记意味着「查过了」，而这条链路压根没查")
+
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT count(*), count(system_units) FROM plan_demand_cell"
+                    " WHERE plan_id = %s", (p,))
+        assert cur.fetchone() == (3, 0), (
+            "★ 三个格子都要建出来、且 system_units 全为 NULL —— "
+            "不适用不是 0，也不是「少种几个格子」")
+
+
+def test_the_two_no_sales_source_causes_share_one_reason(client, seed, use_source):
+    """★ 同一件事只许有一套词汇：Walmart 店与订单报表里没有的店，`reason`
+    必须是**同一个值**（前端判「要不要让人来填」只看它），区别只在 `cause`。
+
+    ★ 反面靶子：两个 `cause` 必须真的不同 —— 合成一个就等于把「为什么」丢了，
+      而那两个原因的处置完全不同（一个等接平台，一个等采集侧补数据）。
+    """
+    from dim import ch_source as cs
+
+    def must_not_be_called(sql, parameters=None):
+        raise AssertionError("没有销量来源的店去查了 CH —— 闸没拦住")
+
+    ms = _seed_gap_store(seed)
+    use_source(lambda: cs.ChSource(must_not_be_called))
+    p = mk(client, seed)
+    gap = client.post(f"/v1/plans/{p}/claims",
+                      json={"seller_sku": ms[0], "sid": ms[1]},
+                      headers=H(seed.actor)).json()["no_history"][0]
+    wm = client.post(f"/v1/plans/{p}/claims",
+                     json={"seller_sku": seed.msku_nofba[0], "sid": seed.msku_nofba[1]},
+                     headers=H(seed.actor)).json()["no_history"][0]
+
+    assert gap["reason"] == wm["reason"] == "not_applicable_no_sales_source", (
+        f"两种成因的 reason 不一致：{gap['reason']!r} vs {wm['reason']!r} —— "
+        "同一件事两套词汇，前端就得跟着后端每接一个新平台加一个分支")
+    assert gap["cause"] != wm["cause"], (
+        f"两种成因的 cause 相同（{gap['cause']!r}）—— 「为什么」丢了，"
+        "而这两个原因等的是完全不同的东西")
+    assert {gap["cause"], wm["cause"]} == {
+        "store_absent_from_order_report", "non_amazon_platform"}
+    # ★ 「没有历史」是第三种东西，绝不能跟上面两种共用 reason
+    assert gap["reason"] != "no_sales_history"
+
+
+def test_the_unknown_store_hint_splits_by_cause():
+    """★★ 残留轮次（must）：运维**先读 hint**。两种成因的处置是**相反**的 ——
+    没人声明过的 sid 该去补一行 `STORE_SID`；已登记的取数缺口**绝不能补**
+    （补了就是硬编一行不存在的映射，把另一家店的销量记到它头上）。
+
+    修复前两种共用一句 hint「这个店没有声明取数映射（缺一行）」，包括那三个
+    已登记的 sid —— 正是 M-4 刚从 `sid_for_or_raise` 里拿掉的那条错建议，
+    原样留在了人先读到的那个字段里。
+
+    ★ 为什么直接调翻译函数而不走一次 HTTP：`claim()` 现在把「已登记的缺口」
+      在到达这里之前就翻成了 200 + 不适用（上面那条测试），所以这一支在今天
+      **没有端到端路径**。留着并钉住它，是因为 `_source_error` 是整个取数失败
+      家族的唯一翻译口，而 `store_for()` 是公开的 dim API —— 一个对自己接受的
+      异常形态**给错建议**的翻译口，比没有这一支更坏（这正是本条要修的缺陷本身）。
+    """
+    from api.ui import plans
+
+    registered = m.UnknownStore("sid='11098' …", sid="11098",
+                                registered_gap=m.NO_ORDER_REPORT_SID["11098"])
+    err = plans._source_error(registered)
+    body = err.body()
+    assert err.status == 503 and body["error"] == "forecast_source_unusable"
+    assert "不要" in body["hint"] and "由人填" in body["hint"], body["hint"]
+    assert "缺一行" not in body["hint"], (
+        f"已登记的缺口还在被建议去补映射表：{body['hint']}")
+    assert body["registered_gap"] == m.NO_ORDER_REPORT_SID["11098"]
+    assert body["sid"] == "11098"
+
+    # ★ 另一支：没人声明过 —— 必须照旧给出「去补一行」这条**正确**的建议。
+    never = m.UnknownStore("sid='99999' …", sid="99999", registered_gap=None)
+    other = plans._source_error(never).body()
+    assert "缺一行" in other["hint"], other["hint"]
+    assert "registered_gap" not in other
+
+
+def test_an_unknown_sid_is_still_told_to_add_the_mapping_row(client, seed):
+    """★ 另一支必须照旧：**没人声明过**的 sid 走的是 503，且 hint 要如实说
+    「去补一行 STORE_SID」—— 那对这一种是正确的建议。
+
+    这一支有真的端到端路径：一个 Amazon 店、不在 STORE_SID、也不在
+    NO_ORDER_REPORT_SID 里。
+    """
+    from dim import ch_source as cs
+    from shared.pg_client import pg_conn as _pg
+
+    unknown_sid = "99999"
+    assert unknown_sid not in m.NO_ORDER_REPORT_SID
+    assert unknown_sid not in m.STORE_SID.values()
+    with _pg() as c, c.cursor() as cur:
+        cur.execute(
+            "INSERT INTO seller (seller_id, name, market, has_fba, platform, refreshed_at)"
+            " VALUES (%s, %s, %s, %s, %s, now())",
+            (unknown_sid, "谁家的店", "US", True, "amazon"))
+        cur.execute("INSERT INTO msku_bridge VALUES (%s, %s, %s, now())",
+                    ("MSKU-UNKNOWN", unknown_sid, seed.sku_a))
+
+    from api.ui.source_factory import source_dep
+
+    def must_not_be_called(sql, parameters=None):
+        raise AssertionError("认不出的 sid 不该走到真取数 —— store_for() 就该拦住")
+
+    client.app.dependency_overrides[source_dep] = lambda: cs.ChSource(must_not_be_called)
+    try:
+        p = mk(client, seed)
+        r = client.post(f"/v1/plans/{p}/claims",
+                        json={"seller_sku": "MSKU-UNKNOWN", "sid": unknown_sid},
+                        headers=H(seed.actor))
+    finally:
+        client.app.dependency_overrides.clear()
+
+    assert r.status_code == 503, r.text
+    body = r.json()
+    assert body["error"] == "forecast_source_unusable"
+    assert "缺一行" in body["hint"], body["hint"]
+    assert body["sid"] == unknown_sid
+    assert "registered_gap" not in body, (
+        "没人声明过的 sid 不该带 registered_gap —— 那会让它看起来像一条已登记的缺口")
