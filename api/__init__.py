@@ -16,9 +16,10 @@ from api.ui.errors import ApiError, translate
 from dim.registry import gate_503_names
 from jobs import refresh_dims
 from jobs import scheduler as job_scheduler
+from jobs.lock import RefreshInFlight
 from shared import config as config_module
 from shared.logging import setup_logging
-from shared.pg_client import business_schema, pg_conn, timed
+from shared.pg_client import business_schema, pg_conn, pg_error_fields, timed
 
 log = logging.getLogger("scm.api")
 
@@ -96,9 +97,26 @@ def _startup_check() -> None:
     try:
         runs = refresh_dims.refresh_all("scheduler")
         log.info("startup refresh runs=%s", [(r.mirror, r.ok) for r in runs])
+    except RefreshInFlight as e:
+        # ★ 锁被占是正常状态（另一轮 CLI/运维触发正在跑），不是启动刷新失败——
+        #   与 jobs/scheduler.py::_tick 对同一个异常的处理保持同一判据：必须
+        #   记成「跳过」，不能跟真失败混进同一种「fail」日志；也不能指望
+        #   RefreshInFlight 自己的消息文本足够自解释——异常类名显式打出来，
+        #   下次换一种措辞的异常也照样分得清。
+        log.warning("startup refresh outcome=skipped reason=busy err_type=%s err=%s",
+                   type(e).__name__, e)
     except BaseException as e:  # noqa: BLE001 - 必须兜住一切，让 lifespan 永不中断；
         # 「刷新失败」和「应用起不来」是两件不同的事（设计 §10.1 OQ-8）。
-        log.warning("startup refresh failed err=%s", e)
+        # ★ 只取 str(e) 等于丢了异常类名与 psycopg2 的 pgcode/constraint——同一条
+        #   纪律 jobs/refresh_dims.py::refresh_one 已经示范过，这里照抄，不能
+        #   各写一套：真超时（TimeoutError）与连不上（TypeError/cause 里的
+        #   errno）签名互斥，只看裸消息会把两者混成一句看不出所以然的话。
+        if isinstance(e, psycopg2.Error):
+            log.warning("startup refresh outcome=fail err_type=%s pg=%s",
+                        type(e).__name__, pg_error_fields(e))
+        else:
+            log.warning("startup refresh outcome=fail err_type=%s err=%s",
+                        type(e).__name__, e)
 
 
 @contextlib.asynccontextmanager

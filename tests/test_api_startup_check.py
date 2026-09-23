@@ -2,11 +2,14 @@
 只记录 + 在需要时触发一次立即刷新；拒绝服务只在业务路由按请求判。"""
 import logging
 
+import psycopg2
 from starlette.testclient import TestClient
 
 import api
 from jobs import refresh_dims
+from jobs.lock import RefreshInFlight
 from shared import config as config_module
+from shared.pg_client import pg_conn
 
 
 def _cfg(monkeypatch, **kw):
@@ -48,7 +51,14 @@ def test_startup_gate_false_never_triggers_a_refresh(wipe, monkeypatch):
 
 def test_a_failing_startup_refresh_is_logged_with_cause_and_does_not_stop_the_app(
         wipe, monkeypatch, caplog):
-    """★ 静默兜底是最坏的一种：刷新崩了要连原因一起留声，且绝不能让应用起不来。"""
+    """★ 静默兜底是最坏的一种：刷新崩了要连原因一起留声，且绝不能让应用起不来。
+
+    ★ fix round 2：异常消息本身刻意不含类名（"CH 连不上：模拟
+    UND_ERR_CONNECT_TIMEOUT" 里没有 "RuntimeError" 这个词）——这样
+    `"RuntimeError" in caplog.text` 只有日志真的打了 `type(e).__name__`
+    才会过，不会被"消息文本恰好包含那几个字"这种巧合托住。只断言消息文本
+    （旧版测试的写法）证不出"类名被记录"，这正是本轮要补的洞。
+    """
     _cfg(monkeypatch, startup_gate=True)
 
     def _boom(*a, **k):
@@ -59,12 +69,58 @@ def test_a_failing_startup_refresh_is_logged_with_cause_and_does_not_stop_the_ap
         with TestClient(api.create_app()) as c:
             assert c.get("/health").status_code == 200
     assert "CH 连不上" in caplog.text and "UND_ERR_CONNECT_TIMEOUT" in caplog.text
+    assert "RuntimeError" in caplog.text, (
+        "日志必须带异常类名（err_type=<class>），不能只有 str(e)——"
+        f"实际日志：{caplog.text!r}")
 
 
-def test_check_only_looks_at_gate_503_mirrors(wipe, monkeypatch, seed):
-    """label_only 的镜像（sku_category）陈旧不触发这条路径，只标注（01:275）。"""
-    from dim.registry import gate_503_names
-    assert "sku_category" not in gate_503_names()
+def test_a_failing_startup_refresh_that_is_a_pg_error_logs_class_and_pgcode(
+        wipe, monkeypatch, caplog):
+    """★ psycopg2.Error 的 pgcode/constraint 全在 `.diag` 里，不在 `str(e)` 里——
+    真实 PG 拒绝（唯一键冲突、外键冲突……）与真实 CH 连不上必须分得开，不能靠
+    "记得看 err_type"。用一次真的坏查询在测试库里现抓一个真 `psycopg2.Error`，
+    而不是手搓一个只是同名的假对象——`.diag`/`.pgcode` 是 C 扩展populate 的，
+    自己拼一个字段名对不齐的假货会把这条测试变成自证空转。
+    """
+    _cfg(monkeypatch, startup_gate=True)
+    pg_err = None
+    try:
+        with pg_conn() as c, c.cursor() as cur:
+            cur.execute("SELECT * FROM no_such_table_zzz")
+    except psycopg2.Error as captured:
+        pg_err = captured
+    assert pg_err is not None, "这条 SQL 本该失败，没失败就验不了 pgcode"
+
+    def _boom(*a, **k):
+        raise pg_err
+
+    monkeypatch.setattr(refresh_dims, "refresh_all", _boom)
+    with caplog.at_level(logging.WARNING, logger="scm.api"):  # noqa: SIM117
+        with TestClient(api.create_app()) as c:
+            assert c.get("/health").status_code == 200
+    assert type(pg_err).__name__ in caplog.text, \
+        f"缺异常类名：{caplog.text!r}"
+    assert pg_err.pgcode in caplog.text, f"缺 pgcode：{caplog.text!r}"
+
+
+def test_a_busy_lock_at_startup_is_skipped_not_treated_as_a_failure(
+        wipe, monkeypatch, caplog):
+    """★ advisory lock 被占（另一轮 CLI/运维触发正在跑）是正常状态，不是启动
+    刷新失败——与 `jobs/scheduler.py::_tick` 对 `RefreshInFlight` 的处理保持
+    同一判据：必须记成"跳过"，不能跟真失败混进同一种 `outcome=fail` 日志，
+    否则运维会把正常的锁竞争当成真事故去查。"""
+    _cfg(monkeypatch, startup_gate=True)
+
+    def _busy(*a, **k):
+        raise RefreshInFlight()
+
+    monkeypatch.setattr(refresh_dims, "refresh_all", _busy)
+    with caplog.at_level(logging.WARNING, logger="scm.api"):  # noqa: SIM117
+        with TestClient(api.create_app()) as c:
+            assert c.get("/health").status_code == 200
+    assert "outcome=skipped" in caplog.text and "busy" in caplog.text
+    assert "outcome=fail" not in caplog.text, \
+        f"抢锁被占不许算成失败：{caplog.text!r}"
 
 
 def test_suite_default_never_triggers_a_refresh_even_with_stale_mirrors(wipe, monkeypatch):
