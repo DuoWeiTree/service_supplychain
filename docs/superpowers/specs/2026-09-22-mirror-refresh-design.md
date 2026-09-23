@@ -157,8 +157,179 @@ CREATE INDEX dim_refresh_run_by_mirror ON dim_refresh_run (mirror, started_at DE
 
 ## 7. 四张镜像的取数 SQL 草案
 
-★ **全部标「设计取值 · 未实测」**：这四张源表的列名本仓文档一个字都没写过（§10 OQ-1）。
-实施计划的 Task 3 是一个**只读探针**，先把真实列名打出来，再定稿 SQL。
+★ **OQ-1 已由 Task 3 只读探针解决**（`jobs/probe_ch.py`，实测 2026-09-22，内网
+`192.168.66.211`）。下方 §7.0 是探针打出来的真实列（`system.columns`），
+**下面的 SQL 草案本身未改**（改写是 Task 4 的事），但探针已经发现两处草案
+与真实列名对不上，Task 4 写 SQL 前必须处理：
+
+- ⚠️ **`lingxing_seller_list` 没有 `marketplace` 列也没有 `platform` 列**——
+  草案第 17/18 行 `s.marketplace` / `s.platform` 在真实表里不存在。该表实有
+  `region`（Nullable String）、`country`（Nullable String）、`marketplace_id`
+  （Nullable String）。`market`/`platform` 改取哪一列，OQ-2/OQ-3 裁定时未预见
+  这个落差，需 Task 4 重新裁定或升级人工，不许照抄草案硬跑。
+- ⚠️ **`lingxing_product_local_products` 没有 `local_sku` 列**——草案第 8/10
+  行的 `local_sku` 在真实表里不存在，真实列名是 `sku`（Nullable String）。
+  `local_sku` 是**另一张表**（`lingxing_product_listing`）里的列，草案在这里
+  显然是抄错了源表。
+- `lingxing_product_listing` 的 `local_sku` `seller_sku` `sid`（Int64）
+  `fulfillment_channel_type` 均存在，草案第 25/33/38 行的用法与真实列一致。
+- `lingxing_inventory_warehouses` 的 `wid`（Int64）`type` `sub_type` `name`
+  均存在，草案第 41~45 行与真实列一致；该表另有 `country_code`（几乎全空，
+  与 CLAUDE.md「38 个国内仓 country_code 几乎全为空」的记载一致，OQ-5 留
+  `market=NULL` 的裁定不受影响）。
+
+### 7.0 探针实测列（`system.columns`，2026-09-22）
+
+```
+=== jxd_raw.lingxing_seller_list （21 行 / 1 个采集日 / 2026-09-22 ~ 2026-09-22）===
+_captured_at                             Nullable(DateTime)
+_captured_date                           Nullable(Date)
+_task_id                                 Nullable(String)
+sid                                      String
+seller_id                                Nullable(String)
+mid                                      Nullable(Int64)
+name                                     Nullable(String)
+account_name                             Nullable(String)
+seller_account_id                        Nullable(Int64)
+region                                   Nullable(String)
+country                                  Nullable(String)
+marketplace_id                           Nullable(String)
+status                                   Nullable(Int64)
+has_ads_setting                          Nullable(Int64)
+_ingested_at                             DateTime
+
+=== jxd_raw.lingxing_product_local_products （5850 行 / 2 个采集日 / 2026-09-21 ~ 2026-09-22）===
+_captured_at                             Nullable(DateTime)
+_captured_date                           Nullable(Date)
+_task_id                                 Nullable(String)
+id                                       Int64
+cid                                      Nullable(Int64)
+bid                                      Nullable(Float64)
+sku                                      Nullable(String)
+sku_identifier                           Nullable(String)
+product_name                             Nullable(String)
+pic_url                                  Nullable(String)
+cg_delivery                              Nullable(Int64)
+cg_transport_costs                       Nullable(Float64)
+purchase_remark                          Nullable(String)
+cg_price                                 Nullable(Float64)
+status                                   Nullable(Int64)
+open_status                              Nullable(Int64)
+is_combo                                 Nullable(Int64)
+create_time                              Nullable(Int64)
+update_time                              Nullable(Int64)
+product_developer_uid                    Nullable(Int64)
+cg_opt_uid                               Nullable(Int64)
+cg_opt_username                          Nullable(String)
+spu                                      Nullable(String)
+ps_id                                    Nullable(Int64)
+attribute                                Nullable(String)
+brand_name                               Nullable(String)
+category_name                            Nullable(String)
+status_text                              Nullable(String)
+product_developer                        Nullable(String)
+supplier_quote                           Nullable(String)
+aux_relation_list                        Nullable(String)
+custom_fields                            Nullable(String)
+global_tags                              Nullable(String)
+_ingested_at                             DateTime
+
+=== jxd_raw.lingxing_product_listing （475760 行 / 58 个采集日 / 2026-07-24 ~ 2026-09-22）===
+_captured_at                             Nullable(DateTime)
+_captured_date                           Date
+_task_id                                 Nullable(String)
+listing_id                               String
+seller_sku                               Nullable(String)
+fnsku                                    Nullable(String)
+item_name                                Nullable(String)
+local_sku                                Nullable(String)
+local_name                               Nullable(String)
+price                                    Nullable(Float64)
+quantity                                 Nullable(Int64)
+asin                                     Nullable(String)
+parent_asin                              Nullable(String)
+small_image_url                          Nullable(String)
+status                                   Nullable(Int64)
+is_delete                                Nullable(Int64)
+store_type                               Nullable(String)
+afn_fulfillable_quantity                 Nullable(Int64)
+afn_reserved_quantity                    Nullable(Int64)
+reserved_fc_transfers                    Nullable(Int64)
+reserved_fc_processing                   Nullable(Int64)
+reserved_customerorders                  Nullable(Int64)
+afn_inbound_shipped_quantity             Nullable(Int64)
+afn_unsellable_quantity                  Nullable(Int64)
+afn_inbound_working_quantity             Nullable(Int64)
+afn_inbound_receiving_quantity           Nullable(Int64)
+currency_code                            Nullable(String)
+landed_price                             Nullable(Float64)
+listing_price                            Nullable(Float64)
+list_price                               Nullable(Float64)
+b2b_price                                Nullable(Float64)
+b2b_price_discount                       Nullable(String)
+open_date                                Nullable(String)
+listing_update_date                      Nullable(String)
+seller_rank                              Nullable(Int64)
+seller_brand                             Nullable(String)
+seller_category                          Nullable(String)
+review_num                               Nullable(Int64)
+last_star                                Nullable(Float64)
+fulfillment_channel_type                 Nullable(String)
+open_date_display                        Nullable(String)
+principal_info                           Nullable(String)
+shipping                                 Nullable(Float64)
+points                                   Nullable(String)
+sid                                      Int64
+dimension_info                           Nullable(String)
+pair_update_time                         Nullable(String)
+small_rank                               Nullable(String)
+on_sale_time                             Nullable(String)
+first_order_time                         Nullable(String)
+global_tags                              Nullable(String)
+variant                                  Nullable(String)
+total_volume                             Nullable(Float64)
+yesterday_volume                         Nullable(Float64)
+fourteen_volume                          Nullable(Float64)
+thirty_volume                            Nullable(Float64)
+yesterday_amount                         Nullable(Float64)
+seven_amount                             Nullable(Float64)
+fourteen_amount                          Nullable(Float64)
+thirty_amount                            Nullable(Float64)
+average_seven_volume                     Nullable(String)
+average_fourteen_volume                  Nullable(String)
+average_thirty_volume                    Nullable(String)
+parent_msku                              Nullable(String)
+marketplace                              Nullable(String)
+seller_category_new                      Nullable(String)
+_ingested_at                             DateTime
+
+=== jxd_raw.lingxing_inventory_warehouses （59 行 / 1 个采集日 / 2026-09-22 ~ 2026-09-22）===
+query_type                               Int64
+_captured_at                             Nullable(DateTime)
+_captured_date                           Nullable(Date)
+_task_id                                 Nullable(String)
+wid                                      Int64
+type                                     Nullable(Int64)
+sub_type                                 Nullable(Int64)
+name                                     Nullable(String)
+is_delete                                Nullable(Int64)
+country_code                             Nullable(String)
+wp_id                                    Nullable(Int64)
+wp_name                                  Nullable(String)
+local_name                               Nullable(String)
+t_warehouse_name                         Nullable(String)
+t_warehouse_code                         Nullable(String)
+t_country_area_name                      Nullable(String)
+t_status                                 Nullable(String)
+_ingested_at                             DateTime
+```
+
+★ 顺带一提：`lingxing_product_listing` 里其实**有** `marketplace`（Nullable
+String）列，只是挂在 listing 表而不是 `lingxing_seller_list`——OQ-2/OQ-3 重新
+裁定 `seller.market`/`platform` 时可以留意这条，但要不要用它、怎么去重到
+sid 粒度，不属于本 Task 的裁定范围。
+
+### 7.2 SQL 草案（未按上述发现改写，留给 Task 4）
 
 ```sql
 -- sku_catalog ← jxd_raw.lingxing_product_local_products（17:84，2,925 货号 · 09-21 起采）
@@ -211,7 +382,7 @@ oversea_self`；`3/2 → oversea_3pl`；**其余一律硬失败**。`fba` 这一
 没有源（§10 OQ-4）。`market` 对国内仓留 `NULL` 并计数（§10 OQ-5）—— 留空是
 「还没到」，写成 `''` 就再也分不开。
 
-### 7.1 取数放哪一层（F-9 定的，不是偏好）
+### 7.3 取数放哪一层（F-9 定的，不是偏好）
 
 | 文件 | 装什么 |
 |---|---|
@@ -281,9 +452,13 @@ lifespan 次序：`setup_logging()` → 起调度器 → `_startup_check()`：�
 
 ### 10.1 裁定（controller，2026-09-22）
 
-- **OQ-1 裁定**：★ **保持开放，不由本轮裁定** —— 待计划 Task 3 的只读探针把四张
-  源表的真实列名打出来后，探针输出必须回填进本文 §7 的 SQL 草案（Task 3 Step 7
-  已经这样写，本轮只是把这条要求钉死：不许在探针跑通之前把 OQ-1 标成已解决）。
+- **OQ-1 已解决**（Task 3，实测 2026-09-22，内网 `jobs/probe_ch.py` 跑通）：
+  四张源表的真实列名已打出并回填进 §7.0。发现两处 §7.2 草案与真实列名不符，
+  留给 Task 4 处理，不在本 Task 里改 SQL：`lingxing_seller_list` 没有
+  `marketplace`/`platform` 列（真实是 `region`/`country`/`marketplace_id`）；
+  `lingxing_product_local_products` 没有 `local_sku` 列（真实是 `sku`，
+  `local_sku` 其实在 `lingxing_product_listing`）。`lingxing_product_listing`
+  与 `lingxing_inventory_warehouses` 的草案列名与实测一致，无需改。
 - **OQ-2 裁定**：`seller` ← `jxd_raw.lingxing_seller_list`；`msku_bridge` ←
   `jxd_raw.lingxing_product_listing`。依据：兄弟仓 `model_inventory_forecast`
   `data/schema/026_channel_is_brand_by_country.sql:11`「实测 2026-09-10

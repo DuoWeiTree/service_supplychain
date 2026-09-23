@@ -4,7 +4,11 @@ version = "0.1.0"
 description = "供应链后端服务 —— 销售计划 → 采购单 → 排货 → 投送 → 回执"
 requires-python = ">=3.11"          # tomllib
 dependencies = [
-    "fastapi>=0.115", "uvicorn>=0.30", "psycopg2-binary>=2.9",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "psycopg2-binary>=2.9",
+    "clickhouse-connect==1.5.0",
+    "apscheduler==3.11.3",
 ]
 
 [dependency-groups]
