@@ -1,0 +1,6 @@
+{ "revs": [
+  { "rev": 2, "content_digest": "3b7e5d1c8a90f2e4", "is_current": true, "in_flight": true,
+    "submitted_by": "ops.zhang", "submitted_at": "2026-09-20T10:31:00+08:00", "lines": 3 },
+  { "rev": 1, "content_digest": "8f1c2a0b9d4e6f77", "is_current": false, "in_flight": false,
+    "submitted_by": "ops.zhang", "submitted_at": "2026-09-19T14:03:00+08:00", "lines": 2 }
+], "in_flight_rev": 2, "current_rev": 2 }

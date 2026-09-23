@@ -1,0 +1,28 @@
+# service_supplychain 连接配置。本文件不入库；模板是 config.example.toml。
+# 路径可由环境变量 JXD_SCM_CONFIG 覆盖（测试用它指向 scm_test）。
+
+[business_pg]                # ★ 业务库：本仓全部业务数据，独占 schema scm
+host     = "192.168.66.210"
+port     = 5432
+user     = "postgres"
+password = "YOUR_PG_PASSWORD"
+dbname   = "jxd_ml"
+schema   = "scm"             # ★ 测试时被切到 scm_test；禁止 scm / inv
+
+[clickhouse]                 # ★ 只读。jxd 数据中心的采集副本，绝不写
+host     = "192.168.66.211"
+port     = 8123
+user     = "default"
+password = "YOUR_CH_PASSWORD"
+database = "jxd_raw"
+secure   = false
+
+[api]
+# ★ 阶段 A 按 Q-5 内网裸跑，不做鉴权；这一段留给 api/pub/ 上线时用。
+bind = "0.0.0.0"
+port = 8090
+
+[freshness]
+# ★ 维度镜像陈旧超过它 → 拒绝服务（E-4）。
+# ★ 设计取值 · 未实测 —— 文档没给过阈值，刷新频率定下来后按实测改。
+max_age_hours = 24

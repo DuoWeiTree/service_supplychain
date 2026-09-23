@@ -6,6 +6,8 @@ web/dist/
 config.toml
 .pytest_cache/
 .ruff_cache/
+*.egg-info/
 .superpowers/
 docs/prototype/.stage-a-*.md
 var/
+web/.env

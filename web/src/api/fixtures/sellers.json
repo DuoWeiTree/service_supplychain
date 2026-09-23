@@ -1,0 +1,5 @@
+{ "sellers": [
+  { "seller_id": "11072", "name": "A4Pet-US", "market": "US", "has_fba": true,  "platform": "amazon" },
+  { "seller_id": "11094", "name": "A4Pet-BS-UK", "market": "UK", "has_fba": true,  "platform": "amazon" },
+  { "seller_id": "90001", "name": "A4Pet-WM", "market": "US", "has_fba": false, "platform": "walmart" }
+] }

@@ -1,0 +1,471 @@
+{
+  "demand": [
+    {
+      "basis": "system",
+      "effective_units": 7,
+      "expected_units": null,
+      "period": "2026-10",
+      "seller_sku": "MSKU-D",
+      "sid": "11072",
+      "sku": "A4P-TOY-002",
+      "system_extrapolated": false,
+      "system_units": 7
+    },
+    {
+      "basis": "system",
+      "effective_units": 8,
+      "expected_units": null,
+      "period": "2026-11",
+      "seller_sku": "MSKU-D",
+      "sid": "11072",
+      "sku": "A4P-TOY-002",
+      "system_extrapolated": false,
+      "system_units": 8
+    },
+    {
+      "basis": "system",
+      "effective_units": 6,
+      "expected_units": null,
+      "period": "2026-12",
+      "seller_sku": "MSKU-D",
+      "sid": "11072",
+      "sku": "A4P-TOY-002",
+      "system_extrapolated": false,
+      "system_units": 6
+    },
+    {
+      "basis": "unknown",
+      "effective_units": null,
+      "expected_units": null,
+      "period": "2026-10",
+      "seller_sku": "MSKU-W",
+      "sid": "90001",
+      "sku": "A4P-TOY-002",
+      "system_extrapolated": false,
+      "system_units": null
+    },
+    {
+      "basis": "unknown",
+      "effective_units": null,
+      "expected_units": null,
+      "period": "2026-11",
+      "seller_sku": "MSKU-W",
+      "sid": "90001",
+      "sku": "A4P-TOY-002",
+      "system_extrapolated": false,
+      "system_units": null
+    },
+    {
+      "basis": "unknown",
+      "effective_units": null,
+      "expected_units": null,
+      "period": "2026-12",
+      "seller_sku": "MSKU-W",
+      "sid": "90001",
+      "sku": "A4P-TOY-002",
+      "system_extrapolated": false,
+      "system_units": null
+    },
+    {
+      "basis": "human",
+      "effective_units": 130,
+      "expected_units": 130,
+      "period": "2026-10",
+      "seller_sku": "MSKU-A",
+      "sid": "11072",
+      "sku": "DCC1800264G1",
+      "system_extrapolated": false,
+      "system_units": 100
+    },
+    {
+      "basis": "system",
+      "effective_units": 120,
+      "expected_units": null,
+      "period": "2026-11",
+      "seller_sku": "MSKU-A",
+      "sid": "11072",
+      "sku": "DCC1800264G1",
+      "system_extrapolated": false,
+      "system_units": 120
+    },
+    {
+      "basis": "system",
+      "effective_units": 90,
+      "expected_units": null,
+      "period": "2026-12",
+      "seller_sku": "MSKU-A",
+      "sid": "11072",
+      "sku": "DCC1800264G1",
+      "system_extrapolated": false,
+      "system_units": 90
+    },
+    {
+      "basis": "unknown",
+      "effective_units": null,
+      "expected_units": null,
+      "period": "2026-10",
+      "seller_sku": "MSKU-B",
+      "sid": "11072",
+      "sku": "DCC1800264G1",
+      "system_extrapolated": false,
+      "system_units": null
+    },
+    {
+      "basis": "unknown",
+      "effective_units": null,
+      "expected_units": null,
+      "period": "2026-11",
+      "seller_sku": "MSKU-B",
+      "sid": "11072",
+      "sku": "DCC1800264G1",
+      "system_extrapolated": false,
+      "system_units": null
+    },
+    {
+      "basis": "unknown",
+      "effective_units": null,
+      "expected_units": null,
+      "period": "2026-12",
+      "seller_sku": "MSKU-B",
+      "sid": "11072",
+      "sku": "DCC1800264G1",
+      "system_extrapolated": false,
+      "system_units": null
+    },
+    {
+      "basis": "system",
+      "effective_units": 40,
+      "expected_units": null,
+      "period": "2026-10",
+      "seller_sku": "MSKU-C",
+      "sid": "11094",
+      "sku": "DCC1800264G1",
+      "system_extrapolated": false,
+      "system_units": 40
+    },
+    {
+      "basis": "system",
+      "effective_units": 44,
+      "expected_units": null,
+      "period": "2026-11",
+      "seller_sku": "MSKU-C",
+      "sid": "11094",
+      "sku": "DCC1800264G1",
+      "system_extrapolated": false,
+      "system_units": 44
+    },
+    {
+      "basis": "system",
+      "effective_units": 44,
+      "expected_units": null,
+      "period": "2026-12",
+      "seller_sku": "MSKU-C",
+      "sid": "11094",
+      "sku": "DCC1800264G1",
+      "system_extrapolated": true,
+      "system_units": 44
+    }
+  ],
+  "inventory": [
+    {
+      "basis": {
+        "as_of": "2026-09-21",
+        "closing_reason": null,
+        "demand": 7,
+        "includes_plan_purchase": false,
+        "reason": "no_seller_attribution",
+        "sku_level_in_transit": 60,
+        "source": "ch",
+        "sources": []
+      },
+      "closing": 33,
+      "inbound": null,
+      "onhand": 40,
+      "period": "2026-10",
+      "sid": "11072",
+      "sku": "A4P-TOY-002"
+    },
+    {
+      "basis": {
+        "as_of": "2026-09-21",
+        "closing_reason": null,
+        "demand": 8,
+        "includes_plan_purchase": false,
+        "reason": "no_seller_attribution",
+        "sku_level_in_transit": 0,
+        "source": "ch",
+        "sources": []
+      },
+      "closing": 25,
+      "inbound": null,
+      "onhand": 33,
+      "period": "2026-11",
+      "sid": "11072",
+      "sku": "A4P-TOY-002"
+    },
+    {
+      "basis": {
+        "as_of": "2026-09-21",
+        "closing_reason": null,
+        "demand": 6,
+        "includes_plan_purchase": false,
+        "reason": "no_seller_attribution",
+        "sku_level_in_transit": 0,
+        "source": "ch",
+        "sources": []
+      },
+      "closing": 19,
+      "inbound": null,
+      "onhand": 25,
+      "period": "2026-12",
+      "sid": "11072",
+      "sku": "A4P-TOY-002"
+    },
+    {
+      "basis": {
+        "as_of": "2026-09-21",
+        "closing_reason": "not_applicable",
+        "demand": null,
+        "includes_plan_purchase": false,
+        "reason": "no_seller_attribution",
+        "sku_level_in_transit": 60,
+        "source": "ch",
+        "sources": []
+      },
+      "closing": null,
+      "inbound": null,
+      "onhand": null,
+      "period": "2026-10",
+      "sid": "90001",
+      "sku": "A4P-TOY-002"
+    },
+    {
+      "basis": {
+        "as_of": "2026-09-21",
+        "closing_reason": "not_applicable",
+        "demand": null,
+        "includes_plan_purchase": false,
+        "reason": "no_seller_attribution",
+        "sku_level_in_transit": 0,
+        "source": "ch",
+        "sources": []
+      },
+      "closing": null,
+      "inbound": null,
+      "onhand": null,
+      "period": "2026-11",
+      "sid": "90001",
+      "sku": "A4P-TOY-002"
+    },
+    {
+      "basis": {
+        "as_of": "2026-09-21",
+        "closing_reason": "not_applicable",
+        "demand": null,
+        "includes_plan_purchase": false,
+        "reason": "no_seller_attribution",
+        "sku_level_in_transit": 0,
+        "source": "ch",
+        "sources": []
+      },
+      "closing": null,
+      "inbound": null,
+      "onhand": null,
+      "period": "2026-12",
+      "sid": "90001",
+      "sku": "A4P-TOY-002"
+    },
+    {
+      "basis": {
+        "as_of": "2026-09-21",
+        "closing_reason": "unknown_demand",
+        "demand": null,
+        "includes_plan_purchase": false,
+        "reason": "no_seller_attribution",
+        "sku_level_in_transit": 80,
+        "source": "ch",
+        "sources": []
+      },
+      "closing": null,
+      "inbound": null,
+      "onhand": 300,
+      "period": "2026-10",
+      "sid": "11072",
+      "sku": "DCC1800264G1"
+    },
+    {
+      "basis": {
+        "as_of": "2026-09-21",
+        "closing_reason": "unknown_demand",
+        "demand": null,
+        "includes_plan_purchase": false,
+        "reason": "no_seller_attribution",
+        "sku_level_in_transit": 120,
+        "source": "ch",
+        "sources": []
+      },
+      "closing": null,
+      "inbound": null,
+      "onhand": null,
+      "period": "2026-11",
+      "sid": "11072",
+      "sku": "DCC1800264G1"
+    },
+    {
+      "basis": {
+        "as_of": "2026-09-21",
+        "closing_reason": "unknown_demand",
+        "demand": null,
+        "includes_plan_purchase": false,
+        "reason": "no_seller_attribution",
+        "sku_level_in_transit": 0,
+        "source": "ch",
+        "sources": []
+      },
+      "closing": null,
+      "inbound": null,
+      "onhand": null,
+      "period": "2026-12",
+      "sid": "11072",
+      "sku": "DCC1800264G1"
+    },
+    {
+      "basis": {
+        "as_of": "2026-09-21",
+        "closing_reason": null,
+        "demand": 40,
+        "includes_plan_purchase": false,
+        "reason": "no_seller_attribution",
+        "sku_level_in_transit": 80,
+        "source": "ch",
+        "sources": []
+      },
+      "closing": -15,
+      "inbound": null,
+      "onhand": 25,
+      "period": "2026-10",
+      "sid": "11094",
+      "sku": "DCC1800264G1"
+    },
+    {
+      "basis": {
+        "as_of": "2026-09-21",
+        "closing_reason": null,
+        "demand": 44,
+        "includes_plan_purchase": false,
+        "reason": "no_seller_attribution",
+        "sku_level_in_transit": 120,
+        "source": "ch",
+        "sources": []
+      },
+      "closing": -59,
+      "inbound": null,
+      "onhand": -15,
+      "period": "2026-11",
+      "sid": "11094",
+      "sku": "DCC1800264G1"
+    },
+    {
+      "basis": {
+        "as_of": "2026-09-21",
+        "closing_reason": null,
+        "demand": 44,
+        "includes_plan_purchase": false,
+        "reason": "no_seller_attribution",
+        "sku_level_in_transit": 0,
+        "source": "ch",
+        "sources": []
+      },
+      "closing": -103,
+      "inbound": null,
+      "onhand": -59,
+      "period": "2026-12",
+      "sid": "11094",
+      "sku": "DCC1800264G1"
+    }
+  ],
+  "periods": [
+    "2026-10",
+    "2026-11",
+    "2026-12"
+  ],
+  "plan_id": 1,
+  "purchase": [
+    {
+      "period": "2026-10",
+      "planned_units": null,
+      "sku": "A4P-TOY-002"
+    },
+    {
+      "period": "2026-11",
+      "planned_units": null,
+      "sku": "A4P-TOY-002"
+    },
+    {
+      "period": "2026-12",
+      "planned_units": null,
+      "sku": "A4P-TOY-002"
+    },
+    {
+      "period": "2026-10",
+      "planned_units": 500,
+      "sku": "DCC1800264G1"
+    },
+    {
+      "period": "2026-11",
+      "planned_units": null,
+      "sku": "DCC1800264G1"
+    },
+    {
+      "period": "2026-12",
+      "planned_units": null,
+      "sku": "DCC1800264G1"
+    }
+  ],
+  "sku_pipeline": [
+    {
+      "no_seller_attribution": true,
+      "period": "2026-10",
+      "sku": "A4P-TOY-002",
+      "sources": [
+        {
+          "kind": "purchase_in_transit",
+          "ref": "PO-2026-0918",
+          "units": 60
+        }
+      ],
+      "units": 60
+    },
+    {
+      "no_seller_attribution": true,
+      "period": "2026-10",
+      "sku": "DCC1800264G1",
+      "sources": [
+        {
+          "kind": "purchase_in_transit",
+          "ref": "PO-2026-0912",
+          "units": 50
+        },
+        {
+          "kind": "purchase_in_transit",
+          "ref": "PO-2026-0915",
+          "units": 30
+        }
+      ],
+      "units": 80
+    },
+    {
+      "no_seller_attribution": true,
+      "period": "2026-11",
+      "sku": "DCC1800264G1",
+      "sources": [
+        {
+          "kind": "purchase_in_transit",
+          "ref": "PO-2026-0920",
+          "units": 120
+        }
+      ],
+      "units": 120
+    }
+  ]
+}
