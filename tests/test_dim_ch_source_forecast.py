@@ -11,6 +11,16 @@ Fix round 1（团队负责人裁定 2026-09-23）：
   max(_captured_at)`），本文件的假 query 直接回放这个布尔值，不再在 Python
   侧模拟一个假的 wall clock——跨机器比较两个 naive datetime 是本轮要修的
   bug 本身（sandbox 系统时区与 CH 不一致时会静默算错，且不报错）。
+
+Fix round 2（团队负责人裁定 2026-09-23）：
+· `ChUnavailable` 之前定义了从没被抛出过——这里补上：`Query` 抛异常时，
+  `ChSource.as_of()` 必须分类后抛 `ChUnavailable`，不许让原始 driver 异常
+  漏出去。分类复用 `shared.ch_client.describe_failure`（同一套区分「超时」
+  与「连不上」的机器——`dim/` 不许 import 它，测试文件不受这条限制，直接
+  注入真正的分类器，而不是自己另造一套判断逻辑）。
+· `[forecast]` 的 `snapshot_lookback_days`/`snapshot_settle_minutes` 之前
+  声明了没人读，现在真的接进 `ChSource.__init__`（`lookback_days`/
+  `settle_minutes`），下面补「改了会变」的测试。
 """
 from __future__ import annotations
 
@@ -19,6 +29,7 @@ import datetime as dt
 import pytest
 
 from dim import ch_source as cs
+from shared.ch_client import describe_failure
 
 #: 实测形状（design §1.3 E-1/E-3）：近 20 个采集日 7,934~8,080 行、每日恰好 21 个 sid，
 #: 当天 06:34~07:39 起跑、约 60 秒跑完。
@@ -116,3 +127,85 @@ def test_as_of_caches_within_ttl_and_rebuilds_after():
     clock[0] += dt.timedelta(seconds=301)
     src.as_of()
     assert len(calls) == 2, "TTL 过了还不重建 = 缓存在保留陈旧"
+
+
+def _raise(exc: BaseException):
+    def q(sql: str):
+        raise exc
+    return q
+
+
+def test_connect_refused_becomes_ch_unavailable_with_the_right_kind():
+    """★ 用真正的 describe_failure 分类（不是另造一套）——ch_client 文档记录的
+    真实形态：`... ← ConnectionRefusedError(111)`。"""
+    try:
+        raise ConnectionRefusedError(111, "Connection refused")
+    except ConnectionRefusedError as inner:
+        exc = RuntimeError("driver 包了一层")
+        exc.__cause__ = inner
+
+    src = cs.ChSource(_raise(exc), classify_failure=describe_failure)
+    with pytest.raises(cs.ChUnavailable) as e:
+        src.as_of()
+    assert e.value.cause["kind"] == "connect_refused"
+    assert e.value.target == cs.FBA_DETAIL_TABLE
+    # ★ 原始 driver 异常类型不许漏出去——调用方只应该看见 ChUnavailable。
+    assert not isinstance(e.value, RuntimeError)
+
+
+def test_timeout_becomes_ch_unavailable_with_the_right_kind():
+    """★ 同上，真实形态：`... ← ConnectTimeoutError ← TimeoutError`——
+    「超时」与「连不上」处置相反，kind 必须能分得开。"""
+    try:
+        raise TimeoutError("timed out")
+    except TimeoutError as inner:
+        exc = RuntimeError("driver 包了一层")
+        exc.__cause__ = inner
+
+    src = cs.ChSource(_raise(exc), classify_failure=describe_failure)
+    with pytest.raises(cs.ChUnavailable) as e:
+        src.as_of()
+    assert e.value.cause["kind"] == "timeout"
+    assert not isinstance(e.value, RuntimeError)
+
+
+def test_ch_unavailable_default_classifier_still_fires_without_injection():
+    """★ 不注入 classify_failure 时（dim/ 不许 import shared.ch_client，没法
+    默认就用真分类器）也必须抛 ChUnavailable，只是 kind 诚实地写 "unknown"——
+    不能因为没注入分类器就让原始异常漏出去。"""
+    src = cs.ChSource(_raise(RuntimeError("boom")))
+    with pytest.raises(cs.ChUnavailable) as e:
+        src.as_of()
+    assert e.value.cause["kind"] == "unknown"
+
+
+def test_lookback_days_is_wired_into_the_sql():
+    """★ [forecast].snapshot_lookback_days 之前声明了没人读——这里证明
+    改它是真的会改变发给 CH 的 SQL，不是一个不生效的旋钮。"""
+    calls = []
+
+    def q(sql: str):
+        calls.append(sql)
+        return [day(23)]
+
+    cs.ChSource(q, lookback_days=3).as_of()
+    assert "today() - 3" in calls[0]
+
+
+def test_settle_minutes_is_wired_into_the_sql():
+    """★ 同上，snapshot_settle_minutes。"""
+    calls = []
+
+    def q(sql: str):
+        calls.append(sql)
+        return [day(23)]
+
+    cs.ChSource(q, settle_minutes=10).as_of()
+    assert "INTERVAL 10 MINUTE" in calls[0]
+
+
+def test_lookback_days_shows_up_in_the_empty_candidate_error():
+    """★ pick_snapshot_date 自己也吃这个参数（用于报错文案），不是只在 SQL
+    格式化里用一次就丢掉。"""
+    with pytest.raises(cs.UnknownShape, match=r"近 3 天"):
+        cs.pick_snapshot_date([], 0.30, MIN_ROWS, MIN_SID, lookback_days=3)

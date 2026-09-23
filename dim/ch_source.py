@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import time
 
 log = logging.getLogger("scm.dim")
 
@@ -265,23 +266,32 @@ def fetch_seller(query: Query) -> Fetched:
 
 from dim.source import InTransit  # ★ 只有本段的 ChSource 需要它
 
+#: ★ ChUnavailable 的 target 与 SQL 的 FROM 共用同一个字面量——写两遍会有
+#:   一天悄悄对不上（改了表名却只改了其中一处）。
+FBA_DETAIL_TABLE = "jxd_raw.lingxing_inventory_fba_detail"
+
 #: 候选快照日。★ 只问 fba_detail —— as_of 标注的是**在仓数**，它的时点就是这张表的。
 #: ★ Fix round 1（团队负责人裁定）：「已写完」不再拿 Python 端的 wall clock 去比
 #:   CH 的 `_captured_at`——两台机器的时钟不是同一个时钟，naive datetime 相减
 #:   看起来能跑，实际比的是两个可能不同时区的「本地时间」，静默算错还不报错
 #:   （这正是本仓 CLAUDE.md 明令禁止的「静默兜底」）。改成让 CH 用它自己的
 #:   `now()` 就地算好 `settled`，随行一起回来，Python 侧只回放这个布尔值。
-SQL_FBA_CAPTURE_DAYS = """
+SQL_FBA_CAPTURE_DAYS = f"""
 SELECT _captured_date, count() AS rows, uniq(sid) AS uniq_sid,
-       now() - INTERVAL {settle} MINUTE > max(_captured_at) AS settled
-  FROM jxd_raw.lingxing_inventory_fba_detail
- WHERE _captured_date >= today() - {lookback}
+       now() - INTERVAL {{settle}} MINUTE > max(_captured_at) AS settled
+  FROM {FBA_DETAIL_TABLE}
+ WHERE _captured_date >= today() - {{lookback}}
  GROUP BY _captured_date
  ORDER BY _captured_date DESC
 """
 
 #: ★ 实测：该表当天 06:34~07:39 起跑、约 60 秒跑完（design §1.3 E-3），而刷新调度
 #:   就排在 06:30 —— 半写窗口是真实存在的。30 分钟 = 实测时长的 30 倍。
+#: ★ Fix round 2：这两个数是 `ChSource.__init__` 的默认值，真正生效的是
+#:   构造参数 `lookback_days`/`settle_minutes`——它们与 `[forecast]` 的
+#:   `snapshot_lookback_days`/`snapshot_settle_minutes` 一一对应，装配层
+#:   （Task 5）把配置值传进来。以前这俩配置键声明了但没人读，改了配置文件
+#:   毫无效果——一个不生效的旋钮比没有旋钮更坏。
 SETTLE_MINUTES = 30
 LOOKBACK_DAYS = 7
 
@@ -298,6 +308,22 @@ class ChUnavailable(Exception):
     def __init__(self, target: str, cause: dict) -> None:
         self.target, self.cause = target, cause
         super().__init__(f"ch_unavailable target={target} cause={cause}")
+
+
+def _unclassified_failure(e: BaseException) -> dict:
+    """★ `classify_failure` 的默认值——`dim/` 不许 import `shared.ch_client`
+    （`tests/test_layering.py::test_pure_layers_cannot_reach_a_connection`：
+    哪怕只 `from shared.ch_client import describe_failure`，`full_imports()`
+    记的是整条 `node.module`，一样会命中 `NO_CONNECTIONS` 而红），所以这里
+    没法直接调用那边按 cause 链分辨「超时」与「连不上」的真分类器。
+
+    与 `query`/`now` 同一个模式：真正的分类逻辑由调用方注入——生产装配层
+    （`api/ui/source_factory.py`，Task 5）在 `api/` 层，允许 import
+    `shared.ch_client`，把 `describe_failure` 本身（签名恰好就是
+    `Callable[[BaseException], dict]`）传进来作为 `classify_failure`。
+    这个默认值只是离线可跑的占位，`kind` 恒为 `"unknown"`——不许把它误读成
+    「已经分类过、就是分不出类型」，那两者是两回事。"""
+    return {"kind": "unknown", "type": type(e).__name__, "msg": str(e)}
 
 
 class ChDataUnusable(Exception):
@@ -317,7 +343,8 @@ def _default_now() -> dt.datetime:
 
 
 def pick_snapshot_date(rows: list[tuple], threshold: float,
-                       min_rows: int, min_distinct_sid: int
+                       min_rows: int, min_distinct_sid: int, *,
+                       lookback_days: int = LOOKBACK_DAYS
                        ) -> tuple[dt.date, list[dict]]:
     """从新到旧挑第一个「已采完 + 没掉档」的采集日。返回 (日期, 被拒清单)。
 
@@ -336,7 +363,7 @@ def pick_snapshot_date(rows: list[tuple], threshold: float,
     """
     if not rows:
         raise UnknownShape(
-            f"lingxing_inventory_fba_detail 近 {LOOKBACK_DAYS} 天一个采集日都没有。"
+            f"{FBA_DETAIL_TABLE} 近 {lookback_days} 天一个采集日都没有。"
             "★ 空不是「今天没货」——把采集缺口读成空会让整张表的在仓变成 0")
     ordered = sorted(rows, key=lambda r: r[0], reverse=True)
     limit = 1.0 - threshold
@@ -368,38 +395,65 @@ class ChSource:
     只有 `as_of()` 在本任务（Task 1）接了真取数；其余三个方法仍显式
     `NotImplementedError`，留给 Task 2~4。
 
-    ★ `min_rows`/`min_distinct_sid` 的默认值 = `shared.config._FORECAST_DEFAULTS`
-    里同名键的默认值（E-1 实测：`SQL_FBA_CAPTURE_DAYS` 近 20 个采集日
-    2026-09-23 测得 7,934~8,080 行、uniq(sid) 恒为 21）。与 `drop_threshold` /
-    `cache_ttl_s` 同一个理由，不是 import 被禁：这两个数字跟着 `[forecast]`
+    ★ `min_rows`/`min_distinct_sid`/`lookback_days`/`settle_minutes` 的默认值
+    = `shared.config._FORECAST_DEFAULTS` 里同名键（`min_rows`/`min_distinct_sid`
+    E-1 实测：`SQL_FBA_CAPTURE_DAYS` 近 20 个采集日 2026-09-23 测得
+    7,934~8,080 行、uniq(sid) 恒为 21；`lookback_days`/`settle_minutes` 就是
+    模块常量 `LOOKBACK_DAYS`/`SETTLE_MINUTES`）。与 `drop_threshold` /
+    `cache_ttl_s` 同一个理由，不是 import 被禁：这些数字跟着 `[forecast]`
     配置走，`dim/` 层只做纯变换、不读配置文件——真正的配置来源由未来的装配层
     （`api/ui/source_factory.py`，Task 5）读出来再作为构造参数传进来，这里
     只重复一次默认值，保证不传时离线也能用同一批 E-1 数字跑起来。
+
+    ★ `classify_failure` 同理是注入点，不是读配置——它对应
+    `shared.ch_client.describe_failure` 的签名（`Callable[[BaseException],
+    dict]`），生产装配层会把那个真正实现传进来；默认值 `_unclassified_failure`
+    只保证离线也能构造、也能触发 `ChUnavailable`，但 `kind` 恒为
+    `"unknown"`（见该函数文档）。
     """
 
     def __init__(self, query: Query, *, now: Callable[[], dt.datetime] = _default_now,
                  drop_threshold: float = 0.30, cache_ttl_s: int = 300,
-                 min_rows: int = 7934, min_distinct_sid: int = 21) -> None:
+                 min_rows: int = 7934, min_distinct_sid: int = 21,
+                 lookback_days: int = LOOKBACK_DAYS, settle_minutes: int = SETTLE_MINUTES,
+                 classify_failure: Callable[[BaseException], dict] = _unclassified_failure
+                 ) -> None:
         self._q = query
         self._now = now
         self._threshold = drop_threshold
         self._ttl = dt.timedelta(seconds=cache_ttl_s)
         self._min_rows = min_rows
         self._min_distinct_sid = min_distinct_sid
+        self._lookback_days = lookback_days
+        self._settle_minutes = settle_minutes
+        self._classify = classify_failure
         self._as_of: tuple[dt.datetime, dt.date] | None = None
 
     def as_of(self) -> dt.date:
         now = self._now()
         if self._as_of is not None and now - self._as_of[0] < self._ttl:
             return self._as_of[1]
-        rows = self._q(SQL_FBA_CAPTURE_DAYS.format(lookback=LOOKBACK_DAYS, settle=SETTLE_MINUTES))
+        sql = SQL_FBA_CAPTURE_DAYS.format(lookback=self._lookback_days, settle=self._settle_minutes)
+        t0 = time.perf_counter()
+        try:
+            rows = self._q(sql)
+        except Exception as e:
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            cause = self._classify(e)
+            # ★ 三问：打的谁（target）· 多久（elapsed_ms）· 怎么 failed 的（cause，
+            #   含 kind——「超时」与「连不上」处置相反，不许只留 e 的 message。
+            log.warning("op=ch_as_of outcome=fail target=%s elapsed_ms=%d cause=%s",
+                       FBA_DETAIL_TABLE, elapsed_ms, cause)
+            raise ChUnavailable(target=FBA_DETAIL_TABLE, cause=cause) from e
+        elapsed_ms = (time.perf_counter() - t0) * 1000
         date, rejected = pick_snapshot_date(
-            rows, self._threshold, self._min_rows, self._min_distinct_sid)
+            rows, self._threshold, self._min_rows, self._min_distinct_sid,
+            lookback_days=self._lookback_days)
         for r in rejected:
             log.warning("op=ch_as_of outcome=rejected %s accepted=%s —— "
                         "回退了一天，这条就是它的证据", r, date)
-        log.info("op=ch_as_of outcome=ok as_of=%s candidates=%d rejected=%d",
-                 date, len(rows), len(rejected))
+        log.info("op=ch_as_of outcome=ok as_of=%s candidates=%d rejected=%d elapsed_ms=%d",
+                 date, len(rows), len(rejected), elapsed_ms)
         self._as_of = (now, date)
         return date
 
