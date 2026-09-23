@@ -109,6 +109,62 @@ def test_a_db_level_failure_inside_upsert_still_writes_provenance_and_does_not_s
         f"error 字段没有点名异常成因：{run[1]!r}")
 
 
+def test_bogus_trigger_is_refused_before_any_mirror_runs(wipe):
+    """review 09-22 二轮：调用方拼错 trigger 不能长得像"这批镜像刷新失败了"——
+    必须在碰任何镜像之前就地爆炸，不排队也不半跑。"""
+    with pytest.raises(rd.UnknownTrigger) as exc:
+        rd.refresh_all("bogus")
+    assert "scheduler" in str(exc.value) and "cli" in str(exc.value) and "api" in str(exc.value), (
+        f"错误消息没有点名允许的取值：{exc.value}")
+    with pg_conn() as c, c.cursor() as cur:
+        assert _rows(cur, "SELECT count(*) FROM dim_refresh_run") == [(0,)], (
+            "坏参数被拒之前不该有任何一次刷新尝试留痕")
+    with advisory_lock():          # ★ 校验失败不该先抢锁——锁必须还拿得到
+        pass
+
+
+def test_unknown_or_inactive_actor_is_refused_before_any_mirror_runs(seed):
+    """同上一条，针对 actor：不存在、或存在但已停用，都必须在跑任何镜像之前
+    就地爆炸——`None`（调度触发，没有人）必须放行。"""
+    with pytest.raises(rd.UnknownActor, match="no-such-actor"):
+        rd.refresh_all("cli", actor="no-such-actor")
+    with pytest.raises(rd.UnknownActor, match=seed.actor_inactive):
+        rd.refresh_all("cli", actor=seed.actor_inactive)
+    with pg_conn() as c, c.cursor() as cur:
+        assert _rows(cur, "SELECT count(*) FROM dim_refresh_run") == [(0,)], (
+            "坏 actor 被拒之前不该有任何一次刷新尝试留痕")
+    # ★ None 必须放行——不能因为"没传 actor"被误判成坏参数
+    got = rd.refresh_all("cli", only="sku_catalog", query=R.replay(R.SKU_CATALOG))
+    assert [r.ok for r in got] == [True]
+
+
+def test_provenance_write_failure_is_contained_and_others_still_run(seed, monkeypatch):
+    """review 09-22 二轮 finding：`SAVEPOINT mirror_<name>` 修好了 `_upsert()`
+    那一步，但收尾的留痕 INSERT 本身还在保护范围之外——同样的失败形状只是
+    挪后了一步（哪怕 trigger/actor 已经在 `refresh_all` 里挡过，这条 INSERT
+    仍可能撞上别的约束或连接问题）。这里直接 monkeypatch 留痕 INSERT 的 SQL
+    文本（引用一个不存在的列），在不绕开入口校验的前提下单独制造"合法参数、
+    DB 却拒绝"的场景。"""
+    monkeypatch.setattr(
+        rd, "_PROVENANCE_SQL",
+        "INSERT INTO dim_refresh_run (mirror, trigger, actor, started_at, finished_at,"
+        " source_max_captured, rows_in, rows_dropped, drop_reasons, ok, nonexistent_column)"
+        " VALUES (%s, %s, %s, %s, now(), %s, %s, %s, %s, %s, %s) RETURNING run_id")
+
+    got = rd.refresh_all("cli", query=_mixed_query_all_good())
+    assert len(got) == 4, "四张镜像都要跑到——留痕写不出来不能打断循环"
+    assert all(r.ok is False for r in got), "留痕都没写成，这一轮不能算数"
+    assert all(r.run_id == rd.NO_PROVENANCE_ROW for r in got)
+    assert all("provenance_write_failed" in (r.error or "") for r in got)
+
+    # ★ upsert 本身仍然落地了——provenance 用的是独立于 mirror_<name> 的
+    #   SAVEPOINT，不该连累已经成功写完的镜像数据。
+    with pg_conn() as c, c.cursor() as cur:
+        assert _rows(cur, "SELECT count(*) FROM sku_catalog WHERE sku = 'DCC1800264G1'") == [(1,)]
+        assert _rows(cur, "SELECT count(*) FROM dim_refresh_run") == [(0,)], (
+            "留痕 INSERT 本身失败——不该有任何一行落进 dim_refresh_run")
+
+
 def _mixed_query():
     """按 SQL 里出现的表名派发到对应的假行。"""
     from dim import ch_source as cs
@@ -126,5 +182,14 @@ def _mixed_query_with_db_level_failure():
     from dim import ch_source as cs
     dup_sku_catalog = [("SKU-DUP", "第一份", R.D2), ("SKU-DUP", "第二份(重复主键)", R.D2)]
     table = {cs.SQL_SKU_CATALOG: dup_sku_catalog, cs.SQL_MSKU_BRIDGE: R.MSKU_BRIDGE,
+             cs.SQL_WAREHOUSE: R.WAREHOUSE, cs.SQL_SELLER: R.SELLER}
+    return lambda sql: list(table[sql])
+
+
+def _mixed_query_all_good():
+    """四张镜像全给合法数据——用于只想验证留痕写入本身（不是 upsert）失败
+    时的隔离效果，不希望 upsert 阶段就先出错混淆归因。"""
+    from dim import ch_source as cs
+    table = {cs.SQL_SKU_CATALOG: R.SKU_CATALOG, cs.SQL_MSKU_BRIDGE: R.MSKU_BRIDGE,
              cs.SQL_WAREHOUSE: R.WAREHOUSE, cs.SQL_SELLER: R.SELLER}
     return lambda sql: list(table[sql])

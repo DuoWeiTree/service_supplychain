@@ -23,9 +23,37 @@ from shared.pg_client import pg_conn, pg_error_fields, timed
 
 log = logging.getLogger("scm.jobs")
 
+#: 与迁移 006 `dim_refresh_run_trigger_known` 的 `CHECK (trigger IN (...))`
+#: 同一张白名单——在 Python 侧复述而不是回查 `information_schema` 现查这条
+#: CHECK：约束的取值集合几乎不会变，回查反而多一次可能失败的 I/O，且早不
+#: 早于建立数据库连接就该拒绝，见下面 `refresh_all` 的用法。
+ALLOWED_TRIGGERS = ("scheduler", "cli", "api")
+
+#: review 09-22 二轮：provenance INSERT 本身在 DB 层失败时没有行可引用——
+#: 这条 INSERT 是唯一一次写 `dim_refresh_run` 的机会（brief 的「只追加一条
+#: 完整的行」判据），失败了不会有"再补一条"的余地，只能用哨兵值占位。
+NO_PROVENANCE_ROW = -1
+
 
 class CoverageDrop(Exception):
     pass
+
+
+class UnknownTrigger(ValueError):
+    """★ review 09-22 二轮：调用方传错 trigger 必须在碰任何镜像之前就地爆炸，
+    不能长得像"这批镜像刷新失败了"——运维会去查错镜像，而真正的 bug
+    在调用方那一行传参。"""
+
+    def __init__(self, trigger: str):
+        super().__init__(
+            f"trigger 必须是 {ALLOWED_TRIGGERS} 之一，收到 {trigger!r}")
+
+
+class UnknownActor(ValueError):
+    """★ 同上一条：`actor` 不存在或已停用，是调用方的错，不是镜像刷新失败。"""
+
+    def __init__(self, actor: str):
+        super().__init__(f"actor {actor!r} 不存在或已停用")
 
 
 class RunRow(NamedTuple):
@@ -101,6 +129,40 @@ def _upsert(cur, m: registry.Mirror, rows: list[tuple], at: dt.datetime) -> None
         [(*r, at) for r in rows])
 
 
+def _check_actor(actor: str | None) -> None:
+    """★ review 09-22 二轮：`actor` 必须存在且 active，一次查询搞定，
+    在拿 advisory lock、跑任何镜像之前——`None` 允许（调度触发的那一轮
+    背后没有人，006 的 `actor` 列本就可空）。"""
+    if actor is None:
+        return
+    with pg_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT active FROM actor WHERE actor_id = %s", (actor,))
+        row = cur.fetchone()
+    if row is None or not row[0]:
+        raise UnknownActor(actor)
+
+
+#: ★ 唯一一条写 `dim_refresh_run` 的 SQL 文本——独立成模块级常量 + 函数，是为了
+#: 让 review 09-22 二轮要求的"这条 INSERT 本身在 DB 层失败"测试能直接
+#: monkeypatch 这里，而不必绕开 `refresh_all` 已经挡住的 trigger/actor 校验
+#: 去伪造一个「合法参数、DB 却拒绝」的场景。
+_PROVENANCE_SQL = (
+    "INSERT INTO dim_refresh_run (mirror, trigger, actor, started_at, finished_at,"
+    " source_max_captured, rows_in, rows_dropped, drop_reasons, ok, error)"
+    " VALUES (%s, %s, %s, %s, now(), %s, %s, %s, %s, %s, %s) RETURNING run_id"
+)
+
+
+def _write_provenance(cur, mirror: str, trigger: str, actor: str | None,
+                      started_at: dt.datetime, source_max_captured, rows_in: int,
+                      rows_dropped: int, reasons: dict, ok: bool,
+                      error: str | None) -> int:
+    cur.execute(_PROVENANCE_SQL,
+                (mirror, trigger, actor, started_at, source_max_captured, rows_in,
+                 rows_dropped, json.dumps(reasons, ensure_ascii=False), ok, error))
+    return cur.fetchone()[0]
+
+
 def refresh_one(cur, m: registry.Mirror, query, trigger: str, actor: str | None) -> RunRow:
     """★ `dim_refresh_run` 只追加（006 的 `BEFORE UPDATE OR DELETE` 触发器挡住了
     `UPDATE`）—— 整轮跑完只在收尾时写**一次完整的行**，不分「先 INSERT 占位、
@@ -153,13 +215,35 @@ def refresh_one(cur, m: registry.Mirror, query, trigger: str, actor: str | None)
         else:
             log.warning("op=refresh mirror=%s trigger=%s outcome=fail err_type=%s err=%s",
                         m.name, trigger, type(e).__name__, e)
-    cur.execute(
-        "INSERT INTO dim_refresh_run (mirror, trigger, actor, started_at, finished_at,"
-        " source_max_captured, rows_in, rows_dropped, drop_reasons, ok, error)"
-        " VALUES (%s, %s, %s, %s, now(), %s, %s, %s, %s, %s, %s) RETURNING run_id",
-        (m.name, trigger, actor, started_at, source_max_captured, rows_in, rows_dropped,
-         json.dumps(reasons, ensure_ascii=False), ok, error))
-    run_id = cur.fetchone()[0]
+    # ★ review 09-22 二轮 finding：上面那个 SAVEPOINT 只框住了「取数 + 校验 +
+    #   upsert」，收尾这条 provenance INSERT 本身还在保护范围之外——同样的
+    #   失败形状只是挪后了一步：这条 INSERT 若在 DB 层失败（哪怕 trigger/actor
+    #   已经在 `refresh_all` 里挡过，仍可能撞上别的约束或连接问题），异常会
+    #   直接冒出 `refresh_one`，把 `refresh_all` 的循环也炸断。所以它需要
+    #   自己单独一层 SAVEPOINT，出错就地兜住、不重试、不让异常逃出去。
+    prov_savepoint = f"provenance_{m.name}"
+    cur.execute(f"SAVEPOINT {prov_savepoint}")
+    try:
+        run_id = _write_provenance(cur, m.name, trigger, actor, started_at,
+                                   source_max_captured, rows_in, rows_dropped,
+                                   reasons, ok, error)
+    except BaseException as e:  # noqa: BLE001 - 这是留痕表**唯一**的写入语句；
+        # 它失败时必须兜住一切异常类型，否则就是让"今天刷过但一行证据都没留下"
+        # 的批次同时炸断 refresh_all 的循环——两条 binding 判据一次性都破。
+        cur.execute(f"ROLLBACK TO SAVEPOINT {prov_savepoint}")
+        prov_type = type(e).__name__
+        if isinstance(e, psycopg2.Error):
+            log.error("op=refresh_provenance mirror=%s trigger=%s outcome=fail"
+                      " err_type=%s pg=%s", m.name, trigger, prov_type, pg_error_fields(e))
+        else:
+            log.error("op=refresh_provenance mirror=%s trigger=%s outcome=fail"
+                      " err_type=%s err=%s", m.name, trigger, prov_type, e)
+        # ★ 留痕都写不出来，这一轮就不能算数——即使前面 _upsert 本身成功了，
+        #   也没有任何证据能证明它发生过（下一轮的 _baseline() 找不到这行）。
+        #   run_id 用哨兵值占位：没有行可引用。
+        ok = False
+        run_id = NO_PROVENANCE_ROW
+        error = f"provenance_write_failed {prov_type}: {e}"[:2000]
     if ok:
         log.info("op=refresh mirror=%s trigger=%s outcome=ok rows_in=%d dropped=%d %s",
                  m.name, trigger, rows_in, rows_dropped, reasons)
@@ -168,6 +252,12 @@ def refresh_one(cur, m: registry.Mirror, query, trigger: str, actor: str | None)
 
 def refresh_all(trigger: str, actor: str | None = None, only: str | None = None,
                 query=None) -> list[RunRow]:
+    # ★ review 09-22 二轮：调用方传错参数必须在碰任何镜像之前就地爆炸——不排队、
+    #   不半跑、不长得像"这批镜像刷新失败了"。两条校验都排在 `advisory_lock()`
+    #   之前：坏参数不该先抢锁再报错，那样会让下一个正常调用平白多等一轮。
+    if trigger not in ALLOWED_TRIGGERS:
+        raise UnknownTrigger(trigger)
+    _check_actor(actor)
     targets = [registry.by_name(only)] if only else registry.refresh_order()
     if only and targets[0].pending:
         raise KeyError(f"{only} 是 pending 条目，本阶段没有取数实现")
