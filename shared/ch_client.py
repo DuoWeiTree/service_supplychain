@@ -4,6 +4,11 @@
   「连不上」，于是没人会想到去看代理。这条是邻居仓 model_inventory_forecast
   实测出来的，照搬它的 PoolManager 写法。
 ★ dim/ 不许 import 本模块（tests/test_layering.py:55）—— 客户端由 jobs/ 注入。
+
+★ Task 5 收紧：只读不能只靠文档承诺 —— `clickhouse_connect` 原始客户端上
+  `command()` / `insert()` 两个写方法必须**出不了这个模块**。`ch_client()`
+  的模块级入口只交出下面这层薄封装，`insert`/`command` 不在它身上，类型系统
+  就是护栏本身，不是「大家记得别调」。
 """
 from __future__ import annotations
 
@@ -24,6 +29,19 @@ CH_CONNECT_TIMEOUT_S = 5
 Query = Callable[[str], list[tuple]]
 
 
+class ReadOnlyClient:
+    """只暴露 `query()`。★ 不用组合出转发全部属性的 `__getattr__` —— 那样
+    `command`/`insert` 一样会经由属性穿透逃出去，收紧就成了摆设。"""
+
+    __slots__ = ("_raw",)
+
+    def __init__(self, raw) -> None:
+        self._raw = raw
+
+    def query(self, sql: str):
+        return self._raw.query(sql)
+
+
 def describe_failure(e: BaseException) -> dict:
     """★ 「超时」与「连不上」必须分得开：前者调大超时有用，后者一行都不生效。"""
     cause = getattr(e, "cause", None) or e.__cause__
@@ -32,15 +50,16 @@ def describe_failure(e: BaseException) -> dict:
     return {"kind": kind, "type": type(e).__name__, "code": code, "msg": str(e)}
 
 
-def ch_client():
+def ch_client() -> ReadOnlyClient:
     c = clickhouse()
     pm = httputil.get_pool_manager(http_proxy=None, https_proxy=None)   # ★ 无代理直连
-    return clickhouse_connect.get_client(
+    raw = clickhouse_connect.get_client(
         host=c["host"], port=int(c.get("port", 8123)),
         username=c.get("user", "default"), password=c.get("password", ""),
         database=c.get("database", "jxd_raw"), secure=c.get("secure", False),
         connect_timeout=CH_CONNECT_TIMEOUT_S, pool_mgr=pm,
     )
+    return ReadOnlyClient(raw)
 
 
 def ch_query(client) -> Query:

@@ -127,9 +127,31 @@ def test_pure_layers_cannot_reach_a_connection():
     assert not bad, f"纯层碰了连接或接口层（离线可测就没了）：{bad}"
 
 
+#: ★ Task 5 扩面：dim/ 之外，jobs/** 与 shared/ch_client.py 也要守——三个入口的
+#: 刷新作业就装在 jobs/ 里，它离「手滑写了一句 INSERT INTO jxd_raw.…」最近。
+#: 但 jobs/refresh_dims.py 本身合法拥有一条写 PG 镜像表的 upsert（设计 §7.1：
+#: 取数在 dim/，落库在 jobs/），所以不能像 dim/ 那样「见写动词就红」——
+#: 要能分清「写的是 CH 的表」与「写的是 PG 的镜像/留痕表」。
+_CH_WRITE_TARGET_WINDOW = 300  # 写动词后面这么多字符内出现 jxd_raw，才判定是在写 CH
+
+
 def test_l7_no_writes_to_clickhouse():
     write = re.compile(r"(?i)\b(insert\s+into|alter\s+table|drop\s+table|create\s+table)\b")
+
+    # dim/：取数层，压根不该出现任何写动词，不管目标是谁——哪怕写的是 PG，
+    # 也说明落库逻辑混进了本该只做「取数 + 纯变换」的这一层。
     bad = [str(p.relative_to(ROOT)) for p in sources("dim") if write.search(p.read_text("utf-8"))]
+
+    # jobs/** 与 shared/ch_client.py：只有写动词的目标是 CH 表（jxd_raw.*）才算违规——
+    # PG 镜像表的 upsert（目标是 dim.registry 里的镜像名或 dim_refresh_run）合法存在于此。
+    ch_scope = sources("jobs") + [ROOT / "shared" / "ch_client.py"]
+    for p in ch_scope:
+        text = p.read_text("utf-8")
+        for m in write.finditer(text):
+            window = text[m.start(): m.start() + _CH_WRITE_TARGET_WINDOW]
+            if "jxd_raw" in window.lower():
+                bad.append(f"{p.relative_to(ROOT)}:{text[:m.start()].count(chr(10)) + 1}")
+
     assert not bad, f"L7 违规（CH 只读）：{bad}"
 
 

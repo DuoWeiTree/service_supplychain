@@ -3,7 +3,7 @@ import logging
 
 import pytest
 
-from shared.ch_client import CH_CONNECT_TIMEOUT_S, ch_query
+from shared.ch_client import CH_CONNECT_TIMEOUT_S, ReadOnlyClient, ch_query
 
 
 class _Boom:
@@ -46,3 +46,23 @@ def test_timeout_and_connect_failure_are_distinguishable():
 
 def test_connect_timeout_is_explicit():
     assert CH_CONNECT_TIMEOUT_S == 5
+
+
+def test_read_only_wrapper_hides_write_methods_of_the_raw_client():
+    """★ CH 只读必须由类型收窄硬保证，不是靠注释：`ch_client()` 的模块级
+    入口只能交出这层封装，原始 clickhouse_connect 客户端的 command()/insert()
+    绝不能逃出 shared/ch_client.py。"""
+    class _RawWithWriteMethods:
+        def query(self, sql):
+            return type("R", (), {"result_rows": [(1,)]})()
+
+        def command(self, *a, **k):
+            raise AssertionError("command() 必须不可达 —— CH 只读")
+
+        def insert(self, *a, **k):
+            raise AssertionError("insert() 必须不可达 —— CH 只读")
+
+    w = ReadOnlyClient(_RawWithWriteMethods())
+    assert not hasattr(w, "insert"), "insert() 逃出了只读封装"
+    assert not hasattr(w, "command"), "command() 逃出了只读封装"
+    assert w.query("SELECT 1").result_rows == [(1,)]
