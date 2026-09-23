@@ -27,40 +27,31 @@ class Mirror:
     note: str = ""
 
 
-def _fetch_pending_stage_a(*_args: object, **_kwargs: object) -> None:
-    """★ 占位，不是「还没写」：阶段 A 四张的取数 SQL 在 Task 4 接上（设计 §7.1）。
-
-    分辨「设计未定」与「还没接线」靠 `pending` 字段，不靠 `fetch is None`
-    ——所以这四张非 pending 的镜像也必须有一个非 None 的 fetch，
-    test_pending_entries_have_no_fetch_and_non_pending_all_do 就是靠这条区分的。
-    """
-    raise NotImplementedError("阶段 A 的 fetch 尚未接线，见 Task 4")
-
-
-#: ★ 阶段 A 的 fetch 在 Task 4 接上。先留 None 的是 pending 条目，不是「还没写」——
-#:   两者靠 pending 字段分开，test_pending_entries_have_no_fetch… 守着。
+#: ★ 阶段 A 四张的 fetch 在 Task 4 接上，这里先留 None——不是遗漏，是让
+#:   Task 2 门禁 (b) 的 `assert callable(m.fetch)` 保持诚实地红，直到 Task 4
+#:   真的接上取数函数为止（controller 裁定：不许用占位 callable 假装接线）。
 MIRRORS: tuple[Mirror, ...] = (
     Mirror(name="seller", stage="A", kind="refresh", staleness="gate_503",
            key_columns=("seller_id",),
            columns=("seller_id", "name", "market", "has_fba", "platform"),
-           source="jxd_raw.lingxing_seller_list", fetch=_fetch_pending_stage_a,
+           source="jxd_raw.lingxing_seller_list",
            coverage=("rows",),
            note="源已裁定（OQ-2，09-22）：jxd_raw.lingxing_seller_list；"
                 "has_fba 派生自 lingxing_product_listing.fulfillment_channel_type='FBA'"
                 "（OQ-3，同日裁定），不是源列"),
     Mirror(name="sku_catalog", stage="A", kind="refresh", staleness="gate_503",
            key_columns=("sku",), columns=("sku", "name"),
-           source="jxd_raw.lingxing_product_local_products", fetch=_fetch_pending_stage_a,
+           source="jxd_raw.lingxing_product_local_products",
            coverage=("rows",)),
     Mirror(name="msku_bridge", stage="A", kind="refresh", staleness="gate_503",
            key_columns=("seller_sku", "sid"), columns=("seller_sku", "sid", "sku"),
-           source="jxd_raw.lingxing_product_listing", fetch=_fetch_pending_stage_a,
+           source="jxd_raw.lingxing_product_listing",
            coverage=("rows", "distinct:sid"),
            depends_on=("seller", "sku_catalog"),
            note="★ GROUP BY seller_sku, sid —— sid 绝不参与 argMax"),
     Mirror(name="warehouse", stage="A", kind="refresh", staleness="gate_503",
            key_columns=("wid",), columns=("wid", "name", "kind", "market"),
-           source="jxd_raw.lingxing_inventory_warehouses", fetch=_fetch_pending_stage_a,
+           source="jxd_raw.lingxing_inventory_warehouses",
            coverage=("rows",)),
     Mirror(name="sku_category", stage="A", kind="refresh", staleness="label_only",
            key_columns=("sku",), companions=("category_refresh",), pending=True,

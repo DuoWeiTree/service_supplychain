@@ -59,9 +59,13 @@ def test_refresh_order_puts_parents_before_children():
     assert set(order) == {m.name for m in MIRRORS if not m.pending}
 
 
-def test_pending_entries_have_no_fetch_and_non_pending_all_do():
+def test_pending_entries_have_no_fetch():
+    """反过来（非 pending 条目都必须有真的 fetch）属于 Task 2 门禁 (b)
+    ——那条断言在阶段 A 四张接线（Task 4）之前应当保持诚实地红，
+    这里不许用占位 callable 把它悄悄唬绿。"""
     for m in MIRRORS:
-        assert (m.fetch is None) == m.pending, f"{m.name}: pending 与 fetch 对不上"
+        if m.pending:
+            assert m.fetch is None, f"{m.name}: pending 条目不该有 fetch"
 
 
 def test_by_name_names_the_miss():
