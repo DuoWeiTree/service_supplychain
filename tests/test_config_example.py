@@ -12,7 +12,7 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
-from shared.config import _FRESHNESS_DEFAULTS
+from shared.config import _FORECAST_DEFAULTS, _FRESHNESS_DEFAULTS
 
 ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = ROOT / "config.example.toml"
@@ -33,6 +33,16 @@ def test_config_example_freshness_keys_match_shared_config_defaults():
     got = set(cfg["freshness"])
     want = set(_FRESHNESS_DEFAULTS)
     assert got == want, f"模板 [freshness] 的键与 shared.config 默认值不一致：" \
+        f"模板独有 {got - want}，默认值独有 {want - got}"
+
+
+def test_config_example_forecast_keys_match_shared_config_defaults():
+    """★ 同上一条，换成 [forecast]（ChSource 设计 2026-09-23 Task 1 新增）。"""
+    with open(EXAMPLE, "rb") as f:
+        cfg = tomllib.load(f)
+    got = set(cfg["forecast"])
+    want = set(_FORECAST_DEFAULTS)
+    assert got == want, f"模板 [forecast] 的键与 shared.config 默认值不一致：" \
         f"模板独有 {got - want}，默认值独有 {want - got}"
 
 

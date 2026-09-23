@@ -60,11 +60,16 @@ def test_as_of_missing_file_fails_loudly(tmp_path):
     assert str(tmp_path / "as_of.txt") in str(ei.value)
 
 
-def test_ch_source_is_explicitly_not_implemented():
-    """★ 空实现会让「该做没做」和「本来就不用做」长得一模一样（规则五）。"""
-    ch = ChSource()
-    for call in (lambda: ch.as_of(),
-                 lambda: ch.monthly_sales_history("MSKU-A", "11072", 3),
+def test_ch_source_still_undone_methods_stay_explicit():
+    """★ 空实现会让「该做没做」和「本来就不用做」长得一模一样（规则五）。
+
+    ★ `as_of()` 已在 ChSource 设计 Task 1 接了真取数（不再是本测试原先覆盖的
+    「四个方法全部占位」——构造也不再是无参 `ChSource()`，而是注入 `query`），
+    详见 `docs/superpowers/specs/2026-09-23-chsource-design.md`。这里只继续守
+    仍未实现的那三个方法（留给 Task 2~4），`as_of()` 的真实行为由
+    `tests/test_dim_ch_source_forecast.py` 覆盖。"""
+    ch = ChSource(lambda sql: [])
+    for call in (lambda: ch.monthly_sales_history("MSKU-A", "11072", 3),
                  lambda: ch.onhand_available("MSKU-A", "11072"),
                  lambda: ch.purchase_in_transit("DCC1800264G1")):
         with pytest.raises(NotImplementedError) as ei:

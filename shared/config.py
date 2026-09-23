@@ -60,3 +60,19 @@ _FRESHNESS_DEFAULTS = {
 
 def freshness() -> dict:
     return {**_FRESHNESS_DEFAULTS, **_cfg().get("freshness", {})}
+
+
+#: ★ 设计取值。`source` 默认 "fixture" —— 默认值必须是离线跑得通的那个，
+#:   否则任何一次漏配都会变成「测试去连生产 CH」。
+_FORECAST_DEFAULTS = {
+    "source": "fixture",
+    "snapshot_lookback_days": 7,
+    "snapshot_settle_minutes": 30,
+    "cache_ttl_seconds": 300,
+    "sales_months_max": 24,
+    "drop_threshold": 0.30,
+}
+
+
+def forecast() -> dict:
+    return {**_FORECAST_DEFAULTS, **_cfg().get("forecast", {})}

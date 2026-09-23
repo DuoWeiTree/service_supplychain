@@ -43,3 +43,24 @@ coverage_drop_threshold = 0.30
 #   真正的拒绝服务只在业务路由按请求判（OQ-8 裁定 09-22，见 03:1622）。
 #   测试夹具置 false —— 它 TRUNCATE 掉四张镜像。
 startup_gate = true
+
+[forecast]
+# ★ 阶段 A 取数源。"fixture" = tests/fixtures 的 5 个假 msku（离线可跑）；
+#   "ch" = 真 ClickHouse。默认 fixture —— 漏配不该变成「去连生产」。
+source = "fixture"
+
+# 快照日候选窗口，以及「这批采集算写完了」的静置时长。
+# ★ 实测：lingxing_inventory_fba_detail 当天 06:34~07:39 起跑、约 60 秒跑完，
+#   而 [freshness] refresh_at = "06:30" 排在它之前 —— 半写窗口真实存在。
+snapshot_lookback_days  = 7
+snapshot_settle_minutes = 30
+
+# ChSource 内部缓存：快照批次按采集日缓存（同一天的快照不可变），
+# as_of 的解析结果按这个秒数缓存。
+cache_ttl_seconds = 300
+
+# 一次最多回溯多少个完整自然月。
+sales_months_max = 24
+
+# 掉档阈值。★ 实测该表日间波动 < 2%、每日恰好 21 个 sid，所以 0.30 已经很松。
+drop_threshold = 0.30

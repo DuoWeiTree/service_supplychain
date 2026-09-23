@@ -1,31 +1,17 @@
-"""真 CH 取数。★ 阶段 A 没有实现 —— 刻意抛，不给空实现。
+"""真 CH 取数。★ 预测取数（`as_of`）已在 2026-09-23 ChSource 设计里接真 CH——
 
-空实现会让「该做没做」和「本来就不用做」长得一模一样（01 规则五）。
-阶段 B 接上时，这三个方法各自的取数口径在 08 §2.3 与 CLAUDE.md「取数的四条铁律」里。
+其余三个方法（`monthly_sales_history` / `onhand_available` / `purchase_in_transit`）
+仍刻意抛 `NotImplementedError`，不给空实现：空实现会让「该做没做」和「本来就不用做」
+长得一模一样（01 规则五）。取数口径在 `docs/superpowers/specs/2026-09-23-chsource-design.md`
+与 CLAUDE.md「取数的四条铁律」里；`ChSource` 类的完整定义在本文件末尾「预测取数」段
+（与下面的镜像刷新取数层是两件事，见该段落开头的说明）。
 """
 from __future__ import annotations
 
 import datetime as dt
+import logging
 
-from dim.source import InTransit
-
-_MSG = ("CH 取数属阶段 B：请按 08 §2.3 实现（商品目录 LEFT JOIN 快照、"
-        "msku→货号 按 as_of argMax 但 sid 不参与、日报先按 _captured_date 去重并比对覆盖面）")
-
-
-class ChSource:
-    def as_of(self) -> dt.date:
-        raise NotImplementedError(_MSG)
-
-    def monthly_sales_history(self, seller_sku: str, sid: str, months: int
-                              ) -> list[tuple[dt.date, int]]:
-        raise NotImplementedError(_MSG)
-
-    def onhand_available(self, seller_sku: str, sid: str) -> int | None:
-        raise NotImplementedError(_MSG)
-
-    def purchase_in_transit(self, sku: str) -> list[InTransit]:
-        raise NotImplementedError(_MSG)
+log = logging.getLogger("scm.dim")
 
 
 # ---------------------------------------------------------------------------
@@ -270,3 +256,139 @@ def fetch_seller(query: Query) -> Fetched:
                      _market_code(_coerce_empty(reasons, "market", market)),
                      bool(has_fba_flag), "amazon"))
     return Fetched(rows, 0, reasons, max(r[3] for r in raw))
+
+
+# ---------------------------------------------------------------------------
+# 预测取数（design 2026-09-23）。★ 与上面的镜像刷新是两件事：镜像是慢变维度，
+#   这里是带时点的量 —— 每个数都要能回答「它是关于什么的」。
+# ---------------------------------------------------------------------------
+
+from dim.source import InTransit  # ★ 只有本段的 ChSource 需要它
+
+#: 候选快照日。★ 只问 fba_detail —— as_of 标注的是**在仓数**，它的时点就是这张表的。
+SQL_FBA_CAPTURE_DAYS = """
+SELECT _captured_date, count() AS rows, uniq(sid) AS uniq_sid, max(_captured_at) AS done_at
+  FROM jxd_raw.lingxing_inventory_fba_detail
+ WHERE _captured_date >= today() - {lookback}
+ GROUP BY _captured_date
+ ORDER BY _captured_date DESC
+"""
+
+#: ★ 实测：该表当天 06:34~07:39 起跑、约 60 秒跑完（design §1.3 E-3），而刷新调度
+#:   就排在 06:30 —— 半写窗口是真实存在的。30 分钟 = 实测时长的 30 倍。
+SETTLE_MINUTES = 30
+LOOKBACK_DAYS = 7
+
+#: ★ E-1 实测下限（近 20 个采集日 7,934~8,080 行、每日恰好 21 个 sid）。
+#:   纯「比对相邻候选日」有个洞：如果整个候选窗口同步塌陷到同一个低值
+#:   （例如某次故障连续几天都只写回同样少的行数），相邻两日互相看起来
+#:   完全没有「掉」，掉档守卫会对着一堆同样坏的日子视而不见。这条绝对
+#:   下限与相邻比较是「或」的关系：任一条不过都算掉档，堵上这个洞。
+NOMINAL_ROWS = 7934
+NOMINAL_SID = 21
+
+#: ★ 其余三个方法在本任务（Task 1）仍未实现，留给后续任务（Task 2~4）——
+#:   与文件顶部旧占位类的道理一样：空实现要能被认出来，不许悄悄返回假数据。
+_STUB_MSG = ("CH 取数属后续阶段任务：请按 docs/superpowers/specs/2026-09-23-chsource-design.md"
+             " §4 实现（商品目录 LEFT JOIN 快照、msku→货号按 as_of argMax 但 sid 不参与、"
+             "日报先按 _captured_date 去重并比对覆盖面）")
+
+
+class ChUnavailable(Exception):
+    """CH 连不上/超时。★ 带上 describe_failure 的分类：「超时」与「连不上」处置相反。"""
+
+    def __init__(self, target: str, cause: dict) -> None:
+        self.target, self.cause = target, cause
+        super().__init__(f"ch_unavailable target={target} cause={cause}")
+
+
+class ChDataUnusable(Exception):
+    """候选日全被拒。★ 带上每一天的数字 —— 「不可用」不说明是哪一种不可用就没法查。"""
+
+    def __init__(self, rejected: list[dict]) -> None:
+        self.rejected = rejected
+        super().__init__(f"ch_data_unusable rejected={rejected}")
+
+
+def _utc_now() -> dt.datetime:
+    # ★ 全仓（CH 的 _captured_at、本模块的比较）一律用 naive datetime——
+    #   与一个 tz-aware 的 now() 相减会直接抛 TypeError，不是更安全，是更脆。
+    return dt.datetime.now()  # noqa: DTZ005
+
+
+def pick_snapshot_date(rows: list[tuple], now: dt.datetime,
+                       threshold: float) -> tuple[dt.date, list[dict]]:
+    """从新到旧挑第一个「已采完 + 没掉档」的采集日。返回 (日期, 被拒清单)。
+
+    ★ 被拒清单不是可选的返回值 —— 回退可以，必须有声（CLAUDE.md 判据五）。
+    ★ 掉档比的是**下一个更旧的候选日**，不是历史最大值：只往上爬的阈值会把
+      「一直在掉」读成「一直没掉」。但只比相邻日会漏掉「整窗口同步塌陷」
+      （相邻两天一样低，互相看不出掉档）——所以还要 OR 上 `NOMINAL_ROWS` /
+      `NOMINAL_SID`（E-1 实测下限）这条不随候选集本身浮动的绝对底线。
+    """
+    if not rows:
+        raise UnknownShape(
+            f"lingxing_inventory_fba_detail 近 {LOOKBACK_DAYS} 天一个采集日都没有。"
+            "★ 空不是「今天没货」——把采集缺口读成空会让整张表的在仓变成 0")
+    ordered = sorted(rows, key=lambda r: r[0], reverse=True)
+    limit = 1.0 - threshold
+    rejected: list[dict] = []
+    for i, (date, n_rows, n_sid, done_at) in enumerate(ordered):
+        reason = None
+        if done_at is None or now - done_at < dt.timedelta(minutes=SETTLE_MINUTES):
+            reason = "not_settled"
+        else:
+            nxt = ordered[i + 1] if i + 1 < len(ordered) else None
+            rows_drop = n_rows < NOMINAL_ROWS * limit or (
+                nxt is not None and n_rows < nxt[1] * limit)
+            sid_drop = n_sid < NOMINAL_SID * limit or (
+                nxt is not None and n_sid < nxt[2] * limit)
+            if rows_drop:
+                reason = "coverage_drop_rows"
+            elif sid_drop:
+                reason = "coverage_drop_uniq_sid"
+        if reason is None:
+            return date, rejected
+        rejected.append({"date": date.isoformat(), "rows": int(n_rows),
+                         "uniq_sid": int(n_sid), "reason": reason})
+    raise ChDataUnusable(rejected)
+
+
+class ChSource:
+    """真 CH 取数。★ 客户端由调用方注入 —— dim/ 不许 import shared.ch_client。
+
+    只有 `as_of()` 在本任务（Task 1）接了真取数；其余三个方法仍显式
+    `NotImplementedError`，留给 Task 2~4。
+    """
+
+    def __init__(self, query: Query, *, now: Callable[[], dt.datetime] = _utc_now,
+                 drop_threshold: float = 0.30, cache_ttl_s: int = 300) -> None:
+        self._q = query
+        self._now = now
+        self._threshold = drop_threshold
+        self._ttl = dt.timedelta(seconds=cache_ttl_s)
+        self._as_of: tuple[dt.datetime, dt.date] | None = None
+
+    def as_of(self) -> dt.date:
+        now = self._now()
+        if self._as_of is not None and now - self._as_of[0] < self._ttl:
+            return self._as_of[1]
+        rows = self._q(SQL_FBA_CAPTURE_DAYS.format(lookback=LOOKBACK_DAYS))
+        date, rejected = pick_snapshot_date(rows, now, self._threshold)
+        for r in rejected:
+            log.warning("op=ch_as_of outcome=rejected %s accepted=%s —— "
+                        "回退了一天，这条就是它的证据", r, date)
+        log.info("op=ch_as_of outcome=ok as_of=%s candidates=%d rejected=%d",
+                 date, len(rows), len(rejected))
+        self._as_of = (now, date)
+        return date
+
+    def monthly_sales_history(self, seller_sku: str, sid: str, months: int
+                              ) -> list[tuple[dt.date, int]]:
+        raise NotImplementedError(_STUB_MSG)
+
+    def onhand_available(self, seller_sku: str, sid: str) -> int | None:
+        raise NotImplementedError(_STUB_MSG)
+
+    def purchase_in_transit(self, sku: str) -> list[InTransit]:
+        raise NotImplementedError(_STUB_MSG)
