@@ -9,6 +9,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from dim import ch_source
+
 
 @dataclass(frozen=True)
 class Mirror:
@@ -27,31 +29,36 @@ class Mirror:
     note: str = ""
 
 
-#: ★ 阶段 A 四张的 fetch 在 Task 4 接上，这里先留 None——不是遗漏，是让
-#:   Task 2 门禁 (b) 的 `assert callable(m.fetch)` 保持诚实地红，直到 Task 4
-#:   真的接上取数函数为止（controller 裁定：不许用占位 callable 假装接线）。
+#: ★ 阶段 A 四张的 fetch 由 Task 4 接上（dim/ch_source.py 的四个纯变换）。
 MIRRORS: tuple[Mirror, ...] = (
     Mirror(name="seller", stage="A", kind="refresh", staleness="gate_503",
            key_columns=("seller_id",),
            columns=("seller_id", "name", "market", "has_fba", "platform"),
            source="jxd_raw.lingxing_seller_list",
+           fetch=ch_source.fetch_seller,
            coverage=("rows",),
            note="源已裁定（OQ-2，09-22）：jxd_raw.lingxing_seller_list；"
                 "has_fba 派生自 lingxing_product_listing.fulfillment_channel_type='FBA'"
-                "（OQ-3，同日裁定），不是源列"),
+                "（OQ-3，同日裁定），不是源列；探针 §7.0 实测后追加裁定（控制器 09-22）："
+                "该表没有 marketplace/platform 列——market 改用 country，"
+                "platform 写常量 'amazon'（该表本就是领星的亚马逊店铺列表）"),
     Mirror(name="sku_catalog", stage="A", kind="refresh", staleness="gate_503",
            key_columns=("sku",), columns=("sku", "name"),
            source="jxd_raw.lingxing_product_local_products",
+           fetch=ch_source.fetch_sku_catalog,
            coverage=("rows",)),
     Mirror(name="msku_bridge", stage="A", kind="refresh", staleness="gate_503",
            key_columns=("seller_sku", "sid"), columns=("seller_sku", "sid", "sku"),
            source="jxd_raw.lingxing_product_listing",
+           fetch=ch_source.fetch_msku_bridge,
            coverage=("rows", "distinct:sid"),
            depends_on=("seller", "sku_catalog"),
-           note="★ GROUP BY seller_sku, sid —— sid 绝不参与 argMax"),
+           note="★ GROUP BY seller_sku, sid —— sid 绝不参与 argMax；"
+                "amzn.gr.* 虚拟促销组与未绑货号的行一律丢弃并计数（控制器 09-22 追加裁定）"),
     Mirror(name="warehouse", stage="A", kind="refresh", staleness="gate_503",
            key_columns=("wid",), columns=("wid", "name", "kind", "market"),
            source="jxd_raw.lingxing_inventory_warehouses",
+           fetch=ch_source.fetch_warehouse,
            coverage=("rows",)),
     Mirror(name="sku_category", stage="A", kind="refresh", staleness="label_only",
            key_columns=("sku",), companions=("category_refresh",), pending=True,

@@ -18,6 +18,11 @@ dev = ["pytest>=8", "httpx>=0.27", "ruff>=0.6"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+# ★ 只加仓库根到 sys.path，不动 tests/ 本身已有的插入行为（helpers.py 等仍按
+#   旧方式扁平导入）——Task 4 的 `from tests.fixtures import ch_rows` 需要
+#   根目录可见，`tests/` 没有 __init__.py 时 pytest 默认只把 tests/ 自己
+#   插进 sys.path，够不到它的父目录。
+pythonpath = ["."]
 
 [build-system]
 requires = ["setuptools>=68"]
