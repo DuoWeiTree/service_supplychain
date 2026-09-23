@@ -526,6 +526,7 @@
   ],
   "sku_pipeline": [
     {
+      "bucket": null,
       "no_seller_attribution": true,
       "period": "2026-10",
       "sku": "A4P-TOY-002",
@@ -539,6 +540,7 @@
       "units": 60
     },
     {
+      "bucket": null,
       "no_seller_attribution": true,
       "period": "2026-10",
       "sku": "DCC1800264G1",
@@ -557,6 +559,7 @@
       "units": 80
     },
     {
+      "bucket": null,
       "no_seller_attribution": true,
       "period": "2026-11",
       "sku": "DCC1800264G1",
@@ -569,5 +572,10 @@
       ],
       "units": 120
     }
-  ]
+  ],
+  "source_notes": {
+    "as_of": "2026-09-21",
+    "dropped": {},
+    "purchase_as_of": null
+  }
 }

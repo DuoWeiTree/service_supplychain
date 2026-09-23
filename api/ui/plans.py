@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-from pathlib import Path
 
 import psycopg2
 from fastapi import APIRouter, Depends, Request
@@ -18,7 +17,17 @@ from api.ui.deps import (
     require_fresh_mirrors,
 )
 from api.ui.errors import ApiError
-from dim.fixture_source import FixtureSource
+from api.ui.source_factory import (  # noqa: F401 - 供测试用 plans.FIXTURES 构造替身源
+    FIXTURES,
+    make_source,
+)
+from dim.ch_source import (
+    ChDataUnusable,
+    ChUnavailable,
+    PurchaseTableStale,
+    UnknownShape,
+    is_overdue,
+)
 from forecast.estimate import InsufficientHistory, monthly_estimate
 from forecast.projection import inventory_projection
 from rules.effective import effective_demand
@@ -28,8 +37,33 @@ log = logging.getLogger("scm.api")
 
 router = APIRouter(dependencies=[Depends(require_fresh_mirrors)])
 
-#: 阶段 A 的取数源。★ 阶段 B 换成 ChSource 时改的只有这一行（dim/source.py 的协议不变）。
-SOURCE = FixtureSource(Path(__file__).resolve().parents[2] / "tests" / "fixtures")
+#: 阶段 A 的取数源。★ 换源只改 config.toml 的 [forecast] source —— dim/source.py 的协议不变。
+SOURCE = make_source()
+
+
+def _source_error(e: Exception) -> ApiError:
+    """把 ChSource 的失败翻成 ApiError —— 同 jobs/refresh_dims.ChUnreachable → refresh_failed
+    的形状，不另发明一种。★ 一律 503：拿不到数算出来的曲线看起来完全正常，S-29/S-30 的
+    错误形状统一裁定同样适用于这条路径。"""
+    if isinstance(e, ChUnavailable):
+        return ApiError(503, "forecast_source_unavailable",
+                        "预测取数源连不上，拒绝服务 —— 不拿旧数或空数冒充",
+                        {"target": e.target, **e.cause})
+    if isinstance(e, ChDataUnusable):
+        return ApiError(503, "forecast_source_unusable",
+                        "近 7 个采集日全都掉档或未采完 —— 这批数据不可用，不是「库存为 0」",
+                        {"rejected": e.rejected})
+    if isinstance(e, PurchaseTableStale):
+        # ★ OQ-5 裁定：陈旧阈值突破 → 未知，不是 0；与「掉档守卫全拒」同一类失败，
+        #   共用 forecast_source_unusable，不再单起一个错误码。
+        return ApiError(503, "forecast_source_unusable",
+                        "采购单快照太久没更新 —— 在途视为未知，不是 0",
+                        {"captured": e.captured.isoformat(), "age_days": e.age_days,
+                         "threshold_days": e.threshold_days})
+    if isinstance(e, UnknownShape):
+        return ApiError(503, "forecast_source_unusable", "取数源出现认不出的形态",
+                        {"detail": str(e)})
+    raise e   # ★ 认不出的异常不许被兜成这四种之一——同 CLAUDE.md「不许 else 兜底」
 
 
 def _date(s: str, field: str) -> dt.date:
@@ -160,6 +194,7 @@ def claim(plan_id: int, body: dict, request: Request, who: str = Depends(actor))
                             if holder else None}) from None
 
         no_history = []
+        history_window = None
         try:
             est = monthly_estimate(SOURCE.monthly_sales_history(seller_sku, sid, len(periods)),
                                    len(periods))
@@ -168,6 +203,12 @@ def claim(plan_id: int, body: dict, request: Request, who: str = Depends(actor))
             est = None
             no_history.append({"seller_sku": seller_sku, "sid": sid,
                                "reason": "no_sales_history"})
+        except (ChUnavailable, ChDataUnusable, UnknownShape) as e:
+            raise _source_error(e) from e
+        # ★ 用了哪几个月、哪些是补 0、最新那个月距今多少天 —— 订单是滞后采集的
+        #   （CLAUDE.md 铁律三），一个没有标记的数比没有数更坏。
+        if hasattr(SOURCE, "history_window"):
+            history_window = SOURCE.history_window() or None
         for i, period in enumerate(periods):
             cur.execute(
                 "INSERT INTO plan_demand_cell (plan_id, seller_sku, sid, period_start,"
@@ -186,7 +227,7 @@ def claim(plan_id: int, body: dict, request: Request, who: str = Depends(actor))
                         (plan_id, sku, period, who))
     return {"claimed": {"seller_sku": seller_sku, "sid": sid, "sku": sku},
             "seeded": {"demand_cells": len(periods), "purchase_cells": len(periods)},
-            "no_history": no_history}
+            "no_history": no_history, "history_window": history_window}
 
 
 def _stranded_purchase_cells(cur, plan_id: int, seller_sku: str, sid: str) -> list[dict]:
@@ -303,33 +344,42 @@ def grid(plan_id: int, request: Request, who: str | None = Depends(actor_optiona
     #   否则一个 3 个月的计划会把在仓数算成 3 倍。
     onhand_added: set[tuple[str, str]] = set()
 
-    for seller_sku, sid, sku, period, sysu, extrap, expu, fba in demand:
-        row = _demand_row(seller_sku, sid, sku, _ym(period), sysu, expu, extrap)
-        out_demand.append(row)
-        eff_units = row["effective_units"]
-        key, ym = (sku, sid), _ym(period)
-        slot = demand_by_store.setdefault(key, {})
-        # ★ 合计行 = 各 msku 之和（14 §1 ①）；只要有一个 msku 未知，这一格就是未知
-        if ym not in slot:
-            slot[ym] = eff_units
-        elif slot[ym] is not None and eff_units is not None:
-            slot[ym] += eff_units
-        else:
-            slot[ym] = None
-        if key not in onhand_by_store:
-            onhand_by_store[key] = None
-        # ★ fba 只取决于 sid（同一 key 下每行都一样），但用 or 而不是覆盖 ——
-        #   同一 key 可能被多个 msku 行访问到，任何一次看见 True 就定了
-        applicable_by_store[key] = applicable_by_store.get(key, False) or fba
-        if fba and (seller_sku, sid) not in onhand_added:
-            onhand_added.add((seller_sku, sid))
-            got = SOURCE.onhand_available(seller_sku, sid)
-            if got is not None:
-                onhand_by_store[key] = (onhand_by_store[key] or 0) + got
+    try:
+        for seller_sku, sid, sku, period, sysu, extrap, expu, fba in demand:
+            row = _demand_row(seller_sku, sid, sku, _ym(period), sysu, expu, extrap)
+            out_demand.append(row)
+            eff_units = row["effective_units"]
+            key, ym = (sku, sid), _ym(period)
+            slot = demand_by_store.setdefault(key, {})
+            # ★ 合计行 = 各 msku 之和（14 §1 ①）；只要有一个 msku 未知，这一格就是未知
+            if ym not in slot:
+                slot[ym] = eff_units
+            elif slot[ym] is not None and eff_units is not None:
+                slot[ym] += eff_units
+            else:
+                slot[ym] = None
+            if key not in onhand_by_store:
+                onhand_by_store[key] = None
+            # ★ fba 只取决于 sid（同一 key 下每行都一样），但用 or 而不是覆盖 ——
+            #   同一 key 可能被多个 msku 行访问到，任何一次看见 True 就定了
+            applicable_by_store[key] = applicable_by_store.get(key, False) or fba
+            if fba and (seller_sku, sid) not in onhand_added:
+                onhand_added.add((seller_sku, sid))
+                got = SOURCE.onhand_available(seller_sku, sid)
+                if got is not None:
+                    onhand_by_store[key] = (onhand_by_store[key] or 0) + got
 
-    in_transit: dict[str, list] = {sku: SOURCE.purchase_in_transit(sku)
-                                   for sku in {r[0] for r in purchase}}
-    as_of = SOURCE.as_of().isoformat()
+        in_transit: dict[str, list] = {sku: SOURCE.purchase_in_transit(sku)
+                                       for sku in {r[0] for r in purchase}}
+        as_of_date = SOURCE.as_of()
+        as_of = as_of_date.isoformat()
+        # ★ OQ-6 裁定：sku_pipeline[] 的 bucket 只在 CH 源（具备 purchase_as_of）下
+        #   有意义；FixtureSource 没有这个方法，按 hasattr 跳过 —— fixture 路径的
+        #   sku_pipeline 形状因此逐字节不变（tests/test_grid_fixture.py 核实）。
+        purchase_as_of = SOURCE.purchase_as_of() if hasattr(SOURCE, "purchase_as_of") else None
+        dropped_stats = SOURCE.stats() if hasattr(SOURCE, "stats") else {}
+    except (ChUnavailable, ChDataUnusable, PurchaseTableStale, UnknownShape) as e:
+        raise _source_error(e) from e
 
     inventory = []
     for (sku, sid), by_month in sorted(demand_by_store.items()):
@@ -373,7 +423,13 @@ def grid(plan_id: int, request: Request, who: str | None = Depends(actor_optiona
         for t in rows:
             slot = pipeline.setdefault((sku, t.period),
                                        {"sku": sku, "period": t.period, "units": 0,
-                                        "sources": [], "no_seller_attribution": True})
+                                        "sources": [], "no_seller_attribution": True,
+                                        # ★ E-13 实测 98.8% 的在途会落进 overdue——这是
+                                        #   数据的形状，不是 bug，但不许因为不匹配任何
+                                        #   计划月份就从 sku_pipeline 里悄悄消失。
+                                        "bucket": (None if purchase_as_of is None else
+                                                  ("overdue" if is_overdue(t.period, purchase_as_of)
+                                                   else "future"))})
             slot["units"] += t.units
             slot["sources"].append({"units": t.units, "kind": "purchase_in_transit", "ref": t.ref})
 
@@ -384,6 +440,14 @@ def grid(plan_id: int, request: Request, who: str | None = Depends(actor_optiona
         "purchase": [{"sku": s, "period": _ym(p), "planned_units": u} for s, p, u in purchase],
         "inventory": inventory,
         "sku_pipeline": [pipeline[k] for k in sorted(pipeline)],
+        "source_notes": {
+            "as_of": as_of,
+            "purchase_as_of": (purchase_as_of.isoformat() if purchase_as_of else None),
+            # ★ 被排除的那一侧必须出现在响应里：sid=0 的欧洲共享池实测占全部可售
+            #   27.6%（键名固定 shared_pool_excluded，Task 2 裁定），没有在途预计到货日的
+            #   行也在这里 —— 丢东西必须有声。
+            "dropped": dropped_stats,
+        },
     }
 
 
