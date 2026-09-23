@@ -28,10 +28,13 @@ def lazy_ch_query() -> Callable[[str], list[tuple]]:
     session`，再被翻成 503「预测取数源连不上」去冤枉网络（实测 4 线程 3 败）。"""
     holder: list = []
 
-    def run(sql: str) -> list[tuple]:
+    def run(sql: str, parameters: dict | None = None) -> list[tuple]:
+        # ★ `parameters` 必须一路透传（终审 I-5）—— 在这一层吃掉它，SQL 里的
+        #   `{name:Type}` 占位符就会以「未绑定参数」在 CH 侧炸，而那个错会被
+        #   分类成 kind="other" → 503「取数源连不上」。
         if not holder:
             holder.append(ch_query(ch_client()))
-        return holder[0](sql)
+        return holder[0](sql, parameters)
 
     return run
 

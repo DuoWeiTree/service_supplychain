@@ -39,7 +39,9 @@ CH_CONNECT_TIMEOUT_S = 5
 #:   一轮真刷新实测 0.7 秒，60 秒已经宽得离谱，还能在一分钟内把问题暴露出来。
 CH_SEND_RECEIVE_TIMEOUT_S = 60
 
-Query = Callable[[str], list[tuple]]
+#: 取数口子。★ 第二个参数是**服务端绑定的参数**（终审 I-5），可选：
+#: `run(sql)` 与 `run(sql, {"as_of": ...})` 都合法。
+Query = Callable[..., list[tuple]]
 
 
 class ReadOnlyClient:
@@ -51,8 +53,12 @@ class ReadOnlyClient:
     def __init__(self, raw) -> None:
         self._raw = raw
 
-    def query(self, sql: str):
-        return self._raw.query(sql)
+    def query(self, sql: str, parameters: dict | None = None):
+        """★ 终审 I-5：`parameters` 走驱动的**服务端参数绑定**（SQL 里写
+        `{name:Type}`），不是 Python 侧拼串。带撇号的 msku 用 `str.format` 拼出来
+        是一条坏 SQL，而驱动报的错会被分类成 kind="other" → 503「取数源连不上」：
+        源是好的，是我们的 SQL 断了，而运维被指去查网络。"""
+        return self._raw.query(sql, parameters=parameters)
 
 
 def _cause_chain(e: BaseException) -> list[BaseException]:
@@ -156,21 +162,27 @@ def ch_client() -> ReadOnlyClient:
 
 
 def ch_query(client) -> Query:
-    """把查询包上日志三问：打的谁（host/db）· 多久 · 怎么失败的（kind + errno）。"""
+    """把查询包上日志三问：打的谁（host/db）· 多久 · 怎么失败的（kind + errno）。
+
+    ★ 终审 I-5：`parameters` 原样交给驱动做**服务端绑定**，不在这里拼串。日志要
+    带上参数本身 —— SQL 文本里现在只剩 `{name:Type}` 占位符，不带参数「打的谁」
+    这一问只答得出半句（知道哪张表，不知道问的是哪个 msku / 哪一天）。
+    """
     c = clickhouse()
     where = f"{c['host']}:{c.get('port', 8123)}/{c.get('database', 'jxd_raw')}"
 
-    def run(sql: str) -> list[tuple]:
+    def run(sql: str, parameters: dict | None = None) -> list[tuple]:
         head = " ".join(sql.split())[:120]
         t0 = time.perf_counter()
         try:
-            rows = list(client.query(sql).result_rows)
+            rows = list(client.query(sql, parameters=parameters).result_rows)
         except BaseException as e:
-            log.warning("op=ch_query target=%s elapsed_ms=%d outcome=fail %s sql=%s",
-                        where, (time.perf_counter() - t0) * 1000, describe_failure(e), head)
+            log.warning("op=ch_query target=%s elapsed_ms=%d outcome=fail %s sql=%s params=%.200s",
+                        where, (time.perf_counter() - t0) * 1000, describe_failure(e), head,
+                        parameters)
             raise
-        log.info("op=ch_query target=%s elapsed_ms=%d outcome=ok rows=%d sql=%s",
-                 where, (time.perf_counter() - t0) * 1000, len(rows), head)
+        log.info("op=ch_query target=%s elapsed_ms=%d outcome=ok rows=%d sql=%s params=%.200s",
+                 where, (time.perf_counter() - t0) * 1000, len(rows), head, parameters)
         return rows
 
     return run

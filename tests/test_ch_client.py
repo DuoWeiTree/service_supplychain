@@ -16,7 +16,7 @@ from shared.ch_client import CH_CONNECT_TIMEOUT_S, ReadOnlyClient, ch_client, ch
 
 
 class _Boom:
-    def query(self, sql):
+    def query(self, sql, parameters=None):
         raise TimeoutError("connect timed out")
 
 
@@ -24,8 +24,8 @@ class _Rows:
     def __init__(self):
         self.seen = []
 
-    def query(self, sql):
-        self.seen.append(sql)
+    def query(self, sql, parameters=None):
+        self.seen.append((sql, parameters))
         return type("R", (), {"result_rows": [(1, "a")]})()
 
 
@@ -163,7 +163,7 @@ def test_read_only_wrapper_hides_write_methods_of_the_raw_client():
     入口只能交出这层封装，原始 clickhouse_connect 客户端的 command()/insert()
     绝不能逃出 shared/ch_client.py。"""
     class _RawWithWriteMethods:
-        def query(self, sql):
+        def query(self, sql, parameters=None):
             return type("R", (), {"result_rows": [(1,)]})()
 
         def command(self, *a, **k):

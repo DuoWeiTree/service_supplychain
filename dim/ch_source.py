@@ -37,7 +37,12 @@ class UnknownShape(Exception):
     """认不出的形态 / 空结果。★ 硬失败，不许落进 else '' 再被下游过滤掉。"""
 
 
-Query = Callable[[str], list[tuple]]
+#: 取数口子。★ 终审 I-5：第二个参数是**服务端绑定的参数**（SQL 里写
+#: `{name:Type}`，由 `shared/ch_client.py::ch_query` 交给驱动），可选：
+#: 不带值的 SQL 照旧 `query(sql)`，带值的一律 `query(sql, {...})`。
+#: 以前是 `str.format` 拼串 —— 一个带撇号的 msku 就能拼出坏 SQL，而驱动报的错
+#: 会被分类成 kind="other" → 503「取数源连不上」：源是好的，是我们的 SQL 断了。
+Query = Callable[..., list[tuple]]
 
 # ★ 列名已由 jobs/probe_ch.py 实测（Task 3 Step 7，design §7.0）。未跑探针就
 #   照搬草案 = 在猜——草案本身就有两处对不上（下面两条 SQL 的注释里各记一处）。
@@ -279,9 +284,9 @@ FBA_DETAIL_TABLE = "jxd_raw.lingxing_inventory_fba_detail"
 #:   `now()` 就地算好 `settled`，随行一起回来，Python 侧只回放这个布尔值。
 SQL_FBA_CAPTURE_DAYS = f"""
 SELECT _captured_date, count() AS rows, uniq(sid) AS uniq_sid,
-       now() - INTERVAL {{settle}} MINUTE > max(_captured_at) AS settled
+       now() - INTERVAL {{settle:UInt16}} MINUTE > max(_captured_at) AS settled
   FROM {FBA_DETAIL_TABLE}
- WHERE _captured_date >= today() - {{lookback}}
+ WHERE _captured_date >= today() - {{lookback:UInt16}}
  GROUP BY _captured_date
  ORDER BY _captured_date DESC
 """
@@ -322,9 +327,10 @@ SELECT toStartOfMonth(d) AS month, toInt64(sum(units)) AS units
            if(argMax(order_status, _captured_date) NOT IN ('Cancelled', 'Pending'),
               argMax(quantity, _captured_date), 0) AS units
       FROM {ORDERS_TABLE}
-     WHERE store = '{{store}}' AND sales_channel = '{{channel}}' AND sku = '{{seller_sku}}'
-       AND toDate(purchase_date) >= toDate('{{start}}')
-       AND toDate(purchase_date) < toDate('{{end}}')
+     WHERE store = {{store:String}} AND sales_channel = {{channel:String}}
+       AND sku = {{seller_sku:String}}
+       AND toDate(purchase_date) >= {{start:Date}}
+       AND toDate(purchase_date) < {{end:Date}}
      GROUP BY amazon_order_id, order_item_id
   )
  GROUP BY month
@@ -377,7 +383,7 @@ SELECT toString(sid)                              AS sid,
        toInt64(sum(afn_fulfillable_quantity))     AS units,
        count()                                    AS raw_rows
   FROM {FBA_DETAIL_TABLE}
- WHERE _captured_date = toDate('{{as_of}}')
+ WHERE _captured_date = {{as_of:Date}}
  GROUP BY sid, seller_sku
 """
 
@@ -461,7 +467,7 @@ SELECT i.sku                                                  AS sku,
        i.order_sn                                             AS ref
   FROM {PURCHASE_ITEMS_TABLE} AS i
  INNER JOIN o ON o.order_sn = i.order_sn
- WHERE i._captured_date = toDate('{{purchase_as_of}}')
+ WHERE i._captured_date = {{purchase_as_of:Date}}
    AND o.st = 2
    AND ifNull(i.is_delete, 0) = 0
    AND i.quantity_real > i.quantity_receive
@@ -691,10 +697,10 @@ class ChSource:
         now = self._now()
         if self._as_of is not None and now - self._as_of[0] < self._ttl:
             return self._as_of[1]
-        sql = SQL_FBA_CAPTURE_DAYS.format(lookback=self._lookback_days, settle=self._settle_minutes)
+        params = {"lookback": self._lookback_days, "settle": self._settle_minutes}
         t0 = time.perf_counter()
         try:
-            rows = self._q(sql)
+            rows = self._q(SQL_FBA_CAPTURE_DAYS, params)
         except Exception as e:
             elapsed_ms = (time.perf_counter() - t0) * 1000
             cause = self._classify(e)
@@ -727,12 +733,11 @@ class ChSource:
         store, channel = order_store_map.store_for(str(sid))
         window = month_window(self.as_of(), months)
         start, end = window[0], _next_month(window[-1])
-        sql = SQL_MONTHLY_SALES.format(
-            store=store, channel=channel, seller_sku=seller_sku,
-            start=start.isoformat(), end=end.isoformat())
+        params = {"store": store, "channel": channel, "seller_sku": seller_sku,
+                  "start": start.isoformat(), "end": end.isoformat()}
         t0 = time.perf_counter()
         try:
-            rows = self._q(sql)
+            rows = self._q(SQL_MONTHLY_SALES, params)
         except Exception as e:
             elapsed_ms = (time.perf_counter() - t0) * 1000
             cause = self._classify(e)
@@ -787,10 +792,9 @@ class ChSource:
         as_of = self.as_of()
         if self._onhand_cache is not None and self._onhand_cache[0] == as_of:
             return self._onhand_cache[1]
-        sql = SQL_FBA_ONHAND.format(as_of=as_of.isoformat())
         t0 = time.perf_counter()
         try:
-            rows = self._q(sql)
+            rows = self._q(SQL_FBA_ONHAND, {"as_of": as_of.isoformat()})
         except Exception as e:
             elapsed_ms = (time.perf_counter() - t0) * 1000
             cause = self._classify(e)
@@ -871,10 +875,10 @@ class ChSource:
         purchase_as_of = self.purchase_as_of()
         if self._transit_cache is not None and self._transit_cache[0] == purchase_as_of:
             return self._transit_cache[1]
-        sql = SQL_PURCHASE_IN_TRANSIT.format(purchase_as_of=purchase_as_of.isoformat())
         t0 = time.perf_counter()
         try:
-            rows = self._q(sql)
+            rows = self._q(SQL_PURCHASE_IN_TRANSIT,
+                           {"purchase_as_of": purchase_as_of.isoformat()})
         except Exception as e:
             elapsed_ms = (time.perf_counter() - t0) * 1000
             cause = self._classify(e)

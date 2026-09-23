@@ -52,12 +52,14 @@ def _skip_if_unreachable():
 def live_query():
     base, _where = _skip_if_unreachable()
 
-    def limited(sql: str) -> list[tuple]:
+    def limited(sql: str, parameters: dict | None = None) -> list[tuple]:
         # ★ 这是冒烟测试，不是覆盖面测试——LIMIT 只为控制读取量，不影响
         #   「SQL 在真实源上能不能跑通」这个判据。50 行是为了在 msku_bridge
         #   实测约 28.6% 的 amzn.gr.* 排除率下，仍大概率留下至少一条有效行，
         #   避免下面的宽度断言因为「恰好全滤空」而变成空转的。
-        return base(sql.strip() + " LIMIT 50")
+        # ★ `parameters` 照样往下传（终审 I-5）——签名跟不上就会在替身这一层
+        #   悄悄把参数吃掉，而那是「证人不在现场」的另一种形状。
+        return base(sql.strip() + " LIMIT 50", parameters)
 
     return limited
 
@@ -88,8 +90,8 @@ def test_as_of_runs_on_real_clickhouse_and_picks_a_real_candidate_day(live_query
     Python 侧搬进 CH——这条测试自己也不能开倒车）：直接用同一条 SQL 原文
     再查一次候选日集合，断言 `as_of()` 落在这批真实候选日之内，而不是拿
     `dt.date.today()` 去猜「够不够新」。"""
-    sql = cs.SQL_FBA_CAPTURE_DAYS.format(lookback=cs.LOOKBACK_DAYS, settle=cs.SETTLE_MINUTES)
-    rows = live_query_raw(sql)
+    rows = live_query_raw(cs.SQL_FBA_CAPTURE_DAYS,
+                          {"lookback": cs.LOOKBACK_DAYS, "settle": cs.SETTLE_MINUTES})
     assert rows, (
         f"{cs.FBA_DETAIL_TABLE} 近 {cs.LOOKBACK_DAYS} 天一个采集日都没有——"
         "下面的断言就是空转的")
@@ -113,8 +115,7 @@ def test_onhand_sql_runs_on_real_clickhouse_and_row_shape_is_sane(live_query_raw
     通过。"""
     src = cs.ChSource(live_query_raw, classify_failure=describe_failure)
     as_of = src.as_of()
-    sql = cs.SQL_FBA_ONHAND.format(as_of=as_of.isoformat())
-    rows = live_query_raw(sql)
+    rows = live_query_raw(cs.SQL_FBA_ONHAND, {"as_of": as_of.isoformat()})
     assert rows, (
         f"{cs.FBA_DETAIL_TABLE} 在 as_of={as_of} 真实 CH 上一行在仓数据都没取到——"
         "下面的断言就是空转的")
@@ -140,7 +141,7 @@ def test_onhand_available_runs_on_real_clickhouse_and_matches_a_hand_written_sum
     一次，断言两者相等。"""
     src = cs.ChSource(live_query_raw, classify_failure=describe_failure)
     as_of = src.as_of()
-    rows = live_query_raw(cs.SQL_FBA_ONHAND.format(as_of=as_of.isoformat()))
+    rows = live_query_raw(cs.SQL_FBA_ONHAND, {"as_of": as_of.isoformat()})
     by_key, _dropped = cs.parse_onhand(rows)
     assert by_key, f"{cs.FBA_DETAIL_TABLE} 在 as_of={as_of} 批量结果为空——对账无从做起"
     (sid, seller_sku), want = next(iter(by_key.items()))
@@ -188,8 +189,8 @@ def test_purchase_in_transit_sql_runs_on_real_clickhouse_and_row_shape_is_sane(l
     """
     src = cs.ChSource(live_query_raw, classify_failure=describe_failure)
     purchase_as_of = src.purchase_as_of()
-    sql = cs.SQL_PURCHASE_IN_TRANSIT.format(purchase_as_of=purchase_as_of.isoformat())
-    rows = live_query_raw(sql)
+    rows = live_query_raw(cs.SQL_PURCHASE_IN_TRANSIT,
+                          {"purchase_as_of": purchase_as_of.isoformat()})
     assert rows, (
         f"{cs.PURCHASE_ITEMS_TABLE} 在 purchase_as_of={purchase_as_of} 真实 CH 上"
         "一行开口在途都没取到——下面的断言就是空转的")
@@ -220,8 +221,8 @@ def test_purchase_in_transit_matches_a_hand_written_sum(live_query_raw):
     莫名其妙红掉的测试。"""
     src = cs.ChSource(live_query_raw, classify_failure=describe_failure)
     purchase_as_of = src.purchase_as_of()
-    rows = live_query_raw(cs.SQL_PURCHASE_IN_TRANSIT.format(
-        purchase_as_of=purchase_as_of.isoformat()))
+    rows = live_query_raw(cs.SQL_PURCHASE_IN_TRANSIT,
+                          {"purchase_as_of": purchase_as_of.isoformat()})
     by_sku, _dropped = cs.parse_in_transit(rows)
     assert by_sku, f"{cs.PURCHASE_ITEMS_TABLE} 在 purchase_as_of={purchase_as_of} 批量结果为空——对账无从做起"
     sku = next(iter(by_sku))
@@ -298,10 +299,9 @@ def test_monthly_sales_sql_runs_on_real_clickhouse_and_row_shape_is_sane(live_qu
     """★ 真跑一次 `SQL_MONTHLY_SALES`（不是回放），验证行宽——(month, units)。"""
     from dim import order_store_map as m
     store, channel = m.store_for(FROZEN_SID)
-    sql = cs.SQL_MONTHLY_SALES.format(
-        store=store, channel=channel, seller_sku=FROZEN_MSKU,
-        start="2026-06-01", end="2026-09-01")
-    rows = live_query_raw(sql)
+    rows = live_query_raw(cs.SQL_MONTHLY_SALES,
+                          {"store": store, "channel": channel, "seller_sku": FROZEN_MSKU,
+                           "start": "2026-06-01", "end": "2026-09-01"})
     assert rows, (
         f"{cs.ORDERS_TABLE} 对 (store={store}, channel={channel}, sku={FROZEN_MSKU}) "
         "真实 CH 上一行月销量都没取到——下面的断言就是空转的")
@@ -477,3 +477,71 @@ def test_monthly_sales_history_excludes_the_current_month(live_query_raw):
     assert all(m < this_month for m, _ in got), (
         f"窗口里出现了当月或未来月份：{got}（as_of={as_of}）——"
         "当月是半个月，混进去会把销量读成骤降")
+
+
+#: ---------------------------------------------------------------------------
+#: 终审 I-5：带值的 SQL 一律走驱动的**服务端参数绑定**，不许 `str.format` 拼串。
+#: ---------------------------------------------------------------------------
+
+#: 一个带撇号的 msku。★ 不是「构造的极端输入」：`seller_sku` 来自
+#: `lingxing_product_listing`，那是卖家自己起的名字，撇号一点都不稀奇。
+#:
+#: ★★ 实测（2026-09-23，把 `SQL_MONTHLY_SALES` 改回拼串跑这条门禁）：后果比终审
+#:   I-5 描述的**更坏**。拼串生成 `... AND sku = 'A' OR 1=1 --'`，`OR 1=1` 让
+#:   整个谓词恒真，于是 CH **不报错**，返回的是**整个店的销量**：
+#:
+#:     2026-06 = 27,031   2026-07 = 25,772   2026-08 = 22,911
+#:
+#:   而这个 msku 真实销量是 0。也就是说它不是「一条坏 SQL 被误报成 CH 连不上」，
+#:   而是**一个安静的错数**：一个 msku 的需求被填成全店的量，响应 200、
+#:   `history_window` 照常产出、没有任何一处报警。
+QUOTE_MSKU = "A' OR 1=1 --"
+
+
+def test_a_quote_in_the_msku_is_bound_not_interpolated(live_query_raw):
+    """★ 真打一次 CH：带撇号的 msku 必须**正常返回 0 行**。
+
+    0 行是正确答案（没有这个 msku 的单）—— 关键在于它是「查过了、没有」。
+    拼串版本在这里返回的是整个店的销量（见 `QUOTE_MSKU` 上面的实测），
+    而那是一个 200 响应里的安静错数，没有任何一处报警。
+    """
+    src = cs.ChSource(live_query_raw, classify_failure=describe_failure)
+    got = src.monthly_sales_history(QUOTE_MSKU, FROZEN_SID, 3)
+    assert got == [], f"带撇号的 msku 竟然查出了行：{got}"
+    window = src.history_window(QUOTE_MSKU, FROZEN_SID)
+    assert window["store"] == "PETSFIT_NORTH_AMERICA", (
+        "口径标记也要照常产出 —— 它是这次「查过了、没有」的证据")
+
+
+def test_a_quote_in_the_msku_really_escapes_the_string_literal_when_interpolated():
+    """★ 这条是上一条的**靶子说明**：证明 `QUOTE_MSKU` 真的能打坏拼串版本，
+    否则上一条就是在一个无害输入上空转（一个不会致命的输入上的绿是假的绿）。
+
+    不改生产代码，只在本地把同一个值按旧办法拼一次，断言拼出来的谓词已经从
+    字符串字面量里逃出去、变成了一个恒真条件。
+    """
+    # ★ 刻意用 `str.format`（不是 f-string）：复现的就是修复前那一行的写法。
+    template = "SELECT 1 FROM t WHERE sku = '{seller_sku}'"
+    sql = template.format(seller_sku=QUOTE_MSKU)
+    assert "sku = 'A' OR 1=1" in sql, sql
+    assert sql.count("'") == 3, (
+        f"拼串之后撇号个数应当是奇数（3）—— 字符串字面量没闭合上：{sql}")
+
+
+def test_no_value_operand_is_string_interpolated_in_the_forecast_sql():
+    """★ 防回归：四条带值的 SQL 里不许再出现 `= '{...}'` 这种拼串占位符。
+
+    ★ 判据看的是**源码文本**，不是运行时行为：一个人把某一条改回 `.format`
+      拼串，运行时照样跑得通（只要没人给它带撇号的输入），而那正是 I-5
+      在生产里潜伏了一整轮的原因 —— 这条断言是它唯一会被发现的地方。
+    """
+    import re
+    for name in ("SQL_FBA_CAPTURE_DAYS", "SQL_MONTHLY_SALES", "SQL_FBA_ONHAND",
+                 "SQL_PURCHASE_IN_TRANSIT"):
+        sql = getattr(cs, name)
+        bad = re.findall(r"'\{[^}]*\}'|toDate\('\{[^}]*\}'\)", sql)
+        assert not bad, (
+            f"{name} 里还有拼串占位符 {bad} —— 带值的操作数一律走 "
+            "`{name:Type}` 服务端绑定（终审 I-5）")
+        assert re.search(r"\{[A-Za-z_]+:[A-Za-z0-9()]+\}", sql), (
+            f"{name} 里一个绑定占位符都没有 —— 这条断言就是空转的")

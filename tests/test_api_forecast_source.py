@@ -24,7 +24,7 @@ def test_ch_source_does_not_connect_at_construction(monkeypatch):
     monkeypatch.setattr(sf, "forecast", lambda: {"source": "ch", "cache_ttl_seconds": 300,
                                                   "drop_threshold": 0.30})
     monkeypatch.setattr(sf, "ch_client", lambda: built.append(1) or object())
-    monkeypatch.setattr(sf, "ch_query", lambda c: (lambda sql: []))
+    monkeypatch.setattr(sf, "ch_query", lambda c: (lambda sql, parameters=None: []))
     src = sf.make_source()
     assert built == [], "构造时就连了 CH"
     # ★ 查询桩给的空行 rows=[] 会被 pick_snapshot_date 判成「近 7 天一个采集日都没有」，
@@ -78,7 +78,7 @@ def test_ch_source_injects_the_real_classify_failure(monkeypatch):
     monkeypatch.setattr(sf, "forecast", lambda: {"source": "ch"})
     monkeypatch.setattr(sf, "ch_client", lambda: object())
 
-    def boom(sql: str) -> list[tuple]:
+    def boom(sql: str, parameters: dict | None = None) -> list[tuple]:
         raise TimeoutError("connection timed out")
 
     monkeypatch.setattr(sf, "ch_query", lambda c: boom)

@@ -125,7 +125,7 @@ def test_empty_candidate_list_is_not_a_silent_empty():
 def test_as_of_caches_within_ttl_and_rebuilds_after():
     calls = []
 
-    def q(sql: str):
+    def q(sql: str, parameters: dict | None = None):
         calls.append(sql)
         return [day(23), day(22)]
 
@@ -143,7 +143,7 @@ def test_as_of_caches_within_ttl_and_rebuilds_after():
 
 
 def _raise(exc: BaseException):
-    def q(sql: str):
+    def q(sql: str, parameters: dict | None = None):
         raise exc
     return q
 
@@ -192,29 +192,38 @@ def test_ch_unavailable_default_classifier_still_fires_without_injection():
     assert e.value.cause["kind"] == "unknown"
 
 
-def test_lookback_days_is_wired_into_the_sql():
+def test_lookback_days_is_wired_into_the_bound_parameters():
     """★ [forecast].snapshot_lookback_days 之前声明了没人读——这里证明
-    改它是真的会改变发给 CH 的 SQL，不是一个不生效的旋钮。"""
+    改它是真的会改变发给 CH 的东西，不是一个不生效的旋钮。
+
+    ★ 终审 I-5 之后判据从「SQL 文本里出现 today() - 3」换成「绑定参数里
+      lookback == 3」：值现在由驱动服务端绑定，SQL 文本里只剩
+      `{lookback:UInt16}` 占位符。断言必须跟着值走到它真正在的地方 ——
+      留在文本上会变成一条永远绿的断言（它比的是一个再也不含这个值的字符串）。"""
     calls = []
 
-    def q(sql: str):
-        calls.append(sql)
+    def q(sql: str, parameters: dict | None = None):
+        calls.append((sql, parameters))
         return [day(23)]
 
     cs.ChSource(q, lookback_days=3).as_of()
-    assert "today() - 3" in calls[0]
+    sql, params = calls[0]
+    assert "{lookback:UInt16}" in sql, "SQL 里该是占位符，不是拼进去的字面量"
+    assert params["lookback"] == 3, params
 
 
-def test_settle_minutes_is_wired_into_the_sql():
+def test_settle_minutes_is_wired_into_the_bound_parameters():
     """★ 同上，snapshot_settle_minutes。"""
     calls = []
 
-    def q(sql: str):
-        calls.append(sql)
+    def q(sql: str, parameters: dict | None = None):
+        calls.append((sql, parameters))
         return [day(23)]
 
     cs.ChSource(q, settle_minutes=10).as_of()
-    assert "INTERVAL 10 MINUTE" in calls[0]
+    sql, params = calls[0]
+    assert "{settle:UInt16}" in sql
+    assert params["settle"] == 10, params
 
 
 def test_lookback_days_shows_up_in_the_empty_candidate_error():
@@ -236,7 +245,7 @@ ONHAND_ROWS = [
 
 
 def onhand_query(rows=None, days=None):
-    def q(sql: str):
+    def q(sql: str, parameters: dict | None = None):
         if "lingxing_inventory_fba_detail" in sql and "_captured_date >=" in sql:
             return days if days is not None else [day(23), day(22)]
         if "afn_fulfillable_quantity" in sql:
@@ -267,14 +276,14 @@ def test_onhand_reads_the_snapshot_once_for_many_mskus():
     calls = []
     base = onhand_query()
 
-    def q(sql):
-        calls.append(sql)
-        return base(sql)
+    def q(sql, parameters: dict | None = None):
+        calls.append((sql, parameters))
+        return base(sql, parameters)
 
     src = cs.ChSource(q)
     for msku in ("DCC1800264G1Z2B", "DVCD105013ALZ2B", "NEVER-STOCKED"):
         src.onhand_available(msku, "11072")
-    assert sum("afn_fulfillable_quantity" in s for s in calls) == 1, (
+    assert sum("afn_fulfillable_quantity" in sql for sql, _p in calls) == 1, (
         "grid 逐 msku 调 21 次 —— 不批量就是 21 次往返")
 
 
@@ -332,7 +341,7 @@ def test_onhand_query_failure_becomes_ch_unavailable():
     ChUnavailable 曾经「定义了但从没抛过」那个教训，见 progress.md Task 1
     Fix round 2）。"""
 
-    def q(sql: str):
+    def q(sql: str, parameters: dict | None = None):
         if "lingxing_inventory_fba_detail" in sql and "_captured_date >=" in sql:
             return [day(23), day(22)]
         if "afn_fulfillable_quantity" in sql:
@@ -361,12 +370,13 @@ def test_onhand_cache_rebuilds_when_as_of_moves_to_a_new_day():
     calls = []
     state = {"days": [day(23), day(22)]}
 
-    def q(sql):
+    def q(sql, parameters: dict | None = None):
         calls.append(sql)
         if "lingxing_inventory_fba_detail" in sql and "_captured_date >=" in sql:
             return state["days"]
         if "afn_fulfillable_quantity" in sql:
-            if "2026-09-23" in sql:
+            # ★ 终审 I-5：快照日现在在**绑定参数**里，不在 SQL 文本里。
+            if (parameters or {}).get("as_of") == "2026-09-23":
                 return [("11072", "X", 1, 1)]
             return [("11072", "X", 2, 1)]
         raise AssertionError(f"没预料到的 SQL：{sql[:80]}")
@@ -409,7 +419,7 @@ def purchase_query(captured=dt.date(2026, 9, 22), fba_days=None, rows=None,
     的参照基准）；`max(_captured_date)` + `purchase_order_list_items` 命中
     `purchase_as_of()`；`quantity_receive` 命中 `purchase_in_transit` 的批量取数。
     """
-    def q(sql: str):
+    def q(sql: str, parameters: dict | None = None):
         if "_captured_date >=" in sql:
             return fba_days if fba_days is not None else [day(23), day(22)]
         if "max(_captured_date)" in sql and "purchase_order_list_items" in sql:
@@ -462,19 +472,19 @@ def test_in_transit_reads_the_batch_once_for_many_skus():
     calls = []
     base = purchase_query()
 
-    def q(sql):
-        calls.append(sql)
-        return base(sql)
+    def q(sql, parameters: dict | None = None):
+        calls.append((sql, parameters))
+        return base(sql, parameters)
 
     src = cs.ChSource(q)
     for sku in ("DVCD105013L1", "DVCD105013AL", "NOT-A-SKU"):
         src.purchase_in_transit(sku)
-    assert sum("quantity_receive" in c for c in calls) == 1
+    assert sum("quantity_receive" in sql for sql, _p in calls) == 1
 
 
 def test_purchase_as_of_empty_result_is_unknown_shape_not_silent():
     """★ 一个采集日都没有 —— 空不是「没有在途」，是采集缺口。"""
-    def q(sql):
+    def q(sql, parameters: dict | None = None):
         if "_captured_date >=" in sql:
             return [day(23), day(22)]
         if "max(_captured_date)" in sql and "purchase_order_list_items" in sql:
@@ -646,7 +656,7 @@ def _sales_query(rows=None, fail=None, as_of_days=None):
     `_captured_date >=` 命中 `as_of()` 的候选日 SQL；`toStartOfMonth` 命中
     月销量批量取数。让 `as_of()` 走正常路径解析出 2026-09-23，而不是直接戳
     ChSource 的私有属性。"""
-    def q(sql: str):
+    def q(sql: str, parameters: dict | None = None):
         if "_captured_date >=" in sql:
             return as_of_days if as_of_days is not None else [day(23), day(22)]
         if "toStartOfMonth" in sql:
