@@ -252,6 +252,32 @@ def test_purchase_in_transit_matches_a_hand_written_sum(live_query_raw):
         "——两条路径本该读同一批快照")
 
 
+def test_purchase_as_of_is_within_staleness_budget(live_query_raw):
+    """★ 控制器裁定追加（09-23，task-6-brief.md）：Task 3 新增的
+    `purchase_staleness_days`（默认 3 天，OQ-5）之前只有构造出来的假快照日在
+    单测里验证过判定逻辑（`tests/test_dim_ch_source_forecast.py`
+    `test_purchase_staleness_days_is_wired_into_the_check`），没有用真实两张表
+    的实际年龄差核实过默认值本身够不够用。这里读 `purchase_as_of()` 与 `as_of()`
+    在真实 CH 上的天数差，断言小于 `purchase_staleness_days` 默认值——若这台
+    机器上真的超了，测试应该红：红了说明默认值 3 天定小了，或者采购表的采集
+    真的断了，两种都不该被静默吞掉（`purchase_as_of()` 内部已经会在超阈值时
+    抛 `PurchaseTableStale`，这条测试要的是提前把「差多少天」摆出来，而不是
+    等断言炸了才去猜）。"""
+    # ★ 不碰私有属性 `_purchase_staleness_days`——直接从构造函数的默认值读，
+    #   与 ChSource 未显式传参时实际生效的阈值是同一个数。
+    threshold_days = cs.ChSource.__init__.__kwdefaults__["purchase_staleness_days"]
+    src = cs.ChSource(live_query_raw, classify_failure=describe_failure)
+    as_of = src.as_of()
+    purchase_as_of = src.purchase_as_of()  # 若已超阈值，这一步自己就会抛 PurchaseTableStale
+    age_days = (as_of - purchase_as_of).days
+    assert age_days < threshold_days, (
+        f"purchase_as_of={purchase_as_of} 比 as_of={as_of} 晚 {age_days} 天，"
+        f"已经达到/超过默认阈值 {threshold_days} 天——"
+        "要么默认值 3 天定小了，要么采购表采集真的断了，两种都不该被静默吞掉"
+        "（正常情况下 `purchase_as_of()` 会在超阈值时先抛 PurchaseTableStale，"
+        "走到这条断言本身就说明还在预算内）")
+
+
 #: ---------------------------------------------------------------------------
 #: Task 4（monthly_sales_history，design §4.2 / §7 / §8 OQ-1）：`SQL_MONTHLY_SALES`
 #: 是新 SQL，带一层子查询 + `GROUP BY amazon_order_id, order_item_id` 去重——

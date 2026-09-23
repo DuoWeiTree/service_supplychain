@@ -38,6 +38,32 @@
 不触发刷新。不管哪种配置，业务端点的拒绝服务都只发生在按请求判的
 `require_fresh_mirrors`（`docs/03` §7.1 E-4）。
 
+## 预测取数（`[forecast]`）
+
+阶段 A 的销量/在仓/采购在途取数走 `dim/ch_source.py::ChSource`（详细口径见
+`docs/superpowers/specs/2026-09-23-chsource-design.md`）。换源只改一行：
+
+    [forecast]
+    source = "fixture"   # 改成 "ch" 即切到真 ClickHouse，无需改代码
+
+`[forecast]` 段（`config.example.toml`）七组键：
+
+| 键 | 作用 |
+|---|---|
+| `source` | `"fixture"`（默认，`tests/fixtures/` 的 5 个假 msku，离线可跑）或 `"ch"`（真 ClickHouse）。漏配不该变成「去连生产」，所以默认不是 `"ch"` |
+| `snapshot_lookback_days` / `snapshot_settle_minutes` | 快照日候选窗口，以及「这批采集算写完了」的静置时长——防止读到还没写完的半截批次 |
+| `cache_ttl_seconds` | `ChSource` 内部缓存：快照批次按采集日缓存（同一天不可变），`as_of` 的解析结果按这个秒数缓存 |
+| `sales_months_max` | 一次最多回溯多少个完整自然月 |
+| `drop_threshold` | 掉档阈值——相邻两个候选日行数掉幅超过它就拒绝该候选日 |
+| `min_rows` / `min_distinct_sid` | 绝对地板——纯粹「比对相邻候选日」测不出整窗口同步塌陷，这两个数字是最后一道底线 |
+| `purchase_staleness_days` | 采购单快照的陈旧阈值（默认 3 天）：超过这么多天没有新采集日，整批在途视为「未知」（抛 `PurchaseTableStale`），不是悄悄当 0 |
+
+三个已知缺口（阶段 A 不解决，见 design §8）：
+
+- **`sid=0` 共享池不分摊，只排除计数**（OQ-2）：欧洲共享池（PL+SE 合池，实测占全部可售 27.6%）不折进任何一个 sid，响应带 `shared_pool_excluded` 计数，PL/SE 两店的在仓因此系统性偏低。
+- **逾期在途归入 `sku_pipeline[].bucket="overdue"` 单列展示，不重定日期**（OQ-6）：`expect_arrive_time` 大面积逾期的行不会被悄悄挪到未来某个月，只会单独标出来。
+- **L-3 晚到订单占比未与重复采集分开**（OQ-1）：去重已消掉「同一行跨采集日重复计数」，但「真·晚到订单」占比还有多少未实测，`monthly_sales_history` 只取**完整月**规避，响应带 `history_window` 口径标记。
+
 ## 测试
 
     uv run pytest -q                       # 全部（需要能连到 PG 192.168.66.210）
