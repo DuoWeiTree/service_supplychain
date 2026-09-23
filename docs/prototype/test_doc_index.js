@@ -54,11 +54,14 @@ actual.forEach(function (f) {
            + '      —— 实施时没人知道它对什么说了算，于是会自己编一个');
   }
 });
+/* ★ 登记项允许带子目录（docs/superpowers/specs/… 这类）：平级清单查不到时，
+ *   按相对 docs/ 的真实路径再查一次。查不到才算「指向不存在的地方」。
+ *   —— 不这么做，规格与计划就只能留在地图外，而它们正是实施时最该被导航到的。 */
 Object.keys(mapped).forEach(function (f) {
-  if (actual.indexOf(f) < 0) {
-    bad.push('★ 地图登记了 ' + f + '，但 docs/ 下**没有这个文件**\n'
-           + '      —— 导航指向不存在的地方，比没有导航更坏');
-  }
+  if (actual.indexOf(f) >= 0) return;
+  if (f.indexOf('/') >= 0 && fs.existsSync(path.join(DOCS, f))) return;
+  bad.push('★ 地图登记了 ' + f + '，但 docs/ 下**没有这个文件**\n'
+         + '      —— 导航指向不存在的地方，比没有导航更坏');
 });
 
 if (bad.length) {

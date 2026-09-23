@@ -41,7 +41,5 @@ coverage_drop_threshold = 0.30
 
 # ★ 启动钩子只记录 + 触发刷新，不拦启动、不拦 /health · /v1/readiness；
 #   真正的拒绝服务只在业务路由按请求判（OQ-8 裁定 09-22，见 03:1622）。
-#   ⚠️ 本 Task 之下的 Task 7 仍按旧写法（抛异常拒绝启动）实现，执行前需按
-#   本裁定重写 —— 见设计 §10.1 OQ-8 与 mirror-refresh 文档增量提案第 7 节。
 #   测试夹具置 false —— 它 TRUNCATE 掉四张镜像。
 startup_gate = true
