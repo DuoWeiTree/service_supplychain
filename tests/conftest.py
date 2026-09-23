@@ -46,27 +46,45 @@ def _switch_schema(text: str) -> str:
     return "".join(out)
 
 
+#: ★ 两个键都要在测试里默认关掉——都会让 `create_app()` 在 `_lifespan` 里碰
+#: 外部系统：`scheduler_enabled` 起一个真 APScheduler（task-6-brief Step 7），
+#: `startup_gate` 在镜像陈旧时抢 advisory lock、触发一次真刷新去打真 CH
+#: （task-7 fix round 1 —— 没有这一条，任何一个带 `with TestClient(...)` 对着
+#: 空表/陈旧镜像跑 lifespan 的测试都会在默认值下真的去连 ClickHouse）。
+_FRESHNESS_TEST_PINS = ("scheduler_enabled", "startup_gate")
+
+
 def _disable_scheduler(text: str) -> str:
-    """★ 测试固定 `[freshness] scheduler_enabled = false` —— 不这样，每个
-    `client` 夹具的 `create_app()` 都会在 `_lifespan` 里起一个真 APScheduler
-    （task-6-brief Step 7）。已有这一行就覆盖成 false，没有就在 `[freshness]`
-    段尾追加一行 —— 两种情况 `config.toml` 都可能出现（新增键 vs 老配置未跟上）。
+    """★ 测试固定 `[freshness]` 里 `_FRESHNESS_TEST_PINS` 这几个键为 false ——
+    不这样，每个 `with TestClient(create_app())` 都会在 `_lifespan` 里碰外部
+    系统（起真调度器 / 抢锁打真 CH）。已有这一行就覆盖成 false，没有就在
+    `[freshness]` 段尾追加一行 —— 两种情况 `config.toml` 都可能出现
+    （新增键 vs 老配置未跟上）。
+
+    ★ 只想验证「真的会触发一次刷新」的测试（tests/test_api_startup_check.py）
+    必须显式 `monkeypatch` 把 `startup_gate` 改回 true —— 默认值保护的是
+    其余全部测试，不是这几个专门测它的用例。
     """
-    out, in_freshness, seen = [], False, False
+    out, in_freshness, seen = [], False, set()
     for line in text.splitlines(keepends=True):
         s = line.strip()
         if s.startswith("["):
-            if in_freshness and not seen:
-                out.append("scheduler_enabled = false\n")
+            if in_freshness:
+                for key in _FRESHNESS_TEST_PINS:
+                    if key not in seen:
+                        out.append(f"{key} = false\n")
             in_freshness = s.startswith("[freshness]")
-            seen = False
-        if in_freshness and s.startswith("scheduler_enabled"):
-            out.append("scheduler_enabled = false\n")
-            seen = True
+            seen = set()
+        matched = next((k for k in _FRESHNESS_TEST_PINS if s.startswith(k)), None)
+        if in_freshness and matched:
+            out.append(f"{matched} = false\n")
+            seen.add(matched)
             continue
         out.append(line)
-    if in_freshness and not seen:
-        out.append("scheduler_enabled = false\n")
+    if in_freshness:
+        for key in _FRESHNESS_TEST_PINS:
+            if key not in seen:
+                out.append(f"{key} = false\n")
     return "".join(out)
 
 

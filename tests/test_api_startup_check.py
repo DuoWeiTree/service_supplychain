@@ -65,3 +65,19 @@ def test_check_only_looks_at_gate_503_mirrors(wipe, monkeypatch, seed):
     """label_only 的镜像（sku_category）陈旧不触发这条路径，只标注（01:275）。"""
     from dim.registry import gate_503_names
     assert "sku_category" not in gate_503_names()
+
+
+def test_suite_default_never_triggers_a_refresh_even_with_stale_mirrors(wipe, monkeypatch):
+    """★ fix round 1：conftest 把 `[freshness] startup_gate` 全局钉成 false ——
+    不这样，任何一个带 `with TestClient(...)` 对着空表/陈旧镜像跑 lifespan 的
+    测试，都会在默认值 `startup_gate=true` 下真的去抢 advisory lock、打真 CH。
+
+    ★ 本测试刻意不调用 `_cfg()`、不 monkeypatch `freshness` ——
+    验的正是"什么都不做"时的默认保护，而不是某个测试自己记得关。
+    """
+    calls = []
+    monkeypatch.setattr(refresh_dims, "refresh_all",
+                        lambda *a, **k: (calls.append((a, k)), [])[1])
+    with TestClient(api.create_app()) as c:      # wipe：四张镜像全空，天然陈旧
+        assert c.get("/health").status_code == 200
+    assert calls == [], f"套件默认值必须保护 CH 不被打——实际触发了 {calls}"
