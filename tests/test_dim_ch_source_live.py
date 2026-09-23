@@ -100,4 +100,62 @@ def test_as_of_runs_on_real_clickhouse_and_picks_a_real_candidate_day(live_query
     assert isinstance(got, dt.date)
     assert got in candidate_dates, (
         f"as_of()={got} 不在真实候选日 {sorted(candidate_dates)} 里——形态不对，"
-        "SQL 文本或 pick_snapshot_date 的排序/分类可能对不上了")
+        f"SQL 文本或 pick_snapshot_date 的排序/分类可能对不上了")
+
+
+def test_onhand_sql_runs_on_real_clickhouse_and_row_shape_is_sane(live_query_raw):
+    """★ Task 2 review finding 4：`SQL_FBA_ONHAND` 是新 SQL、自带一次 `toString(sid)`
+    转型——同 `SQL_SELLER` 当年的坑一个形状（`sid` 两侧类型不同在真实 CH 上直接
+    `NO_COMMON_TYPE`，12 个 fixture 回放测试一个都测不出来）。这里真跑一次
+    `SQL_FBA_ONHAND`（不是回放），验证行宽与「已知有货的 sid 真的出现在结果
+    里」，并断言 `sid=0` 欧洲共享池今天确实非零地被排除——这条断言若变成 0，
+    要么共享池真的清空了要么排除逻辑本身坏了，两者都必须显式暴露，不能悄悄
+    通过。"""
+    src = cs.ChSource(live_query_raw, classify_failure=describe_failure)
+    as_of = src.as_of()
+    sql = cs.SQL_FBA_ONHAND.format(as_of=as_of.isoformat())
+    rows = live_query_raw(sql)
+    assert rows, (
+        f"{cs.FBA_DETAIL_TABLE} 在 as_of={as_of} 真实 CH 上一行在仓数据都没取到——"
+        "下面的断言就是空转的")
+    assert all(len(r) == 4 for r in rows), (
+        f"SQL_FBA_ONHAND 的行宽应为 4（sid, seller_sku, units, raw_rows）："
+        f"real row={rows[:1]}")
+
+    by_key, dropped = cs.parse_onhand(rows)
+    assert any(sid == "11072" for sid, _seller_sku in by_key), (
+        "已知有货的 sid 11072（design §1.3 E-1/E-4 的常驻样本）在真实 CH 上"
+        "一个 key 都没出现——形态不对")
+    shared = dropped.get("shared_pool_excluded", {})
+    assert shared.get("units", 0) > 0 and shared.get("rows", 0) > 0, (
+        f"sid=0 欧洲共享池今天理应非零（design E-4：实测 1,114 行 / 14,073 件），"
+        f"实际拿到 {shared!r}——排除逻辑或数据源本身可能已经变了")
+
+
+def test_onhand_available_runs_on_real_clickhouse_and_matches_a_hand_written_sum(live_query_raw):
+    """★ 真值对账（design §7）：`ChSource.onhand_available` 的答案要和一条独立
+    手写的 SQL 对上——同一条 SQL 自己对自己不算对账。不硬编码某个具体 msku
+    （那会在该 msku 未来清库存/下架后变成一条会莫名其妙红掉的测试），改为从
+    真实批量结果里随手取一个非共享池的 key，分别用 `ChSource` 与独立 SQL 各查
+    一次，断言两者相等。"""
+    src = cs.ChSource(live_query_raw, classify_failure=describe_failure)
+    as_of = src.as_of()
+    rows = live_query_raw(cs.SQL_FBA_ONHAND.format(as_of=as_of.isoformat()))
+    by_key, _dropped = cs.parse_onhand(rows)
+    assert by_key, f"{cs.FBA_DETAIL_TABLE} 在 as_of={as_of} 批量结果为空——对账无从做起"
+    (sid, seller_sku), want = next(iter(by_key.items()))
+
+    got = src.onhand_available(seller_sku, sid)
+    assert got == want, (
+        f"ChSource.onhand_available({seller_sku!r}, {sid!r})={got} 与批量结果"
+        f"{want} 对不上——两条路径本该读同一批缓存")
+
+    hand = live_query_raw(f"""
+        SELECT toInt64(sum(afn_fulfillable_quantity))
+          FROM {cs.FBA_DETAIL_TABLE}
+         WHERE _captured_date = toDate('{as_of.isoformat()}')
+           AND toString(sid) = '{sid}' AND seller_sku = '{seller_sku}'
+    """)
+    assert hand and hand[0][0] == want, (
+        f"独立手写 SQL 对 (sid={sid}, seller_sku={seller_sku}) 算出 {hand}，"
+        f"与 onhand_available 的 {want} 对不上——两条路径本该读同一批快照")

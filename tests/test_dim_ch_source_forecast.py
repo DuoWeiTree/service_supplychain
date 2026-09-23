@@ -281,6 +281,24 @@ def test_duplicate_rows_are_summed_and_counted():
     assert dropped["rows_collapsed"] == 1
 
 
+def test_a_single_groups_own_raw_rows_above_one_is_collapsed_and_counted():
+    """★ 与上一条测的是**另一种**重复形态：这里只有一条 Python 行，但它自己的
+    `count()`（SQL 的 GROUP BY 已经把 3 条原始表行 sum 到这一条里）> 1——
+    SQL 端已经正确 sum() 过了，这条测试只管「有没有把这件事记下来」。
+    ★ review 发现：这条分支此前一个测试都没覆盖——删掉它，
+    `test_shared_pool_sid_zero_is_excluded_and_counted` /
+    `test_a_real_zero_is_zero_not_missing` / `test_duplicate_rows_are_summed_and_counted`
+    三条全部照样通过（共享池行先 `continue` 跳过了这条分支，上一条测试走的是
+    「同一个 key 出现在两条不同的返回行里」那另一种形态）。今天生产数据里没有
+    任何非共享池的 (sid, seller_sku) 分组 `raw_rows > 1`（E-1：8,080/8,080 全部
+    n=1），所以这条分支目前在真实数据上不可观测——这条测试就是唯一能证伪它
+    的地方。"""
+    rows = [("11072", "Y", 30, 3)]
+    by_key, dropped = cs.parse_onhand(rows)
+    assert by_key[("11072", "Y")] == 30
+    assert dropped["rows_collapsed"] == 2
+
+
 def test_onhand_query_failure_becomes_ch_unavailable():
     """★ as_of() 拿到快照日之后，在仓批量查询本身仍可能失败（连接在两次
     往返之间断掉）——必须走 as_of() 同一条 classify_failure/ChUnavailable
