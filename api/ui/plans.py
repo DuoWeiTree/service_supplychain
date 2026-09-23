@@ -84,10 +84,15 @@ def _source_error(e: Exception) -> ApiError:
     if isinstance(e, PurchaseTableStale):
         # ★ OQ-5 裁定：陈旧阈值突破 → 未知，不是 0；与「掉档守卫全拒」同一类失败，
         #   共用 forecast_source_unusable，不再单起一个错误码。
+        # ★ F4（复核 09-23）：`stale_table` 点名是哪张表老了——行项表停了是
+        #   没有新采购，单据表停了是状态冻住（还可能两张一起停，
+        #   `dim.ch_source.BOTH_PURCHASE_TABLES`），处置不同。不加这个字段，
+        #   两个成因相反的 503 body 会逐字节相同，拿到它的人得去翻日志才知道
+        #   该查哪张——日志已经点名了，响应体不该比日志更瞎。
         return ApiError(503, "forecast_source_unusable",
                         "采购单快照太久没更新 —— 在途视为未知，不是 0",
                         {"captured": e.captured.isoformat(), "age_days": e.age_days,
-                         "threshold_days": e.threshold_days})
+                         "threshold_days": e.threshold_days, "stale_table": e.stale_table})
     if isinstance(e, UnknownShape):
         return ApiError(503, "forecast_source_unusable", "取数源出现认不出的形态",
                         {"detail": str(e)})

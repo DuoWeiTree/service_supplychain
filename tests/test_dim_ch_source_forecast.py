@@ -585,6 +585,11 @@ def test_purchase_table_stale_raises_instead_of_reading_as_zero():
     assert e.value.captured == dt.date(2026, 9, 18)
     assert e.value.age_days == 5
     assert e.value.threshold_days == 3
+    # ★ F3（复核 09-23）：两张表同龄（`purchase_query` 默认 order_captured
+    #   跟 captured 同一天）——`stale_table` 必须点名「两张都是」，不许挑一张
+    #   冒充：`>=`/`<=` 都会把这种同龄悄悄并给某一张表，而它是最常见的
+    #   陈旧形态（两张一起停，09-21 实测）。
+    assert e.value.stale_table == cs.BOTH_PURCHASE_TABLES
 
 
 def test_purchase_table_within_threshold_is_not_stale():
@@ -605,6 +610,7 @@ def test_purchase_staleness_days_is_wired_into_the_check():
         src.purchase_as_of()
     assert e.value.age_days == 2
     assert e.value.threshold_days == 1
+    assert e.value.stale_table == cs.BOTH_PURCHASE_TABLES  # ★ F3：同龄，两张都是
 
 
 # ---------------------------------------------------------------------------

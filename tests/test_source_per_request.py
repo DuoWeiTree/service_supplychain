@@ -290,6 +290,91 @@ def test_purchase_staleness_gate_fires_on_a_later_request_too(client, seed, use_
     assert body["threshold_days"] == 3
 
 
+def test_purchase_staleness_gate_fires_when_only_the_order_table_freezes(client, seed,
+                                                                          use_source):
+    """★ F2（复核 09-23）：上面那条只证了行项表冻住那一半——复核实测过对称的
+    另一半会独立坏掉：把单据表那次查询改成「本实例只看一次、之后一律当它
+    新鲜」，全量测试照样绿（复核报告的变异证据）。这里钉一个长命实例的现场：
+    行项表**跟着参照物照常推进**（每次都等于当前 `as_of()`，永远 age=0），
+    单据表冻结在第一次查到的那天——十天后单据表自己 10 天没动，闸必须响，
+    不许因为「反正查过一次了」被放行。"""
+    order_frozen = dt.date(2026, 9, 23)
+    fba_day = [dt.date(2026, 9, 23)]
+    clock = [dt.datetime(2026, 9, 23, 8, 0, tzinfo=dt.UTC)]
+
+    def q(sql: str, parameters: dict | None = None) -> list[tuple]:
+        one = " ".join(sql.split())
+        if "GROUP BY _captured_date" in one:
+            return [(fba_day[0], 8000, 21, True)]
+        if "GROUP BY sid, seller_sku" in one:
+            return list(_ONHAND_ROWS)
+        if "max(_captured_date)" in one and cs.PURCHASE_ITEMS_TABLE in one and "JOIN" not in one:
+            return [(fba_day[0],)]  # ★ 行项表跟着参照物走——每次都新鲜
+        if "max(_captured_date)" in one and cs.PURCHASE_ORDER_TABLE in one and "JOIN" not in one:
+            return [(order_frozen,)]  # ★ 单据表冻结在第一次查到的那天
+        if "INNER JOIN o" in one:
+            return [("DCC1800264G1", "2026-07", 40, "PO-OLD")]
+        if cs.ORDERS_TABLE in one:
+            return list(_SALES_ROWS)
+        raise AssertionError(f"假 CH 认不出这条 SQL：{one[:160]}")
+
+    src = cs.ChSource(q, now=lambda: clock[0], cache_ttl_s=300,
+                      purchase_staleness_days=3, classify_failure=describe_failure)
+    use_source(lambda: src)
+
+    pid = _plan(client, seed)
+    client.post(f"/v1/plans/{pid}/claims",
+                json={"seller_sku": "MSKU-A", "sid": "11072"}, headers=H(seed.actor))
+    r1 = client.get(f"/v1/plans/{pid}/grid", headers=H(seed.actor))
+    assert r1.status_code == 200, r1.text
+    assert r1.json()["source_notes"]["purchase_as_of"] == "2026-09-23"
+
+    # 十天过去：fba_detail 与行项表一起照常推进（行项表还是"新鲜"），单据表停在
+    # 09-23 没动。TTL 也过了。
+    fba_day[0] = dt.date(2026, 10, 3)
+    clock[0] = dt.datetime(2026, 10, 3, 8, 0, tzinfo=dt.UTC)
+
+    r2 = client.get(f"/v1/plans/{pid}/grid", headers=H(seed.actor))
+    assert r2.status_code == 503, (
+        f"第二次请求拿到 {r2.status_code}，body={r2.text} —— 单据表已经 10 天没动"
+        "（阈值 3 天），行项表自己新鲜不能掩盖它——闸必须再判一次，不许因为"
+        "「本实例已经看过单据表一次」就不再重查")
+    body = r2.json()
+    assert body["error"] == "forecast_source_unusable"
+    assert body["age_days"] == 10, body
+
+
+def test_purchase_table_stale_503_body_names_which_table_is_stale(client, seed, use_source):
+    """★ F4（复核 09-23）：两个方向的 503 body 之前逐字节相同——行项表停了是
+    「没有新采购」，单据表停了是「状态冻住」，处置相反，但拿到 503 的人分不出
+    该查哪张，得去翻日志。`stale_table` 现在把这个信息带进响应体：这里钉住
+    三种形态两两分得开——单据表老、行项表老、两张一起老（同龄，`BOTH_
+    PURCHASE_TABLES`）。"""
+    def body_for(purchase_captured, purchase_order_captured):
+        fake = FakeCh(capture_days=[dt.date(2026, 9, 23)],
+                      purchase_captured=purchase_captured,
+                      purchase_order_captured=purchase_order_captured)
+        src = cs.ChSource(fake, purchase_staleness_days=3, classify_failure=describe_failure)
+        use_source(lambda: src)
+        pid = _plan(client, seed)
+        client.post(f"/v1/plans/{pid}/claims",
+                    json={"seller_sku": "MSKU-A", "sid": "11072"}, headers=H(seed.actor))
+        r = client.get(f"/v1/plans/{pid}/grid", headers=H(seed.actor))
+        assert r.status_code == 503, r.text
+        return r.json()
+
+    order_stale = body_for(dt.date(2026, 9, 23), dt.date(2026, 9, 18))
+    items_stale = body_for(dt.date(2026, 9, 18), dt.date(2026, 9, 23))
+    both_stale = body_for(dt.date(2026, 9, 18), dt.date(2026, 9, 18))
+
+    assert order_stale["stale_table"] == cs.PURCHASE_ORDER_TABLE, order_stale
+    assert items_stale["stale_table"] == cs.PURCHASE_ITEMS_TABLE, items_stale
+    assert both_stale["stale_table"] == cs.BOTH_PURCHASE_TABLES, both_stale
+    # ★ 分得开不是三条孤立断言凑出来的——三种形态必须两两不同。
+    seen = {order_stale["stale_table"], items_stale["stale_table"], both_stale["stale_table"]}
+    assert len(seen) == 3, seen
+
+
 def test_purchase_as_of_is_rechecked_when_the_reference_moves():
     """★ 同一条判据在 dim 层的单测形态（不经 HTTP）：参照的 `as_of()` 一往前走，
     年龄就变了，闸必须重判 —— 而不是拿第一次的结论一直用下去。"""
@@ -309,10 +394,16 @@ def test_purchase_as_of_is_rechecked_when_the_reference_moves():
 
 def test_purchase_as_of_is_not_requeried_while_the_reference_holds():
     """★ 反面靶子：参照物没动就不许多打一次 CH —— 「每次都重查」与「按参照物
-    缓存」都能让上面那条绿，两者的区别只有这条数得出来。"""
+    缓存」都能让上面那条绿，两者的区别只有这条数得出来。
+
+    ★ F2（复核 09-23）：只数 `purchase_as_of`（行项表那个标签）曾经放过一种
+    退化——把单据表那次查询提到缓存判断**之前**（＝单据表每次调用都打一次
+    CH，缓存形同虚设），这条断言仍然绿，因为它压根没看单据表那个标签。
+    两张表各自都要数一次，一个标签松了另一个也得抓得出来。"""
     fake = FakeCh()
     src = cs.ChSource(fake, classify_failure=describe_failure)
     src.purchase_as_of()
     src.purchase_as_of()
     src.purchase_as_of()
     assert fake.calls.count("purchase_as_of") == 1, fake.calls
+    assert fake.calls.count("purchase_order_as_of") == 1, fake.calls
