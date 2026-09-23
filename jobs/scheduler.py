@@ -13,7 +13,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from jobs.lock import RefreshInFlight
-from jobs.refresh_dims import refresh_all
+from jobs.refresh_dims import ChUnreachable, refresh_all
 from shared.config import freshness
 
 log = logging.getLogger("scm.jobs")
@@ -72,6 +72,18 @@ def _tick() -> None:
         runs = refresh_all("scheduler", actor=None)
     except RefreshInFlight:
         log.warning("op=scheduled_job outcome=skipped reason=refresh_in_flight")
+        return
+    except ChUnreachable as e:
+        # ★ 复审残留 ②：`ChUnreachable` 原先逃出这里，被 `_on_error` 记成泛泛的
+        #   `outcome=fail` + 一页 traceback —— 四个入口里唯独夜跑这条没有点名的
+        #   收场（CLI 退出码 1、运维接口 503、直调拿到带 runs 的异常）。
+        # ★ 与 `RefreshInFlight` 分成两个 outcome：锁被占是**正常**（skipped），
+        #   CH 连不上是**真失败**（fail）—— 混成一种，查的时候就分不清今晚是
+        #   「有人在跑」还是「上游没了」。证据行由 `_ch_query_or_record` 写全，
+        #   这里只负责收场；三问日志它也已经打过，不重复打。
+        log.error("op=scheduled_job outcome=fail reason=ch_unreachable"
+                  " err_type=%s target=%s mirrors=%d",
+                  type(e).__name__, e.target, len(e.runs))
         return
     ok = sum(1 for r in runs if r.ok)
     log.info("op=scheduled_job outcome=finish mirrors=%d ok=%d failed=%d",

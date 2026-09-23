@@ -48,6 +48,39 @@ def test_unreachable_ch_is_503_with_a_named_cause_not_a_bare_500(client, seed, m
     assert "connect_refused" in str(body.get("cause")), f"没点名怎么失败的：{body}"
 
 
+def test_a_deep_keyerror_is_not_painted_over_as_unknown_mirror(client, seed, monkeypatch):
+    """★ 复审残留 ③：`except KeyError` 兜住的不只是「登记表里没这个名字」——
+    任何从刷新深处冒上来的 `KeyError`（编程错误、字典拿错键）都会被报成
+    404 `unknown_mirror`，于是运维去查一个拼写正确的镜像名为什么「不存在」。
+
+    这与同一个函数里拒绝 `except Exception` 兜底的理由是同一条，只是换了个
+    异常类型：把编程错误涂成别的东西。名字该在调用**之前**验，验过之后
+    再冒出来的 `KeyError` 就不再是「名字错了」。
+    """
+    from jobs import refresh_dims as rd
+
+    def _boom(*a, **k):
+        raise KeyError("某个字典在刷新深处拿错了键")
+
+    monkeypatch.setattr(rd, "refresh_all", _boom)
+    r = client.post("/v1/jobs/refresh-dims", json={"only": "sku_catalog"},
+                    headers={"x-actor": seed.actor})
+    assert r.status_code != 404, (
+        f"深处的 KeyError 被涂成了 404 unknown_mirror：{r.status_code} {r.text}")
+
+
+def test_a_known_mirror_name_is_validated_before_the_refresh_is_attempted(
+        client, seed, monkeypatch):
+    """★ 名字验在调用之前：拼错的名字不该先抢锁、先建连、先碰 CH 才被拒。"""
+    from jobs import refresh_dims as rd
+    called = []
+    monkeypatch.setattr(rd, "refresh_all", lambda *a, **k: called.append(k) or [])
+    r = client.post("/v1/jobs/refresh-dims", json={"only": "nope"},
+                    headers={"x-actor": seed.actor})
+    assert r.status_code == 404 and r.json()["error"] == "unknown_mirror"
+    assert called == [], "名字是错的，却已经去跑刷新了"
+
+
 def test_undeclared_query_param_is_400(client, seed):
     r = client.post("/v1/jobs/refresh-dims?force=1", json={},
                     headers={"x-actor": seed.actor})

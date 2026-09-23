@@ -6,6 +6,7 @@ from apscheduler.triggers.cron import CronTrigger
 from jobs import scheduler as S
 from jobs.lock import advisory_lock
 from shared import config as config_module
+from tests.helpers import make_ch_unreachable
 
 
 def _with_freshness(monkeypatch, **kw):
@@ -75,10 +76,33 @@ def test_freshness_config_has_every_key_even_when_toml_omits_them(monkeypatch):
                         "coverage_drop_threshold", "startup_gate", "refresh_timezone"}
 
 
-def test_tick_returns_cleanly_when_lock_is_busy(wipe, caplog):
+def test_tick_returns_cleanly_when_lock_is_busy(wipe, scm_log):
     """★ 锁被占是正常状态（另一轮 CLI/运维触发正在跑），不是任务出错 ——
     `_tick()` 必须就地接住 `RefreshInFlight`，打一条日志、干净返回，
-    不许把它扔进 APScheduler 的事件循环让 `_on_error` 当成一次 job 失败。"""
-    with caplog.at_level(logging.WARNING, logger="scm.jobs"), advisory_lock():
+    不许把它扔进 APScheduler 的事件循环让 `_on_error` 当成一次 job 失败。
+
+    ★ 夹具从裸 `caplog` 换成 `scm_log`：同一批里其它日志断言已经因为
+    `scm` 的 propagate=False 而只在别的测试先跑过时才绿（见 `1884440`），
+    这条长在同一片沙地上。"""
+    with scm_log.at_level(logging.WARNING, logger="scm.jobs"), advisory_lock():
         S._tick()   # 不能抛 —— 抛了这条测试本身就会失败
-    assert "refresh_in_flight" in caplog.text
+    assert "refresh_in_flight" in scm_log.text
+
+
+def test_tick_returns_cleanly_when_ch_is_unreachable(wipe, scm_log, monkeypatch):
+    """★ 复审残留 ②：`ChUnreachable` 逃出了 `_tick()`，被 APScheduler 的
+    `_on_error` 记成泛泛的 `op=scheduled_job outcome=fail` + 一页 traceback ——
+    四个入口里唯独夜跑这条没有点名的收场（CLI 退出码 1、运维接口 503、
+    直调拿到带 runs 的异常，都收得干干净净）。
+
+    证据行照样写全（那是 I-3 修好的），缺的是**这一轮怎么结束**：
+    「CH 连不上」与「_tick 自己有 bug」被吞进同一种 fail 日志，
+    与 `RefreshInFlight` 当初要分开的正是同一件事。
+    """
+    make_ch_unreachable(monkeypatch)
+    with scm_log.at_level(logging.WARNING, logger="scm.jobs"):
+        S._tick()   # 不能抛
+    assert "reason=ch_unreachable" in scm_log.text, f"没点名这一轮为什么结束：{scm_log.text!r}"
+    assert "err_type=ChUnreachable" in scm_log.text, f"没带异常类名：{scm_log.text!r}"
+    assert "outcome=skipped" not in scm_log.text, (
+        "CH 连不上是真失败，不是「跳过」—— 与锁被占必须分得开")

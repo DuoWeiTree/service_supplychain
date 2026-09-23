@@ -50,11 +50,17 @@ def pg_error_fields(e: psycopg2.Error) -> dict:
     }
 
 
+def pg_target() -> str:
+    """「打的谁」那一问的唯一答案串。★ 提成函数是因为错误响应也要回答它 ——
+    两处各拼一遍就会出现「日志里写着打 A、响应里写着打 B」。"""
+    c = business_pg()
+    return f"{c['host']}:{c.get('port', 5432)}/{c['dbname']}.{business_schema()}"
+
+
 @contextlib.contextmanager
 def timed(op: str, **fields):
     """日志三问：打的谁（op + host/db）· 多久（elapsed_ms）· 怎么失败的（pgcode / constraint）。"""
-    c = business_pg()
-    where = f"{c['host']}:{c.get('port', 5432)}/{c['dbname']}.{business_schema()}"
+    where = pg_target()
     t0 = time.perf_counter()
     try:
         yield

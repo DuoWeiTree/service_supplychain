@@ -19,7 +19,7 @@ from jobs import scheduler as job_scheduler
 from jobs.lock import RefreshInFlight
 from shared import config as config_module
 from shared.logging import setup_logging
-from shared.pg_client import business_schema, pg_conn, pg_error_fields, timed
+from shared.pg_client import business_schema, pg_conn, pg_error_fields, pg_target, timed
 
 log = logging.getLogger("scm.api")
 
@@ -139,6 +139,34 @@ def _startup_check() -> None:
                         type(e).__name__, e)
 
 
+def _database_unavailable(exc: psycopg2.Error) -> ApiError | None:
+    """「压根连不上业务库」翻成 503，其余返回 None 交给原来的那条路。
+
+    ★ 复审残留 ①：`_pg_error` 原先把「认不出的约束」与「压根连不上」当成同
+    一种放行，于是 PG 挂掉时 `/v1/readiness` 给的是裸 500（纯文本
+    `Internal Server Error`，不是 S-29 形状）—— 而那正是要用来查「为什么起
+    不来」的口子（OQ-8 原话）。与 I-3 为运维端点选 503 的是同一条理由：
+    上游依赖不可用与「我们算错了」调用方的处置不同，同一把尺子要量到底。
+
+    ★ 判据是 `pgcode is None` 而不是「异常类名叫 OperationalError」：
+    服务器**回了话**的 OperationalError（如 57P01 管理员关库、53300 连接数
+    满）带 pgcode，那是另一类形态，不在这里猜。pgcode 为空 = 这次根本没走到
+    服务器，是客户端侧的建连失败。
+    """
+    if not isinstance(exc, psycopg2.OperationalError) or exc.pgcode is not None:
+        return None
+    try:
+        target = pg_target()
+    except Exception:            # noqa: BLE001 - 连配置都读不出来时不许再炸一次
+        target = "<配置读不出来>"
+    log.warning("op=request outcome=pg_unavailable target=%s err_type=%s err=%s",
+                target, type(exc).__name__, exc)
+    return ApiError(503, "database_unavailable",
+                    "连不上业务库，本次请求没有读到任何数据；"
+                    "/health 不依赖它，仍然可达",
+                    {"target": target, "err_type": type(exc).__name__})
+
+
 @contextlib.asynccontextmanager
 async def _lifespan(app: FastAPI):
     # ★ FastAPI 0.141 移除了 add_event_handler（曾经只是 deprecated）——
@@ -163,6 +191,9 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(psycopg2.Error)
     async def _pg_error(request: Request, exc: psycopg2.Error):
+        unavailable = _database_unavailable(exc)
+        if unavailable is not None:
+            return JSONResponse(status_code=unavailable.status, content=unavailable.body())
         translated = translate(exc)
         if translated is None:
             raise exc     # ★ 认不出的约束不许被兜成业务错误，让它以 500 冒出来

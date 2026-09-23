@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from api.ui.deps import actor, declared
 from api.ui.errors import ApiError
+from dim import registry
 from jobs import refresh_dims
 from jobs.lock import RefreshInFlight
 
@@ -23,6 +24,21 @@ class RefreshBody(BaseModel):
 @router.post("/jobs/refresh-dims")
 def refresh_dims_now(request: Request, body: RefreshBody, who: str = Depends(actor)):
     declared(request)
+    # ★ 复审残留 ③：名字在调用**之前**验。原先靠函数末尾的 `except KeyError`，
+    #   于是任何从刷新深处冒上来的 `KeyError`（编程错误、字典拿错键）都被报成
+    #   404「登记表里没有这个镜像」，运维会去查一个拼写正确的名字为什么不存在。
+    #   这与同函数里拒绝 `except Exception` 兜底是同一条理由，只是换了异常类型。
+    # ★ 只把 `registry.by_name` 这一次包起来：验过之后再冒出来的 KeyError
+    #   就不再是「名字错了」，必须走真正的错误路径。
+    # ⚠ pending 条目（登记了但本阶段没有取数实现）现在会以 500 冒出来，
+    #   而不是原先那句措辞错误的 404 —— 它该有自己的错误码（`mirror_pending`
+    #   409），新增错误码要连 `docs/08` §3 一起做，已记进 parked-findings。
+    if body.only is not None:
+        try:
+            registry.by_name(body.only)
+        except KeyError as e:
+            raise ApiError(404, "unknown_mirror", "登记表里没有这个镜像",
+                           {"only": body.only}) from e
     try:
         runs = refresh_dims.refresh_all("api", actor=who, only=body.only)
     except RefreshInFlight as e:
@@ -37,7 +53,4 @@ def refresh_dims_now(request: Request, body: RefreshBody, who: str = Depends(act
                        "上游 ClickHouse 连不上，这一轮一张镜像都没刷；"
                        "dim_refresh_run 里每张镜像各留了一行 ok=false",
                        {"target": e.target, "cause": e.cause}) from e
-    except KeyError as e:
-        raise ApiError(404, "unknown_mirror", "登记表里没有这个镜像",
-                       {"only": body.only}) from e
     return {"runs": [r._asdict() for r in runs]}
