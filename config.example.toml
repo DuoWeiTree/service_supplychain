@@ -59,8 +59,6 @@ snapshot_settle_minutes = 30
 # as_of 的解析结果按这个秒数缓存。
 cache_ttl_seconds = 300
 
-# 一次最多回溯多少个完整自然月。
-sales_months_max = 24
 
 # 掉档阈值。★ 实测该表日间波动 < 2%、每日恰好 21 个 sid，所以 0.30 已经很松。
 drop_threshold = 0.30

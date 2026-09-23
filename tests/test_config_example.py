@@ -50,3 +50,51 @@ def test_config_example_has_the_three_connection_sections():
     with open(EXAMPLE, "rb") as f:
         cfg = tomllib.load(f)
     assert {"business_pg", "clickhouse", "api"} <= set(cfg)
+
+
+#: 非测试源码。★ `shared/config.py` 自己**不算**引用 —— 它是声明的那一侧，
+#: 「声明了」和「有人读」正是这条门禁要分开的两件事（`sales_months_max` 当年
+#: 三处声明、零处读取，`test_config_example_*_keys_match_*` 两个方向都绿：
+#: 它比的是模板的键与默认值字典的键，而两者都含着那个死键）。
+_CODE_DIRS = ("api", "dim", "erp", "forecast", "jobs", "rules", "shared")
+_NOT_A_REFERENCE = {ROOT / "shared" / "config.py"}
+
+
+def _non_test_sources() -> list[Path]:
+    out = [p for d in _CODE_DIRS for p in sorted((ROOT / d).rglob("*.py"))
+           if p not in _NOT_A_REFERENCE]
+    assert out, "一个源文件都没扫到 —— 这条规则是空转的"
+    return out
+
+
+def _unreferenced(keys) -> list[str]:
+    texts = [p.read_text("utf-8") for p in _non_test_sources()]
+    return sorted(k for k in keys
+                  if not any(f'"{k}"' in t or f"'{k}'" in t for t in texts))
+
+
+def test_every_declared_forecast_key_is_read_by_non_test_code():
+    """★★ 终审 I-4：**一个不生效的旋钮比没有旋钮更坏** —— 它在 README 里像个
+    承诺，改了却毫无效果，而没有任何东西会报错。
+
+    `sales_months_max` 在 `shared/config.py` / `config.example.toml` / `README.md`
+    三处声明、`grep` 全树零处读取，而上面那两条「模板键 == 默认值键」的门禁
+    一个都抓不到：它们比的是两个**都含着那个死键**的集合。判据得换成「有没有
+    人真的读它」。
+    ★ 这也是 Task 1 复核提过的同一个缺陷（`snapshot_lookback_days` /
+      `snapshot_settle_minutes` 当时被接上了，这一个没有）—— 所以这次补门禁，
+      不只是修那一个键。
+    """
+    dead = _unreferenced(_FORECAST_DEFAULTS)
+    assert not dead, (
+        f"[forecast] 这些键声明了但非测试代码里没人读：{dead}。"
+        "要么接上（在 api/ui/source_factory.py 里传给 ChSource），要么从"
+        " shared/config.py、config.example.toml、README.md 三处一起删掉 ——"
+        "留着就是在 README 里许一个不会兑现的承诺")
+
+
+def test_every_declared_freshness_key_is_read_by_non_test_code():
+    """★ 同一条判据换成 `[freshness]` —— 死旋钮不是 `[forecast]` 的专属毛病，
+    一条只盯一个段的门禁下次会在另一个段上错过它。"""
+    dead = _unreferenced(_FRESHNESS_DEFAULTS)
+    assert not dead, f"[freshness] 这些键声明了但非测试代码里没人读：{dead}"

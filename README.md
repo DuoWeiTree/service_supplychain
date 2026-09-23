@@ -70,14 +70,16 @@ live 门禁都必须绿（它们要能连内网 CH）：
 `shared_pool_excluded` 变成 0 是信号，不是好消息——要么共享池真清空了，
 要么排除逻辑坏了，两种都得查。
 
-`[forecast]` 段（`config.example.toml`）七组键：
+`[forecast]` 段（`config.example.toml`）六组键 —— ★ 每一个都由
+`api/ui/source_factory.py` 真的读进去，`tests/test_config_example.py` 有一条门禁
+盯着这件事（`sales_months_max` 就是这么被发现「声明了三处、无人读取」的：
+一个不生效的旋钮比没有旋钮更坏，已删除）：
 
 | 键 | 作用 |
 |---|---|
 | `source` | `"fixture"`（默认，`tests/fixtures/` 的 5 个假 msku，离线可跑）或 `"ch"`（真 ClickHouse）。漏配不该变成「去连生产」，所以默认不是 `"ch"` |
 | `snapshot_lookback_days` / `snapshot_settle_minutes` | 快照日候选窗口，以及「这批采集算写完了」的静置时长——防止读到还没写完的半截批次 |
 | `cache_ttl_seconds` | `ChSource` 内部缓存：快照批次按采集日缓存（同一天不可变），`as_of` 的解析结果按这个秒数缓存 |
-| `sales_months_max` | 一次最多回溯多少个完整自然月 |
 | `drop_threshold` | 掉档阈值——相邻两个候选日行数掉幅超过它就拒绝该候选日 |
 | `min_rows` / `min_distinct_sid` | 绝对地板——纯粹「比对相邻候选日」测不出整窗口同步塌陷，这两个数字是最后一道底线 |
 | `purchase_staleness_days` | 采购单快照的陈旧阈值（默认 3 天）：超过这么多天没有新采集日，整批在途视为「未知」（抛 `PurchaseTableStale`），不是悄悄当 0 |

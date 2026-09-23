@@ -310,52 +310,136 @@ def test_monthly_sales_sql_runs_on_real_clickhouse_and_row_shape_is_sane(live_qu
     assert all(isinstance(r[0], dt.date) for r in rows)
 
 
-def test_monthly_sales_dedupe_reduces_the_total_by_the_measured_magnitude(live_query_raw):
-    """★ OQ-1 裁定的先决条件本身在真实数据上的证据：按 (amazon_order_id,
-    order_item_id) 去重必须真的让总量变小，且量级要跟 design §1.3 E-9 冻结的
-    12.5%（2026-08）/ 19.4%（2026-09）对得上——不是随便小一点就算数，如果两者
-    相等或去重后反而更大，说明去重逻辑已经不起作用了。手写一条不带
-    `GROUP BY amazon_order_id, order_item_id` 的裸算术版本做对比，同
-    `SQL_PURCHASE_IN_TRANSIT` 那条 status 过滤的 live 对比是同一个手法。"""
-    from dim import order_store_map as m
-    store, channel = m.store_for(FROZEN_SID)
-    for month, start, end, want_pct in (
-        ("2026-08", "2026-08-01", "2026-09-01", 12.5),
-        ("2026-09", "2026-09-01", "2026-10-01", 19.4),
-    ):
-        raw = live_query_raw(f"""
-            SELECT toInt64(sum(quantity))
+#: 「去重降幅算显著」的下限。★ 不是冻结的实测值，是「它确实在起作用」的门槛：
+#: 实测量级是 12~20%（见 `test_monthly_sales_dedupe_*` 里的表），5% 留足了余量。
+_MATERIAL_DEDUPE_PCT = 5.0
+#: 「这个月已经老到不会再被重复采集」的月龄。★ 2026-09-23 实测：2026-03~07 五个月
+#: 的降幅**全部是 0.00%**，08 是 12.53%、09 是 19.42% —— 重复采集只发生在最近
+#: 两个自然月内。4 个月往前是这条边界之外很远的地方。
+_AGED_MONTHS_BACK = 4
+#: 降幅「已经衰减掉」的上限。
+_DECAYED_DEDUPE_PCT = 1.0
+
+
+def _month_start(d: dt.date, months_back: int) -> dt.date:
+    y, m = d.year, d.month - months_back
+    while m <= 0:
+        y, m = y - 1, m + 12
+    return dt.date(y, m, 1)
+
+
+def _raw_vs_dedup(query, store: str, channel: str,
+                  start: dt.date, end: dt.date) -> tuple[int, int, float]:
+    """同一个窗口，裸算术 vs 按 order_item 去重。返回 (raw, dedup, 降幅%)。
+
+    ★ 去重那条的判据与 `SQL_MONTHLY_SALES` **逐字相同**，只是去掉了
+    `AND sku = '{seller_sku}'` 这一层（那条 SQL 是按单个 msku 设计的，
+    这里要的是整个 (store, channel) 的去重效果）。"""
+    raw = query(f"""
+        SELECT toInt64(sum(quantity))
+          FROM {cs.ORDERS_TABLE}
+         WHERE store = '{store}' AND sales_channel = '{channel}'
+           AND order_status NOT IN ('Cancelled', 'Pending')
+           AND toDate(purchase_date) >= toDate('{start.isoformat()}')
+           AND toDate(purchase_date) < toDate('{end.isoformat()}')
+    """)[0][0]
+    dedup = query(f"""
+        SELECT toInt64(sum(units)) FROM (
+            SELECT if(argMax(order_status, _captured_date) NOT IN ('Cancelled', 'Pending'),
+                      argMax(quantity, _captured_date), 0) AS units
               FROM {cs.ORDERS_TABLE}
              WHERE store = '{store}' AND sales_channel = '{channel}'
-               AND order_status NOT IN ('Cancelled', 'Pending')
-               AND toDate(purchase_date) >= toDate('{start}')
-               AND toDate(purchase_date) < toDate('{end}')
-        """)[0][0]
-        # ★ SQL_MONTHLY_SALES 是按单个 seller_sku 设计的（grid 逐 msku 调用）；
-        #   这里要的是整个 (store, channel) 的去重效果，所以另写一条同样的去重
-        #   逻辑但不按 sku 过滤——去重/状态过滤的判据与 SQL_MONTHLY_SALES 逐字
-        #   相同，只是去掉了 `AND sku = '{{seller_sku}}'` 这一层。
-        dedup = live_query_raw(f"""
-            SELECT toInt64(sum(units)) FROM (
-                SELECT if(argMax(order_status, _captured_date) NOT IN ('Cancelled', 'Pending'),
-                          argMax(quantity, _captured_date), 0) AS units
-                  FROM {cs.ORDERS_TABLE}
-                 WHERE store = '{store}' AND sales_channel = '{channel}'
-                   AND toDate(purchase_date) >= toDate('{start}')
-                   AND toDate(purchase_date) < toDate('{end}')
-                 GROUP BY amazon_order_id, order_item_id
-            )
-        """)[0][0]
-        assert raw is not None and dedup is not None, (
-            f"{month}: raw={raw} dedup={dedup}——下面的断言就是空转的")
-        assert dedup < raw, (
-            f"{month}: 去重后 {dedup} 应当明显小于裸算术 {raw}——如果两者相等，"
-            "说明 GROUP BY amazon_order_id, order_item_id 这一步在真实 SQL 里"
-            "已经不起作用了")
-        pct = (raw - dedup) / raw * 100
-        assert abs(pct - want_pct) < 3, (
-            f"{month}: 去重降幅 {pct:.1f}% 与 design §1.3 E-9 冻结的 {want_pct}% "
-            "差太多——量级本身可能已经变了（不是「小一点就算数」）")
+               AND toDate(purchase_date) >= toDate('{start.isoformat()}')
+               AND toDate(purchase_date) < toDate('{end.isoformat()}')
+             GROUP BY amazon_order_id, order_item_id
+        )
+    """)[0][0]
+    assert raw, f"窗口 [{start}, {end}) 裸算术为 {raw} —— 断言会是空转的"
+    assert dedup is not None, f"窗口 [{start}, {end}) 去重结果为 None"
+    return int(raw), int(dedup), (raw - dedup) / raw * 100
+
+
+def test_monthly_sales_dedupe_is_material_on_recent_months_and_decayed_on_aged_ones(
+        live_query_raw):
+    """★★ 终审 I-3：判据从「两个写死的月份 == 两个写死的百分比」换成**性质**。
+
+    旧判据钉的是 `("2026-08", 12.5)` / `("2026-09", 19.4)`，而降幅**随月龄衰减**
+    ——2026-09-23 实测（PETSFIT_NORTH_AMERICA / Amazon.com）：
+
+        2026-03  0.00%   2026-06  0.00%   2026-08  12.53%
+        2026-04  0.00%   2026-07  0.00%   2026-09  19.42%
+        2026-05  0.00%
+
+    所以 2026-08 会自己往 0 漂，两条断言都会在大约两个月后炸，而失败信息会说
+    「去重逻辑坏了」—— 其实只是时间过去了。**一条会腐烂成假红的门禁是一条会
+    被人删掉的门禁。**
+
+    换成三条性质，月份全部从 CH 自己的 `today()` 推：
+      ① 最近的活跃窗口（上个月月初 → 今天）降幅必须显著 —— 去重真的在起作用；
+      ② 4 个月前那个月降幅必须已经衰减掉 —— 于是一个老月份上的 0% 读作「月龄」，
+         不读作「逻辑坏了」，这条性质本身就是那条解释的证据；
+      ③ 窗口里每个月 `dedup <= raw` —— 去重永远不许把总量变大。
+    ★ 活跃窗口刻意跨两个月（当月 + 上个月）：只取当月的话，每月 1 号那天当月
+      才刚开张、还没有任何跨采集日的重复，这条会变成一条每月红一次的假红。
+    """
+    from dim import order_store_map as m
+    store, channel = m.store_for(FROZEN_SID)
+    # ★ 用 CH 自己的日期，不用本机 wall clock —— 同 `SQL_FBA_CAPTURE_DAYS` 把
+    #   「已写完」判定搬进 CH 的那条理由，这条测试自己也不能开倒车。
+    today = live_query_raw("SELECT today()")[0][0]
+    assert isinstance(today, dt.date)
+
+    # ① 活跃窗口：上个月月初 → 明天（右开区间，把今天整天包进来）
+    active_start = _month_start(today, 1)
+    raw, dedup, pct = _raw_vs_dedup(live_query_raw, store, channel,
+                                    active_start, today + dt.timedelta(days=1))
+    assert dedup < raw and pct >= _MATERIAL_DEDUPE_PCT, (
+        f"活跃窗口 [{active_start}, {today}] 去重降幅只有 {pct:.2f}%"
+        f"（raw={raw} dedup={dedup}），低于 {_MATERIAL_DEDUPE_PCT}% —— "
+        "GROUP BY amazon_order_id, order_item_id 这一步可能在真实 SQL 里"
+        "已经不起作用了。★ 这是「最近的月份」，重复采集本该在这里最密集"
+        "（2026-09-23 实测 12~20%）")
+
+    # ② 4 个月前那个月：降幅必须已经衰减掉
+    aged_start = _month_start(today, _AGED_MONTHS_BACK)
+    aged_end = _month_start(today, _AGED_MONTHS_BACK - 1)
+    _raw_old, _dedup_old, pct_old = _raw_vs_dedup(live_query_raw, store, channel,
+                                                  aged_start, aged_end)
+    assert pct_old <= _DECAYED_DEDUPE_PCT, (
+        f"{aged_start:%Y-%m}（{_AGED_MONTHS_BACK} 个月前）的去重降幅是 "
+        f"{pct_old:.2f}%，高于 {_DECAYED_DEDUPE_PCT}% —— 「降幅随月龄衰减」这条"
+        "性质不再成立了。它是①那条断言的**解释**：老月份上的 0% 该读作月龄、"
+        "不该读作逻辑坏了。性质变了就要重新实测一次衰减边界，"
+        "而不是把这个阈值往上抬")
+
+    # ③ 去重永远不许把总量变大 —— 逐月查，一个月都不许漏
+    span_start = _month_start(today, 5)
+    rows = live_query_raw(f"""
+        SELECT toStartOfMonth(toDate(purchase_date)) AS m, toInt64(sum(quantity))
+          FROM {cs.ORDERS_TABLE}
+         WHERE store = '{store}' AND sales_channel = '{channel}'
+           AND order_status NOT IN ('Cancelled', 'Pending')
+           AND toDate(purchase_date) >= toDate('{span_start.isoformat()}')
+         GROUP BY m ORDER BY m
+    """)
+    assert len(rows) >= 3, f"近 6 个月只有 {len(rows)} 个月有单 —— 下面就是空转的"
+    deduped = dict(live_query_raw(f"""
+        SELECT m, toInt64(sum(units)) FROM (
+            SELECT toStartOfMonth(toDate(any(purchase_date))) AS m,
+                   if(argMax(order_status, _captured_date) NOT IN ('Cancelled', 'Pending'),
+                      argMax(quantity, _captured_date), 0) AS units
+              FROM {cs.ORDERS_TABLE}
+             WHERE store = '{store}' AND sales_channel = '{channel}'
+               AND toDate(purchase_date) >= toDate('{span_start.isoformat()}')
+             GROUP BY amazon_order_id, order_item_id
+        ) GROUP BY m ORDER BY m
+    """))
+    inflated = [(str(month), int(n), deduped.get(month)) for month, n in rows
+                if deduped.get(month) is None or deduped[month] > n]
+    assert not inflated, (
+        f"这些月份去重之后总量反而变大（或整月消失）：{inflated}"
+        "（格式 (月, raw, dedup)）—— 去重只该合并同一 order_item 的多次采集，"
+        "把总量做大说明 argMax 的分组键或状态过滤已经变形了")
 
 
 def test_monthly_sales_history_matches_the_frozen_hand_checked_numbers(live_query_raw):

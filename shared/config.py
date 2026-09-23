@@ -75,7 +75,6 @@ _FORECAST_DEFAULTS = {
     "snapshot_lookback_days": 7,
     "snapshot_settle_minutes": 30,
     "cache_ttl_seconds": 300,
-    "sales_months_max": 24,
     "drop_threshold": 0.30,
     "min_rows": 7934,
     "min_distinct_sid": 21,

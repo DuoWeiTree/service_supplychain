@@ -286,6 +286,19 @@ def test_unusable_batch_raises_instead_of_returning_zero():
         src.onhand_available("DCC1800264G1Z2B", "11072")
 
 
+def test_the_shared_pool_counter_is_an_explicit_zero_when_nothing_was_excluded():
+    """★ 终审 M-1：「查过了、一件都没排除」必须**长得跟**「压根没查这一批」不一样。
+
+    原先这个键只在真有共享池行时才建出来，于是两种情况在 `source_notes.dropped`
+    里都是「缺这个键」。而这个计数器存在的唯一理由就是「27.6% 的可售被排除」
+    不许无声无息 —— 空 ≠ 0 ≠ 没查。"""
+    by_key, dropped = cs.parse_onhand([("11072", "X", 10, 1)])
+    assert by_key == {("11072", "X"): 10}
+    assert dropped["shared_pool_excluded"] == {"rows": 0, "units": 0}, (
+        f"没有共享池行时 dropped={dropped!r} —— 这个键必须显式为 0，"
+        "缺席会让「查了没排除」与「没查」长得一样")
+
+
 def test_duplicate_rows_are_summed_and_counted():
     """★ 今天一行不重（实测 8,080/8,080 n=1），但重复行是 L-4 点名的形态。"""
     rows = [("11072", "X", 10, 1), ("11072", "X", 5, 1)]

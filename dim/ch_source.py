@@ -399,13 +399,19 @@ def parse_onhand(rows: list[tuple]) -> tuple[dict[tuple[str, str], int], dict]:
          SQL 或源表形态变了，拼接也要能被看见，不是覆盖掉旧值完事。
     """
     out: dict[tuple[str, str], int] = {}
-    dropped: dict = {}
+    # ★ 终审 M-1：共享池计数器**显式从 0 开始**。原先只在真有共享池行时才建这个
+    #   键，于是「查过了、一件都没排除」与「压根没查这一批」在响应里长得一模一样
+    #   （都是缺这个键）。而这个计数器存在的唯一理由就是「27.6% 的可售被排除」
+    #   这件事不许无声无息 —— 空 ≠ 0 ≠ 没查（CLAUDE.md 判据一）。
+    #   只有这一个键给零值：`rows_collapsed` / `missing_eta_*` 说的是「今天没出现
+    #   这种形态」，它们的缺席本身就是答案，不需要一个 0 来复述。
+    dropped: dict = {"shared_pool_excluded": {"rows": 0, "units": 0}}
     for sid, seller_sku, units, raw_rows in rows:
         sid = str(sid)
         units = int(units)
         raw_rows = int(raw_rows)
         if sid == SHARED_POOL_SID:
-            bucket = dropped.setdefault("shared_pool_excluded", {"rows": 0, "units": 0})
+            bucket = dropped["shared_pool_excluded"]
             bucket["rows"] += raw_rows
             bucket["units"] += units
             continue
