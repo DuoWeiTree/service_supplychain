@@ -18,6 +18,7 @@ FORBIDDEN_SCHEMAS = {"scm", "inv"}
 #: 每个测试之间要清空的表。★ plan_line_transition 不在其中 ——
 #: 它是白名单（迁移灌的数据），清掉它状态机就没了。
 DATA_TABLES = (
+    "dim_refresh_run",
     "plan_line_event", "plan_submit_skip", "plan_line", "plan_rev",
     "plan_demand_cell", "plan_purchase_cell", "msku_claim", "plan",
     "msku_bridge", "sku_catalog", "warehouse", "seller", "actor",

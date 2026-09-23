@@ -75,3 +75,24 @@ def test_by_name_names_the_miss():
         assert "no_such_mirror" in str(e)
     else:
         raise AssertionError("查不到的名字必须硬失败，不许返回 None")
+
+
+def test_every_non_pending_entry_is_backed_by_a_real_table(wipe):
+    """★ 登记了却没有 refreshed_at 列 / 不在视图里 —— 两种都会让 503 闸形同虚设。"""
+    from shared.pg_client import pg_conn
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT table_name FROM information_schema.columns"
+                    " WHERE table_schema = current_schema() AND column_name = 'refreshed_at'")
+        has_refreshed_at = {r[0] for r in cur.fetchall()}
+        cur.execute("SELECT mirror FROM v_mirror_freshness")
+        in_view = {r[0] for r in cur.fetchall()}
+    assert in_view, "视图一行都没有 —— 下面的集合比较是空转的"
+    for m in MIRRORS:
+        if m.pending:
+            continue
+        assert callable(m.fetch), f"{m.name} 不是 pending，却没有 fetch"
+        if m.staleness == "gate_503":
+            assert m.name in has_refreshed_at, f"{m.name} 没有 refreshed_at 列"
+    assert in_view == gate_503_names(), (
+        f"只在视图里：{sorted(in_view - gate_503_names())}；"
+        f"只在登记表里：{sorted(gate_503_names() - in_view)}")
