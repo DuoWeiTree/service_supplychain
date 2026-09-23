@@ -85,7 +85,7 @@ class Mirror:
 期望集合 = 登记表 `names ∪ companions`，**双向断言集合相等**，不是包含。
 `pending=True` 的条目允许没有 `fetch`，**名字仍必须在** —— 于是 `03` 新增一行 MIRROR
 而没人加登记 → 红。★ **同时统计被丢掉的那一侧**：断言解析到的总行数 ≥ 42
-（`03:51` 写的就是 42 张），否则是正则坏了 —— 扫 0 行的门禁永远是绿的。
+（`03:51` 写的就是 43 张，含 S-33 新增的 `dim_refresh_run`），否则是正则坏了 —— 扫 0 行的门禁永远是绿的。
 
 **(b) 非 pending 条目必须兑现（需连 PG 测试库）**：① `fetch` 可调用；② 该表有
 `refreshed_at` 列（查 `information_schema.columns`）；③ `staleness == "gate_503"` 的
@@ -183,13 +183,16 @@ SELECT toString(s.sid) AS seller_id,             -- ★ 店铺号全字段字符
  GROUP BY s.sid
 
 -- msku_bridge ← jxd_raw.lingxing_product_listing（⚠️ 同上）
+-- ★ 裁定（preflight 09-22）：未绑货号的丢弃不在 SQL 里做，落在 Python 侧的
+--   fetch_msku_bridge（计划 Task 4）——因为丢弃必须计数进 drop_reasons.unbound_sku，
+--   SQL 的 HAVING 会把这一侧静默滤掉，看不出丢了多少（铁律：丢的一侧必须统计）。
+--   本条与计划 SQL_MSKU_BRIDGE 保持一致，不在 SQL 里加 HAVING sku != ''。
 SELECT seller_sku, toString(sid) AS sid,
        argMax(local_sku, _captured_date) AS sku,  -- ★ 改绑：取 as_of 当时有效的那个
        max(_captured_date) AS captured
   FROM jxd_raw.lingxing_product_listing
  WHERE _captured_date >= today() - 30
  GROUP BY seller_sku, sid                         -- ★★ sid 绝不参与 argMax
-HAVING sku != ''
 
 -- warehouse ← jxd_raw.lingxing_inventory_warehouses（17:202，118 仓）
 SELECT wid, argMax(name, _captured_date) AS name,

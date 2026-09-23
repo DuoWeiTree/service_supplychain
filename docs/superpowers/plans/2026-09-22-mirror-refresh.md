@@ -74,9 +74,10 @@ def _doc_rows() -> list[tuple[list[str], str]]:
 
 
 def test_doc_table_parser_actually_sees_the_table():
-    """★ 扫 0 行的门禁永远是绿的。03:51 写的是 42 张，少于它就是正则坏了。"""
+    """★ 扫 0 行的门禁永远是绿的。03:51 写的是 43 张（含 S-33 新增的 dim_refresh_run），
+    少于它就是正则坏了。"""
     rows = _doc_rows()
-    assert len(rows) >= 42, f"只解析到 {len(rows)} 行 —— 正则没匹配上，下面那条断言是空转的"
+    assert len(rows) >= 43, f"只解析到 {len(rows)} 行 —— 正则没匹配上，下面那条断言是空转的"
 
 
 def test_registry_matches_the_doc_exactly():
@@ -360,9 +361,16 @@ def test_every_non_pending_entry_is_backed_by_a_real_table(wipe):
 
 Run: `uv run pytest -q tests/test_ddl_006_dim_refresh_run.py tests/test_mirror_registry.py`
 Expected: FAIL —— `psycopg2.errors.UndefinedTable: relation "dim_refresh_run" does not exist`；
-门禁 (b) 另因 `m.fetch` 仍为 `None` 而 FAIL（Task 4 才接上 —— 此时把 Task 1 的四条
-阶段 A 条目暂标 `pending=True` 是**错的**，正确做法是让这条断言先红着，Task 4 结束时转绿；
-若不接受长时间红，把这条断言留到 Task 4 再加）。
+门禁 (b) 另因 `m.fetch` 仍为 `None` 而 FAIL。
+
+★ **裁定的排期（preflight 09-22，不再有第二条路）**：`test_every_non_pending_entry_is_backed_by_a_real_table`
+里 `assert callable(m.fetch)` 这一条从本 Task 起就加进测试文件，**红着一直到 Task 4**
+（Task 1 的四条阶段 A 条目**不许**为了让它提前转绿而暂标 `pending=True`——那样会
+把「还没接上 fetch」悄悄伪装成「阶段 A 本来就不实现」，跟 `pending` 字段的真实含义
+撞车）。Task 3 全程也还是红（它只加 CH 客户端与探针，不碰 `dim/registry.py` 的
+`fetch=` 字段）。直到 Task 4 Step 4 把四个 `fetch_*` 接进登记表，这条断言才转绿——
+Task 4 那一步会显式确认。**不许把这条断言挪到 Task 4 才加，也不许中途 skip**：
+它红着的这段时间，红的理由必须一直是「fetch 还没接上」，而不是别的什么。
 
 - [ ] **Step 3: 写迁移**
 
@@ -652,6 +660,12 @@ Run: `uv run python -m jobs.probe_ch`（需内网）
 把每张表的真实列名写进 `docs/superpowers/specs/2026-09-22-mirror-refresh-design.md` §7 的
 SQL 草案，去掉「未实测」标注，并在 §10 把 OQ-1 标为已解决、列出实测日期。
 ★ 连不上时**不要跳过这一步**继续往下写 —— 猜出来的列名会一路带到 Task 4 的 SQL 里。
+
+★ **预期状态（preflight 09-22 裁定的排期，见 Task 2 Step 2）**：本 Task 结束时，
+`test_mirror_registry.py::test_every_non_pending_entry_is_backed_by_a_real_table`
+里 `assert callable(m.fetch)` 那条断言**仍然是红的**——本 Task 只加了 CH 客户端
+与探针，没有碰 `dim/registry.py` 的 `fetch=` 字段。这是预期状态，不是本 Task
+遗留的缺陷，Task 4 Step 4 接上四个 `fetch_*` 之后才会转绿。
 
 - [ ] **Step 8: Commit**
 
@@ -1185,22 +1199,21 @@ def _check_coverage(cur, m: registry.Mirror, fetched: ch_source.Fetched,
     prev_rows, prev_reasons = base
     if prev_rows and len(fetched.rows) < prev_rows * limit:
         raise CoverageDrop(f"coverage_drop rows {len(fetched.rows)} < {prev_rows} × {limit:.2f}")
+    # ★ 一趟循环做两件事：算出这一轮的 distinct 计数（不管比不比得过都要记，
+    #   下一轮要拿它当基线）、再拿它跟上一轮比。原来分两个循环各扫一遍 m.coverage，
+    #   合并成一趟。
     for rule in m.coverage:
         if not rule.startswith("distinct:"):
             continue
         col = rule.split(":", 1)[1]
         idx = m.columns.index(col)
         now = len({r[idx] for r in fetched.rows})
-        prev = prev_reasons.get(f"distinct_{col}")
         reasons[f"distinct_{col}"] = now
+        prev = prev_reasons.get(f"distinct_{col}")
         if prev and now < prev * limit:
             raise CoverageDrop(
                 f"coverage_drop {rule} {now} < {prev} × {limit:.2f} —— "
                 "整店 0 行是采集缺口的形状，总行数看不出来")
-    # ★ distinct 计数在成功的那一轮也要记，否则下一轮没有可比的基线
-    for rule in m.coverage:
-        if rule.startswith("distinct:"):
-            reasons.setdefault(f"distinct_{rule.split(':', 1)[1]}", 0)
 
 
 def _upsert(cur, m: registry.Mirror, rows: list[tuple], at: dt.datetime) -> None:
@@ -1217,40 +1230,48 @@ def _upsert(cur, m: registry.Mirror, rows: list[tuple], at: dt.datetime) -> None
 
 
 def refresh_one(cur, m: registry.Mirror, query, trigger: str, actor: str | None) -> RunRow:
-    cur.execute("INSERT INTO dim_refresh_run (mirror, trigger, actor) VALUES (%s, %s, %s)"
-                " RETURNING run_id", (m.name, trigger, actor))
-    run_id = cur.fetchone()[0]
+    """★ `dim_refresh_run` 只追加（006 的 `BEFORE UPDATE OR DELETE` 触发器挡住了
+    `UPDATE`）—— 整轮跑完只在收尾时写**一次完整的行**，不分「先 INSERT 占位、
+    再 UPDATE 补结果」两次。`started_at` 在 Python 侧先取好时间戳，跟收尾那次
+    INSERT 一起落库，而不是靠数据库的 `DEFAULT now()`（那样会记成收尾时刻）。"""
+    started_at = dt.datetime.now(dt.UTC)
     rows_in = rows_dropped = 0
+    reasons: dict = {}
+    source_max_captured = None
+    ok = False
+    error: str | None = None
     try:
         fetched = m.fetch(query)
         rows_in, rows_dropped = len(fetched.rows), fetched.dropped
         reasons = dict(fetched.drop_reasons)
         _check_coverage(cur, m, fetched, reasons)
         _upsert(cur, m, fetched.rows, dt.datetime.now(dt.UTC))
+        source_max_captured = fetched.source_max_captured
+        ok = True
     except BaseException as e:
         # ★ 失败也要写完整的一行：只打日志的话，明天没人知道今天刷过、更不知道为什么没成
-        cur.execute("UPDATE dim_refresh_run SET finished_at = now(), rows_in = %s,"
-                    " rows_dropped = %s, ok = false, error = %s WHERE run_id = %s",
-                    (rows_in, rows_dropped, f"{type(e).__name__}: {e}"[:2000], run_id))
+        error = f"{type(e).__name__}: {e}"[:2000]
         log.warning("op=refresh mirror=%s trigger=%s outcome=fail err=%s",
                     m.name, trigger, e)
-        return RunRow(m.name, run_id, False, rows_in, rows_dropped, f"{type(e).__name__}: {e}")
-    cur.execute("UPDATE dim_refresh_run SET finished_at = now(), rows_in = %s,"
-                " rows_dropped = %s, drop_reasons = %s, source_max_captured = %s,"
-                " ok = true WHERE run_id = %s",
-                (rows_in, rows_dropped, json.dumps(reasons, ensure_ascii=False),
-                 fetched.source_max_captured, run_id))
-    log.info("op=refresh mirror=%s trigger=%s outcome=ok rows_in=%d dropped=%d %s",
-             m.name, trigger, rows_in, rows_dropped, reasons)
-    return RunRow(m.name, run_id, True, rows_in, rows_dropped, None)
+    cur.execute(
+        "INSERT INTO dim_refresh_run (mirror, trigger, actor, started_at, finished_at,"
+        " source_max_captured, rows_in, rows_dropped, drop_reasons, ok, error)"
+        " VALUES (%s, %s, %s, %s, now(), %s, %s, %s, %s, %s, %s) RETURNING run_id",
+        (m.name, trigger, actor, started_at, source_max_captured, rows_in, rows_dropped,
+         json.dumps(reasons, ensure_ascii=False), ok, error))
+    run_id = cur.fetchone()[0]
+    if ok:
+        log.info("op=refresh mirror=%s trigger=%s outcome=ok rows_in=%d dropped=%d %s",
+                 m.name, trigger, rows_in, rows_dropped, reasons)
+    return RunRow(m.name, run_id, ok, rows_in, rows_dropped, error)
 ```
 
-★ `dim_refresh_run` 挂着只追加触发器，上面两条 `UPDATE` 会被它挡住。
-**实现时二选一**（两条都要在注释里写明选了哪条、为什么）：
-① 006 的触发器只 `BEFORE DELETE`，`UPDATE` 放行 —— 但那样「证据可改」；
-② 改成先攒结果、**一次 INSERT 写完整行**，`refresh_one` 里不再 UPDATE。
-**选 ②**：run 行只在收尾时写一次，`started_at` 用 Python 侧的时间戳传进去。
-Step 1 的 `test_run_rows_cannot_be_updated_or_deleted` 正是钉住这一条的门禁。
+★ **已裁定（preflight 09-22）**：Task 2 Step 1 的 `test_run_rows_cannot_be_updated_or_deleted`
+就是钉住「只追加」这一条的门禁；上面的实现是它唯一能通过的写法 ——
+`refresh_one` 全程只有这一条 `INSERT`，没有任何 `UPDATE ... WHERE run_id`。
+旧版「先 INSERT 占位、成败后再 UPDATE 补结果」的写法在 006 迁移之下**根本跑不动**：
+第一次调用就会撞上 `forbid_update_delete()` 触发器，抛
+`psycopg2.errors.RaiseException`，这不是「二选一待定」，是已经选定并改完的实现。
 
 续写：
 
@@ -1294,7 +1315,10 @@ if __name__ == "__main__":
 - [ ] **Step 5: 跑测试确认它绿**
 
 Run: `uv run pytest -q tests/test_jobs_refresh_dims.py`
-Expected: PASS
+Expected: PASS。★ 这一步顺带验证了 `refresh_one` 只有一条 `INSERT`、没有任何
+`UPDATE ... WHERE run_id`——006 的 `forbid_update_delete()` 触发器不会被撞到
+（preflight 09-22 发现的头号缺陷：旧写法在这一步会以
+`psycopg2.errors.RaiseException` 整体炸掉，不是断言失败）。
 
 - [ ] **Step 6: 证明掉档闸不是摆设**
 
@@ -1917,8 +1941,11 @@ Expected: PASS（内网）或 SKIP **并在输出里看得见理由**
 刷新失败或掉档超 `coverage_drop_threshold` 时**整批拒绝**、旧镜像原封不动，
 `dim_refresh_run` 里会有一行 `ok=false` 说明是哪一步、丢了多少行、为什么丢。
 
-`[freshness] startup_gate = true` 时，启动检查发现维度镜像仍陈旧会让进程**起不来**
-（`docs/03` §7.1 E-4）。带病起来要显式置 `false`——那之后业务端点会逐请求 503。
+启动只做记录 + 触发：`[freshness] startup_gate = true` 时，若有维度镜像仍陈旧，
+启动检查会记一条日志并触发一次立即刷新，**不会**阻断进程启动——`/health` 与
+`/v1/readiness` 永远可达（OQ-8 裁定 09-22）。`startup_gate = false` 时只记录，
+不触发刷新。不管哪种配置，业务端点的拒绝服务都只发生在按请求判的
+`require_fresh_mirrors`（`docs/03` §7.1 E-4）。
 ```
 
 「离线可跑的那部分」的命令追加 `tests/test_mirror_registry.py tests/test_dim_ch_source.py tests/test_ch_client.py`。
@@ -1975,9 +2002,37 @@ git commit -m "docs+test: 镜像刷新端到端证明 + 活 CH 冒烟（跳过�
 `yield`」；`/v1/plans` 等业务路由的 503 仍由既有的 `require_fresh_mirrors`
 逐请求承担，不受影响。测试文件同步改名 `tests/test_api_startup_check.py`。
 
+**Gap（preflight 09-22 扫描发现，已裁定并改完，第三批）**：
+
+1. **Task 5 `refresh_one` 撞 006 的只追加触发器**（preflight 头号缺陷）：原写法
+   先 `INSERT` 占位、成败后再 `UPDATE ... WHERE run_id`，而 006 挂着
+   `BEFORE UPDATE OR DELETE` 触发器——第一次调用就会被
+   `forbid_update_delete()` 拦成 `psycopg2.errors.RaiseException`，Step 1 自己
+   的测试全过不了。已改成 `started_at` 在 Python 侧先取时间戳、整轮跑完只写
+   **一条终态 INSERT**（成功/失败都在这条里落齐 `finished_at/ok/error/rows_in/
+   rows_dropped/source_max_captured`），不再有任何 `UPDATE`。`_check_coverage`
+   原本两个循环各扫一遍 `m.coverage`，顺带合并成一趟。
+2. **Task 8 README 文案未跟 OQ-8 重写同步**：仍写着「进程起不来」「带病起来要
+   显式置 false」，与 Task 7/设计 §8 的新行为（只记录 + 触发一次刷新，永不阻断）
+   矛盾。已改写为「记录 + 触发，不阻断；`startup_gate=false` 只记录」。
+3. **`03:51` 引用数字过期**：`docs/03-数据库表清单.md:51` 因本轮新增
+   `dim_refresh_run`（S-33）已经是「43 张」，而计划 `test_doc_table_parser_actually_sees_the_table`
+   的文档字符串与门槛断言、设计 §4 的同一处引用都还写着「42 张」/`>= 42`。
+   已同步改成 43。
+4. **门禁 (b) `callable(m.fetch)` 的预期红绿排期未钉死**：原文本同时给出「留红到
+   Task 4」与「挪到 Task 4 再加」两条互斥路径，容易被执行者顺手选错、还看不出
+   跟 Task 5 的问题会叠加。已裁定为唯一路径：断言从 Task 2 起就在测试文件里，
+   Task 2/3 期间预期红，Task 4 Step 4 接上 `fetch=` 后才转绿——Task 2 Step 2、
+   Task 3 Step 7 之后、Task 4 Step 5 三处都显式写明了这一排期，不许中途 skip。
+5. **设计 §7 `SQL_MSKU_BRIDGE` 与计划实现不一致**：设计里这条 SQL 带
+   `HAVING sku != ''`，计划 Task 4 的同名 SQL 没有——未绑货号的丢弃改在 Python
+   侧的 `fetch_msku_bridge` 里做，因为要计进 `drop_reasons.unbound_sku`（丢的
+   一侧必须统计，铁律）。已让设计 §7 去掉 `HAVING`，改成与计划一致的说明。
+
 **2. Placeholder scan**：无 TBD / 「适当处理错误」/「照 Task N 写」。每个代码步都有可运行的代码块。
-Task 2 Step 3 与 Task 5 Step 4 各有一处**显式的二选一**，两处都给了选哪个、为什么，
-以及钉住它的那条测试 —— 这是决策点，不是占位符。
+Task 5 `refresh_one` 原有一处「先 INSERT 占位再 UPDATE / 一次性 INSERT」的二选一，
+preflight 09-22 发现它写成了两条 `UPDATE`，与 006 的只追加触发器自相矛盾——已裁定
+并改完为「只有一条终态 INSERT」，不再是待选项（见下方 Gap 第三批）。
 
 **3. Type consistency**
 
