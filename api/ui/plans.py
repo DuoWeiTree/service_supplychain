@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from typing import Annotated
 
 import psycopg2
 from fastapi import APIRouter, Depends, Request
@@ -19,7 +20,7 @@ from api.ui.deps import (
 from api.ui.errors import ApiError
 from api.ui.source_factory import (  # noqa: F401 - 供测试用 plans.FIXTURES 构造替身源
     FIXTURES,
-    make_source,
+    source_dep,
 )
 from dim.ch_source import (
     ChDataUnusable,
@@ -29,6 +30,7 @@ from dim.ch_source import (
     is_overdue,
 )
 from dim.order_store_map import UnknownStore
+from dim.source import Source
 from forecast.estimate import InsufficientHistory, monthly_estimate
 from forecast.projection import inventory_projection
 from rules.effective import effective_demand
@@ -38,8 +40,12 @@ log = logging.getLogger("scm.api")
 
 router = APIRouter(dependencies=[Depends(require_fresh_mirrors)])
 
-#: 阶段 A 的取数源。★ 换源只改 config.toml 的 [forecast] source —— dim/source.py 的协议不变。
-SOURCE = make_source()
+#: 取数源由 `Depends(source_dep)` **每请求**装配一次（api/ui/source_factory.py）。
+#: ★ 终审 C-1/C-2/C-3：这里原先是一个模块级单例 `SOURCE = make_source()`。它把
+#:   一个 CH 客户端和 `ChSource` 全部可变的每次调用状态（两份缓存、`stats()`、
+#:   `history_window()`、`purchase_as_of`）钉在进程上，而 grid()/claim() 是
+#:   plain def 端点、跑在 Starlette 的线程池里 —— 于是并发请求会互相踩。
+#:   换源仍然只改 config.toml 的 [forecast] source，dim/source.py 的协议不变。
 
 
 def _source_error(e: Exception) -> ApiError:
@@ -165,7 +171,9 @@ def _periods(cur, plan_id: int) -> list[dt.date]:
 
 
 @router.post("/plans/{plan_id}/claims")
-def claim(plan_id: int, body: dict, request: Request, who: str = Depends(actor)):
+def claim(plan_id: int, body: dict, request: Request,
+          source: Annotated[Source, Depends(source_dep)],
+          who: str = Depends(actor)):
     declared(request)
     seller_sku, sid = body.get("seller_sku"), body.get("sid")
     if not seller_sku or not sid:
@@ -212,7 +220,7 @@ def claim(plan_id: int, body: dict, request: Request, who: str = Depends(actor))
         no_history = []
         history_window = None
         try:
-            est = monthly_estimate(SOURCE.monthly_sales_history(seller_sku, sid, len(periods)),
+            est = monthly_estimate(source.monthly_sales_history(seller_sku, sid, len(periods)),
                                    len(periods))
         except InsufficientHistory:
             # ★ 没有历史 ≠ 预估 0：格子照建（人还要在上面填），system_units 留 NULL 并点名
@@ -227,8 +235,8 @@ def claim(plan_id: int, body: dict, request: Request, who: str = Depends(actor))
             raise _source_error(e) from e
         # ★ 用了哪几个月、哪些是补 0、最新那个月距今多少天 —— 订单是滞后采集的
         #   （CLAUDE.md 铁律三），一个没有标记的数比没有数更坏。
-        if hasattr(SOURCE, "history_window"):
-            history_window = SOURCE.history_window() or None
+        if hasattr(source, "history_window"):
+            history_window = source.history_window(seller_sku, sid) or None
         for i, period in enumerate(periods):
             cur.execute(
                 "INSERT INTO plan_demand_cell (plan_id, seller_sku, sid, period_start,"
@@ -344,7 +352,9 @@ def _load_grid(cur, plan_id: int):
 
 
 @router.get("/plans/{plan_id}/grid")
-def grid(plan_id: int, request: Request, who: str | None = Depends(actor_optional)):
+def grid(plan_id: int, request: Request,
+         source: Annotated[Source, Depends(source_dep)],
+         who: str | None = Depends(actor_optional)):
     declared(request)
     with timed("grid", actor=who, plan_id=plan_id), pg_conn() as c, c.cursor() as cur:
         periods, demand, purchase = _load_grid(cur, plan_id)
@@ -385,19 +395,19 @@ def grid(plan_id: int, request: Request, who: str | None = Depends(actor_optiona
             applicable_by_store[key] = applicable_by_store.get(key, False) or fba
             if fba and (seller_sku, sid) not in onhand_added:
                 onhand_added.add((seller_sku, sid))
-                got = SOURCE.onhand_available(seller_sku, sid)
+                got = source.onhand_available(seller_sku, sid)
                 if got is not None:
                     onhand_by_store[key] = (onhand_by_store[key] or 0) + got
 
-        in_transit: dict[str, list] = {sku: SOURCE.purchase_in_transit(sku)
+        in_transit: dict[str, list] = {sku: source.purchase_in_transit(sku)
                                        for sku in {r[0] for r in purchase}}
-        as_of_date = SOURCE.as_of()
+        as_of_date = source.as_of()
         as_of = as_of_date.isoformat()
         # ★ OQ-6 裁定：sku_pipeline[] 的 bucket 只在 CH 源（具备 purchase_as_of）下
         #   有意义；FixtureSource 没有这个方法，按 hasattr 跳过 —— fixture 路径的
         #   sku_pipeline 形状因此逐字节不变（tests/test_grid_fixture.py 核实）。
-        purchase_as_of = SOURCE.purchase_as_of() if hasattr(SOURCE, "purchase_as_of") else None
-        dropped_stats = SOURCE.stats() if hasattr(SOURCE, "stats") else {}
+        purchase_as_of = source.purchase_as_of() if hasattr(source, "purchase_as_of") else None
+        dropped_stats = source.stats() if hasattr(source, "stats") else {}
     # ★ fix round 1 审计（team-lead 要求逐一核对 ChSource 实际会抛的异常集合是否都
     #   进了这个元组）：grid() 只调用 as_of/onhand_available/purchase_in_transit/
     #   purchase_as_of/stats——没有一个会走 order_store_map（那是 monthly_sales_history

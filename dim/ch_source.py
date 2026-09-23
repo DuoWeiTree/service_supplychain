@@ -656,19 +656,30 @@ class ChSource:
         #:   不可变（E-1/E-3：一天写一次、60 秒写完），日期一变整份丢弃重建
         #:   （不合并，记忆 `defaults-preserve-staleness`）。
         self._onhand_cache: tuple[dt.date, dict[tuple[str, str], int]] | None = None
-        #: ★ 采购表是覆盖型、没有历史快照（docs/01:94）——一旦解析出
-        #:   `purchase_as_of()` 就不会再变（同一批快照的生命周期内不可变，
-        #:   同 `_onhand_cache` 一个理由，只是没有第二个候选日可切换）。
-        self._purchase_as_of: dt.date | None = None
+        #: `(参照的 as_of, 解析出的采购快照日)`。★ 终审 C-3：原先只存后者、一经
+        #:   解析就**永不再查**，于是 OQ-5 的陈旧闸在第一次成功之后再也不会触发——
+        #:   实测 `as_of()` 走到 2026-10-03 时 `purchase_as_of()` 仍返回
+        #:   2026-09-23（真实年龄 10 天 / 阈值 3 天），一声不响地继续供应一批
+        #:   冻住的在途。缓存键必须是**比较的参照物**（`as_of()`）：参照物一变，
+        #:   年龄就变了，这批缓存对新的参照物就不再有效（同 `_onhand_cache`
+        #:   按快照日作键那条理由，只是它的参照物是自己）。
+        self._purchase_as_of: tuple[dt.date, dt.date] | None = None
         self._transit_cache: tuple[dt.date, dict[str, list[InTransit]]] | None = None
         #: ★ 最近一批取数的丢弃计数，供上层写进日志与响应（`source_notes.dropped`）。
         self._stats: dict = {}
-        #: ★ 最近一次 `monthly_sales_history()` 调用的窗口留痕（口径标记，OQ-1
-        #:   裁定）——Task 5 把它原样透传进 `POST /plans/{id}/claims` 响应，
-        #:   不许在装配层丢弃或改写。调用前是空字典，不是 None：`history_window()`
-        #:   在没调用过 `monthly_sales_history()` 时返回 `{}`，而不是抛错——
-        #:   这是「还没问过」，不是「问了但没有答案」。
-        self._history_window: dict = {}
+        #: `(seller_sku, sid)` → 那一次 `monthly_sales_history()` 的窗口留痕
+        #: （口径标记，OQ-1 裁定）——装配层把它原样透传进
+        #: `POST /plans/{id}/claims` 响应，不许丢弃或改写。没问过的键返回 `{}`，
+        #: 不抛错：那是「还没问过」，不是「问了但没有答案」。
+        #: ★ 终审 C-2：原先是**一个**槽位，写完之后由调用方在下一行读回来。
+        #:   两个并发调用一交错，后写的那个会把先写的整个盖掉——实测线程 B 问的是
+        #:   sid 11077（PETSFIT_EUROPE/Amazon.co.uk），拿回来的窗口却写着
+        #:   PETSFIT_NORTH_AMERICA/Amazon.com，连 zero_filled 都是 A 的。
+        #:   一个指着错店的标记比没有标记更坏：它是对「这个数是关于什么的」
+        #:   给出的一个自信的错答案。所以改成**按它回答的那个键存取** ——
+        #:   `history_window()` 必须把自己要问的 (seller_sku, sid) 报上来，
+        #:   读到别人的那条路径在构造上就不存在了。
+        self._history_windows: dict[tuple[str, str], dict] = {}
 
     def as_of(self) -> dt.date:
         now = self._now()
@@ -733,7 +744,7 @@ class ChSource:
                 "静默忽略就是漏了一段历史，或者 month_window/SQL 的边界算错了")
         series, filled = fill_months(window, hits)
         newest_age = (self.as_of() - window[-1]).days
-        self._history_window = {
+        self._history_windows[(seller_sku, str(sid))] = {
             "store": store, "sales_channel": channel,
             "months": [m.isoformat() for m in window],
             "zero_filled": [m.isoformat() for m in window if m not in hits],
@@ -752,11 +763,15 @@ class ChSource:
                  elapsed_ms)
         return series
 
-    def history_window(self) -> dict:
-        """最近一次 `monthly_sales_history()` 调用的窗口留痕，供 Task 5 写进
+    def history_window(self, seller_sku: str, sid: str) -> dict:
+        """**这一个** `(seller_sku, sid)` 的窗口留痕，供装配层写进
         `POST /plans/{id}/claims` 响应（控制器裁定：原样透传，不许丢弃/改写）。
-        没调用过时返回 `{}`。"""
-        return dict(self._history_window)
+        没问过这个键时返回 `{}`。
+
+        ★ 终审 C-2：参数不是装饰 —— 它是这个方法唯一的正确性依据。不带键的
+        「最近一次」在并发下会如实地报出另一个请求的店铺名（见 `__init__` 里
+        `_history_windows` 上面那段实测）。"""
+        return dict(self._history_windows.get((seller_sku, str(sid)), {}))
 
     def _onhand(self) -> dict[tuple[str, str], int]:
         """按 `as_of()` 的快照日批量取一次并缓存（design §5：21 次 grid 调用
@@ -804,9 +819,16 @@ class ChSource:
         """采购表自己的 `max(_captured_date)`（覆盖型表，没有历史快照，E-14
         实测比 fba_detail 晚一天）。★ 陈旧阈值（OQ-5）：与 `as_of()`（fba_detail
         快照日）比较年龄，超过 `purchase_staleness_days` 就 `PurchaseTableStale`，
-        不许把陈旧数据读成「在途为 0」或悄悄返回上一轮缓存的数字。"""
-        if self._purchase_as_of is not None:
-            return self._purchase_as_of
+        不许把陈旧数据读成「在途为 0」或悄悄返回上一轮缓存的数字。
+
+        ★ 终审 C-3：缓存键是**参照的 `as_of()`**，不是「查过一次就完事」。
+        参照物一往前走，同一个 captured 的年龄就变了，闸必须重新判一次 ——
+        否则采购采集停摆之后，每一张 grid 都在一个悄悄老了好几天的
+        `source_notes.purchase_as_of` 下继续发一批冻住的在途，而 OQ-5 点名
+        「悄悄给昨天的数」正是它要防的那一种结局。"""
+        reference = self.as_of()
+        if self._purchase_as_of is not None and self._purchase_as_of[0] == reference:
+            return self._purchase_as_of[1]
         t0 = time.perf_counter()
         try:
             rows = self._q(SQL_PURCHASE_AS_OF)
@@ -822,19 +844,18 @@ class ChSource:
                 f"{PURCHASE_ITEMS_TABLE} 一个采集日都没有 —— "
                 "把采集缺口读成「没有在途」会让计划看起来不缺货")
         captured = rows[0][0]
-        # ★ 陈旧比较的参照基准是 fba_detail 的快照日（`as_of()`），不是本机
-        #   wall clock——两张表都是「采集副本」，比较它们各自的 CH 时点才有意义。
-        reference = self.as_of()
+        # ★ 陈旧比较的参照基准是 fba_detail 的快照日（`as_of()`，上面已取），不是
+        #   本机 wall clock——两张表都是「采集副本」，比较它们各自的 CH 时点才有意义。
         age_days = (reference - captured).days
         if age_days > self._purchase_staleness_days:
             log.warning("op=ch_purchase_as_of outcome=stale captured=%s age_days=%d "
                         "threshold_days=%d elapsed_ms=%d",
                         captured, age_days, self._purchase_staleness_days, elapsed_ms)
             raise PurchaseTableStale(captured, age_days, self._purchase_staleness_days)
-        log.info("op=ch_purchase_as_of outcome=ok captured=%s age_days=%d elapsed_ms=%d",
-                 captured, age_days, elapsed_ms)
-        self._purchase_as_of = captured
-        return self._purchase_as_of
+        log.info("op=ch_purchase_as_of outcome=ok captured=%s age_days=%d reference=%s"
+                 " elapsed_ms=%d", captured, age_days, reference, elapsed_ms)
+        self._purchase_as_of = (reference, captured)
+        return captured
 
     def _in_transit(self) -> dict[str, list[InTransit]]:
         """按 `purchase_as_of()` 的快照日批量取一次并缓存（同 `_onhand()` 的

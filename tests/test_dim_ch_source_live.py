@@ -377,7 +377,7 @@ def test_monthly_sales_history_matches_the_frozen_hand_checked_numbers(live_quer
             f"{month}: ChSource.monthly_sales_history 给出 {got[month]}，"
             f"与 design §7 冻结的真值 {want} 对不上")
 
-    window = src.history_window()
+    window = src.history_window(FROZEN_MSKU, FROZEN_SID)
     assert window["store"] == "PETSFIT_NORTH_AMERICA"
     assert window["sales_channel"] == "Amazon.com"
     assert window["lag_note"], "口径标记不许是空字符串——没有标记的数比没有数更坏"

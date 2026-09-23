@@ -40,6 +40,35 @@ def test_unknown_source_value_hard_fails(monkeypatch):
         sf.make_source()
 
 
+def test_a_bad_source_value_fails_at_startup_not_at_the_first_request(wipe, monkeypatch):
+    """★ 终审 C-1 的连带项：装配改成「每请求一次」之后，就**没有 import 期的
+    单例**替配置把关了 —— `[forecast] source` 配错会变成每个请求各报一次 500，
+    淹在访问日志里。配置类错误必须在启动钩子炸（CLAUDE.md 判据四），而且是
+    在启动日志第一屏可见的地方。"""
+    from starlette.testclient import TestClient
+
+    import api
+
+    monkeypatch.setattr(sf, "forecast", lambda: {"source": "excel"})
+    with pytest.raises(ValueError, match="excel"), TestClient(api.create_app()):
+        pass
+
+
+def test_the_source_config_is_logged_once_at_startup(wipe, monkeypatch, scm_log):
+    """★ 每请求装配不许每请求打一行 —— 那会把访问日志淹掉，而这行的用处恰恰是
+    「启动日志第一屏可见」。同时它要说清生命周期，不然下一个人会以为还有缓存。"""
+    from starlette.testclient import TestClient
+
+    import api
+
+    monkeypatch.setattr(sf, "forecast", lambda: {"source": "ch", "cache_ttl_seconds": 300})
+    with TestClient(api.create_app()) as c:
+        c.get("/health")
+    lines = [r for r in scm_log.text.splitlines() if "op=forecast_source" in r]
+    assert len(lines) == 1, f"op=forecast_source 打了 {len(lines)} 行：{lines}"
+    assert "kind=ch" in lines[0] and "lifecycle=per_request" in lines[0], lines[0]
+
+
 def test_ch_source_injects_the_real_classify_failure(monkeypatch):
     """★★ 控制器验收判据第一条：漏注 classify_failure 不报错、测试也照样绿，
     但会让生产每一次 CH 抖动都报 kind='unknown'，废掉「超时」与「连不上」
@@ -62,10 +91,9 @@ def test_ch_source_injects_the_real_classify_failure(monkeypatch):
         "（用了默认占位分类器），生产环境的每次 CH 抖动都会报不出原因")
 
 
-def test_ch_unavailable_becomes_503_naming_the_kind(client, seed, monkeypatch):
+def test_ch_unavailable_becomes_503_naming_the_kind(client, seed, use_source):
     """★ 与 mirror_stale 同一条理由：拿不到数算出来的曲线看起来完全正常。
     调度器必须能区分「旧」「无」「不适用」。"""
-    from api.ui import plans
 
     class Dead:
         def as_of(self):
@@ -78,7 +106,7 @@ def test_ch_unavailable_becomes_503_naming_the_kind(client, seed, monkeypatch):
         def purchase_in_transit(self, *a):
             raise cs.ChUnavailable("x", {"kind": "timeout"})
 
-    monkeypatch.setattr(plans, "SOURCE", Dead())
+    use_source(Dead)
     plan = client.post("/v1/plans", json={"title": "t", "period_start": "2026-10-01",
                                           "months": 3}, headers={"x-actor": seed.actor}).json()
     r = client.get(f"/v1/plans/{plan['plan_id']}/grid")
@@ -89,18 +117,18 @@ def test_ch_unavailable_becomes_503_naming_the_kind(client, seed, monkeypatch):
     assert body["target"] == "192.168.66.211:8123/jxd_raw"
 
 
-def test_claim_returns_the_history_window(client, seed, monkeypatch):
+def test_claim_returns_the_history_window(client, seed, use_source):
     """★ 没有标记的数比没有数更坏：用了哪几个月、哪些是补 0，界面要说得出来。"""
     from api.ui import plans
 
     class Src(FixtureSource):
-        def history_window(self):
-            return {"store": "PETSFIT_NORTH_AMERICA", "sales_channel": "Amazon.com",
+        def history_window(self, seller_sku, sid):
+            return {"store": "PETSFIT_NORTH_AMERICA", "asked_about": [seller_sku, sid], "sales_channel": "Amazon.com",
                     "months": ["2026-07-01", "2026-08-01"], "zero_filled": ["2026-07-01"],
                     "newest_month": "2026-08-01", "newest_month_age_days": 23,
                     "lag_note": "orders_are_lagging_collected; deduped by order_item"}
 
-    monkeypatch.setattr(plans, "SOURCE", Src(plans.FIXTURES))
+    use_source(lambda: Src(plans.FIXTURES))
     plan = client.post("/v1/plans", json={"title": "t", "period_start": "2026-10-01",
                                           "months": 2}, headers={"x-actor": seed.actor}).json()
     r = client.post(f"/v1/plans/{plan['plan_id']}/claims",
@@ -110,7 +138,7 @@ def test_claim_returns_the_history_window(client, seed, monkeypatch):
     assert r.json()["history_window"]["zero_filled"] == ["2026-07-01"]
 
 
-def test_unknown_store_becomes_503_naming_it(client, seed, monkeypatch):
+def test_unknown_store_becomes_503_naming_it(client, seed, use_source):
     """★ fix round 1（阻塞项）：design §8 OQ-3 点名的真实缺口 —— 一个 sid 在
     dim/order_store_map.py::STORE_SID 里没有对应的 (store, sales_channel) 时，
     monthly_sales_history() 经 order_store_map.store_for() 抛 UnknownStore。
@@ -126,7 +154,7 @@ def test_unknown_store_becomes_503_naming_it(client, seed, monkeypatch):
                 "sid='11072' 在订单报表里没有对应的 store —— "
                 "这个店的销量取不到，不能当成「卖了 0 件」")
 
-    monkeypatch.setattr(plans, "SOURCE", Src(plans.FIXTURES))
+    use_source(lambda: Src(plans.FIXTURES))
     plan = client.post("/v1/plans", json={"title": "t", "period_start": "2026-10-01",
                                           "months": 3}, headers={"x-actor": seed.actor}).json()
     r = client.post(f"/v1/plans/{plan['plan_id']}/claims",
@@ -139,12 +167,11 @@ def test_unknown_store_becomes_503_naming_it(client, seed, monkeypatch):
         "detail 必须点名认不出的 sid —— 没点名，运维不知道去 STORE_SID 里补哪一行")
 
 
-def test_grid_wires_dropped_stats_into_source_notes(client, seed, monkeypatch):
+def test_grid_wires_dropped_stats_into_source_notes(client, seed, use_source):
     """★ fix round 1（must #3）：source_notes.dropped 在 tracked 套件里只被
     fixture 路径断言过恒为 {}（FixtureSource 没有 stats()）——CH 路径下真正
     非空的取值此前零覆盖。钉住 SOURCE.stats() 原样透传进响应，不是被悄悄
     改写或丢弃。"""
-    from api.ui import plans
 
     class ChStub:
         def as_of(self):
@@ -167,7 +194,7 @@ def test_grid_wires_dropped_stats_into_source_notes(client, seed, monkeypatch):
             #   不是随手编的字典。
             return {"onhand": {"shared_pool_excluded": {"rows": 1114, "units": 14073}}}
 
-    monkeypatch.setattr(plans, "SOURCE", ChStub())
+    use_source(ChStub)
     plan = client.post("/v1/plans", json={"title": "t", "period_start": "2026-10-01",
                                           "months": 2}, headers={"x-actor": seed.actor}).json()
     client.post(f"/v1/plans/{plan['plan_id']}/claims",
@@ -180,12 +207,11 @@ def test_grid_wires_dropped_stats_into_source_notes(client, seed, monkeypatch):
         "source_notes.dropped 必须原样透传 SOURCE.stats()，不是猜的默认值 {}")
 
 
-def test_grid_computes_bucket_from_purchase_as_of(client, seed, monkeypatch):
+def test_grid_computes_bucket_from_purchase_as_of(client, seed, use_source):
     """★ fix round 1（must #3）：sku_pipeline[].bucket 的 'overdue'/'future' 取值
     在 tracked 套件里此前零覆盖 —— fixture 路径下 purchase_as_of 恒 None、
     bucket 因此恒 null，从没有一条测试验过「传对了 purchase_as_of、算出了对的
     bucket 值」这一步（OQ-6 存在的意义正是这个判断）。"""
-    from api.ui import plans
 
     class ChStub:
         def as_of(self):
@@ -207,7 +233,7 @@ def test_grid_computes_bucket_from_purchase_as_of(client, seed, monkeypatch):
         def stats(self):
             return {}
 
-    monkeypatch.setattr(plans, "SOURCE", ChStub())
+    use_source(ChStub)
     plan = client.post("/v1/plans", json={"title": "t", "period_start": "2026-10-01",
                                           "months": 2}, headers={"x-actor": seed.actor}).json()
     client.post(f"/v1/plans/{plan['plan_id']}/claims",

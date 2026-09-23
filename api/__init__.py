@@ -11,7 +11,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from api.ui import catalog, dashboard, lines, ops, plans, submit, system
+from api.ui import catalog, dashboard, lines, ops, plans, source_factory, submit, system
 from api.ui.errors import ApiError, translate
 from dim.registry import gate_503_names
 from jobs import refresh_dims
@@ -171,6 +171,12 @@ def _database_unavailable(exc: psycopg2.Error) -> ApiError | None:
 async def _lifespan(app: FastAPI):
     # ★ FastAPI 0.141 移除了 add_event_handler（曾经只是 deprecated）——
     #   lifespan 是现在唯一的启动钩子入口，行为等价：serve 第一个请求前跑完。
+    # ★ 取数源的装配已经改成「每请求一次」（终审 C-1/C-2/C-3），于是
+    #   `[forecast] source` 配错不再有一个 import 期的单例替它炸。配置类错误
+    #   往启动钩子放，别等第一个请求才炸；生效配置也只在这里打一行，
+    #   不是每请求打一行去淹没访问日志。★ 这一支**故意**不兜异常：
+    #   配错了就该起不来，而不是每个请求各报一次 500。
+    source_factory.log_source_config()
     job_scheduler.start()          # ★ 先起调度器：启动检查可能要立刻触发一轮刷新
     try:
         _startup_check()

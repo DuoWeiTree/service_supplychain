@@ -120,9 +120,31 @@ def describe_failure(e: BaseException) -> dict:
             "code": code, "msg": str(e)}
 
 
+#: ★ 终审 C-1：连接池可以共用，**客户端不可以**。两者是两样东西：
+#:   · `PoolManager` 是 TCP 连接池，urllib3 明确保证线程安全 —— 每次建客户端
+#:     都新建一个池，等于每个请求都从头握手、旧池等 GC，白付成本。
+#:   · `clickhouse_connect` 的客户端带一个 **session**，同一个 session 上并发
+#:     查询会被驱动直接拒绝（2026-09-23 实测 4 线程 3 败：
+#:     `ProgrammingError: Attempt to execute concurrent queries within the same
+#:     session. Please use a separate client instance per thread/process.`）。
+#:     而那个异常会被上层分类成 kind="other"、翻成 503「预测取数源连不上」——
+#:     CH 是健康的，运维却被指去查网络。所以客户端必须一个请求一个。
+#: ★ 惰性建池：import 时建池会让「配置写错」在启动前一秒才炸。
+_POOL_MANAGER = None
+
+
+def _pool_manager():
+    global _POOL_MANAGER
+    if _POOL_MANAGER is None:
+        _POOL_MANAGER = httputil.get_pool_manager(http_proxy=None, https_proxy=None)  # ★ 无代理直连
+    return _POOL_MANAGER
+
+
 def ch_client() -> ReadOnlyClient:
+    """★ 每次调用都是一个**新**客户端 —— 绝不缓存、绝不跨线程共用（见 `_POOL_MANAGER`
+    上面那段：共用会让健康的 CH 报成「连不上」）。"""
     c = clickhouse()
-    pm = httputil.get_pool_manager(http_proxy=None, https_proxy=None)   # ★ 无代理直连
+    pm = _pool_manager()
     raw = clickhouse_connect.get_client(
         host=c["host"], port=int(c.get("port", 8123)),
         username=c.get("user", "default"), password=c.get("password", ""),

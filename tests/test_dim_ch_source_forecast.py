@@ -682,7 +682,7 @@ def test_monthly_sales_history_records_the_lag_marker_in_history_window():
     got = src.monthly_sales_history("DCC1800264G1Z2B", "11072", 3)
     assert got == [(dt.date(2026, 6, 1), 561), (dt.date(2026, 7, 1), 0),
                    (dt.date(2026, 8, 1), 318)]
-    window = src.history_window()
+    window = src.history_window("DCC1800264G1Z2B", "11072")
     assert window["zero_filled"] == ["2026-07-01"]
     assert window["newest_month"] == "2026-08-01"
     assert window["newest_month_age_days"] == (dt.date(2026, 9, 23) - dt.date(2026, 8, 1)).days

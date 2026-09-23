@@ -59,7 +59,7 @@ def test_inventory_is_onhand_minus_demand_and_in_transit_stays_out(client, seed)
     assert oct_row["basis"]["sources"] == [] and oct_row["basis"]["sku_level_in_transit"] == 80
 
 
-def test_onhand_is_the_sum_of_that_stores_mskus(client, seed, monkeypatch):
+def test_onhand_is_the_sum_of_that_stores_mskus(client, seed, use_source):
     """★ inventory 的键是 (sku, sid)，而在仓在库里是 msku 级 ——
     合计行就是各 msku 之和，不许另算一遍（14 §1 ①）。
 
@@ -67,9 +67,14 @@ def test_onhand_is_the_sum_of_that_stores_mskus(client, seed, monkeypatch):
     改用 monkeypatch 让第二个 msku 非零（50），这样掉一个就不等于 350。
     """
     from api.ui import plans as plans_module
+    from dim.fixture_source import FixtureSource
     fake_onhand = {("MSKU-A", "11072"): 300, ("MSKU-B", "11072"): 50}
-    monkeypatch.setattr(plans_module.SOURCE, "onhand_available",
-                        lambda seller_sku, sid: fake_onhand.get((seller_sku, sid)))
+
+    class Src(FixtureSource):
+        def onhand_available(self, seller_sku, sid):
+            return fake_onhand.get((seller_sku, sid))
+
+    use_source(lambda: Src(plans_module.FIXTURES))
     pid = setup_plan(client, seed, mskus=(("MSKU-A", "11072"), ("MSKU-B", "11072")))
     g = client.get(f"/v1/plans/{pid}/grid", headers=H(seed.actor)).json()
     rows = sorted([r for r in g["inventory"] if r["sid"] == "11072"], key=lambda r: r["period"])
