@@ -22,7 +22,6 @@ from api.ui.source_factory import (  # noqa: F401 - 供测试用 plans.FIXTURES 
     FIXTURES,
     source_dep,
 )
-from dim import order_store_map
 from dim.ch_source import (
     ChDataUnusable,
     ChUnavailable,
@@ -98,19 +97,15 @@ def _source_error(e: Exception) -> ApiError:
         #   一路抛到这里。与 UnknownShape 同一类「认不出的形态」，不新开错误码；
         #   detail 里带着 store_for() 原样写出的 sid（它是唯一已知量——正因为它没有
         #   对应的 (store, channel) 才会抛这个异常）。
-        # ★★ 残留轮次：hint 必须**按成因分开**。两种成因的处置是**相反**的：
-        #   · 没人声明过 → 去 STORE_SID 补一行，这是对的建议；
-        #   · 已登记的取数缺口（NO_ORDER_REPORT_SID）→ **绝不能补**。补了就是
-        #     硬编一行不存在的映射，把另一家店的销量记到它头上 —— 正是 M-4
-        #     刚从 `sid_for_or_raise` 里拿掉的那条错建议，原样留在了运维**先读到**
-        #     的那个字段里（detail 说对了，hint 说反了，而人先看 hint）。
-        if e.registered_gap:
-            return ApiError(503, "forecast_source_unusable",
-                            "这个店在订单报表里压根没有销量来源 —— 数必须由人填，"
-                            "**不要**去改 dim/order_store_map.py 的映射表：硬编一行"
-                            "就是把另一家店的销量记到它头上",
-                            {"detail": str(e), "sid": e.sid,
-                             "registered_gap": e.registered_gap})
+        # ★★ 残留轮次：这句 hint 原先对**所有** UnknownStore 都说「缺一行，去补」，
+        #   包括 `NO_ORDER_REPORT_SID` 上那三个已登记的缺口 —— 而对它们，补一行
+        #   就是硬编一行不存在的映射，把另一家店的销量记到它头上（正是 M-4 刚从
+        #   `sid_for_or_raise` 拿掉的那条错建议，留在了人**先读到**的字段里）。
+        # ★ 修法不是在这里再劈一支（那一支没有调用路径，而没有路径的分支没人能
+        #   信）。分派放在 `claim()` 的 `except UnknownStore` 里，按
+        #   `e.registered_gap` 把「已登记的缺口」翻成 200 + 不适用 —— 所以走到
+        #   这里的**只有「没人声明过」那一种**，这句「去补一行」也就只对着它该
+        #   对的人说。改 `claim()` 那处分派的人要连这句话一起重新想。
         return ApiError(503, "forecast_source_unusable",
                         "这个店没有声明取数映射（dim/order_store_map.py 缺一行）"
                         "—— 销量取不到，不能当成「卖了 0 件」",
@@ -120,6 +115,17 @@ def _source_error(e: Exception) -> ApiError:
     #   到这里。签名标 -> ApiError 与这一支的行为因此有点不对称，留着不改：
     #   真正要防的洞不在这里，是"except 元组要跟上 ChSource 实际会抛的异常集合"。
     raise e   # ★ 认不出的异常不许被兜成这五种之一——同 CLAUDE.md「不许 else 兜底」
+
+
+def _history_window(source, seller_sku: str, sid: str) -> dict | None:
+    """这一次取数的口径标记。★ 只有**真查过**的那两条路径调它（取到了 / 查了没有）。
+
+    ★ 不适用那两支不调：口径标记的意思是「查了，用的是这几个月」，给一个没查过
+    的格子贴上它，就是说了一句没发生的事。`FixtureSource` 没有这个方法 ⇒ None。
+    """
+    if not hasattr(source, "history_window"):
+        return None
+    return source.history_window(seller_sku, sid) or None
 
 
 def _date(s: str, field: str) -> dt.date:
@@ -258,10 +264,6 @@ def claim(plan_id: int, body: dict, request: Request,
         no_history = []
         history_window = None
         est = None
-        # ★ 「这个 msku 有没有销量取数源」先问清楚，再决定要不要去取数。
-        #   两种成因、一个结论：不适用。★ 判据都不在这里硬编 —— 平台看
-        #   `seller.platform` 镜像列，店铺缺口看 dim 的登记表。
-        registered_gap = order_store_map.no_sales_source(sid)
         if platform not in _SALES_PLATFORM:
             # ★ 终审 I-2：「这个店压根没有 Amazon 销量源」是**不适用**，不是未知。
             #   走到 monthly_sales_history 的话，CH 档会在 store_for() 上抛
@@ -273,18 +275,6 @@ def claim(plan_id: int, body: dict, request: Request,
                                "reason": NOT_APPLICABLE,
                                "cause": CAUSE_NON_AMAZON_PLATFORM,
                                "platform": platform})
-        elif registered_gap:
-            # ★★ 残留轮次裁定：`NO_ORDER_REPORT_SID` 上的 179 个 msku 原先一律
-            #   503，于是一家**活着的美国店**的货整个上不了计划。而这件事的形状
-            #   与上面那一支**一模一样**：这个 msku 没有销量取数源。既然一周前
-            #   已经为 Walmart 那一种裁定过「格子照建、system_units 留 NULL、
-            #   标记点名」，这一种就用同一个答案 —— 145 个 msku 认领不了，比
-            #   一格等人来填的 NULL 坏得多。
-            #   ★ 未知/0 的保证不变：绝不是 0，也绝不是编出来的预估。
-            no_history.append({"seller_sku": seller_sku, "sid": sid,
-                               "reason": NOT_APPLICABLE,
-                               "cause": CAUSE_STORE_ABSENT_FROM_ORDER_REPORT,
-                               "detail": registered_gap})
         else:
             try:
                 est = monthly_estimate(
@@ -294,16 +284,41 @@ def claim(plan_id: int, body: dict, request: Request,
                 est = None
                 no_history.append({"seller_sku": seller_sku, "sid": sid,
                                    "reason": "no_sales_history"})
-            except (ChUnavailable, ChDataUnusable, UnknownShape, UnknownStore) as e:
-                # ★ fix round 1：UnknownStore 曾经漏在这个元组外——monthly_sales_history()
-                #   → order_store_map.store_for() 抛的这个异常会裸着冒成无 S-29 形状的 500。
-                #   claim() 不碰采购表，所以这里不需要 PurchaseTableStale（同 grid() 不需要
-                #   UnknownStore 一个道理——见 _source_error() 上面的审计注释）。
+                history_window = _history_window(source, seller_sku, sid)
+            except UnknownStore as e:
+                # ★★ 残留轮次裁定（第二轮）：**按异常分派，不预检**。
+                #   `NO_ORDER_REPORT_SID` 上的 179 个 msku 的形状与上面那一支
+                #   一模一样 —— 这个 msku 没有销量取数源 —— 所以给同一个答案：
+                #   格子照建、system_units 留 NULL、标记点名。145 个 msku 认领
+                #   不了，比一格等人来填的 NULL 坏得多。
+                #   ★ 未知/0 的保证不变：绝不是 0，也绝不是编出来的预估。
+                #   ★ 为什么不在调用前查一次 `NO_ORDER_REPORT_SID`：那样
+                #   `_source_error` 里那支「已登记的缺口」永远走不到，而一个没有
+                #   路径的分支是没人能信的分支 —— 本仓已经被这种东西咬过两次
+                #   （`ChUnavailable` 定义了从没抛过；折叠计数器没有靶子）。
+                #   分派放在这里之后，`_source_error` 只会收到「没人声明过」
+                #   那一种，它那句「去补一行」也就只对着它该对的人说。
+                if not e.registered_gap:
+                    raise _source_error(e) from e
+                est = None
+                no_history.append({"seller_sku": seller_sku, "sid": sid,
+                                   "reason": NOT_APPLICABLE,
+                                   "cause": CAUSE_STORE_ABSENT_FROM_ORDER_REPORT,
+                                   "detail": e.registered_gap})
+                # ★ 不设 history_window：这一支压根没查过，而口径标记的意思是
+                #   「查了，用的是这几个月」。给它一个标记就是说了一句没发生的事。
+            except (ChUnavailable, ChDataUnusable, UnknownShape) as e:
+                # ★ fix round 1：`UnknownStore` 曾经漏在这个元组外——
+                #   monthly_sales_history() → order_store_map.store_for() 抛的这个
+                #   异常会裸着冒成无 S-29 形状的 500。现在它有了自己的 except
+                #   （上面那一支，按成因分派），所以不在这个元组里。
+                #   claim() 不碰采购表，所以这里不需要 PurchaseTableStale（同 grid()
+                #   不需要 UnknownStore 一个道理——见 _source_error() 上面的审计注释）。
                 raise _source_error(e) from e
-            # ★ 用了哪几个月、哪些是补 0、最新那个月距今多少天 —— 订单是滞后采集的
-            #   （CLAUDE.md 铁律三），一个没有标记的数比没有数更坏。
-            if hasattr(source, "history_window"):
-                history_window = source.history_window(seller_sku, sid) or None
+            else:
+                # ★ 用了哪几个月、哪些是补 0、最新那个月距今多少天 —— 订单是滞后
+                #   采集的（CLAUDE.md 铁律三），一个没有标记的数比没有数更坏。
+                history_window = _history_window(source, seller_sku, sid)
         for i, period in enumerate(periods):
             cur.execute(
                 "INSERT INTO plan_demand_cell (plan_id, seller_sku, sid, period_start,"

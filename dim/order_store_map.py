@@ -147,18 +147,6 @@ ORDER_REPORT_STORES: frozenset[str] = frozenset({
 })
 
 
-def no_sales_source(sid: str) -> str | None:
-    """这个 sid **压根没有销量取数源**时，返回登记的实测出处；否则 None。
-
-    ★ 与 `store_for()` 抛 `UnknownStore` 是同一张表的两个问法，区别在调用方要
-    的东西：`store_for()` 要的是「给我 store」，答不上来就硬失败；这里要的是
-    「这个 sid 是不是**已登记**的取数缺口」，答案是一条可以直接回显给人看的
-    出处。★ 判据只有这一处，接口层不许自己再列一遍 sid ——
-    硬编店铺号会让新增豁免时「dim 里加了、接口还说它未知」。
-    """
-    return NO_ORDER_REPORT_SID.get(str(sid))
-
-
 def growth_budget(sid: str) -> int:
     """豁免 sid 的 msku 数上限（登记值 + 余量）。超了就该重新审视这条豁免。"""
     recorded = NO_ORDER_REPORT_SID_MSKUS[str(sid)]
