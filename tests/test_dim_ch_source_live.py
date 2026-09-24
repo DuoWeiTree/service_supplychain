@@ -507,6 +507,57 @@ def test_monthly_sales_history_matches_the_frozen_hand_checked_numbers(live_quer
     assert window["lag_note"], "口径标记不许是空字符串——没有标记的数比没有数更坏"
 
 
+def test_daily_sales_sql_runs_on_real_clickhouse_and_sums_to_the_frozen_month(live_query_raw):
+    """★ 真跑一次 `SQL_DAILY_SALES`（task-14 复核 Minor #3）：行宽 3、一天一行、落在窗口内，
+    且冻结样本 2026-06 的日销合计 == design §7 冻结的月销 561 —— 日粒度与月粒度用的是
+    同一套去重口径，合计对不上就是其中一条改走样了。窗口一个月，读取量有界。"""
+    from dim import order_store_map as m
+    store, channel = m.store_for(FROZEN_SID)
+    start, end = dt.date(2026, 6, 1), dt.date(2026, 6, 30)
+    rows = live_query_raw(cs.SQL_DAILY_SALES,
+                          {"store": store, "channel": channel, "seller_sku": FROZEN_MSKU,
+                           "start": start.isoformat(), "end": end.isoformat()})
+    assert rows, f"{cs.ORDERS_TABLE} 冻结样本 2026-06 一行日销都没有 —— 下面的断言是空转的"
+    assert all(len(r) == 3 for r in rows), f"行宽应为 3（d, units, zeroed）：{rows[:1]}"
+    days = [r[0] for r in rows]
+    assert len(days) == len(set(days)), f"同一天出现不止一行：{days}"
+    assert all(start <= d <= end for d in days)
+    assert sum(int(r[1]) for r in rows) == FROZEN_MONTHS[dt.date(2026, 6, 1)]
+
+    src = cs.ChSource(live_query_raw, classify_failure=describe_failure)
+    got = src.daily_sales(FROZEN_MSKU, FROZEN_SID, start, end)
+    assert sum(got.values()) == FROZEN_MONTHS[dt.date(2026, 6, 1)]
+    assert "daily_sales" in src.stats()
+
+
+#: ★ task-14 复核 live 探针（2026-09-24）实测：DVCD105013L1Z2B / 11072 在 08-15..08-18
+#: 的采集日 hit_rows=1、units=0（真断货），当天整表 7,765~7,892 行 / 21 店；
+#: 08-13 是 20 行 / 1 店的残桩。快照日历史不可变，这组数不随时间漂。
+STOCKOUT_MSKU, STOCKOUT_SID = "DVCD105013L1Z2B", "11072"
+STOCKOUT_DAYS = {dt.date(2026, 8, d) for d in (15, 16, 17, 18)}
+
+
+def test_fba_stock_days_on_real_clickhouse_censors_a_known_stock_out(live_query_raw):
+    """★ 真跑一次 `SQL_FBA_STOCK_DAYS` + `ChSource.fba_stock_days`：行宽 5、units 不为 NULL
+    （ifNull），已知断货日被 censor，20 行残桩被拒 —— 容差守卫（控制器裁定）在真数据上
+    就是这个效果。窗口 8 天，读取量有界。"""
+    start, end = dt.date(2026, 8, 13), dt.date(2026, 8, 20)
+    params = {"sid": STOCKOUT_SID, "seller_sku": STOCKOUT_MSKU,
+              "start": start.isoformat(), "end": end.isoformat()}
+    rows = live_query_raw(cs.SQL_FBA_STOCK_DAYS, params)
+    assert rows, f"{cs.FBA_DETAIL_TABLE} {start}~{end} 一个采集日都没有 —— 断言是空转的"
+    assert all(len(r) == 5 for r in rows), f"行宽应为 5：{rows[:1]}"
+    assert all(r[4] is not None for r in rows), f"units 出现 NULL（ifNull 失效）：{rows}"
+
+    src = cs.ChSource(live_query_raw, classify_failure=describe_failure)
+    got = src.fba_stock_days(STOCKOUT_MSKU, STOCKOUT_SID, start, end)
+    assert STOCKOUT_DAYS <= got.censored, (
+        f"已知断货日 {sorted(STOCKOUT_DAYS)} 没全被 censor：censored={sorted(got.censored)} "
+        f"rejected={got.rejected}")
+    assert {r["date"]: r["reason"] for r in got.rejected}.get("2026-08-13") == "rows_below_floor"
+    assert not {dt.date.fromisoformat(r["date"]) for r in got.rejected} & got.captured
+
+
 def test_monthly_sales_history_excludes_the_current_month(live_query_raw):
     """★ 当月绝不入选（month_window）——今天真实调用一次，断言窗口最新一个月
     早于本月月初。"""

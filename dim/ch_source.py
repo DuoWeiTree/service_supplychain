@@ -341,12 +341,14 @@ SELECT toStartOfMonth(d) AS month, toInt64(sum(units)) AS units
 #: Cancelled/Pending · 只统计一个 (store, sales_channel)），只是按日分组。
 #: ★ 外层 GROUP BY d 保证一天一行：同一天多个 order_item 在这里合计（协议要求
 #:   一个 (msku, sid, date) 只出一个数，baseline_rate 不做二次去重）。
+#: ★ `zeroed_order_items`：被 Cancelled/Pending 记成 0 件的 order_item 数 —— 排除必须有声。
 SQL_DAILY_SALES = f"""
-SELECT d, toInt64(sum(units)) AS units
+SELECT d, toInt64(sum(units)) AS units, toInt64(sum(zeroed)) AS zeroed_order_items
   FROM (
     SELECT toDate(any(purchase_date)) AS d,
            if(argMax(order_status, _captured_date) NOT IN ('Cancelled', 'Pending'),
-              argMax(quantity, _captured_date), 0) AS units
+              argMax(quantity, _captured_date), 0) AS units,
+           argMax(order_status, _captured_date) IN ('Cancelled', 'Pending') AS zeroed
       FROM {ORDERS_TABLE}
      WHERE store = {{store:String}} AND sales_channel = {{channel:String}}
        AND sku = {{seller_sku:String}}
@@ -358,14 +360,18 @@ SELECT d, toInt64(sum(units)) AS units
  ORDER BY d
 """
 
-#: spec §3.2 · OP-15：每个采集日一行 —— 当天整表的行数 / 店数（掉档守卫，同
-#: pick_snapshot_date 的 min_rows / min_distinct_sid）+ 该 msku 的行数与可售合计。
+#: spec §3.2 · OP-15：每个采集日一行 —— 当天整表的行数 / 店数（掉档守卫：与
+#: pick_snapshot_date 共用 `_below_floor`，同一把容差 min × (1 − drop_threshold)）
+#: + 该 msku 的行数与可售合计。
+#: ★ afn_fulfillable_quantity 是 Nullable：msku 缺行那天 sumIf 回 NULL（实测
+#:   (2026-07-24, 20, 1, 0, None)），ifNull 收成 0，不靠 hit_rows == 0 的短路兜住。
 #: ★ msku 缺行不在 SQL 里判：缺行在「被接受的采集日」上才等于断货（L-1），在掉档日上什么都不是。
 SQL_FBA_STOCK_DAYS = f"""
 SELECT _captured_date AS d, count() AS rows, uniq(sid) AS uniq_sid,
        countIf(toString(sid) = {{sid:String}} AND seller_sku = {{seller_sku:String}}) AS hit_rows,
-       toInt64(sumIf(afn_fulfillable_quantity,
-                     toString(sid) = {{sid:String}} AND seller_sku = {{seller_sku:String}})) AS units
+       toInt64(ifNull(sumIf(afn_fulfillable_quantity,
+                            toString(sid) = {{sid:String}} AND seller_sku = {{seller_sku:String}}),
+                      0)) AS units
   FROM {FBA_DETAIL_TABLE}
  WHERE _captured_date >= {{start:Date}} AND _captured_date <= {{end:Date}}
  GROUP BY _captured_date
@@ -374,7 +380,8 @@ SELECT _captured_date AS d, count() AS rows, uniq(sid) AS uniq_sid,
 
 
 def parse_stock_days(rows: list[tuple], start: dt.date, end: dt.date, *,
-                     min_rows: int, min_distinct_sid: int) -> StockDays:
+                     min_rows: int, min_distinct_sid: int, drop_threshold: float
+                     ) -> StockDays:
     censored: set[dt.date] = set()
     captured: set[dt.date] = set()
     rejected: list[dict] = []
@@ -387,8 +394,13 @@ def parse_stock_days(rows: list[tuple], start: dt.date, end: dt.date, *,
         if d in seen:
             raise UnknownShape(f"采集日 {d} 出现了不止一行（SQL 应按日分组）")
         seen.add(d)
-        if int(n_rows) < min_rows or int(n_sid) < min_distinct_sid:
-            rejected.append({"date": d.isoformat(), "rows": int(n_rows), "uniq_sid": int(n_sid)})
+        # ★ 控制器裁定（task-14 复核）：与 pick_snapshot_date 同一把尺子。严格按 E-1 最小值
+        #   7,934 会把 20 天前的整天（实测 7,765~7,892 行 / 21 店）全拒掉，连真断货也不 censor。
+        reason = _below_floor(int(n_rows), int(n_sid), min_rows, min_distinct_sid,
+                              drop_threshold)
+        if reason is not None:
+            rejected.append({"date": d.isoformat(), "rows": int(n_rows),
+                             "uniq_sid": int(n_sid), "reason": reason})
             continue
         captured.add(d)
         if int(hit) == 0 or int(units) <= 0:
@@ -709,6 +721,18 @@ def _default_now() -> dt.datetime:
     return dt.datetime.now()  # noqa: DTZ005
 
 
+def _below_floor(n_rows: int, n_sid: int, min_rows: int, min_distinct_sid: int,
+                 threshold: float) -> str | None:
+    """采集日有没有到过绝对下限（E-1 实测 × (1 − threshold)）。`pick_snapshot_date` 与
+    `parse_stock_days` 共用 —— 两处各写一遍，改一处另一处不会知道。"""
+    limit = 1.0 - threshold
+    if n_rows < min_rows * limit:
+        return "rows_below_floor"
+    if n_sid < min_distinct_sid * limit:
+        return "sid_below_floor"
+    return None
+
+
 def pick_snapshot_date(rows: list[tuple], threshold: float,
                        min_rows: int, min_distinct_sid: int, *,
                        lookback_days: int = LOOKBACK_DAYS
@@ -745,10 +769,8 @@ def pick_snapshot_date(rows: list[tuple], threshold: float,
                 reason = "rows_drop_vs_neighbour"
             elif nxt is not None and n_sid < nxt[2] * limit:
                 reason = "sid_drop_vs_neighbour"
-            elif n_rows < min_rows * limit:
-                reason = "rows_below_floor"
-            elif n_sid < min_distinct_sid * limit:
-                reason = "sid_below_floor"
+            else:
+                reason = _below_floor(n_rows, n_sid, min_rows, min_distinct_sid, threshold)
         if reason is None:
             return date, rejected
         rejected.append({"date": date.isoformat(), "rows": int(n_rows),
@@ -828,6 +850,12 @@ class ChSource:
         #:   `history_window()` 必须把自己要问的 (seller_sku, sid) 报上来，
         #:   读到别人的那条路径在构造上就不存在了。
         self._history_windows: dict[tuple[str, str], dict] = {}
+        #: `(seller_sku, sid)` → daily_sales 里被 Cancelled/Pending 记成 0 的 order_item 数。
+        #: 按键存：同一个键问两遍是覆盖，不是累加（stats() 报的是合计）。
+        self._zeroed_by_key: dict[tuple[str, str], int] = {}
+        #: 已经点过名的拒收采集日。★ 拒收是整表的事，几百个 msku 各打一遍同一条
+        #:   WARNING 会把真告警淹掉 —— 每个 source 实例每天只点名一次。
+        self._logged_rejected_days: set[str] = set()
 
     def as_of(self) -> dt.date:
         now = self._now()
@@ -927,21 +955,28 @@ class ChSource:
             raise ChUnavailable(target=ORDERS_TABLE, cause=cause) from e
         elapsed_ms = (time.perf_counter() - t0) * 1000
         out: dict[dt.date, int] = {}
-        for d, units in rows:
+        zeroed = 0
+        for d, units, zeroed_items in rows:
             if not start <= d <= end:
                 raise UnknownShape(f"日销落在窗口之外：{d}（窗口 {start}~{end}）")
             # ★ 外层 GROUP BY d 保证一天一行；覆盖写会静默丢掉其中一行的件数。
             if d in out:
                 raise UnknownShape(f"日销 {d} 出现了不止一行（SQL 应按日合计）")
             out[d] = int(units)
+            zeroed += int(zeroed_items)
+        self._zeroed_by_key[(seller_sku, str(sid))] = zeroed
+        self._stats["daily_sales"] = {
+            "cancelled_or_pending_zeroed_order_items": sum(self._zeroed_by_key.values()),
+            "keys": len(self._zeroed_by_key)}
         self._history_windows[(seller_sku, str(sid))] = {
             "store": store, "sales_channel": channel, "from": start.isoformat(),
             "until": end.isoformat(), "days_with_orders": len(out),
+            "zeroed_order_items": zeroed,
             "lag_note": "orders_are_lagging_collected; deduped_by_order_item; "
                         "estimation_anchor_moved_back_by_embargo_days"}
         log.info("op=ch_daily_sales outcome=ok store=%s channel=%s msku=%s start=%s end=%s"
-                 " days=%d units=%d elapsed_ms=%d", store, channel, seller_sku, start, end,
-                 len(out), sum(out.values()), elapsed_ms)
+                 " days=%d units=%d zeroed_order_items=%d elapsed_ms=%d", store, channel,
+                 seller_sku, start, end, len(out), sum(out.values()), zeroed, elapsed_ms)
         return out
 
     def fba_stock_days(self, seller_sku: str, sid: str, start: dt.date, end: dt.date
@@ -960,14 +995,19 @@ class ChSource:
             raise ChUnavailable(target=FBA_DETAIL_TABLE, cause=cause) from e
         elapsed_ms = (time.perf_counter() - t0) * 1000
         got = parse_stock_days(rows, start, end, min_rows=self._min_rows,
-                               min_distinct_sid=self._min_distinct_sid)
+                               min_distinct_sid=self._min_distinct_sid,
+                               drop_threshold=self._threshold)
         rejected_dates = {r["date"] for r in got.rejected}
         uncaptured = [d.isoformat() for d in
                       (start + dt.timedelta(days=i) for i in range((end - start).days + 1))
                       if d not in got.captured and d.isoformat() not in rejected_dates]
         for r in got.rejected:
-            log.warning("op=ch_stock_days outcome=rejected_day msku=%s sid=%s %s —— 不 censor",
-                        seller_sku, sid, r)
+            if r["date"] in self._logged_rejected_days:
+                continue
+            self._logged_rejected_days.add(r["date"])
+            log.warning("op=ch_stock_days outcome=rejected_day target=%s %s —— 整表掉档，"
+                        "这天对所有 msku 都不 censor（首次见于 msku=%s sid=%s）",
+                        FBA_DETAIL_TABLE, r, seller_sku, sid)
         log.info("op=ch_stock_days outcome=ok msku=%s sid=%s start=%s end=%s captured=%d"
                  " censored=%d rejected=%d uncaptured=%d elapsed_ms=%d", seller_sku, sid, start,
                  end, len(got.captured), len(got.censored), len(got.rejected), len(uncaptured),
