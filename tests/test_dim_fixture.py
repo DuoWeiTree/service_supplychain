@@ -110,3 +110,11 @@ def test_fba_stock_days_names_censored_and_captured_days(s):
     assert got.censored == frozenset({D(2026, 9, 1), D(2026, 9, 2)})
     assert got.captured == frozenset(D(2026, 8, 30) + dt.timedelta(days=i) for i in range(4))
     assert got.rejected == ()
+
+
+def test_daily_sales_drops_zero_unit_days(s):
+    """★ 终审 I-3：0 件的那天（只有取消 / 待付的订单）不是「卖了 0」的历史 —— 出成一行 0，
+    baseline_rate 就会给一个 rate 0 而不是「没有销量」，同一件事随有没有人取消过订单
+    一时已知一时未知。与 ChSource 同口径：0 件的日子不出行。"""
+    D = dt.date
+    assert s.daily_sales("MSKU-CXL", "99999", D(2026, 9, 1), D(2026, 9, 30)) == {}

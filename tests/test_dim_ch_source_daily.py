@@ -23,7 +23,7 @@ class Q:
 def test_daily_sales_dedups_by_order_item_and_keeps_the_window():
     q = Q([(D(2026, 9, 1), 4, 0), (D(2026, 9, 2), 0, 1)])
     got = cs.ChSource(q).daily_sales("MSKU-A", "11072", D(2026, 6, 17), D(2026, 9, 14))
-    assert got == {D(2026, 9, 1): 4, D(2026, 9, 2): 0}
+    assert got == {D(2026, 9, 1): 4}          # 09-02 只有被取消的 → 不出行（终审 I-3）
     sql, params = q.calls[0]
     assert "GROUP BY amazon_order_id, order_item_id" in sql and "argMax(order_status" in sql
     store, channel = order_store_map.store_for("11072")
@@ -199,3 +199,23 @@ def test_daily_sales_counts_cancelled_or_pending_order_items_it_zeroed(caplog):
     assert "zeroed_order_items=3" in caplog.text
     sql = " ".join(cs.SQL_DAILY_SALES.split())
     assert "IN ('Cancelled', 'Pending')" in sql and "AS zeroed_order_items" in sql
+
+
+def test_daily_sales_cancelled_only_msku_has_no_history_not_rate_zero(caplog):
+    """★ 终审 I-3 裁定：窗口里只有取消 / 待付订单的 msku —— SQL 会给每天一行 units=0。
+    这些行不许出现在日销里：出了，baseline_rate 就把它当成「卖了 0」给 rate 0；
+    不出，它与一行订单都没有的 msku 一样是「没有销量」（未知）。被置零的 order_item
+    照记进 zeroed_order_items —— 丢可以，必须有声。"""
+    caplog.set_level(logging.INFO)
+    src = cs.ChSource(Q([(D(2026, 9, 1), 0, 2), (D(2026, 9, 3), 0, 1)]))
+    assert src.daily_sales("MSKU-A", "11072", D(2026, 9, 1), D(2026, 9, 3)) == {}
+    w = src.history_window("MSKU-A", "11072")
+    assert (w["days_with_orders"], w["zeroed_order_items"], w["zero_unit_days"]) == (0, 3, 2)
+    assert "zero_unit_days=2" in caplog.text
+
+
+def test_daily_sales_zero_unit_rows_are_still_checked_for_duplicates():
+    """丢 0 件行不许顺带丢掉「一天两行」这道形状闸。"""
+    q = Q([(D(2026, 9, 1), 0, 1), (D(2026, 9, 1), 3, 0)])
+    with pytest.raises(cs.UnknownShape, match="2026-09-01"):
+        cs.ChSource(q).daily_sales("MSKU-A", "11072", D(2026, 6, 17), D(2026, 9, 14))

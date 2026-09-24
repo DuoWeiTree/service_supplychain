@@ -342,6 +342,7 @@ SELECT toStartOfMonth(d) AS month, toInt64(sum(units)) AS units
 #: ★ 外层 GROUP BY d 保证一天一行：同一天多个 order_item 在这里合计（协议要求
 #:   一个 (msku, sid, date) 只出一个数，baseline_rate 不做二次去重）。
 #: ★ `zeroed_order_items`：被 Cancelled/Pending 记成 0 件的 order_item 数 —— 排除必须有声。
+#: ★ 合计 0 件的日子 SQL 照出（要数 zeroed），由 daily_sales() 丢掉（终审 I-3）。
 SQL_DAILY_SALES = f"""
 SELECT d, toInt64(sum(units)) AS units, toInt64(sum(zeroed)) AS zeroed_order_items
   FROM (
@@ -955,15 +956,23 @@ class ChSource:
             raise ChUnavailable(target=ORDERS_TABLE, cause=cause) from e
         elapsed_ms = (time.perf_counter() - t0) * 1000
         out: dict[dt.date, int] = {}
-        zeroed = 0
+        seen: set[dt.date] = set()
+        zeroed = zero_days = 0
         for d, units, zeroed_items in rows:
             if not start <= d <= end:
                 raise UnknownShape(f"日销落在窗口之外：{d}（窗口 {start}~{end}）")
             # ★ 外层 GROUP BY d 保证一天一行；覆盖写会静默丢掉其中一行的件数。
-            if d in out:
+            if d in seen:
                 raise UnknownShape(f"日销 {d} 出现了不止一行（SQL 应按日合计）")
-            out[d] = int(units)
+            seen.add(d)
             zeroed += int(zeroed_items)
+            # ★ 终审 I-3：只有取消 / 待付订单的那天 units=0 —— 不出行。出了，只取消过订单的
+            #   msku 会得 rate 0，而一单都没有的得「没有销量」；同一件事不许随取消与否变样。
+            #   天数进 history_window / 日志，丢可以，必须有声。
+            if int(units) == 0:
+                zero_days += 1
+                continue
+            out[d] = int(units)
         self._zeroed_by_key[(seller_sku, str(sid))] = zeroed
         self._stats["daily_sales"] = {
             "cancelled_or_pending_zeroed_order_items": sum(self._zeroed_by_key.values()),
@@ -971,12 +980,13 @@ class ChSource:
         self._history_windows[(seller_sku, str(sid))] = {
             "store": store, "sales_channel": channel, "from": start.isoformat(),
             "until": end.isoformat(), "days_with_orders": len(out),
-            "zeroed_order_items": zeroed,
+            "zeroed_order_items": zeroed, "zero_unit_days": zero_days,
             "lag_note": "orders_are_lagging_collected; deduped_by_order_item; "
                         "estimation_anchor_moved_back_by_embargo_days"}
         log.info("op=ch_daily_sales outcome=ok store=%s channel=%s msku=%s start=%s end=%s"
-                 " days=%d units=%d zeroed_order_items=%d elapsed_ms=%d", store, channel,
-                 seller_sku, start, end, len(out), sum(out.values()), zeroed, elapsed_ms)
+                 " days=%d units=%d zeroed_order_items=%d zero_unit_days=%d elapsed_ms=%d",
+                 store, channel, seller_sku, start, end, len(out), sum(out.values()), zeroed,
+                 zero_days, elapsed_ms)
         return out
 
     def fba_stock_days(self, seller_sku: str, sid: str, start: dt.date, end: dt.date

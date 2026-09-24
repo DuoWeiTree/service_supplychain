@@ -527,6 +527,10 @@ def test_daily_sales_sql_runs_on_real_clickhouse_and_sums_to_the_frozen_month(li
     src = cs.ChSource(live_query_raw, classify_failure=describe_failure)
     got = src.daily_sales(FROZEN_MSKU, FROZEN_SID, start, end)
     assert sum(got.values()) == FROZEN_MONTHS[dt.date(2026, 6, 1)]
+    # ★ 终审 I-3：只有取消 / 待付的日子在 SQL 里是 0 件行，出口处不许留下
+    assert all(v > 0 for v in got.values()), f"日销里出现了 0 件的日子：{got}"
+    zero_rows = sum(1 for r in rows if int(r[1]) == 0)
+    assert src.history_window(FROZEN_MSKU, FROZEN_SID)["zero_unit_days"] == zero_rows
     assert "daily_sales" in src.stats()
 
 

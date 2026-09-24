@@ -48,14 +48,15 @@ class FixtureSource:
     def daily_sales(self, seller_sku: str, sid: str, start: dt.date, end: dt.date
                     ) -> dict[dt.date, int]:
         """★ 同一天两行（同 msku/sid/date）在这里就加总 —— baseline_rate 按天只认
-        一个数，取数层悄悄留一条丢一条会比加错更难查。"""
+        一个数，取数层悄悄留一条丢一条会比加错更难查。
+        ★ 合计 0 件的日子不出行（同 ChSource.daily_sales，终审 I-3）。"""
         out: dict[dt.date, int] = {}
         for r in self._rows("daily_sales.csv"):
             if r["seller_sku"] == seller_sku and r["sid"] == sid:
                 d = dt.date.fromisoformat(r["date"])
                 if start <= d <= end:
                     out[d] = out.get(d, 0) + int(r["units"])
-        return out
+        return {d: u for d, u in out.items() if u != 0}
 
     def fba_stock_days(self, seller_sku: str, sid: str, start: dt.date, end: dt.date
                        ) -> StockDays:
