@@ -71,3 +71,31 @@ def test_known_sibling_defect_is_ported_verbatim():
     恒卖 4 件/天 120 天 → 4.325（高估 8.1%）。先搬不修：修的那一次这条**应当**变红。"""
     r = baseline_rate({back(i): 4 for i in range(120)}, set(), A)
     assert r.rate == pytest.approx(4.325139122267326, rel=1e-12)
+
+
+def test_estimation_anchor_moves_back_embargo_days():
+    """spec §3.1 ②：估计锚点从 as_of 前挪 7 天（设计取值 · 未实测，W-5）。"""
+    from forecast.baseline import EMBARGO_DAYS, data_windows, estimation_anchor
+    assert EMBARGO_DAYS == 7
+    assert estimation_anchor(dt.date(2026, 9, 21)) == dt.date(2026, 9, 14)
+    w = data_windows(dt.date(2026, 9, 21))
+    assert (w.estimation_anchor, w.censor_from, w.sales_from, w.until) == (
+        dt.date(2026, 9, 14), dt.date(2026, 7, 21), dt.date(2026, 6, 17), dt.date(2026, 9, 14))
+
+
+@pytest.mark.parametrize("bad", [-1, 1.5, True, None])
+def test_embargo_must_be_a_non_negative_int(bad):
+    from forecast.baseline import estimation_anchor
+    with pytest.raises(ValueError):
+        estimation_anchor(dt.date(2026, 9, 21), bad)
+
+
+def test_the_incomplete_recent_days_no_longer_drag_the_rate_down():
+    """06 §4：近几天订单没采全 → v1 系统性低估。挪开锚点后，最后 7 天的缺口不再进估计。"""
+    from forecast.baseline import estimate_rate
+    as_of = dt.date(2026, 9, 21)
+    full = {as_of - dt.timedelta(days=i): 10 for i in range(120)}
+    lagged = {**full, **{as_of - dt.timedelta(days=i): 3 for i in range(7)}}   # 近 7 天只采到 3 成
+    e = estimate_rate(lagged, set(), as_of)
+    assert (e.embargo_days, e.estimation_anchor) == (7, dt.date(2026, 9, 14))
+    assert e.result.rate == pytest.approx(estimate_rate(full, set(), as_of).result.rate)

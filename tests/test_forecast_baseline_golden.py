@@ -54,13 +54,14 @@ def test_port_matches_sibling_v1_at_every_anchor():
     assert bad == [], f"{len(bad)} 个 case 与兄弟仓不符：{bad[:10]}"
 
 
-def test_production_entry_matches_sibling_v1_at_as_of():
-    """生产入口（claim 调的就是它）在 v1 口径下 = 兄弟仓在 as_of 上的输出。"""
+def test_production_entry_is_sibling_v1_at_the_estimation_anchor():
+    """★ D-3 ② 之后的新基准：生产入口 = 兄弟仓 v1 在 as_of − 7 上的输出（W-5）。
+    与运营对「当前数据下的新基准」是人的动作，不在这里（OP-19）。"""
     cases, expected = load()
     bad = []
     for c in cases:
         e = estimate_rate(*cases[c], AS_OF)
         got = None if e.result is None else e.result.rate
-        if not close(got, expected[(c, AS_OF)]):
+        if not close(got, expected[(c, EARLIER)]):
             bad.append(c)
     assert bad == []

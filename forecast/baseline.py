@@ -24,6 +24,10 @@ WINSOR_Q = 0.95
 #: demand.py:266 `if len(nz) >= 5` —— 非零日少于 5 天不削峰
 WINSOR_MIN_NONZERO = 5
 
+#: spec §3.1 ② · 00 W-5：估计锚点从 as_of 前挪 7 天（整窗后移，不丢样本）。
+#: ★ 设计取值 · 未实测 —— 兄弟仓 maturity.py:179 自己标的占位（成熟度曲线受 08-20 回填污染）。
+EMBARGO_DAYS = 7
+
 
 @dataclass(frozen=True)
 class BaselineResult:
@@ -100,13 +104,22 @@ def baseline_rate(daily: Mapping[dt.date, int], censor: Collection[dt.date], anc
                           censored, cap)
 
 
-def data_windows(as_of: dt.date) -> DataWindows:
-    a = as_of
+def estimation_anchor(as_of: dt.date, embargo_days: int = EMBARGO_DAYS) -> dt.date:
+    """★ 两个锚点两个名字（兄弟仓 maturity.py:215）：推演从 as_of 的库存出发，
+    速率用 as_of − embargo_days 那批成熟数据算。"""
+    if not isinstance(embargo_days, int) or isinstance(embargo_days, bool) or embargo_days < 0:
+        raise ValueError(f"embargo_days 必须是非负整数，收到 {embargo_days!r}")
+    return as_of - dt.timedelta(days=embargo_days)
+
+
+def data_windows(as_of: dt.date, embargo_days: int = EMBARGO_DAYS) -> DataWindows:
+    a = estimation_anchor(as_of, embargo_days)
     return DataWindows(a, a - dt.timedelta(days=TARGET_WINDOW_DAYS - 1),
                        a - dt.timedelta(days=WINDOW_DAYS - 1), a)
 
 
-def estimate_rate(daily: Mapping[dt.date, int], censor: Collection[dt.date],
-                  as_of: dt.date) -> Estimate:
-    """生产入口。★ v1 口径：估计锚点 = as_of（没有滞后修正，embargo 0 天）。Task 12 改。"""
-    return Estimate(as_of, 0, as_of, baseline_rate(daily, censor, as_of))
+def estimate_rate(daily: Mapping[dt.date, int], censor: Collection[dt.date], as_of: dt.date,
+                  embargo_days: int = EMBARGO_DAYS) -> Estimate:
+    """生产入口：速率在估计锚点上算（spec §3.1 ②）。"""
+    a = estimation_anchor(as_of, embargo_days)
+    return Estimate(as_of, embargo_days, a, baseline_rate(daily, censor, a))
