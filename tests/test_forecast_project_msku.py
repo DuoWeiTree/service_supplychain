@@ -32,7 +32,7 @@ def test_bridge_days_are_consumed_by_forecast():
     assert chain(rows) == [(264, 100, 0, 164), (164, 50, 0, 114)]
     assert rows[0].bridge == {"from": "2026-09-22", "to": "2026-09-30", "units": 36,
                               "by": "forecast", "rate": 4.0, "month_totals": {"2026-09": 120},
-                              "onhand_as_of": 300}
+                              "onhand_as_of": 300, "arrivals": [], "arrival_units": 0}
     assert rows[1].bridge is None
 
 
@@ -105,3 +105,46 @@ def test_elapsed_month_is_named_not_computed():
 def test_arrival_outside_the_window_is_a_caller_bug():
     with pytest.raises(ValueError, match="beyond_horizon"):
         project_msku(msku(), D(2026, 9, 30), [OCT], [Arrival(D(2027, 1, 13), 5, {})])
+
+
+def test_arrival_in_the_bridge_window_is_named_in_the_opening_basis():
+    """14 B3 · §6：as_of 与计划首月之间到的货不许悄悄并进期初 —— 期初 = 在仓 − 桥接销量 + 桥接到货。"""
+    arr = [Arrival(D(2026, 9, 25), 50, {"order_period": "2026-06"})]
+    rows = project_msku(msku(onhand=300, rate=4.0), D(2026, 9, 21), [OCT, NOV], arr)
+    br = rows[0].bridge
+    assert br["arrivals"] == [{"date": "2026-09-25", "units": 50, "order_period": "2026-06"}]
+    assert br["arrival_units"] == 50
+    assert rows[0].opening == br["onhand_as_of"] - br["units"] + br["arrival_units"] == 314
+    assert rows[0].arrivals == ()
+
+
+def test_unknown_arrival_in_the_bridge_window_is_named_too():
+    arr = [Arrival(D(2026, 9, 25), None, {"reason": "gap_unknown"})]
+    rows = project_msku(msku(onhand=300, rate=4.0), D(2026, 9, 21), [OCT, NOV], arr)
+    assert rows[0].bridge["arrivals"] == [{"date": "2026-09-25", "units": None,
+                                           "reason": "gap_unknown"}]
+    assert rows[0].bridge["arrival_units"] is None
+    assert [(r.state, r.reason, r.opening) for r in rows] == [
+        ("unknown", "inbound_unknown", None), ("unknown", "inbound_unknown", None)]
+
+
+@pytest.mark.parametrize("periods, bad", [
+    ([], "为空"),
+    ([D(2026, 10, 2)], "2026-10-02"),
+    ([OCT, DEC], "2026-12-01"),
+    ([NOV, OCT], "2026-10-01"),
+])
+def test_plan_months_must_be_sorted_contiguous_month_starts(periods, bad):
+    with pytest.raises(ValueError, match=f"计划月 ?{bad}"):
+        project_msku(msku(), D(2026, 9, 30), periods)
+
+
+def test_no_rate_rows_still_show_expected_demand_and_name_the_bridge():
+    """OP-8：未知的是头寸，不是期望销量 —— 期望销量照常回显，桥接依据点名 rate 缺失。"""
+    rows = project_msku(msku(onhand=300, rate=None), D(2026, 9, 21), [OCT, NOV])
+    assert [(r.opening, r.demand, r.inbound, r.closing) for r in rows] == [
+        (None, 100, 0, None), (None, 50, 0, None)]
+    assert rows[0].bridge == {"from": "2026-09-22", "to": "2026-09-30", "units": None,
+                              "by": "forecast", "rate": None, "month_totals": {},
+                              "onhand_as_of": 300, "arrivals": [], "arrival_units": 0}
+    assert rows[1].bridge is None

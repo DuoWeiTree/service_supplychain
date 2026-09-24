@@ -72,8 +72,20 @@ def _blank(p: dt.date, state: str, reason: str, since: dt.date | None = None) ->
     return MskuMonth(p, state, reason, since, None, None, None, None, None, None, ())
 
 
+def _check_periods(periods: list[dt.date]) -> None:
+    if not periods:
+        raise ValueError("计划月为空")
+    for i, p in enumerate(periods):
+        if p.day != 1:
+            raise ValueError(f"计划月 {p} 不是月初")
+        if i and p != add_months(periods[i - 1], 1):
+            raise ValueError(f"计划月 {p} 与上一个 {periods[i - 1]} 不相接"
+                             f"（应为 {add_months(periods[i - 1], 1)}）")
+
+
 def project_msku(m: MskuInput, as_of: dt.date, periods: list[dt.date],
                  arrivals: list[Arrival] = ()) -> list[MskuMonth]:
+    _check_periods(periods)
     if not m.applicable:
         return [_blank(p, "not_applicable", "not_applicable") for p in periods]
     if m.onhand is None:
@@ -87,10 +99,12 @@ def project_msku(m: MskuInput, as_of: dt.date, periods: list[dt.date],
     demand: dict[dt.date, Fraction | None] = {}
     bridge = None
     if start < first_plan:                                   # ★ W-6 桥接段：按预测扣
+        totals: dict[str, int] = {}
+        units: int | None = None
         if m.base_rate is None:
             demand.update({d: None for d in span(start, first_plan - ONE)})
         else:
-            totals, units, mm = {}, 0, month_start(start)
+            units, mm = 0, month_start(start)
             while mm < first_plan:
                 a, b = max(start, mm), min(first_plan - ONE, month_end(mm))
                 total = units_for_month(m.base_rate, days_in_month(mm))
@@ -98,9 +112,9 @@ def project_msku(m: MskuInput, as_of: dt.date, periods: list[dt.date],
                 demand.update(segment_daily(total, a, b))
                 units += segment_units(total, a, b)
                 mm = add_months(mm, 1)
-            bridge = {"from": start.isoformat(), "to": (first_plan - ONE).isoformat(),
-                      "units": units, "by": "forecast", "rate": m.base_rate,
-                      "month_totals": totals, "onhand_as_of": m.onhand}
+        bridge = {"from": start.isoformat(), "to": (first_plan - ONE).isoformat(),
+                  "units": units, "by": "forecast", "rate": m.base_rate,
+                  "month_totals": totals, "onhand_as_of": m.onhand}
     for p in live:                                           # ★ 计划月：扣期望销量
         a, eff = max(start, p), m.effective.get(p)
         if eff is None:
@@ -118,6 +132,15 @@ def project_msku(m: MskuInput, as_of: dt.date, periods: list[dt.date],
         arr[x.date] = None if (prev is None or x.units is None) else prev + x.units
         notes.setdefault(x.date, []).append({"date": x.date.isoformat(), "units": x.units,
                                              **x.note})
+
+    if bridge is not None:
+        # ★ 14 B3：桥接段到的货不在任何计划月的 arrivals 里 —— 必须在期初依据里点名，
+        #   否则期初变了却说不出为什么。
+        ins = [n for d in sorted(notes) if d < first_plan for n in notes[d]]
+        vals = [arr[d] for d in notes if d < first_plan]
+        bridge["arrivals"] = ins
+        bridge["arrival_units"] = (None if any(v is None for v in vals)
+                                   else _int(sum(vals, Fraction(0))))
 
     days = span(start, end)
     L = run_ledger(m.onhand, start, [demand[d] for d in days],
@@ -144,6 +167,10 @@ def project_msku(m: MskuInput, as_of: dt.date, periods: list[dt.date],
         month_notes = tuple(n for d in sorted(notes) if a <= d <= b for n in notes[d])
         br = bridge if (p == first_plan and not partial) else None
         shown_opening = None if (partial or opening is None) else _int(opening)
+        if br is not None and shown_opening is not None and shown_opening != (
+                m.onhand - br["units"] + br["arrival_units"]):
+            raise AssertionError(f"{m.key} {p}: 期初 {shown_opening} ≠ {m.onhand} − "
+                                 f"{br['units']} + {br['arrival_units']}")
         if closing is None:
             rows.append(MskuMonth(p, "unknown", cause, since, shown_opening, dem, inbound, None,
                                   None, br, month_notes))
