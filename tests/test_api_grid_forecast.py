@@ -216,3 +216,21 @@ def test_grid_forecast_logs_counts_and_elapsed(client, seed, lead_time_reset, sc
     line = next(r.getMessage() for r in scm_log.records if "op=grid_forecast" in r.getMessage())
     assert f"plan_id={pid}" in line and "mskus=3" in line and "elapsed_ms=" in line
     assert "make_days=30 ship_days=60" in line
+
+
+def test_failure_after_forecast_plan_is_logged_with_plan_id(client, seed, lead_time_reset,
+                                                            scm_log, monkeypatch):
+    """forecast_plan 之后的自检炸了（这里：货号行丢了）也要有 outcome=fail 那一行，不是裸 500。"""
+    import dataclasses
+
+    from api.ui import grid_forecast
+    real = grid_forecast.forecast_plan
+    monkeypatch.setattr(grid_forecast, "forecast_plan",
+                        lambda inp: dataclasses.replace(real(inp), sku=[]))
+    pid = s1(client, seed)
+    r = client.get(f"/v1/plans/{pid}/grid", headers=H(seed.actor))
+    assert r.status_code == 500
+    line = next(r.getMessage() for r in scm_log.records
+                if "op=grid_forecast" in r.getMessage() and "outcome=fail" in r.getMessage())
+    assert f"plan_id={pid}" in line and "elapsed_ms=" in line
+    assert "AssertionError" in line and "计划货号在推演里丢了" in line

@@ -192,3 +192,17 @@ def test_store_with_mixed_fba_flags_is_rejected():
     y = m(("MSKU-Y", "11072"), SKU_A, None, (1, 1, 1), None, applicable=False)
     with pytest.raises(ValueError, match=r"DCC1800264G1 店铺 11072 下 msku 的 has_fba 不一致"):
         forecast_plan(s1(extra=(y,)))
+
+
+def test_sku_row_carries_the_reason_of_the_msku_that_made_it_unknown():
+    """货号行的 reason 与 state 出自同一条规则（_combine_state）—— 两处各写一遍迟早不一致。"""
+    f = forecast_plan(s1(c_eff=(40, None, 44)))
+    assert [(r.state, r.reason, r.reason_from) for r in sku_rows(f, SKU_A)] == [
+        ("ok", None, None), ("unknown", "unknown_demand", C), ("unknown", "unknown_demand", C)]
+    w = m(("MSKU-W", "90001"), SKU_B, None, (1, 1, 1), None, applicable=False)
+    f = forecast_plan(PlanForecastInput(
+        as_of=D(2026, 9, 21), periods=P, make_days=30, ship_days=60, mskus=[w],
+        purchase={(SKU_B, OCT): None, ("NO-MSKU", OCT): None}, ordered_open={}))
+    assert {(r.sku, r.state, r.reason, r.reason_from) for r in f.sku} == {
+        (SKU_B, "not_applicable", "not_applicable", None),
+        ("NO-MSKU", "no_msku", "no_msku", None)}

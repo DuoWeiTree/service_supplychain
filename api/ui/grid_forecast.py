@@ -39,18 +39,6 @@ def unallocated_json(u: dict) -> dict:
     return {**u, "scope": "msku" if "seller_sku" in u else "batch"}
 
 
-def _sku_reason(f, sku_row, mskus_of_sku: list[MskuInput], i: int
-                ) -> tuple[str | None, dict | None]:
-    """SkuMonth 不带 reason：未知时从第一个未知的 msku 带上来，并指到它。"""
-    if sku_row.state == "unknown":
-        for m in mskus_of_sku:
-            r = f.msku[m.key][i]
-            if m.applicable and r.closing is None:
-                return r.reason, {"seller_sku": m.seller_sku, "sid": m.sid}
-        raise AssertionError(f"{sku_row.sku} {sku_row.period} 货号行未知，但找不到未知的 msku")
-    return {"ok": None, "partial": "as_of_inside_month"}.get(sku_row.state, sku_row.state), None
-
-
 def forecast_payload(*, as_of: dt.date, periods: list[dt.date], demand_rows: list[dict],
                      purchase_rows: list[tuple], fba: dict, onhand: dict, base_rate: dict,
                      in_transit: dict, lead: LeadTime, embargo_days: int | None,
@@ -75,41 +63,44 @@ def forecast_payload(*, as_of: dt.date, periods: list[dt.date], demand_rows: lis
         mskus=mskus, purchase=purchase,
         ordered_open={sku: [(t.period, t.units, t.ref) for t in ts]
                       for sku, ts in in_transit.items()})
+    # ★ 推演本身与之后的每一道自检都在这一个 try 里：哪一步炸，都留下 plan_id · 耗时 · 原因
     try:
         f = forecast_plan(inp)
-    except (ValueError, AssertionError) as e:
+        out = _serialize(f, {m.key: m.sku for m in mskus}, plan_skus, as_of, lead, embargo_days)
+    except Exception as e:
         log.error("op=grid_forecast plan_id=%s outcome=fail mskus=%d make_days=%d ship_days=%d"
                   " elapsed_ms=%d error=%s: %s", plan_id, len(mskus), lead.make_days,
                   lead.ship_days, (time.perf_counter() - t0) * 1000, type(e).__name__, e)
         raise
+    log.info("op=grid_forecast plan_id=%s outcome=ok mskus=%d skus=%d beyond=%d unallocated=%d"
+             " make_days=%d ship_days=%d elapsed_ms=%d", plan_id, len(mskus), len(plan_skus),
+             len(f.beyond_horizon), len(f.unallocated), lead.make_days, lead.ship_days,
+             (time.perf_counter() - t0) * 1000)
+    return out
+
+
+def _serialize(f, sku_of: dict[tuple[str, str], str], plan_skus: set[str], as_of: dt.date,
+               lead: LeadTime, embargo_days: int | None) -> dict:
     got_skus = {s.sku for s in f.sku}
     if plan_skus - got_skus:            # ★ 静默丢失已踩六次：货号行少了就炸，不往下发
         raise AssertionError(f"计划货号在推演里丢了：{sorted(plan_skus - got_skus)}")
-
-    ms_by_sku: dict[str, list[MskuInput]] = {}
-    for m in mskus:
-        ms_by_sku.setdefault(m.sku, []).append(m)
-    sku_json = []
-    for s in f.sku:
-        i = periods.index(s.period)
-        reason, reason_from = _sku_reason(f, s, ms_by_sku.get(s.sku, []), i)
-        sku_json.append({
-            "sku": s.sku, "period": _ym(s.period), "state": s.state, "reason": reason,
-            "reason_from": reason_from, "demand": s.demand, "system": s.system,
-            "opening": s.opening, "stock_demand": s.stock_demand, "inbound_planned": s.inbound,
-            "closing": s.closing, "excluded_not_applicable": s.excluded_not_applicable,
-            "pipeline": {"making": s.making, "shipping": s.shipping,
-                         "ordered_open": s.ordered_open,
-                         "ordered_open_sources": list(s.ordered_sources),
-                         "fba_inbound": None, "fba_inbound_reason": "not_fetched"},
-            "in_transit": s.in_transit, "in_transit_excludes": ["fba_inbound"],
-            "unfilled_purchase": list(s.unfilled_purchase)})
-
-    out = {
+    sku_json = [{
+        "sku": s.sku, "period": _ym(s.period), "state": s.state, "reason": s.reason,
+        "reason_from": (None if s.reason_from is None else
+                        {"seller_sku": s.reason_from[0], "sid": s.reason_from[1]}),
+        "demand": s.demand, "system": s.system, "opening": s.opening,
+        "stock_demand": s.stock_demand, "inbound_planned": s.inbound, "closing": s.closing,
+        "excluded_not_applicable": s.excluded_not_applicable,
+        "pipeline": {"making": s.making, "shipping": s.shipping, "ordered_open": s.ordered_open,
+                     "ordered_open_sources": list(s.ordered_sources),
+                     "fba_inbound": None, "fba_inbound_reason": "not_fetched"},
+        "in_transit": s.in_transit, "in_transit_excludes": ["fba_inbound"],
+        "unfilled_purchase": list(s.unfilled_purchase)} for s in f.sku]
+    return {
         "params": {"as_of": as_of.isoformat(), "route": lead.route, "make_days": lead.make_days,
                    "ship_days": lead.ship_days, "anchor_day": lead.anchor_day,
                    "embargo_days": embargo_days},
-        "forecast": [{"seller_sku": k[0], "sid": k[1], "sku": by_key[k]["sku"],
+        "forecast": [{"seller_sku": k[0], "sid": k[1], "sku": sku_of[k],
                       "period": _ym(r.period), "state": r.state, "reason": r.reason,
                       "unknown_since": _ym(r.unknown_since), "opening": r.opening,
                       "demand": r.demand, "inbound_planned": r.inbound, "closing": r.closing,
@@ -117,7 +108,7 @@ def forecast_payload(*, as_of: dt.date, periods: list[dt.date], demand_rows: lis
                       "basis": {"bridge": r.bridge, "arrivals": list(r.arrivals)}}
                      for k, rs in sorted(f.msku.items()) for r in rs],
         # ★ MskuProjection 是 list 子类：通用序列化会丢掉 msku 级依据，这里显式发出去
-        "forecast_msku": [{"seller_sku": k[0], "sid": k[1], "sku": by_key[k]["sku"],
+        "forecast_msku": [{"seller_sku": k[0], "sid": k[1], "sku": sku_of[k],
                            "first_stockout_date": _iso(rs.first_stockout_date)}
                           for k, rs in sorted(f.msku.items())],
         "forecast_store": [{"sku": s.sku, "sid": s.sid, "period": _ym(s.period),
@@ -129,8 +120,3 @@ def forecast_payload(*, as_of: dt.date, periods: list[dt.date], demand_rows: lis
         "beyond_horizon": f.beyond_horizon,
         "unallocated": [unallocated_json(u) for u in f.unallocated],
     }
-    log.info("op=grid_forecast plan_id=%s outcome=ok mskus=%d skus=%d beyond=%d unallocated=%d"
-             " make_days=%d ship_days=%d elapsed_ms=%d", plan_id, len(mskus), len(got_skus),
-             len(f.beyond_horizon), len(f.unallocated), lead.make_days, lead.ship_days,
-             (time.perf_counter() - t0) * 1000)
-    return out

@@ -262,6 +262,8 @@ class SkuMonth:
     ordered_sources: tuple[dict, ...]
     in_transit: int
     unfilled_purchase: tuple[str, ...]
+    reason: str | None = None
+    reason_from: tuple[str, str] | None = None   # 未知时：让它未知的那个 msku（seller_sku, sid）
 
 
 @dataclass(frozen=True)
@@ -284,15 +286,17 @@ def _beyond(b: Batch, reason: str) -> dict:
             "arrive": b.arrive.isoformat(), "reason": reason}
 
 
-def _combine_state(rows: list[MskuMonth]) -> tuple[str, str | None]:
-    if all(r.state == "elapsed" for r in rows):
-        return "elapsed", "elapsed"
-    bad = next((r for r in rows if r.closing is None), None)
+def _combine_state(rows: list[tuple[tuple[str, str], MskuMonth]]
+                   ) -> tuple[str, str | None, tuple[str, str] | None]:
+    """(msku key, 该月行) → (state, reason, 让它未知的那个 msku)。店铺行与货号行共用这一条规则。"""
+    if all(r.state == "elapsed" for _, r in rows):
+        return "elapsed", "elapsed", None
+    bad = next(((k, r) for k, r in rows if r.closing is None), None)
     if bad is not None:
-        return "unknown", bad.reason
-    if any(r.state == "partial" for r in rows):
-        return "partial", "as_of_inside_month"
-    return "ok", None
+        return "unknown", bad[1].reason, bad[0]
+    if any(r.state == "partial" for _, r in rows):
+        return "partial", "as_of_inside_month", None
+    return "ok", None, None
 
 
 def forecast_plan(inp: PlanForecastInput) -> PlanForecast:
@@ -381,7 +385,7 @@ def forecast_plan(inp: PlanForecastInput) -> PlanForecast:
                     month_stores.append(StoreMonth(sku, sid, p, "not_applicable",
                                                    "not_applicable", dem, sysu, None, None, None))
                     continue
-                state, reason = _combine_state(rows)
+                state, reason, _ = _combine_state([(m.key, final[m.key][i]) for m in group])
                 month_stores.append(StoreMonth(
                     sku, sid, p, state, reason, dem, sysu,
                     _sum(r.opening for r in rows), _sum(r.inbound for r in rows),
@@ -392,11 +396,12 @@ def forecast_plan(inp: PlanForecastInput) -> PlanForecast:
             making = sum(b.units for b in batches[sku] if b.placed <= me < b.made)
             shipping = sum(b.units for b in batches[sku] if b.made <= me < b.arrive)
             if not month_stores:
-                state = "no_msku"
+                state, reason, reason_from = "no_msku", "no_msku", None
             elif not live:
-                state = "not_applicable"
+                state, reason, reason_from = "not_applicable", "not_applicable", None
             else:
-                state = _combine_state([final[m.key][i] for m in ms_list if m.applicable])[0]
+                state, reason, reason_from = _combine_state(
+                    [(m.key, final[m.key][i]) for m in ms_list if m.applicable])
 
             def stock(f, live=live):
                 return _sum(f(s) for s in live) if live else None
@@ -409,7 +414,7 @@ def forecast_plan(inp: PlanForecastInput) -> PlanForecast:
                 _sum(final[m.key][i].demand for m in ms_list if m.applicable) if live else None,
                 stock(lambda s: s.inbound), stock(lambda s: s.closing),
                 len(month_stores) - len(live), making, shipping, ordered, refs,
-                making + shipping + ordered, tuple(unfilled[sku]))
+                making + shipping + ordered, tuple(unfilled[sku]), reason, reason_from)
             if (row.state == "ok" and row.closing
                     != row.opening - row.stock_demand + row.inbound):   # ★ 恒等式③ 货号层
                 raise AssertionError(f"{sku} {p} 货号层恒等式不成立：{row}")
