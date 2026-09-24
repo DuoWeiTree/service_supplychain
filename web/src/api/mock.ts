@@ -1,6 +1,6 @@
 import { ApiError, type SupplyChainApi } from './client';
 import type {
-  CatalogResult, CountKey, ForecastState, GridResponse, PlanSummary, RevList, Seller, SkippedCell,
+  CatalogResult, CountKey, ForecastArrival, ForecastState, GridResponse, PlanSummary, RevList, Seller, SkippedCell,
 } from './types';
 import plansFixture from './fixtures/plans.json';
 import gridFixture from './fixtures/grid-1.json';
@@ -9,6 +9,51 @@ import revsFixture from './fixtures/revs-1.json';
 import sellersFixture from './fixtures/sellers.json';
 
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
+
+const STALE = 'not_recomputed_in_mock' as const;
+
+/** ★ OP-17：mock 不重跑逐日台账（那是后端 forecast/ 的活，照抄一份迟早分叉；docs/05 前端不承载判据）。
+ *  改了之后该货号**依赖这次输入**的每一项如实标「未重算」、数变未知 —— 不留旧数，也不删条目
+ *  （删了就把「没算进来」说成了「没有」）。
+ *  - 两条路径都失效：库存链、断货日、分配（到货 / 未分配 —— 分配按缺口与期望销量比例，14 §3.1）
+ *  - 只有采购路径失效：在制 / 在船 / 在途、未填采购月、超出推演窗（`forecast/plan_forecast.py` 由采购批次推出）
+ *  ★ 不适用 / 已过去 / 没有 msku 的行，状态与输入无关，原样保留 —— 改成「未知」就是把不适用说成未知。 */
+export function markForecastStale(g: GridResponse, sku: string, cause: 'demand' | 'purchase'): void {
+  const hit = (r: { sku: string; state: ForecastState }) =>
+    r.sku === sku && r.state !== 'not_applicable' && r.state !== 'elapsed' && r.state !== 'no_msku';
+  const stale = { state: 'unknown' as const, reason: STALE,
+                  opening: null, demand: null, inbound_planned: null, closing: null };
+  const staleArrival = (x: ForecastArrival): ForecastArrival => ({
+    date: x.date, order_period: x.order_period, units: null, pool: null, reason: STALE,
+  });
+  for (const r of g.forecast) {
+    if (r.sku !== sku) continue;
+    r.basis.arrivals = r.basis.arrivals.map(staleArrival);
+    if (r.basis.bridge) {
+      const b = r.basis.bridge;
+      Object.assign(b, { arrivals: b.arrivals.map(staleArrival), arrival_units: null, stockout_date: null });
+    }
+    if (hit(r)) Object.assign(r, stale, { stockout_date: null, unknown_since: null });
+  }
+  for (const r of g.forecast_msku) if (r.sku === sku) r.first_stockout_date = null;
+  for (const r of g.forecast_store) if (hit(r)) Object.assign(r, stale);
+  for (const r of g.forecast_sku) {
+    if (r.sku !== sku) continue;
+    if (hit(r)) Object.assign(r, stale, { reason_from: null, stock_demand: null });
+    if (cause === 'purchase') {
+      Object.assign(r, { in_transit: null, unfilled_purchase: null });
+      Object.assign(r.pipeline, { making: null, shipping: null });
+    }
+  }
+  for (const u of g.unallocated) {
+    if (u.sku !== sku) continue;
+    Object.assign(u, { reason: STALE, units: null });
+    if (u.scope === 'msku') { u.pool = null; delete u.rule; delete u.gap_part; delete u.weight_part; }
+  }
+  if (cause === 'purchase') {
+    for (const b of g.beyond_horizon) if (b.sku === sku) Object.assign(b, { reason: STALE, units: null });
+  }
+}
 
 export function createMockApi(): SupplyChainApi {
   // ★ fixture 里只有 plans：`excluded.archived` 是**按这次查询现算**的（见 listPlans），
@@ -83,22 +128,6 @@ export function createMockApi(): SupplyChainApi {
       // ★ 只改 closing_reason；reason 是另一件事，改它就会把「在途没归属」这条信息抹掉
       row.basis.closing_reason = row.closing === null ? 'unknown_demand' : null;
       carried = row.closing;                      // ★ 本月期末 = 下月期初（链）
-    }
-  }
-
-  /** ★ OP-17：mock 不重跑逐日台账（那是后端 forecast/ 的活，照抄一份迟早分叉；docs/05 前端不承载判据）。
-   *  改了之后该货号依赖输入的数如实变「未知」，不留一个已经过时的数。
-   *  ★ 不适用 / 已过去的行与输入无关，原样保留 —— 把它们也改成「未知」就是把不适用说成未知。 */
-  function staleForecast(g: GridResponse, sku: string): void {
-    const hit = (r: { sku: string; state: ForecastState }) =>
-      r.sku === sku && r.state !== 'not_applicable' && r.state !== 'elapsed';
-    const stale = { state: 'unknown' as const, reason: 'not_recomputed_in_mock' as const,
-                    opening: null, demand: null, inbound_planned: null, closing: null };
-    for (const r of g.forecast) if (hit(r)) Object.assign(r, stale, { stockout_date: null });
-    for (const r of g.forecast_msku) if (r.sku === sku) r.first_stockout_date = null;
-    for (const r of g.forecast_store) if (hit(r)) Object.assign(r, stale);
-    for (const r of g.forecast_sku) {
-      if (hit(r)) Object.assign(r, stale, { reason_from: null, stock_demand: null });
     }
   }
 
@@ -179,7 +208,7 @@ export function createMockApi(): SupplyChainApi {
       cell.effective_units = units ?? cell.system_units;
       cell.basis = units !== null ? 'human' : cell.system_units !== null ? 'system' : 'unknown';
       recompute(g, cell.sku, sid);
-      staleForecast(g, cell.sku);
+      markForecastStale(g, cell.sku, 'demand');
       return clone(cell);
     },
 
@@ -196,7 +225,7 @@ export function createMockApi(): SupplyChainApi {
           { field: 'planned_units', got: units });
       }
       cell.planned_units = units;
-      staleForecast(g, sku);
+      markForecastStale(g, sku, 'purchase');
       return clone(cell);
     },
 

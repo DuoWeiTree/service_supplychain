@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { createMockApi } from './mock';
+import { createMockApi, markForecastStale } from './mock';
 import { ApiError } from './client';
-import type { CountKey } from './types';
+import type { CountKey, GridResponse } from './types';
+import gridFixture from './fixtures/grid-1.json';
 
 let api = createMockApi();
 beforeEach(() => { api = createMockApi(); });
@@ -298,5 +299,87 @@ describe('mock 数据源', () => {
     // ★ fixture 里 plan3=已撤销、plan4=已完结 —— 两个桶必须非零，否则这条门禁在假装测
     expect(counts['已撤销']).toBeGreaterThan(0);
     expect(counts['已完结']).toBeGreaterThan(0);
+  });
+});
+
+describe('★ OP-17 复核 R1：依赖计划采购 / 期望销量的每一项都如实标「未重算」，不留旧数、不静默丢', () => {
+  const base = (): GridResponse => JSON.parse(JSON.stringify(gridFixture)) as GridResponse;
+  const SKU = 'DCC1800264G1';
+  /** fixture 里没有到货与未分配 —— 这里合成一份，检验标记本身 */
+  const withArrivals = (): GridResponse => {
+    const g = base();
+    const row = g.forecast.find((r) => r.sku === SKU && r.state === 'ok')!;
+    row.basis.arrivals = [{ date: '2026-12-10', units: 40, order_period: '2026-10', pool: 500,
+                            rule: 'x', gap_part: 40, weight_part: 0 }];
+    g.unallocated = [
+      { scope: 'batch', sku: SKU, order_period: '2026-11', arrive: '2027-01-13', units: 300,
+        reason: 'gap_unknown', unknown: [['MSKU-B', '11072']] },
+      { scope: 'batch', sku: 'A4P-TOY-002', order_period: '2026-11', arrive: '2027-01-13', units: 9,
+        reason: 'gap_unknown', unknown: [] },
+    ];
+    return g;
+  };
+
+  it('改采购后：在途 / 在制 / 在船 / 未填采购 → null（未知），不是旧数', () => {
+    const g = withArrivals();
+    markForecastStale(g, SKU, 'purchase');
+    const rows = g.forecast_sku.filter((r) => r.sku === SKU);
+    expect(rows.length).toBeGreaterThan(0);
+    for (const r of rows) {
+      expect(r.in_transit).toBeNull();
+      expect(r.pipeline.making).toBeNull();
+      expect(r.pipeline.shipping).toBeNull();
+      expect(r.unfilled_purchase).toBeNull();
+      expect(r.reason).toBe('not_recomputed_in_mock');
+    }
+    // 别的货号不动
+    expect(g.forecast_sku.filter((r) => r.sku !== SKU).every((r) => r.in_transit !== null)).toBe(true);
+  });
+
+  it('改采购后：超出推演窗 / 未分配 / 到货依据 都留着但标「未重算」、件数未知', () => {
+    const g = withArrivals();
+    const beyondBefore = g.beyond_horizon.filter((b) => b.sku === SKU).length;
+    expect(beyondBefore).toBeGreaterThan(0);
+    markForecastStale(g, SKU, 'purchase');
+    const beyond = g.beyond_horizon.filter((b) => b.sku === SKU);
+    expect(beyond).toHaveLength(beyondBefore);                       // ★ 不静默丢
+    expect(beyond.every((b) => b.reason === 'not_recomputed_in_mock' && b.units === null)).toBe(true);
+    const un = g.unallocated.filter((u) => u.sku === SKU);
+    expect(un).toHaveLength(1);
+    expect(un.every((u) => u.reason === 'not_recomputed_in_mock' && u.units === null)).toBe(true);
+    expect(g.unallocated.find((u) => u.sku !== SKU)!.reason).toBe('gap_unknown');
+    const arr = g.forecast.filter((r) => r.sku === SKU).flatMap((r) => r.basis.arrivals);
+    expect(arr).toHaveLength(1);
+    expect(arr.every((a) => a.reason === 'not_recomputed_in_mock' && a.units === null && a.pool === null)).toBe(true);
+    for (const r of g.forecast.filter((x) => x.sku === SKU && x.basis.bridge)) {
+      expect(r.basis.bridge!.arrival_units).toBeNull();
+      expect(r.basis.bridge!.stockout_date).toBeNull();
+    }
+  });
+
+  it('改期望销量：分配（到货 / 未分配）跟着失效；在途与超窗只看采购，照旧是当前数', () => {
+    const g = withArrivals();
+    const transit = g.forecast_sku.filter((r) => r.sku === SKU).map((r) => r.in_transit);
+    markForecastStale(g, SKU, 'demand');
+    expect(g.forecast_sku.filter((r) => r.sku === SKU).map((r) => r.in_transit)).toEqual(transit);
+    expect(g.beyond_horizon.filter((b) => b.sku === SKU).every((b) => b.reason === 'arrives_after_horizon')).toBe(true);
+    expect(g.unallocated.find((u) => u.sku === SKU)!.reason).toBe('not_recomputed_in_mock');
+    expect(g.forecast.filter((r) => r.sku === SKU).flatMap((r) => r.basis.arrivals)
+      .every((a) => a.reason === 'not_recomputed_in_mock')).toBe(true);
+  });
+
+  it('标了未知的行不留旧的 unknown_since', () => {
+    const g = base();
+    markForecastStale(g, SKU, 'demand');
+    const rows = g.forecast.filter((r) => r.sku === SKU && r.reason === 'not_recomputed_in_mock');
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((r) => r.unknown_since === null)).toBe(true);
+  });
+
+  it('createMockApi.putPurchase 走的是采购那条路径', async () => {
+    const api = createMockApi();
+    await api.putPurchase(1, SKU, '2026-10', 1);
+    const g = await api.getGrid(1);
+    expect(g.forecast_sku.filter((r) => r.sku === SKU).every((r) => r.in_transit === null)).toBe(true);
   });
 });

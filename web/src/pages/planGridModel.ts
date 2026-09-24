@@ -26,7 +26,7 @@ export interface SkuTotals { sku: string; cells: SkuForecast[] }
 export interface Orphan {
   kind: 'unknown_seller' | 'inventory_without_demand' | 'demand_without_inventory'
       | 'na_disagrees_with_seller' | 'in_transit_disagrees' | 'demand_disagrees' | 'chain_broken'
-      | 'forecast_sum_disagrees';
+      | 'forecast_sum_disagrees' | 'sku_forecast_missing';
   key: string;
 }
 export interface GridModel {
@@ -102,6 +102,13 @@ export function buildGridModel(grid: GridResponse, sellers: Seller[]): GridModel
   const usedStock = new Set<string>();
   const stockKey = (sku: string, sid: Sid, p: Period) => `${sku}/${sid}/${p}`;
   const stockByKey = new Map(grid.forecast_store.map((s) => [stockKey(s.sku, s.sid, s.period), s]));
+  // ★ 几百个货号一张表：按键建索引，不在循环里 filter / find
+  const mskuForecast = new Map<string, MskuForecast[]>();
+  for (const f of grid.forecast) {
+    const k = `${f.seller_sku}/${f.sid}`;
+    const list = mskuForecast.get(k);
+    if (list) list.push(f); else mskuForecast.set(k, [f]);
+  }
 
   for (const d of grid.demand) {
     const seller = sellerById.get(d.sid);
@@ -119,7 +126,7 @@ export function buildGridModel(grid: GridResponse, sellers: Seller[]): GridModel
     let row = block.mskus.find((r) => r.seller_sku === d.seller_sku);
     if (!row) {
       row = { seller_sku: d.seller_sku, sid: d.sid, cells: [],
-              forecast: grid.forecast.filter((f) => f.seller_sku === d.seller_sku && f.sid === d.sid) };
+              forecast: mskuForecast.get(`${d.seller_sku}/${d.sid}`) ?? [] };
       block.mskus.push(row);
     }
     row.cells.push({
@@ -178,30 +185,39 @@ export function buildGridModel(grid: GridResponse, sellers: Seller[]): GridModel
     }
   }
 
-  const totals: SkuTotals[] = [...new Set(grid.forecast_sku.map((r) => r.sku))].map((sku) => ({
+  const skuRow = new Map(grid.forecast_sku.map((r) => [`${r.sku}/${r.period}`, r]));
+  const skuHasRows = new Set(grid.forecast_sku.map((r) => r.sku));
+  // ★ 货号全集 = 块 ∪ 采购 ∪ forecast_sku。某个货号一行 forecast_sku 都没有 → 照铺全未知并点名，
+  //   不许让它的在途行悄悄消失（统计被丢掉的那一侧）
+  const allSkus = [...new Set([
+    ...[...blocks.values()].map((b) => b.sku), ...grid.purchase.map((p) => p.sku), ...skuHasRows,
+  ])];
+  for (const sku of allSkus) if (!skuHasRows.has(sku)) orphans.push({ kind: 'sku_forecast_missing', key: sku });
+  const totals: SkuTotals[] = allSkus.map((sku) => ({
     sku,
-    cells: grid.periods
-      .map((p) => grid.forecast_sku.find((r) => r.sku === sku && r.period === p))
-      .filter((r): r is SkuForecast => r !== undefined),
+    cells: grid.periods.map((p) => skuRow.get(`${sku}/${p}`)).filter((r): r is SkuForecast => r !== undefined),
   }));
-  // ★ 在途总数与它的组成是两个证人：对不上要点名，不挑一个信
+  // ★ 在途总数与它的组成是两个证人：对不上要点名，不挑一个信。
+  //   任一为 null（OP-17 mock 改采购后未重算）⇒ 未知，没有两个证人可比
   const transit: TransitRow[] = totals.map((t) => ({
     sku: t.sku,
     cells: grid.periods.map((period) => {
-      const c = t.cells.find((x) => x.period === period);
-      if (c && c.in_transit !== c.pipeline.making + c.pipeline.shipping + c.pipeline.ordered_open) {
+      const c = skuRow.get(`${t.sku}/${period}`);
+      if (c && c.in_transit !== null && c.pipeline.making !== null && c.pipeline.shipping !== null
+          && c.in_transit !== c.pipeline.making + c.pipeline.shipping + c.pipeline.ordered_open) {
         orphans.push({ kind: 'in_transit_disagrees', key: `${t.sku}/${period}` });
       }
       return { period, units: c ? c.in_transit : null };
     }),
   }));
 
+  const purchaseByKey = new Map(grid.purchase.map((p) => [`${p.sku}/${p.period}`, p]));
   const skus = [...new Set(grid.purchase.map((p) => p.sku))];
   const purchase: PurchaseRow[] = skus.map((sku) => ({
     sku,
     cells: grid.periods.map((period) => ({
       period,
-      planned_units: grid.purchase.find((p) => p.sku === sku && p.period === period)?.planned_units ?? null,
+      planned_units: purchaseByKey.get(`${sku}/${period}`)?.planned_units ?? null,
     })),
   }));
 

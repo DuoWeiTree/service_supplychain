@@ -249,6 +249,24 @@ describe('在途读 forecast_sku（货号级，只展示不分摊）', () => {
     expect(m.transit.map((t) => t.sku)).toContain('GHOST-SKU');
   });
 
+  it('★ OP-17：在途为 null（mock 改采购后未重算）→ 该格未知，不报组成对不上', () => {
+    const g = makeGrid();
+    g.forecast_sku[0] = { ...g.forecast_sku[0]!, reason: 'not_recomputed_in_mock', in_transit: null,
+      pipeline: { ...g.forecast_sku[0]!.pipeline, making: null, shipping: null } };
+    const m = buildGridModel(g, sellers);
+    expect(m.transit[0]!.cells[0]!.units).toBeNull();
+    expect(m.orphans.filter((o) => o.kind === 'in_transit_disagrees')).toEqual([]);
+  });
+
+  it('★ 块 / 采购里有、forecast_sku 里一行都没有的货号：在途行照铺（全未知）并点名，不静默丢', () => {
+    const g = makeGrid();
+    g.purchase.push({ sku: 'SKU-P', period: P[0]!, planned_units: 1 });
+    const m = buildGridModel(g, sellers);
+    const row = m.transit.find((t) => t.sku === 'SKU-P');
+    expect(row?.cells.map((c) => c.units)).toEqual([null, null, null]);
+    expect(m.orphans).toContainEqual({ kind: 'sku_forecast_missing', key: 'SKU-P' });
+  });
+
   it('★ 后端那份真 fixture：零 in_transit_disagrees，10 月每个货号都有确定数字', () => {
     const realSellers = (realSellersFixture as { sellers: Seller[] }).sellers;
     const m = buildGridModel(realGrid as unknown as GridResponse, realSellers);

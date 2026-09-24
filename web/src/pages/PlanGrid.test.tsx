@@ -580,6 +580,23 @@ describe('计划整表', () => {
     expect(screen.queryByTestId('orphans')).toBeNull();
   });
 
+  it('★ OP-17：真 mock 上改计划采购 → 该货号在途变 —，不留改之前的旧数', async () => {
+    vi.resetModules();
+    const { createMockApi } = await import('../api/mock');
+    vi.doMock('../api', () => ({ api: createMockApi(), ApiError }));
+    const { PlanGrid } = await import('./PlanGrid');
+    render(
+      <MemoryRouter initialEntries={['/plans/1']}>
+        <Routes><Route path="/plans/:planId" element={<PlanGrid />} /></Routes>
+      </MemoryRouter>,
+    );
+    const row = await screen.findByTestId('purchase-row-DCC1800264G1');
+    expect(within(row).getByTestId('transit-DCC1800264G1-2026-10')).toHaveTextContent('700');
+    await fill(gridcell(row, '计划采购量 DCC1800264G1 2026-12'), '321');
+    await waitFor(() => expect(within(screen.getByTestId('purchase-row-DCC1800264G1'))
+      .getByTestId('transit-DCC1800264G1-2026-10')).toHaveTextContent('—'));
+  });
+
   it('★ 真 fixture：没有任何一格带外推标签（spec §3.3：速率模型不外推）', async () => {
     // ★ F16：monthly_estimate 退役，base_rate × 天数对任何月份都算得出，fixture 重固化后
     //   不会再产生外推那一格。标签本身的渲染逻辑不删——上面 makeGrid() 的合成数据仍在喂

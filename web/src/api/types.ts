@@ -198,10 +198,11 @@ export type ForecastReason = null | 'as_of_inside_month' | 'unknown_onhand' | 'u
   | 'bridge_rate_unknown' | 'inbound_unknown' | 'not_applicable' | 'elapsed' | 'no_msku'
   | 'not_recomputed_in_mock';
 
-/** 一次到货。★ `units` 为 null = 这批分不出去（OP-12），不是 0 */
+/** 一次到货。★ `units` 为 null = 这批分不出去（OP-12）或 mock 未重算（OP-17），不是 0 */
 export interface ForecastArrival {
-  date: string; units: number | null; order_period: Period; pool: number;
-  rule?: string; gap_part?: number; weight_part?: number; reason?: 'gap_unknown';
+  date: string; units: number | null; order_period: Period; pool: number | null;
+  rule?: string; gap_part?: number; weight_part?: number;
+  reason?: 'gap_unknown' | 'not_recomputed_in_mock';
 }
 /** W-6 桥接段（as_of 次日 → 首个计划月前一天，按预测扣）。★ `rate` 为 null 时 `units` 也是 null */
 export interface ForecastBridge {
@@ -226,8 +227,9 @@ export interface StoreForecast {
   demand: number | null; system: number | null;
   opening: number | null; inbound_planned: number | null; closing: number | null;
 }
+/** ★ making / shipping 由计划采购推出；null = mock 改了采购没重算（OP-17）。后端恒给数 */
 export interface SkuPipeline {
-  making: number; shipping: number; ordered_open: number;
+  making: number | null; shipping: number | null; ordered_open: number;
   ordered_open_sources: { period: Period; units: number; ref: string }[];
   /** ★ 没取，不是 0 */
   fba_inbound: null; fba_inbound_reason: 'not_fetched';
@@ -241,26 +243,29 @@ export interface SkuForecast {
   /** ★ 只含进库存求和的 msku —— 恒等式用这个，不是 demand */
   stock_demand: number | null; inbound_planned: number | null;
   closing: number | null; excluded_not_applicable: number;
-  pipeline: SkuPipeline; in_transit: number; in_transit_excludes: 'fba_inbound'[];
-  unfilled_purchase: Period[];
+  /** ★ null = 未知（OP-17 mock 未重算），不是 0 */
+  pipeline: SkuPipeline; in_transit: number | null; in_transit_excludes: 'fba_inbound'[];
+  unfilled_purchase: Period[] | null;
 }
+/** ★ 日期只由采购月 + 提前期定；`units` 与「这条还在不在」随采购量变 ——
+ *  mock 改了采购后整条标 `not_recomputed_in_mock`、件数未知，留着不删（OP-17） */
 export interface BeyondHorizon {
-  sku: string; order_period: Period; units: number; placed: string; made: string; arrive: string;
-  reason: 'arrives_after_horizon' | 'arrives_before_as_of';
+  sku: string; order_period: Period; units: number | null; placed: string; made: string; arrive: string;
+  reason: 'arrives_after_horizon' | 'arrives_before_as_of' | 'not_recomputed_in_mock';
 }
 /** 整批分不出去（`forecast/allocate.py`） */
 export interface UnallocatedBatch {
   scope: 'batch';
-  sku: string; order_period: Period; arrive: string; units: number;
-  reason: 'gap_unknown' | 'no_fba_msku';
+  sku: string; order_period: Period; arrive: string; units: number | null;
+  reason: 'gap_unknown' | 'no_fba_msku' | 'not_recomputed_in_mock';
   unknown: [string, Sid][];
 }
 /** 分到了、但这个 msku 推演不了（不适用 / 在仓未知） */
 export interface UnallocatedMsku {
   scope: 'msku';
-  sku: string; order_period: Period; arrive: string; units: number;
-  reason: 'not_applicable' | 'unknown_onhand';
-  seller_sku: string; sid: Sid; date: string; pool: number;
+  sku: string; order_period: Period; arrive: string; units: number | null;
+  reason: 'not_applicable' | 'unknown_onhand' | 'not_recomputed_in_mock';
+  seller_sku: string; sid: Sid; date: string; pool: number | null;
   rule?: string; gap_part?: number; weight_part?: number;
 }
 export type Unallocated = UnallocatedBatch | UnallocatedMsku;
