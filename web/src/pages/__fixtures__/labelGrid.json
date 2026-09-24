@@ -1,4 +1,232 @@
 {
+  "periods": [
+    "2026-10",
+    "2026-11"
+  ],
+  "demand": [
+    {
+      "seller_sku": "MSKU-A",
+      "sid": "11072",
+      "sku": "SKU-1",
+      "period": "2026-10",
+      "system_units": 135,
+      "system_extrapolated": false,
+      "expected_units": 100,
+      "effective_units": 100,
+      "basis": "human",
+      "system_basis": {
+        "method": "baseline_rate_v1",
+        "as_of": "2026-09-21",
+        "estimation_anchor": "2026-09-14",
+        "embargo_days": 7,
+        "window": {
+          "from": "2026-07-21",
+          "until": "2026-09-14"
+        },
+        "target_window": {
+          "from": "2026-06-17",
+          "until": "2026-09-14"
+        },
+        "censored_days": 0,
+        "stock_days_rejected": 0,
+        "stock_days_uncaptured": 0,
+        "reason": null,
+        "raw_rate": null,
+        "n_eff": null,
+        "target_rate": null,
+        "winsor_cap": null,
+        "first_seen": null,
+        "constants": {
+          "halflife_days": 14,
+          "window_days": 56,
+          "target_window_days": 90,
+          "shrink_prior": 3,
+          "winsor_q": 0.95
+        },
+        "base_rate": 4.325139122267326,
+        "days_in_month": 31,
+        "units_raw": 134.0793127902871
+      }
+    },
+    {
+      "seller_sku": "MSKU-A",
+      "sid": "11072",
+      "sku": "SKU-1",
+      "period": "2026-11",
+      "system_units": 130,
+      "system_extrapolated": false,
+      "expected_units": 90,
+      "effective_units": 90,
+      "basis": "human",
+      "system_basis": {
+        "method": "baseline_rate_v1",
+        "as_of": "2026-09-21",
+        "estimation_anchor": "2026-09-14",
+        "embargo_days": 7,
+        "window": {
+          "from": "2026-07-21",
+          "until": "2026-09-14"
+        },
+        "target_window": {
+          "from": "2026-06-17",
+          "until": "2026-09-14"
+        },
+        "censored_days": 0,
+        "stock_days_rejected": 0,
+        "stock_days_uncaptured": 0,
+        "reason": null,
+        "raw_rate": null,
+        "n_eff": null,
+        "target_rate": null,
+        "winsor_cap": null,
+        "first_seen": null,
+        "constants": {
+          "halflife_days": 14,
+          "window_days": 56,
+          "target_window_days": 90,
+          "shrink_prior": 3,
+          "winsor_q": 0.95
+        },
+        "base_rate": 4.325139122267326,
+        "days_in_month": 30,
+        "units_raw": 129.75417366801977
+      }
+    },
+    {
+      "seller_sku": "MSKU-B",
+      "sid": "11072",
+      "sku": "SKU-1",
+      "period": "2026-10",
+      "system_units": 10,
+      "system_extrapolated": false,
+      "expected_units": 5,
+      "effective_units": 5,
+      "basis": "human",
+      "system_basis": {
+        "method": "baseline_rate_v1",
+        "as_of": "2026-09-21",
+        "estimation_anchor": "2026-09-14",
+        "embargo_days": 7,
+        "window": {
+          "from": "2026-07-21",
+          "until": "2026-09-14"
+        },
+        "target_window": {
+          "from": "2026-06-17",
+          "until": "2026-09-14"
+        },
+        "censored_days": 0,
+        "stock_days_rejected": 0,
+        "stock_days_uncaptured": 0,
+        "reason": null,
+        "raw_rate": null,
+        "n_eff": null,
+        "target_rate": null,
+        "winsor_cap": null,
+        "first_seen": null,
+        "constants": {
+          "halflife_days": 14,
+          "window_days": 56,
+          "target_window_days": 90,
+          "shrink_prior": 3,
+          "winsor_q": 0.95
+        },
+        "base_rate": 0.32,
+        "days_in_month": 31,
+        "units_raw": 9.92
+      }
+    },
+    {
+      "seller_sku": "MSKU-B",
+      "sid": "11072",
+      "sku": "SKU-1",
+      "period": "2026-11",
+      "system_units": 10,
+      "system_extrapolated": false,
+      "expected_units": 5,
+      "effective_units": 5,
+      "basis": "human",
+      "system_basis": {
+        "method": "baseline_rate_v1",
+        "as_of": "2026-09-21",
+        "estimation_anchor": "2026-09-14",
+        "embargo_days": 7,
+        "window": {
+          "from": "2026-07-21",
+          "until": "2026-09-14"
+        },
+        "target_window": {
+          "from": "2026-06-17",
+          "until": "2026-09-14"
+        },
+        "censored_days": 0,
+        "stock_days_rejected": 0,
+        "stock_days_uncaptured": 0,
+        "reason": null,
+        "raw_rate": null,
+        "n_eff": null,
+        "target_rate": null,
+        "winsor_cap": null,
+        "first_seen": null,
+        "constants": {
+          "halflife_days": 14,
+          "window_days": 56,
+          "target_window_days": 90,
+          "shrink_prior": 3,
+          "winsor_q": 0.95
+        },
+        "base_rate": 0.32,
+        "days_in_month": 30,
+        "units_raw": 9.6
+      }
+    },
+    {
+      "seller_sku": "MSKU-W",
+      "sid": "90001",
+      "sku": "SKU-1",
+      "period": "2026-10",
+      "system_units": null,
+      "system_extrapolated": false,
+      "expected_units": 60,
+      "effective_units": 60,
+      "basis": "human",
+      "system_basis": {
+        "reason": "not_applicable_no_sales_source",
+        "cause": "non_amazon_platform",
+        "days_in_month": 31,
+        "units_raw": null
+      }
+    },
+    {
+      "seller_sku": "MSKU-W",
+      "sid": "90001",
+      "sku": "SKU-1",
+      "period": "2026-11",
+      "system_units": null,
+      "system_extrapolated": false,
+      "expected_units": 65,
+      "effective_units": 65,
+      "basis": "human",
+      "system_basis": {
+        "reason": "not_applicable_no_sales_source",
+        "cause": "non_amazon_platform",
+        "days_in_month": 30,
+        "units_raw": null
+      }
+    }
+  ],
+  "purchase": [
+    {
+      "sku": "SKU-1",
+      "period": "2026-10",
+      "planned_units": 200
+    },
+    {
+      "sku": "SKU-1",
+      "period": "2026-11",
+      "planned_units": 80
+    }
+  ],
   "params": {
     "as_of": "2026-09-21",
     "route": "oversea_sea",

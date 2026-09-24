@@ -1,0 +1,163 @@
+import { render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { describe, expect, it, vi } from 'vitest';
+import type { GridResponse } from '../api/types';
+import { markForecastStale } from '../api/mock';
+import { PlanSheet } from './PlanSheet';
+import { buildGridModel } from './planGridModel';
+import { LABEL_GRID, LABEL_GRID_LONG, LABEL_SELLERS } from './__fixtures__/labelGrid';
+
+function renderSheet(grid: GridResponse = LABEL_GRID, orphansOk = false) {
+  const model = buildGridModel(grid, LABEL_SELLERS);
+  if (!orphansOk) expect(model.orphans).toEqual([]);
+  render(<PlanSheet model={model} pending={new Set()} inputErr={{}} onDemand={vi.fn()}
+                    onPurchase={vi.fn()} onRemoveStore={vi.fn()} onRemoveMsku={vi.fn()} />);
+}
+
+async function open(name: string) {
+  await userEvent.click(screen.getByRole('button', { name }));
+  return screen.getByRole('dialog');
+}
+
+/** 数据区（不含「怎么算的」折叠区 —— 那里的公式本来就写着「期初」「期末」） */
+const data = (d: HTMLElement) => within(d).getByTestId('fb-data');
+
+// 数字全部来自 labelGrid*.json（tests/test_label_grid_fixture.py 用 forecast_payload 跑出来的）
+describe('spec §5：点开一格看依据', () => {
+  it('msku 首月：期初来自 as_of 可售 − 桥接段按预测扣，再 − 期望 + 到货 = 期末 → 下月期初', async () => {
+    renderSheet();
+    const d = await open('依据 MSKU-A 2026-10');
+    expect(d).toHaveTextContent('库存 A4Pet-US / MSKU-A / 2026-10');
+    expect(d).toHaveTextContent('期初 261（= 2026-09 末；as_of 2026-09-21 可售 300 − 09-22–09-30 按预测扣 39）');
+    expect(d).toHaveTextContent('− 期望 100');
+    expect(d).toHaveTextContent('+ 到货 0');
+    expect(d).toHaveTextContent('= 期末 161');
+    expect(d).toHaveTextContent('→ 2026-11 期初');
+    expect(d).toHaveTextContent('预测 135 = 4.33 件/天 × 31 天（窗口 07-21 ~ 09-14，禁言 7 天，剔断货 0 天）');
+  });
+
+  it('次月期初 ≡ 上月期末：链逐月相接', async () => {
+    renderSheet();
+    const d = await open('依据 MSKU-A 2026-11');
+    expect(d).toHaveTextContent('期初 161（= 2026-10 期末）');
+    expect(d).toHaveTextContent('= 期末 71');
+    expect(d).not.toHaveTextContent('→');            // 最后一个月没有下月
+  });
+
+  it('到货逐笔说清怎么分的（14 §3.2 依据必须说实话）；断货日照报', async () => {
+    renderSheet(LABEL_GRID_LONG);
+    const d = await open('依据 MSKU-A 2027-01');
+    expect(d).toHaveTextContent('期初 -39（= 2026-12 期末）');
+    expect(d).toHaveTextContent('+ 到货 189');
+    expect(d).toHaveTextContent('01-13 到货 189（2026-10 下单，缺口 159 补齐，余量按期望销量再摊 30，这批 200）');
+    expect(d).toHaveTextContent('= 期末 30');
+    expect(d).toHaveTextContent('本月断货 2027-01-01');
+    expect(d).toHaveTextContent('首次断货 2026-12-20');
+  });
+
+  it('货号行：库存链 + 在途拆成 生产中 / 货运中 / 已下单未到，FBA 货件写「未取」；周期外逐笔列出', async () => {
+    renderSheet();
+    const d = await open('依据 SKU-1 2026-10');
+    expect(d).toHaveTextContent('货号 SKU-1 / 2026-10');
+    expect(d).toHaveTextContent('期初 271 − 期望 105 + 到货 0 = 期末 166');
+    expect(d).toHaveTextContent('不含 1 家无 FBA 店铺');
+    expect(d).toHaveTextContent('在途 250 = 生产中 200 + 货运中 0 + 已下单未到 50');
+    expect(d).toHaveTextContent('FBA 货件 未取');
+    expect(d).toHaveTextContent('PO-2026-0918 50');
+    expect(d).toHaveTextContent('2026-10 下单 200 件 → 2027-01-13 到货（周期外）');
+    expect(d).toHaveTextContent('2026-11 下单 80 件 → 2027-02-13 到货（周期外）');
+  });
+
+  it('货号行：采购未填的月份点名', async () => {
+    renderSheet(LABEL_GRID_LONG);
+    const d = await open('依据 SKU-1 2027-01');
+    expect(d).toHaveTextContent('采购未填：2026-12、2027-01');
+  });
+
+  it('店铺行：Σ msku 的链，逐个 msku 列期末；单 msku 的店铺直接给该 msku 的链', async () => {
+    renderSheet();
+    const d = await open('依据 A4Pet-US SKU-1 2026-10');
+    expect(d).toHaveTextContent('库存 A4Pet-US / SKU-1 / 2026-10');
+    expect(d).toHaveTextContent('期初 271 − 期望 105 + 到货 0 = 期末 166');
+    expect(d).toHaveTextContent('MSKU-A：期末 161');
+    expect(d).toHaveTextContent('MSKU-B：期末 5');
+  });
+
+  it('无 FBA 店铺：说「无 FBA」，不给数；预测不适用给成因', async () => {
+    renderSheet();
+    const d = await open('依据 A4Pet-WM SKU-1 2026-10');
+    expect(d).toHaveTextContent('无 FBA，不推演库存');
+    expect(d).toHaveTextContent('预测 不适用（非亚马逊店铺，没有销量取数源）');
+    expect(data(d)).not.toHaveTextContent('期末');
+  });
+
+  it('★ 说明进折叠区，默认收起', async () => {
+    renderSheet();
+    const d = await open('依据 MSKU-A 2026-10');
+    const details = within(d).getByText('怎么算的').closest('details')!;
+    expect(details).not.toHaveAttribute('open');
+  });
+
+  it('未知给原因，不给数', async () => {
+    const g = structuredClone(LABEL_GRID);
+    const r = g.forecast.find((f) => f.seller_sku === 'MSKU-B' && f.period === '2026-11')!;
+    Object.assign(r, { state: 'unknown', reason: 'unknown_demand', unknown_since: '2026-11', closing: null });
+    renderSheet(g, true);
+    const d = await open('依据 MSKU-B 2026-11');
+    expect(d).toHaveTextContent('未知：2026-11 起期望销量待填');
+    expect(data(d)).not.toHaveTextContent('= 期末');   // 期初照给（它有数），期末不编
+  });
+
+  it('★ mock 改后未重算：说出来，旧数一个都不显示', async () => {
+    const g = structuredClone(LABEL_GRID);
+    markForecastStale(g, 'SKU-1', 'purchase');
+    renderSheet(g, true);
+    const d = await open('依据 MSKU-A 2026-10');
+    expect(d).toHaveTextContent('改后未重算（mock）');
+    expect(data(d)).not.toHaveTextContent(/期初|期末|261|161|300/);
+    await userEvent.keyboard('{Escape}');
+    const s = await open('依据 SKU-1 2026-10');
+    expect(s).toHaveTextContent('生产中 —');
+    expect(s).toHaveTextContent('2026-10 下单 — 件 → 2027-01-13 到货（改后未重算）');
+  });
+
+  it('预测：旧认领没有依据 / 窗口内没有销量 —— 说原因，不编数', async () => {
+    const g = structuredClone(LABEL_GRID);
+    g.demand.find((c) => c.seller_sku === 'MSKU-A' && c.period === '2026-10')!.system_basis = null;
+    const b = g.demand.find((c) => c.seller_sku === 'MSKU-B' && c.period === '2026-10')!;
+    b.system_units = null;
+    Object.assign(b.system_basis!, { base_rate: null, reason: 'no_sales_in_window', units_raw: null });
+    renderSheet(g, true);
+    expect(await open('依据 MSKU-A 2026-10')).toHaveTextContent('预测 —（旧认领无依据，重新添加后可算）');
+    await userEvent.keyboard('{Escape}');
+    expect(await open('依据 MSKU-B 2026-10')).toHaveTextContent('预测 —（窗口内没有销量）');
+  });
+
+  it('★ 点依据不移动格子光标（按钮不触发选中）', async () => {
+    renderSheet();
+    const before = screen.getAllByRole('gridcell').find((c) => c.getAttribute('aria-selected') === 'true');
+    await open('依据 MSKU-A 2026-11');
+    const after = screen.getAllByRole('gridcell').find((c) => c.getAttribute('aria-selected') === 'true');
+    expect(after).toBe(before);
+  });
+
+  it('★ 面板开着时整表重载：显示新 model 的数，不是打开那一刻的旧对象', async () => {
+    const props = { pending: new Set<string>(), inputErr: {}, onDemand: vi.fn(), onPurchase: vi.fn(),
+                    onRemoveStore: vi.fn(), onRemoveMsku: vi.fn() };
+    const { rerender } = render(<PlanSheet model={buildGridModel(LABEL_GRID, LABEL_SELLERS)} {...props} />);
+    await open('依据 MSKU-A 2026-11');
+    const g = structuredClone(LABEL_GRID);
+    markForecastStale(g, 'SKU-1', 'demand');
+    rerender(<PlanSheet model={buildGridModel(g, LABEL_SELLERS)} {...props} />);
+    expect(screen.getByRole('dialog')).toHaveTextContent('改后未重算（mock）');
+  });
+
+  it('★ 面板上没有 ` · ` 元串（文案纪律）', async () => {
+    renderSheet(LABEL_GRID_LONG);
+    for (const name of ['依据 MSKU-A 2027-01', '依据 SKU-1 2027-01', '依据 A4Pet-US SKU-1 2027-01']) {
+      const d = await open(name);
+      expect(d.textContent).not.toContain(' · ');
+      await userEvent.keyboard('{Escape}');
+    }
+  });
+});

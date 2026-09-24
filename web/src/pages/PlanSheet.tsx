@@ -5,6 +5,8 @@ import {
   closingOfLast, demandAt, mskuStockAt, stockAt, sumUnits, systemAt, totalsAt,
   type GridModel, type MskuCell, type MskuRow, type SkuBlock,
 } from './planGridModel';
+import { basisTitle, FORECAST_WHY, ForecastBasis, type BasisTarget } from './ForecastBasis';
+import { Modal } from '../components/Modal';
 import { buildCards, cardMatches, monthLabel, riskOrder, stockState, summarize, type CardSummary, type SkuCard } from './planSheetModel';
 import { demandKey, mskuKey, purchaseKey, skuKey } from './usePlanGridSaves';
 
@@ -53,18 +55,8 @@ const blockKey = (b: SkuBlock) => `${b.sid}-${b.sku}`;
 const SHORT_LABEL = { 预测: '预', 库存: '存', 在途: '途' } as const;
 
 /** 库存为什么是 — 。★ 光秃秃一根 — 分不出「没在仓数」「销量待填」「mock 没重算」 */
-const UNKNOWN_WHY: Partial<Record<Exclude<ForecastReason, null>, string>> = {
-  unknown_onhand: '无在仓数',
-  unknown_demand: '销量待填',
-  bridge_rate_unknown: '计划首月前的销速未知',
-  inbound_unknown: '到货数未知',
-  not_recomputed_in_mock: '改后未重算（mock）',
-  elapsed: '月份已过',
-  no_msku: '无 msku',
-};
 function unknownWhy(reason: ForecastReason | undefined): string {
-  if (reason == null) return '无数据';
-  return UNKNOWN_WHY[reason] ?? `未知（${reason}）`;
+  return reason == null ? '无数据' : FORECAST_WHY[reason];
 }
 
 export function PlanSheet(props: PlanSheetProps) {
@@ -88,6 +80,7 @@ export function PlanSheet(props: PlanSheetProps) {
   // 在飞期间显示人刚填的数，落地后以服务端重载的为准
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [scrollTop, setScrollTop] = useState(0);
+  const [basis, setBasis] = useState<BasisTarget | null>(null);
   const [viewH, setViewH] = useState(FALLBACK_VIEW_H);
   const editRef = useRef<typeof editing>(null);
   const scRef = useRef<HTMLDivElement>(null);
@@ -406,14 +399,15 @@ export function PlanSheet(props: PlanSheetProps) {
   function stockLine(v: QtyValue, block: SkuBlock, p: Period): ReactNode {
     const s = stockState(v, low);
     const inv = block.stock.find((r) => r.period === p);
+    const btn = (inner: ReactNode) => basisBtn(`${block.seller_name} ${block.sku}`, { kind: 'store', block, period: p }, inner);
     return (
       <span className="ps-d">
         <span>预测 <b data-testid={`store-system-${block.sid}-${block.sku}-${p}`}><Qty v={systemAt(block, p)} /></b></span>
         {v.kind === 'na'
-          ? <span>库存 <b data-testid="closing-na">无 FBA</b></span>
+          ? <span>库存 {btn(<b data-testid="closing-na">无 FBA</b>)}</span>
           : (
             <span title={v.kind === 'num' ? undefined : unknownWhy(inv?.reason)}>
-              库存 <b data-testid="closing-sku">{v.kind === 'num' ? fmt(v.value) : '—'}</b>
+              库存 {btn(<b data-testid="closing-sku">{v.kind === 'num' ? fmt(v.value) : '—'}</b>)}
               {(s === 'out' || s === 'low') && (
                 <em className={`ps-flag ps-flag--${s === 'out' ? 'danger' : 'warn'}`}>{s === 'out' ? '断货' : '偏低'}</em>
               )}
@@ -428,6 +422,13 @@ export function PlanSheet(props: PlanSheetProps) {
     if (!inv || inv.state === 'not_applicable') return undefined;
     return `期初 ${inv.opening ?? '—'} · 数据截至 ${model.params.as_of}`;
   }
+
+  /** 库存数字包成按钮：点开看它的依据。★ mousedown 不冒泡 —— 否则先把格子光标挪过来 */
+  const basisBtn = (label: string, target: BasisTarget, inner: ReactNode) => (
+    <button type="button" className="ps-basis" aria-label={`依据 ${label} ${target.period}`}
+      onMouseDown={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}
+      onClick={(e) => { e.stopPropagation(); setBasis(target); }}>{inner}</button>
+  );
 
   const cols = `var(--row-head-w) repeat(${periods.length}, minmax(var(--col-w), 1fr)) 112px`;
   const minW = `calc(var(--row-head-w) + ${periods.length} * var(--col-w) + 112px)`;
@@ -452,7 +453,8 @@ export function PlanSheet(props: PlanSheetProps) {
       return (
         <span className="ps-d">
           <span>{skuLabel('预测')} <b data-testid={`sku-system-${card.sku}-${p}`}>{t?.system_not_applicable ? '不适用' : fmt(t?.system ?? null)}</b></span>
-          <span title={stockWhy}>{skuLabel('库存')} <b data-testid={`sku-stock-${card.sku}-${p}`}>{stockTxt}</b></span>
+          <span title={stockWhy}>{skuLabel('库存')} {basisBtn(card.sku, { kind: 'sku', sku: card.sku, period: p },
+            <b data-testid={`sku-stock-${card.sku}-${p}`}>{stockTxt}</b>)}</span>
           <span title="不含 FBA 货件（未取）">{skuLabel('在途')} <b data-testid={`transit-${card.sku}-${p}`}>{fmt(transitAt(p))}</b></span>
         </span>
       );
@@ -564,14 +566,15 @@ export function PlanSheet(props: PlanSheetProps) {
     );
   }
 
-  function mskuLine(r: MskuRow, c: MskuCell | undefined, p: Period): ReactNode {
+  function mskuLine(block: SkuBlock, r: MskuRow, c: MskuCell | undefined, p: Period): ReactNode {
     const v = mskuStockAt(r, p);
     const f = r.forecast.find((x) => x.period === p);
     return (
       <span className="ps-d">
         <span>预测 <b data-testid={`msku-system-${r.seller_sku}-${r.sid}-${p}`}>{c?.system_na ? '不适用' : fmt(c?.system_units ?? null)}</b></span>
         <span title={v.kind === 'unknown' ? unknownWhy(f?.reason) : undefined}>
-          库存 <b data-testid={`msku-stock-${r.seller_sku}-${r.sid}-${p}`}>{v.kind === 'na' ? '无 FBA' : <Qty v={v} />}</b>
+          库存 {basisBtn(r.seller_sku, { kind: 'msku', block, row: r, period: p },
+            <b data-testid={`msku-stock-${r.seller_sku}-${r.sid}-${p}`}>{v.kind === 'na' ? '无 FBA' : <Qty v={v} />}</b>)}
         </span>
       </span>
     );
@@ -594,7 +597,7 @@ export function PlanSheet(props: PlanSheetProps) {
             label: `期望销量 ${r.seller_sku}`, testId: `cell-${r.seller_sku}-${r.sid}-${p}`, human: c?.basis === 'human',
             title: c?.system_na ? '无销量取数源，预测不适用' : c?.system_units != null ? `系统预估 ${c.system_units}` : '没有预估，需要人填',
             value: demandValue(c, pending.has(k) ? drafts[k] : undefined),
-            sub: mskuLine(r, c, p),
+            sub: mskuLine(row.block, r, c, p),
           });
         })}
         <div className="ps-sum"><span className="ps-v"><Qty v={sumUnits(r.cells.map((c) => c.effective_units))} /></span></div>
@@ -698,6 +701,12 @@ export function PlanSheet(props: PlanSheetProps) {
           <div className="pm-empty">{cards.length === 0 ? '这张计划还没有货号，先去「添加货品」' : '没有符合筛选的货号'}</div>
         )}
       </div>
+
+      {basis && (
+        <Modal title={basisTitle(basis)} onClose={() => { setBasis(null); focusGrid(); }}>
+          <ForecastBasis model={model} target={basis} />
+        </Modal>
+      )}
 
       <div className="pm-status" aria-live="polite">
         <span className="pm-status__sel">

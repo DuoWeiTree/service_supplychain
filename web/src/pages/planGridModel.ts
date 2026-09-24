@@ -1,6 +1,6 @@
 import type { QtyValue } from '../components/Qty';
 import type {
-  BeyondHorizon, DemandBasis, ForecastParams, ForecastState, GridResponse, MskuForecast, Period,
+  BeyondHorizon, DemandBasis, DemandCell, ForecastParams, ForecastState, GridResponse, MskuForecast, Period,
   Seller, Sid, SkuForecast, StoreForecast, Unallocated,
 } from '../api/types';
 
@@ -13,6 +13,8 @@ export interface MskuCell {
   expected_units: number | null;
   effective_units: number | null;
   basis: DemandBasis;
+  /** 认领时记下的预测依据（点开看依据用）。★ null = 旧认领没种（OP-8），不是 0 */
+  system_basis: DemandCell['system_basis'];
 }
 export interface MskuRow { seller_sku: string; sid: Sid; cells: MskuCell[]; forecast: MskuForecast[] }
 /** ★ 店铺库存挂在**块**上（店铺 × 货号），= Σ 该块 msku 行（spec §4.6），不是另算的一份 */
@@ -34,6 +36,8 @@ export interface Orphan {
 export interface GridModel {
   periods: Period[]; blocks: SkuBlock[]; purchase: PurchaseRow[]; transit: TransitRow[];
   totals: SkuTotals[]; params: ForecastParams; beyond: BeyondHorizon[]; unallocated: Unallocated[];
+  /** `${seller_sku}/${sid}` → 整本台账第一个断货日（forecast_msku）；null = 不断货 */
+  firstStockout: Map<string, string | null>;
   orphans: Orphan[];
 }
 
@@ -137,6 +141,7 @@ export function buildGridModel(grid: GridResponse, sellers: Seller[]): GridModel
       system_na: d.system_basis?.reason === 'not_applicable_no_sales_source',
       system_extrapolated: d.system_extrapolated,
       expected_units: d.expected_units, effective_units: d.effective_units, basis: d.basis,
+      system_basis: d.system_basis,
     });
   }
 
@@ -228,6 +233,8 @@ export function buildGridModel(grid: GridResponse, sellers: Seller[]): GridModel
 
   return {
     periods: grid.periods, blocks: [...blocks.values()], purchase, transit, totals,
-    params: grid.params, beyond: grid.beyond_horizon, unallocated: grid.unallocated, orphans,
+    params: grid.params, beyond: grid.beyond_horizon, unallocated: grid.unallocated,
+    firstStockout: new Map(grid.forecast_msku.map((r) => [`${r.seller_sku}/${r.sid}`, r.first_stockout_date])),
+    orphans,
   };
 }

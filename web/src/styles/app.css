@@ -154,3 +154,13 @@
 /* 紧凑：一格一行，库存挪到数字左边 */
 .ps--compact .ps-c, .ps--compact .ps-sum { flex-direction: row-reverse; align-items: center; justify-content: flex-start; gap: var(--space-2); }
 .ps--compact .ps-sub { display: none; }
+
+/* 格子里的库存数字 = 点开看依据的按钮：外观仍是那个数，只加一条虚下划线提示可点 */
+.ps-basis { all: unset; cursor: pointer; border-bottom: 1px dotted currentColor; }
+.ps-basis:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+/* 依据面板：一行一环，数字等宽，逐笔明细缩进 */
+.fb { display: grid; gap: var(--space-3); font-size: 13px; }
+.fb-chain { display: grid; gap: 2px; font-variant-numeric: tabular-nums; }
+.fb-sub { padding-left: var(--space-4); color: var(--text-3); font-size: 12px; }
+.fb-list { margin: 0; padding-left: var(--space-4); display: grid; gap: 2px; font-variant-numeric: tabular-nums; }
+.fb-fc { color: var(--text-2); }
