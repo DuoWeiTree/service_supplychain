@@ -83,6 +83,9 @@ interface MockApi {
   //   不覆盖它就会在每个用例里抛 TypeError（不是本测试关心的路径，给固定值即可）
   getLeadTime: () => Promise<{ route: 'oversea_sea'; make_days: number; ship_days: number;
     anchor_day: number; valid_from: { making: string; shipping: string } }>;
+  putLeadTime: (...args: unknown[]) => Promise<{ route: 'oversea_sea'; make_days: number; ship_days: number;
+    anchor_day: number; valid_from: { making: string; shipping: string };
+    changed: { segment: 'making' | 'shipping'; from: number; to: number }[] }>;
 }
 
 function buildMockApi(grid: GridResponse) {
@@ -124,8 +127,13 @@ function buildMockApi(grid: GridResponse) {
       return { released: { seller_sku: sellerSku, sid }, dropped_cells, stranded_purchase_cells: [] };
     }),
     submit: vi.fn(async () => ({ rev: 1, lines: 1, in_flight: true, content_digest: 'x', skipped: [] })),
-    getLeadTime: async () => ({ route: 'oversea_sea', make_days: 30, ship_days: 60, anchor_day: 15,
-      valid_from: { making: '2026-01-01', shipping: '2026-01-01' } }),
+    getLeadTime: vi.fn(async () => ({ route: 'oversea_sea' as const, make_days: 30, ship_days: 60, anchor_day: 15,
+      valid_from: { making: '2026-01-01', shipping: '2026-01-01' } })),
+    putLeadTime: vi.fn(async (...args: unknown[]) => {
+      const [input] = args as [{ make_days?: number; ship_days?: number }];
+      return { route: 'oversea_sea' as const, make_days: input.make_days ?? 30, ship_days: input.ship_days ?? 60,
+        anchor_day: 15, valid_from: { making: '2026-01-01', shipping: '2026-01-01' }, changed: [] };
+    }),
   };
   return { state, api };
 }
@@ -558,6 +566,36 @@ describe('计划整表', () => {
     expect(await screen.findByTestId('plan-sheet')).toBeInTheDocument();
     expect(screen.getByTestId('block-11072-SKU-1')).toBeInTheDocument();
     expect(screen.getByText('500 plan_head_failed')).toBeInTheDocument();
+  });
+
+  // ★ 复核 R1 第 2 点：提前期是第四个独立读（与 plan/grid/sellers 同一条 I6 纪律），
+  //   挂了照 planErr/gridErr/sellersErr 的样子走 ErrorDetail，矩阵/抬头照常出数
+  it('★ 取提前期挂了，矩阵与抬头照常出数（I6）', async () => {
+    await renderGrid(makeGrid(), (m) => {
+      m.api.getLeadTime = async () => { throw new ApiError(503, 'lead_time_unavailable', '提前期取不到'); };
+    });
+    expect(await screen.findByRole('heading', { name: '2026 Q4 销售计划' })).toBeInTheDocument();
+    expect(await screen.findByTestId('block-11072-SKU-1')).toBeInTheDocument();
+    expect(screen.getByText('503 lead_time_unavailable')).toBeInTheDocument();
+    // ★ 挂了就不画那一条 bar —— 不许拿一份挂号数据硬凑出「改」按钮
+    expect(screen.queryByRole('button', { name: '改提前期' })).toBeNull();
+  });
+
+  // ★ 复核 R1 第 1 点：真后端失败（不是客户端校验）要走 fail()/ErrorDetail，
+  //   err.fields 一起上屏，且不许 push 成功 toast
+  it('★ 提前期保存被后端拒绝：ErrorDetail 点名 code + fields，不 push 成功 toast', async () => {
+    const putLeadTime = vi.fn(async () => {
+      throw new ApiError(409, 'lead_time_conflict', '有一版提前期还没生效', { pending_from: '2026-09-25' });
+    });
+    await renderGrid(makeGrid(), (m) => { m.api.putLeadTime = putLeadTime; });
+    await userEvent.click(await screen.findByRole('button', { name: '改提前期' }));
+    await userEvent.click(screen.getByRole('button', { name: '保存提前期' }));
+
+    expect(await screen.findByText('409 lead_time_conflict')).toBeInTheDocument();
+    // ★ hint 在 ErrorDetail 与失败 toast 里各出现一份，都在也是对的——只要不是「已保存」
+    expect(screen.getAllByText('有一版提前期还没生效').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('2026-09-25')).toBeInTheDocument();   // ★ fields 没被吞掉
+    expect(screen.queryByText(/已保存/)).toBeNull();
   });
 
   it('★ 对不上的行要点名；数据干净时丢弃区不渲染（不是渲染一个空框）', async () => {

@@ -6,7 +6,7 @@ import { useActionError } from '../shell/useActionError';
 import { useInFlight } from '../shell/useInFlight';
 import { ErrorDetail } from '../components/ErrorDetail';
 import { api, ApiError } from '../api';
-import type { GridResponse, PlanSummary, Seller, SubmitResult } from '../api/types';
+import type { GridResponse, LeadTime, PlanSummary, Seller, SubmitResult } from '../api/types';
 import { buildGridModel } from './planGridModel';
 import { usePlanGridSaves } from './usePlanGridSaves';
 import { LeadTimeBar } from './LeadTimeBar';
@@ -20,11 +20,15 @@ export function PlanGrid() {
   const [plan, setPlan] = useState<PlanSummary | null>(null);
   const [grid, setGrid] = useState<GridResponse | null>(null);
   const [sellers, setSellers] = useState<Seller[] | null>(null);
-  // ★ I6 裁定：三个读接口各记各的错 —— 一个挂了不许把整屏换成一个错误块。
+  const [leadTime, setLeadTime] = useState<LeadTime | null>(null);
+  // ★ I6 裁定：读接口各记各的错 —— 一个挂了不许把整屏换成一个错误块。
   //   合成一个 err 的写法会让「计划抬头取不到」把已经拿回来的网格一起吞掉。
+  //   提前期（Task 20 复核 R1）与另外三个同一条纪律：它是独立的第四个读，不挂在
+  //   model（grid && sellers）身上 —— 网格挂了不该连累提前期条也一起消失。
   const [planErr, setPlanErr] = useState<ApiError | null>(null);
   const [gridErr, setGridErr] = useState<ApiError | null>(null);
   const [sellersErr, setSellersErr] = useState<ApiError | null>(null);
+  const [leadTimeErr, setLeadTimeErr] = useState<ApiError | null>(null);
   // ★ T4 R2 裁定：写动作的错误不跟着 load() 走 —— 见 useActionError 的注释
   const { err: actionErr, fail, succeed, dismiss } = useActionError();
   const [report, setReport] = useState<SubmitResult | null>(null);
@@ -33,12 +37,13 @@ export function PlanGrid() {
   const { pending: submitting, run } = useInFlight();
 
   const load = async () => {
-    const [p, g, s] = await Promise.allSettled([
-      api.getPlan(planId), api.getGrid(planId), api.listSellers(),
+    const [p, g, s, lt] = await Promise.allSettled([
+      api.getPlan(planId), api.getGrid(planId), api.listSellers(), api.getLeadTime(),
     ]);
     if (p.status === 'fulfilled') { setPlan(p.value); setPlanErr(null); } else setPlanErr(p.reason as ApiError);
     if (g.status === 'fulfilled') { setGrid(g.value); setGridErr(null); } else setGridErr(g.reason as ApiError);
     if (s.status === 'fulfilled') { setSellers(s.value); setSellersErr(null); } else setSellersErr(s.reason as ApiError);
+    if (lt.status === 'fulfilled') { setLeadTime(lt.value); setLeadTimeErr(null); } else setLeadTimeErr(lt.reason as ApiError);
   };
 
   useEffect(() => { void load(); }, [planId]);
@@ -134,7 +139,8 @@ export function PlanGrid() {
         </div>
       )}
 
-      {model && <LeadTimeBar onChanged={load} />}
+      {leadTimeErr && <ErrorDetail err={leadTimeErr} />}
+      {leadTime && <LeadTimeBar leadTime={leadTime} onChanged={load} fail={fail} succeed={succeed} />}
 
       {model && (
         <PlanSheet
