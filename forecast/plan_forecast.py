@@ -308,6 +308,8 @@ def forecast_plan(inp: PlanForecastInput) -> PlanForecast:
     for (sku, p), units in sorted(inp.purchase.items()):
         if units is None:
             unfilled[sku].append(p.strftime("%Y-%m"))       # ★ OP-13：不静默
+        elif units < 0:
+            raise ValueError(f"{sku} {p.strftime('%Y-%m')} 采购量为负：{units}")
         elif units > 0:
             batches[sku].append(Batch(sku, p, units, *order_arrival(p, inp.make_days,
                                                                      inp.ship_days)))

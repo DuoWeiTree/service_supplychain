@@ -158,3 +158,37 @@ def test_gap_unknown_batch_is_listed_once_even_with_an_unknown_onhand_msku():
     assert [(u["sku"], u["reason"]) for u in f.unallocated] == [(SKU_A, "gap_unknown")]
     assert f.unallocated[0]["unknown"] == [["MSKU-X", "11094"]]
     assert (f.msku[A][1].state, f.msku[A][1].reason) == ("unknown", "inbound_unknown")
+
+
+def test_negative_purchase_is_rejected_by_name():
+    """负采购量不许静默跳过（CLAUDE.md「静默兜底是最坏的一种」）。"""
+    import pytest
+
+    inp = s1()
+    inp.purchase[(SKU_A, NOV)] = -5
+    with pytest.raises(ValueError, match=r"DCC1800264G1 2026-11 采购量为负：-5"):
+        forecast_plan(inp)
+
+
+def test_unknown_msku_makes_its_store_and_sku_unknown_from_that_month():
+    """spec §4.6：任一 msku 未知 → 上层未知；同货号下别的店不受牵连。"""
+    f = forecast_plan(s1(c_eff=(40, None, 44)))
+    assert [(r.state, r.closing) for r in f.msku[C]] == [
+        ("ok", -33), ("unknown", None), ("unknown", None)]
+    store_c = [s for s in f.store if (s.sku, s.sid) == (SKU_A, "11094")]
+    assert [(s.state, s.reason, s.closing) for s in store_c] == [
+        ("ok", None, -33), ("unknown", "unknown_demand", None), ("unknown", "unknown_demand", None)]
+    store_a = [s for s in f.store if (s.sku, s.sid) == (SKU_A, "11072")]
+    assert [s.state for s in store_a] == ["ok", "ok", "ok"]
+    rows = sku_rows(f, SKU_A)
+    assert [(r.state, r.opening, r.closing) for r in rows] == [
+        ("ok", 271, 131), ("unknown", 131, None), ("unknown", None, None)]
+
+
+def test_store_with_mixed_fba_flags_is_rejected():
+    """has_fba 是店铺级（02 §3.1a）：同店 msku 不一致 = 输入自相矛盾，报错而不是跟第一个走。"""
+    import pytest
+
+    y = m(("MSKU-Y", "11072"), SKU_A, None, (1, 1, 1), None, applicable=False)
+    with pytest.raises(ValueError, match=r"DCC1800264G1 店铺 11072 下 msku 的 has_fba 不一致"):
+        forecast_plan(s1(extra=(y,)))
