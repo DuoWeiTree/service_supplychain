@@ -32,7 +32,8 @@ def test_bridge_days_are_consumed_by_forecast():
     assert chain(rows) == [(264, 100, 0, 164), (164, 50, 0, 114)]
     assert rows[0].bridge == {"from": "2026-09-22", "to": "2026-09-30", "units": 36,
                               "by": "forecast", "rate": 4.0, "month_totals": {"2026-09": 120},
-                              "onhand_as_of": 300, "arrivals": [], "arrival_units": 0}
+                              "onhand_as_of": 300, "arrivals": [], "arrival_units": 0,
+                              "stockout_date": None}
     assert rows[1].bridge is None
 
 
@@ -146,5 +147,63 @@ def test_no_rate_rows_still_show_expected_demand_and_name_the_bridge():
         (None, 100, 0, None), (None, 50, 0, None)]
     assert rows[0].bridge == {"from": "2026-09-22", "to": "2026-09-30", "units": None,
                               "by": "forecast", "rate": None, "month_totals": {},
-                              "onhand_as_of": 300, "arrivals": [], "arrival_units": 0}
+                              "onhand_as_of": 300, "arrivals": [], "arrival_units": 0,
+                              "stockout_date": None}
     assert rows[1].bridge is None
+
+
+def test_stockout_inside_the_bridge_is_reported_not_moved_to_the_first_plan_day():
+    """spec §4.5：断货日 = 台账里第一个 daily_unmet > 0 的日子 —— 桥接段也是台账。
+    onhand 10，9 月 120 件：9/22~9/24 = 3×4 = 12 > 10 → 9/24 断货。"""
+    rows = project_msku(msku(onhand=10, rate=4.0), D(2026, 9, 21), [OCT, NOV])
+    assert rows[0].opening == -26
+    assert rows[0].bridge["stockout_date"] == "2026-09-24"
+    assert rows.first_stockout_date == D(2026, 9, 24)
+    assert [r.stockout_date for r in rows] == [D(2026, 10, 1), D(2026, 11, 1)]   # OP-18：月内
+
+
+def test_first_stockout_date_is_msku_level_and_none_when_never_short():
+    m = msku(onhand=7, eff={OCT: 40, NOV: 44, DEC: 44})
+    rows = project_msku(m, D(2026, 9, 30), [OCT, NOV, DEC],
+                        [Arrival(D(2026, 11, 14), 110, {})])
+    assert rows.first_stockout_date == D(2026, 10, 6)
+    assert project_msku(msku(), D(2026, 9, 30), [OCT, NOV]).first_stockout_date is None
+
+
+def test_stockout_before_a_mid_month_unknown_is_kept():
+    """10/6 已断货，11/14 到货未知 → 11 月未知，但 11/1 的断货照报。"""
+    m = msku(onhand=7, eff={OCT: 40, NOV: 44})
+    rows = project_msku(m, D(2026, 9, 30), [OCT, NOV], [Arrival(D(2026, 11, 14), None, {})])
+    assert (rows[1].state, rows[1].closing, rows[1].stockout_date) == (
+        "unknown", None, D(2026, 11, 1))
+
+
+@pytest.mark.parametrize("applicable, reason", [(False, "not_applicable"),
+                                                (True, "unknown_onhand")])
+def test_arrivals_for_an_unprojectable_msku_are_listed_not_dropped(applicable, reason):
+    arr = [Arrival(D(2026, 10, 5), 30, {"order_period": "2026-06"})]
+    rows = project_msku(msku(onhand=None, applicable=applicable), D(2026, 9, 30), [OCT], arr)
+    assert rows.unplaced_arrivals == (
+        {"date": "2026-10-05", "units": 30, "order_period": "2026-06", "reason": reason},)
+    assert rows.first_stockout_date is None
+
+
+def test_arrivals_are_range_checked_on_every_path():
+    old = [Arrival(D(2020, 1, 1), 5, {})]
+    for m, as_of in [(msku(), D(2026, 10, 31)),                      # 全部已过去
+                     (msku(onhand=None), D(2026, 9, 30)),
+                     (msku(applicable=False), D(2026, 9, 30))]:
+        with pytest.raises(ValueError, match="到货日 2020-01-01"):
+            project_msku(m, as_of, [OCT], old)
+    with pytest.raises(ValueError, match="到货日 2026-09-30"):       # as_of 当天不算推演窗
+        project_msku(msku(), D(2026, 9, 30), [OCT], [Arrival(D(2026, 9, 30), 5, {})])
+
+
+def test_unknown_onhand_rows_still_show_expected_demand():
+    """同裁定 3：未知的是头寸，不是期望销量。已过去的月照样是已过去。"""
+    rows = project_msku(msku(onhand=None, eff={OCT: 30, NOV: 50}), D(2026, 10, 10), [OCT, NOV])
+    assert [(r.state, r.reason, r.demand, r.closing, r.unknown_since) for r in rows] == [
+        ("unknown", "unknown_onhand", 20, None, OCT), ("unknown", "unknown_onhand", 50, None, OCT)]
+    rows = project_msku(msku(onhand=None, eff={OCT: 30, NOV: 50}), D(2026, 10, 31), [OCT, NOV])
+    assert [(r.state, r.demand, r.unknown_since) for r in rows] == [
+        ("elapsed", None, None), ("unknown", 50, NOV)]
