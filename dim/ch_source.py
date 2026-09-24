@@ -552,10 +552,18 @@ class PurchaseTableStale(Exception):
     （不管是否同龄）→ `BOTH_PURCHASE_TABLES`；只有一张越线 → 报那一张。
     同龄只是「两张都越线」的一个特例，不再是判定 BOTH 的依据本身。
     `captured`/`age_days` 两个旧属性语义不变（`api/ui/plans.py` 在读）——
-    仍然指向**更老的那张**，与 `stale_table` 是否报「两张」无关。"""
+    仍然指向**更老的那张**，与 `stale_table` 是否报「两张」无关。
 
-    def __init__(self, *, items_captured: dt.date, items_age_days: int,
-                 order_captured: dt.date, order_age_days: int,
+    ★ S1（复核第三轮 09-23）：「越线」判据（`age_days > threshold_days`）
+    原先在这里与 `purchase_as_of()` 的守卫里各写一份——两处一旦漂移就谁也
+    不会红（`>` 一处改成 `>=` 而另一处没跟着改，是这种漂移的一种具体形状：
+    恰好等于阈值的表被点名，把 `test_purchase_table_within_threshold_is_not_
+    stale` 明写的判据「恰好等于阈值不算陈旧」错点了名）。现在 `items_over`/
+    `order_over` 由 `purchase_as_of()` 算好、原样传进来，本类不再自己重算，
+    判据只有一处定义。"""
+
+    def __init__(self, *, items_captured: dt.date, items_age_days: int, items_over: bool,
+                 order_captured: dt.date, order_age_days: int, order_over: bool,
                  threshold_days: int) -> None:
         self.items_captured, self.items_age_days = items_captured, items_age_days
         self.order_captured, self.order_age_days = order_captured, order_age_days
@@ -563,8 +571,10 @@ class PurchaseTableStale(Exception):
         # ★ R3：`stale_table` 只问「谁越线了」——两张都越线就都点名，不比较
         #   谁更老。同龄（旧 F3 的判据）现在只是「两张都越线」下必然成立的
         #   一种情形，不再单独判等。
-        items_over = items_age_days > threshold_days
-        order_over = order_age_days > threshold_days
+        # ★ S1：`items_over`/`order_over` 是调用方算好传进来的——「越线」这条
+        #   判据只在 `purchase_as_of()` 里定义一次，本类不重新用
+        #   `age_days > threshold_days` 算一遍（那正是上一轮两处判据漂移
+        #   互不感知的根子）。
         if items_over and order_over:
             self.stale_table = BOTH_PURCHASE_TABLES
         elif order_over:
@@ -575,7 +585,8 @@ class PurchaseTableStale(Exception):
             #   两张都未越线的值，仍确定性地报行项表，不产生未定义行为。
             self.stale_table = PURCHASE_ITEMS_TABLE
         # ★ captured/age_days 语义不变——指向更老的那张，跟 stale_table 报
-        #   一张还是两张无关（这条判据仍然需要单纯的年龄比较）。
+        #   一张还是两张无关（这条判据仍然需要单纯的年龄比较，与「越线」是
+        #   两件事：一张可以更老但仍在阈值内）。
         if order_age_days > items_age_days:
             self.captured, self.age_days = order_captured, order_age_days
         else:
@@ -937,10 +948,23 @@ class ChSource:
                  reference, self._purchase_staleness_days)
         # ★ 判据三：年龄取更老的那个跟阈值比——单据表比行项表新不是错（今天
         #   09-23 就是两表同日，09-22 时反过来），守卫判的是年龄不是谁新谁旧。
-        if max(items_age_days, order_age_days) > self._purchase_staleness_days:
+        # ★ S1（复核第三轮 09-23）：「越线」判据只在这里算一次——`items_over`/
+        #   `order_over` 原样传给 `PurchaseTableStale`，它不再自己用
+        #   `age_days > threshold_days` 重算一遍。上一轮守卫写的是
+        #   `max(...) > threshold`、异常内部另写了一遍 `age_days > threshold`，
+        #   两处各自改动互不感知——`>` 单独改成 `>=` 就会把「恰好等于阈值仍
+        #   可用」的表也点了名（`test_purchase_table_within_threshold_is_not_
+        #   stale` 明写的判据）。`items_over or order_over` 与
+        #   `max(items_age_days, order_age_days) > threshold` 等价（至少一个
+        #   超过阈值，等价于两者的最大值超过阈值），行为不变。
+        items_over = items_age_days > self._purchase_staleness_days
+        order_over = order_age_days > self._purchase_staleness_days
+        if items_over or order_over:
             exc = PurchaseTableStale(
                 items_captured=items_captured, items_age_days=items_age_days,
+                items_over=items_over,
                 order_captured=order_captured, order_age_days=order_age_days,
+                order_over=order_over,
                 threshold_days=self._purchase_staleness_days)
             log.warning("op=ch_purchase_as_of outcome=stale stale_table=%s "
                         "items_captured=%s items_age_days=%d items_elapsed_ms=%d "

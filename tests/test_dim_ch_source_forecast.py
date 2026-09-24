@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import re
 
 import pytest
 
@@ -693,6 +694,22 @@ def test_purchase_table_stale_names_both_tables_when_both_are_over_threshold_but
     assert e.value.age_days == 13
 
 
+def test_purchase_table_stale_does_not_name_a_table_exactly_at_the_threshold():
+    """★ S1（复核第三轮 09-23）：「越线」比较符的边界没有靶子——把异常内两处
+    `> threshold_days` 一起改成 `>=`，之前全量绿。这里钉住具体输入：阈值 3、
+    行项表 age **恰好 3**（`test_purchase_table_within_threshold_is_not_stale`
+    明写的判据：恰好等于阈值不算陈旧，3 天是「漏采一天仍可用」的余量）、
+    单据表 age 5（真越线）——`stale_table` 必须只点名单据表，不许把「仍可用」
+    的行项表也一起点了名。"""
+    src = cs.ChSource(purchase_query(captured=dt.date(2026, 9, 20),
+                                      order_captured=dt.date(2026, 9, 18)))
+    with pytest.raises(cs.PurchaseTableStale) as e:
+        src.purchase_as_of()
+    assert e.value.items_age_days == 3 and e.value.order_age_days == 5
+    assert e.value.stale_table == cs.PURCHASE_ORDER_TABLE, (
+        "行项表 age 恰好等于阈值（3），按明写判据仍可用——不许被一起点名")
+
+
 def test_purchase_order_table_query_failure_becomes_ch_unavailable():
     """★ 同行项表那条的镜像——单据表查询本身也可能连不上/超时，target 必须
     点名是它，不能笼统地报 PURCHASE_ITEMS_TABLE（三问之一：打的谁）。"""
@@ -742,8 +759,13 @@ def test_purchase_as_of_logs_report_how_long_each_table_took(scm_log):
         assert lines, (
             f"没找到 outcome={outcome} 这条日志——完整记录：{[r.getMessage() for r in records]}")
         for line in lines:
-            assert "items_elapsed_ms=" in line, f"outcome={outcome} 没说行项表多久：{line}"
-            assert "order_elapsed_ms=" in line, f"outcome={outcome} 没说单据表多久：{line}"
+            # ★ 复核第三轮 09-23：只断字段名在不在，一个硬编码的
+            #   `items_elapsed_ms=0` 也能满足——改断数字形态。假桩下耗时常态
+            #   是 0（断 >0 做不到），`\d+` 是能拿到的最紧的一档。
+            assert re.search(r"items_elapsed_ms=\d+", line), (
+                f"outcome={outcome} 没说行项表多久（或不是数字）：{line}")
+            assert re.search(r"order_elapsed_ms=\d+", line), (
+                f"outcome={outcome} 没说单据表多久（或不是数字）：{line}")
 
 
 def test_is_overdue_true_for_a_past_month():
