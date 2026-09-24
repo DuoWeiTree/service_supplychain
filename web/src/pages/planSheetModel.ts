@@ -3,7 +3,7 @@ import type { Period } from '../api/types';
 import type { GridModel, MskuRow, PurchaseRow, SkuBlock, TransitRow } from './planGridModel';
 import { inventoryAt } from './planGridModel';
 
-/** 计划矩阵的一张卡：一个货号。店铺块、货号级采购、货号级在途放在同一处。
+/** 计划整表的一组：一个货号。店铺块、货号级采购、货号级在途放在同一处。
  *  ★ 只是把 GridModel 按货号重新分组，不产生任何新数 —— 数的口径全在 planGridModel.ts。 */
 export interface SkuCard {
   sku: string;
@@ -79,11 +79,16 @@ export function summarize(card: SkuCard, periods: Period[], low: number): CardSu
   };
 }
 
+/** 风险优先：先断货、再待填、再偏低。★ 只决定先后，不进任何一个数 */
+export function riskOrder(a: CardSummary, b: CardSummary): number {
+  return b.outs.length - a.outs.length || b.todo - a.todo || b.lows.length - a.lows.length;
+}
+
 export function cardMatches(card: SkuCard, q: string): boolean {
   const needle = q.trim().toLowerCase();
   if (needle === '') return true;
   const hay: string[] = [card.sku];
-  for (const b of card.stores) { hay.push(b.seller_name); b.mskus.forEach((m: MskuRow) => hay.push(m.seller_sku)); }
+  for (const b of card.stores) { hay.push(b.seller_name, b.market); b.mskus.forEach((m: MskuRow) => hay.push(m.seller_sku)); }
   return hay.join(' ').toLowerCase().includes(needle);
 }
 

@@ -55,7 +55,7 @@ describe('判据① · 建 → 加货品 → 填两种量 → 提交 → 铸出 
     //   而不是内容不对）。判据①要的是"新建后走到网格"这件事本身，不是内部实现细节，
     //   所以改成认网格页确实渲染出了刚填的标题——不依赖 mock 派发的自增 plan_id 数字。
     expect(await screen.findByRole('heading', { name: '2027 Q1 销售计划' })).toBeInTheDocument();
-    expect(screen.getByTestId('plan-matrix')).toBeInTheDocument();
+    expect(screen.getByTestId('plan-sheet')).toBeInTheDocument();
   });
 
   it('② 加货品：认领 msku 后可返回网格', async () => {
@@ -74,7 +74,7 @@ describe('判据① · 建 → 加货品 → 填两种量 → 提交 → 铸出 
 
   it('③④ 填两种量 → 提交 → 铸出 rev，且两种量各自生效', async () => {
     await app('/plans/1');
-    await screen.findByTestId('plan-matrix');
+    await screen.findByTestId('plan-sheet');
     const block = await screen.findByTestId(`block-${FIRST_INV.sid}-${FIRST_INV.sku}`);
     // 多 msku 的店铺默认展开，单 msku 的店铺直接在店铺行上填 —— 都不用先点展开
 

@@ -9,7 +9,7 @@ import { api, ApiError } from '../api';
 import type { GridResponse, PlanSummary, Seller, SubmitResult } from '../api/types';
 import { buildGridModel } from './planGridModel';
 import { usePlanGridSaves } from './usePlanGridSaves';
-import { PlanMatrix } from './PlanMatrix';
+import { PlanSheet } from './PlanSheet';
 import { SubmitPanel, type InFlightBlock } from './SubmitPanel';
 
 const SUBMIT_KEY = 'submit';
@@ -134,7 +134,7 @@ export function PlanGrid() {
       )}
 
       {model && (
-        <PlanMatrix
+        <PlanSheet
           model={model} pending={pending} inputErr={inputErr}
           onDemand={(ss, sid, p, raw) => void saveDemand(ss, sid, p, raw)}
           onPurchase={(sku, p, raw) => void savePurchase(sku, p, raw)}

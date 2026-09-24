@@ -14,7 +14,7 @@ export interface MskuCell {
 export interface MskuRow { seller_sku: string; sid: Sid; cells: MskuCell[] }
 /** ★ 库存挂在**块**上（店铺 × 货号），不挂在 msku 上 */
 export interface SkuBlock {
-  sid: Sid; seller_name: string; has_fba: boolean; sku: string;
+  sid: Sid; seller_name: string; market: string; has_fba: boolean; sku: string;
   mskus: MskuRow[]; inventory: InventoryCell[];
 }
 export interface PurchaseRow { sku: string; cells: { period: Period; planned_units: number | null }[] }
@@ -97,7 +97,7 @@ export function buildGridModel(grid: GridResponse, sellers: Seller[]): GridModel
     const bKey = `${d.sid}/${d.sku}`;
     let block = blocks.get(bKey);
     if (!block) {
-      block = { sid: d.sid, seller_name: seller.name, has_fba: seller.has_fba, sku: d.sku, mskus: [], inventory: [] };
+      block = { sid: d.sid, seller_name: seller.name, market: seller.market, has_fba: seller.has_fba, sku: d.sku, mskus: [], inventory: [] };
       blocks.set(bKey, block);
     }
     let row = block.mskus.find((r) => r.seller_sku === d.seller_sku);

@@ -128,15 +128,15 @@ const fill = async (cell: HTMLElement, text: string) => {
 };
 const gridcell = (root: HTMLElement, name: string) => within(root).getByRole('gridcell', { name });
 
-describe('计划矩阵', () => {
-  it('标题 + 一个货号一张卡：月份列 + 合计列', async () => {
+describe('计划整表', () => {
+  it('标题 + 一张整表：月份列 + 合计列；一个货号一组', async () => {
     await renderGrid();
     expect(await screen.findByRole('heading', { name: '2026 Q4 销售计划' })).toBeInTheDocument();
     const card = await screen.findByTestId('card-SKU-1');
-    const head = within(card).getAllByRole('columnheader');
+    const head = within(screen.getByRole('grid')).getAllByRole('columnheader');
     expect(head.map((h) => h.getAttribute('aria-label') ?? h.textContent))
-      .toEqual(['店铺 / MSKU', '2026-10', '2026-11', '2026-12', '合计']);
-    // ★ 两家店与采购在同一张卡里 —— 不再是上面一块块销量、底下另一张采购表
+      .toEqual(['货号 / 店铺 / MSKU', '2026-10', '2026-11', '2026-12', '合计']);
+    // ★ 两家店与采购在同一组里 —— 不再是上面一块块销量、底下另一张采购表
     expect(within(card).getByTestId('block-11072-SKU-1')).toBeInTheDocument();
     expect(within(card).getByTestId('block-90001-SKU-1')).toBeInTheDocument();
     expect(within(card).getByTestId('purchase-row-SKU-1')).toBeInTheDocument();
@@ -218,11 +218,57 @@ describe('计划矩阵', () => {
     expect(within(block).getByTestId('sum-demand')).toHaveTextContent('—');
   });
 
-  it('★ 断货挂在卡片头，收起也看得见；不适用的店不算断货', async () => {
+  it('★ 断货挂在货号行上，折叠也看得见；不适用的店不算断货', async () => {
     await renderGrid();
     const card = await screen.findByTestId('card-SKU-1');
-    expect(within(card).getByTestId('outage-11072-SKU-1')).toHaveTextContent('A4Pet-US 断货 1 个月');
-    expect(within(card).queryByTestId('outage-90001-SKU-1')).toBeNull();
+    await userEvent.click(within(card).getByRole('button', { name: '折叠 SKU-1' }));
+    expect(within(card).queryByTestId('block-11072-SKU-1')).toBeNull();
+    const flag = within(card).getByTestId('outage-SKU-1');
+    // 两家店里只有 A4Pet-US 断货；无 FBA 的 A4Pet-WM 是「不适用」，不计入
+    expect(flag).toHaveTextContent('断 1');
+    expect(flag.getAttribute('title')).toBe('A4Pet-US 断货 1 个月');
+  });
+
+  it('★ 下一个待填（N）：光标跳到下一格「待填」的销量，不停在空着的采购格', async () => {
+    const { mock } = await renderGrid();
+    const card = await screen.findByTestId('card-SKU-1');
+    await userEvent.click(gridcell(card, '计划采购量 SKU-1 2026-10'));
+    await userEvent.keyboard('n');
+    // SKU-1 下第一格待填是 MSKU-A 的 12 月；采购 11 / 12 月虽然空着，不算待填
+    await userEvent.keyboard('9{Enter}');
+    expect(mock.api.putDemand).toHaveBeenCalledWith(1, 'MSKU-A', '11072', '2026-12', 9);
+    expect(mock.api.putPurchase).not.toHaveBeenCalled();
+  });
+
+  it('★ ⌘D 只在同一类行之间填：采购不会被填进销量', async () => {
+    const { mock } = await renderGrid();
+    const card = await screen.findByTestId('card-SKU-1');
+    await userEvent.click(gridcell(card, '计划采购量 SKU-1 2026-10'));
+    await userEvent.keyboard('{Shift>}{ArrowDown}{/Shift}{Control>}d{/Control}');
+    expect(mock.api.putDemand).not.toHaveBeenCalled();
+  });
+
+  it('★ 几十个货号时只渲染看得见的行；折叠全部后一行一个货号', async () => {
+    const grid = makeGrid();
+    for (let n = 2; n <= 80; n++) {
+      grid.sku_pipeline.push({ sku: `SKU-${n}`, period: P[0]!, units: 1, sources: [], no_seller_attribution: true });
+    }
+    await renderGrid(grid);
+    await screen.findByTestId('card-SKU-1');
+    const status = screen.getByTestId('plan-sheet').querySelector('.pm-status__sel')!;
+    expect(status).toHaveTextContent('80 个货号，84 行');
+    // 表头 1 行 + 可视区一窗；84 行全画出来就等于没有虚拟滚动
+    expect(screen.getAllByRole('row').length).toBeLessThan(40);
+    await userEvent.click(screen.getByRole('button', { name: '全部折叠成一行一个货号' }));
+    expect(status).toHaveTextContent('80 个货号，80 行');
+    expect(screen.queryByTestId('block-11072-SKU-1')).toBeNull();
+  });
+
+  it('筛选「偏低」与排序「货号」都在工具栏上', async () => {
+    await renderGrid();
+    await screen.findByTestId('card-SKU-1');
+    expect(screen.getByRole('button', { name: /^偏低/ })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: '排序' })).toHaveValue('risk');
   });
 
   it('★ 折叠按钮有 aria-expanded 与点名是哪一块的可及名称（F11）', async () => {
@@ -481,7 +527,7 @@ describe('计划矩阵', () => {
     await renderGrid(makeGrid(), (m) => {
       m.api.getPlan = async () => { throw new ApiError(500, 'plan_head_failed', '抬头取不到'); };
     });
-    expect(await screen.findByTestId('plan-matrix')).toBeInTheDocument();
+    expect(await screen.findByTestId('plan-sheet')).toBeInTheDocument();
     expect(screen.getByTestId('block-11072-SKU-1')).toBeInTheDocument();
     expect(screen.getByText('500 plan_head_failed')).toBeInTheDocument();
   });

@@ -63,7 +63,7 @@ const OK: SubmitResult = {
 describe('提交', () => {
   it('★ 逐条列出被跳过的格子，并交代两边的数', async () => {
     await renderGrid(async () => OK);
-    await screen.findByTestId('plan-matrix');
+    await screen.findByTestId('plan-sheet');
     await userEvent.click(screen.getByRole('button', { name: '提交' }));
 
     const report = await screen.findByTestId('submit-report');
@@ -81,7 +81,7 @@ describe('提交', () => {
 
   it('提交成功不自动跳走 —— skipped[] 只有这一次机会被看见', async () => {
     await renderGrid(async () => OK);
-    await screen.findByTestId('plan-matrix');
+    await screen.findByTestId('plan-sheet');
     await userEvent.click(screen.getByRole('button', { name: '提交' }));
     await screen.findByTestId('submit-report');
     expect(screen.getByRole('link', { name: '去版本' })).toHaveAttribute('href', '/plans/1/revs');
@@ -94,7 +94,7 @@ describe('提交', () => {
                 { sku: 'SKU-1', period: '2026-11', reason: 'zero_purchase' },
                 { sku: 'SKU-1', period: '2026-12', reason: 'no_claimed_msku' }],
     }));
-    await screen.findByTestId('plan-matrix');
+    await screen.findByTestId('plan-sheet');
     await userEvent.click(screen.getByRole('button', { name: '提交' }));
     const empty = await screen.findByTestId('empty-rev');
     expect(empty).toHaveTextContent('没有占在流转位');
@@ -110,7 +110,7 @@ describe('提交', () => {
     await renderGrid(async () => {
       throw new ApiError(409, 'rev_in_flight', '先处理 rev 7', { in_flight_rev: 7 });
     });
-    await screen.findByTestId('plan-matrix');
+    await screen.findByTestId('plan-sheet');
     await userEvent.click(screen.getByRole('button', { name: '提交' }));
 
     const box = await screen.findByTestId('rev-in-flight');
@@ -126,7 +126,7 @@ describe('提交', () => {
     await renderGrid(async () => {
       throw new ApiError(400, 'bad_request', '起始月必须是月初', { period_start: '2026-10-15' });
     });
-    await screen.findByTestId('plan-matrix');
+    await screen.findByTestId('plan-sheet');
     await userEvent.click(screen.getByRole('button', { name: '提交' }));
     expect(await screen.findByText('400 bad_request')).toBeInTheDocument();
     expect(screen.queryByTestId('rev-in-flight')).toBeNull();
@@ -136,7 +136,7 @@ describe('提交', () => {
     let resolveSubmit!: (v: SubmitResult) => void;
     const submit = vi.fn(() => new Promise<SubmitResult>((resolve) => { resolveSubmit = resolve; }));
     await renderGrid(submit);
-    await screen.findByTestId('plan-matrix');
+    await screen.findByTestId('plan-sheet');
     const btn = screen.getByRole('button', { name: '提交' });
 
     await userEvent.click(btn);
