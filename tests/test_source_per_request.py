@@ -348,8 +348,8 @@ def test_purchase_table_stale_503_body_names_which_table_is_stale(client, seed, 
     """★ F4（复核 09-23）：两个方向的 503 body 之前逐字节相同——行项表停了是
     「没有新采购」，单据表停了是「状态冻住」，处置相反，但拿到 503 的人分不出
     该查哪张，得去翻日志。`stale_table` 现在把这个信息带进响应体：这里钉住
-    三种形态两两分得开——单据表老、行项表老、两张一起老（同龄，`BOTH_
-    PURCHASE_TABLES`）。"""
+    四种形态两两分得开——单据表老、行项表老、两张一起老且同龄、两张一起老
+    但不同龄（R3，复核第二轮：旧实现会把这一态错并进「更老的那张」）。"""
     def body_for(purchase_captured, purchase_order_captured):
         fake = FakeCh(capture_days=[dt.date(2026, 9, 23)],
                       purchase_captured=purchase_captured,
@@ -365,13 +365,19 @@ def test_purchase_table_stale_503_body_names_which_table_is_stale(client, seed, 
 
     order_stale = body_for(dt.date(2026, 9, 23), dt.date(2026, 9, 18))
     items_stale = body_for(dt.date(2026, 9, 18), dt.date(2026, 9, 23))
-    both_stale = body_for(dt.date(2026, 9, 18), dt.date(2026, 9, 18))
+    both_tied = body_for(dt.date(2026, 9, 18), dt.date(2026, 9, 18))
+    both_untied = body_for(dt.date(2026, 9, 19), dt.date(2026, 9, 10))  # age 4 与 13，都越线
 
     assert order_stale["stale_table"] == cs.PURCHASE_ORDER_TABLE, order_stale
     assert items_stale["stale_table"] == cs.PURCHASE_ITEMS_TABLE, items_stale
-    assert both_stale["stale_table"] == cs.BOTH_PURCHASE_TABLES, both_stale
-    # ★ 分得开不是三条孤立断言凑出来的——三种形态必须两两不同。
-    seen = {order_stale["stale_table"], items_stale["stale_table"], both_stale["stale_table"]}
+    assert both_tied["stale_table"] == cs.BOTH_PURCHASE_TABLES, both_tied
+    assert both_untied["stale_table"] == cs.BOTH_PURCHASE_TABLES, (
+        f"两张都越线（age 4 与 13 都超阈值 3）——不许因为不同龄就只点名更老的"
+        f"那张：{both_untied}")
+    # ★ 分得开不是孤立断言凑出来的——四种形态里真正不同的取值必须只有三个
+    #  （两个 BOTH 形态的 stale_table 取值理应相同，都是「两张一起」）。
+    seen = {order_stale["stale_table"], items_stale["stale_table"],
+            both_tied["stale_table"], both_untied["stale_table"]}
     assert len(seen) == 3, seen
 
 

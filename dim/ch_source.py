@@ -457,12 +457,15 @@ SQL_PURCHASE_ORDER_AS_OF = f"""
 SELECT max(_captured_date) FROM {PURCHASE_ORDER_TABLE}
 """
 
-#: ★ F3（复核 09-23）：两张表**同龄**时 `PurchaseTableStale.stale_table` 报的
-#:   第三种形态——不挑一张冒充。两张表同龄最典型的成因不是「两张都正常」，
-#:   而是**两张一起停**（09-21 实测：两张表整天缺）。挑一张（哪怕挑得有理由）
-#:   会让读者按单张表的处置去理解（「没有新采购」/「状态冻住」），而真相是
-#:   整批采集停了——第一眼就是错的，所以必须是一个单独、一眼能认出的值，
-#:   不能复用 `PURCHASE_ITEMS_TABLE`/`PURCHASE_ORDER_TABLE` 里的任何一个。
+#: `PurchaseTableStale.stale_table` 在**两张表都越过阈值**时报的形态——不挑
+#: 一张冒充。两张都越线最典型的成因不是「两张都正常」，而是**两张一起停**
+#: （09-21 实测：两张表整天缺），挑一张（哪怕挑得有理由）会让读者按单张表的
+#: 处置去理解（「没有新采购」/「状态冻住」），而真相是整批采集停了——第一眼
+#: 就是错的。★ R3（复核第二轮 09-23）：同龄只是「两张都越线」的一个特例，
+#: 不是这个值的判据本身——「两张都超阈值但不同龄」同样报它（旧实现曾经
+#: 把这种情形并进「更老的那张」，运维照着修完那张才发现另一张也越线）。
+#: 必须是一个单独、一眼能认出的值，不能复用 `PURCHASE_ITEMS_TABLE`/
+#: `PURCHASE_ORDER_TABLE` 里的任何一个。
 BOTH_PURCHASE_TABLES = f"{PURCHASE_ITEMS_TABLE}+{PURCHASE_ORDER_TABLE}"
 
 #: ★★ 必须按采购单 `status` 过滤，不能只靠 `quantity_real > quantity_receive`。
@@ -541,11 +544,15 @@ class PurchaseTableStale(Exception):
     两张表各自的日期与年龄仍然全部留在 `items_*`/`order_*` 属性与消息里，
     不因为兼容旧属性名就丢掉另一张表的证据。
 
-    ★ F3（复核 09-23）：两张表**同龄**时 `stale_table` 是 `BOTH_PURCHASE_TABLES`，
-    不挑一张冒充——同龄最典型的成因是两张一起停（09-21 实测），挑一张会让
-    读者按单张表的处置去理解，第一眼就是错的。同龄时 `items_captured`
-    与 `order_captured` 必然相等（都等于 `reference - age_days`），所以
-    `captured`/`age_days` 仍然可以照常取行项表那一份，不产生歧义。"""
+    ★ R3（复核第二轮 09-23）：`stale_table` 报的是**所有越线的表**，不是
+    「谁最老」——「两张都超阈值但不同龄」是独立于「同龄」的第四种形态：旧
+    实现落进 `elif/else` 只报更老的那张（实测 items age=4 已越线、order
+    age=13 ⇒ body 只提单据表），运维照着修完单据表，下一次请求才发现行项表
+    也越线。现在按各自的年龄是否超过 `threshold_days` 独立判定：两张都越线
+    （不管是否同龄）→ `BOTH_PURCHASE_TABLES`；只有一张越线 → 报那一张。
+    同龄只是「两张都越线」的一个特例，不再是判定 BOTH 的依据本身。
+    `captured`/`age_days` 两个旧属性语义不变（`api/ui/plans.py` 在读）——
+    仍然指向**更老的那张**，与 `stale_table` 是否报「两张」无关。"""
 
     def __init__(self, *, items_captured: dt.date, items_age_days: int,
                  order_captured: dt.date, order_age_days: int,
@@ -553,17 +560,25 @@ class PurchaseTableStale(Exception):
         self.items_captured, self.items_age_days = items_captured, items_age_days
         self.order_captured, self.order_age_days = order_captured, order_age_days
         self.threshold_days = threshold_days
-        # ★ 判据三：谁新谁旧不是重点，年龄才是——但同龄不许被并进任一分支
-        #   （F3）：`>=`/`<=` 都会把同龄悄悄并给某一张表，而同龄最典型的成因
-        #   是两张一起停，不是巧合地一样新。
-        if items_age_days == order_age_days:
+        # ★ R3：`stale_table` 只问「谁越线了」——两张都越线就都点名，不比较
+        #   谁更老。同龄（旧 F3 的判据）现在只是「两张都越线」下必然成立的
+        #   一种情形，不再单独判等。
+        items_over = items_age_days > threshold_days
+        order_over = order_age_days > threshold_days
+        if items_over and order_over:
             self.stale_table = BOTH_PURCHASE_TABLES
-            self.captured, self.age_days = items_captured, items_age_days
-        elif order_age_days > items_age_days:
+        elif order_over:
             self.stale_table = PURCHASE_ORDER_TABLE
+        else:
+            # ★ 调用方（`purchase_as_of()`）只在「至少一张越线」时才构造本
+            #   异常，所以这一支覆盖的是「只有行项表越线」；万一被绕过传入
+            #   两张都未越线的值，仍确定性地报行项表，不产生未定义行为。
+            self.stale_table = PURCHASE_ITEMS_TABLE
+        # ★ captured/age_days 语义不变——指向更老的那张，跟 stale_table 报
+        #   一张还是两张无关（这条判据仍然需要单纯的年龄比较）。
+        if order_age_days > items_age_days:
             self.captured, self.age_days = order_captured, order_age_days
         else:
-            self.stale_table = PURCHASE_ITEMS_TABLE
             self.captured, self.age_days = items_captured, items_age_days
         super().__init__(
             f"purchase_table_stale stale_table={self.stale_table} "

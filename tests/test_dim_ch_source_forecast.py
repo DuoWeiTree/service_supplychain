@@ -38,6 +38,7 @@ Task 3（`purchase_in_transit`，controller 裁定 09-23，design §4.4 / §8 OQ
 from __future__ import annotations
 
 import datetime as dt
+import logging
 
 import pytest
 
@@ -638,8 +639,13 @@ def test_purchase_table_stale_names_the_order_table_when_it_is_the_older_one():
     assert e.value.items_age_days == 1
     assert e.value.threshold_days == 3
     # ★ 判据一：消息里必须能分辨两张表各自的日期，不是只留一个日期让人猜。
+    # ★ R2（复核第二轮 09-23）：`PURCHASE_ORDER_TABLE` 是 `PURCHASE_ITEMS_TABLE`
+    #   的**前缀**，`BOTH_PURCHASE_TABLES` 又是两者用 `+` 拼起来的——不带分隔符
+    #   的子串断言在三种形态下**全都为真**，是被同一测试里那句 `==` 托着的。
+    #   带上尾随空格（消息格式串里 `stale_table=<值> threshold_days=...`，
+    #   BOTH 形态下值后面接的是 `+` 不是空格）才分得开。
     msg = str(e.value)
-    assert f"stale_table={cs.PURCHASE_ORDER_TABLE}" in msg
+    assert f"stale_table={cs.PURCHASE_ORDER_TABLE} " in msg
     assert f"items_captured={dt.date(2026, 9, 22)}" in msg
     assert f"order_captured={dt.date(2026, 9, 18)}" in msg
 
@@ -654,7 +660,9 @@ def test_purchase_table_stale_names_the_items_table_when_it_is_the_older_one():
     assert e.value.stale_table == cs.PURCHASE_ITEMS_TABLE
     assert e.value.items_age_days == 6
     assert e.value.order_age_days == 1
-    assert f"stale_table={cs.PURCHASE_ITEMS_TABLE}" in str(e.value)
+    # ★ R2：同上一条——带尾随空格，BOTH 形态下 items 后面接的是 `+`，
+    #   不会假阳性满足这句。
+    assert f"stale_table={cs.PURCHASE_ITEMS_TABLE} " in str(e.value)
 
 
 def test_purchase_table_not_stale_when_both_tables_differ_but_within_threshold():
@@ -664,6 +672,25 @@ def test_purchase_table_not_stale_when_both_tables_differ_but_within_threshold()
     src = cs.ChSource(purchase_query(captured=dt.date(2026, 9, 21),
                                       order_captured=dt.date(2026, 9, 23)))
     assert src.purchase_as_of() == dt.date(2026, 9, 21)
+
+
+def test_purchase_table_stale_names_both_tables_when_both_are_over_threshold_but_not_tied():
+    """★ R3（复核第二轮 09-23）：「两张都超阈值但不同龄」是独立于「同龄」的
+    第四种形态——旧实现落进 `elif/else` 只报更老的那张（复核实测的具体输入：
+    items age=4 已越线、order age=13，body 只提单据表；运维照着修完单据表，
+    下一次请求才发现行项表也越线）。`stale_table` 现在按各自年龄是否超阈值
+    独立判定：不管两张差多少天，只要都越线就是 `BOTH_PURCHASE_TABLES`。"""
+    src = cs.ChSource(purchase_query(captured=dt.date(2026, 9, 19),
+                                      order_captured=dt.date(2026, 9, 10)))
+    with pytest.raises(cs.PurchaseTableStale) as e:
+        src.purchase_as_of()
+    assert e.value.items_age_days == 4 and e.value.order_age_days == 13
+    assert e.value.stale_table == cs.BOTH_PURCHASE_TABLES, (
+        "两张都越线（4>3 且 13>3）——不许因为不同龄就只点名更老的那张")
+    # ★ captured/age_days 旧语义不变：仍指向更老的那张（单据表），跟
+    #   stale_table 现在报「两张」互不冲突。
+    assert e.value.captured == dt.date(2026, 9, 10)
+    assert e.value.age_days == 13
 
 
 def test_purchase_order_table_query_failure_becomes_ch_unavailable():
@@ -692,6 +719,31 @@ def test_purchase_order_table_never_collected_is_unknown_shape():
     with pytest.raises(cs.UnknownShape) as e:
         src.purchase_as_of()
     assert cs.PURCHASE_ORDER_TABLE in str(e.value)
+
+
+def test_purchase_as_of_logs_report_how_long_each_table_took(scm_log):
+    """★ R1（复核第二轮 09-23）：F1 修的是「成功路径丢了 elapsed_ms」——但那次
+    回归本身没有任何门禁看得见（复核逐行读 diff 才发现的，全量测试当时零增量
+    地全绿），下一次 refactor 还是同一个形状。这里把它钉死：`outcome=check`/
+    `outcome=ok`/`outcome=stale` 三条 `op=ch_purchase_as_of` 日志都必须带
+    `items_elapsed_ms=` 与 `order_elapsed_ms=`。写完先把两个字段从三条日志
+    格式串里删掉，确认它红（复核报告贴的证据：删掉后全量相对基线零增量）。"""
+    with scm_log.at_level(logging.INFO, logger="scm.dim"):
+        ok_src = cs.ChSource(purchase_query(captured=dt.date(2026, 9, 22)))
+        ok_src.purchase_as_of()  # 正常路径 → outcome=check + outcome=ok
+        stale_src = cs.ChSource(purchase_query(captured=dt.date(2026, 9, 18)))
+        with pytest.raises(cs.PurchaseTableStale):
+            stale_src.purchase_as_of()  # 陈旧路径 → outcome=check + outcome=stale
+
+    records = [r for r in scm_log.records if r.name == "scm.dim"]
+    for outcome in ("check", "ok", "stale"):
+        lines = [r.getMessage() for r in records
+                 if f"op=ch_purchase_as_of outcome={outcome}" in r.getMessage()]
+        assert lines, (
+            f"没找到 outcome={outcome} 这条日志——完整记录：{[r.getMessage() for r in records]}")
+        for line in lines:
+            assert "items_elapsed_ms=" in line, f"outcome={outcome} 没说行项表多久：{line}"
+            assert "order_elapsed_ms=" in line, f"outcome={outcome} 没说单据表多久：{line}"
 
 
 def test_is_overdue_true_for_a_past_month():
