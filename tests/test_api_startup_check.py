@@ -164,3 +164,29 @@ def test_suite_default_never_triggers_a_refresh_even_with_stale_mirrors(wipe, mo
     with TestClient(api.create_app()) as c:      # wipe：四张镜像全空，天然陈旧
         assert c.get("/health").status_code == 200
     assert calls == [], f"套件默认值必须保护 CH 不被打——实际触发了 {calls}"
+
+
+def test_a_failing_startup_lead_time_read_logs_pgcode(wipe, monkeypatch, scm_log):
+    """★ 复核 T8：提前期是启动钩子里唯一一处配置类检查（铁律 #4），读失败必须带 pgcode ——
+    只记 err= 分不清「表没建（迁移没跑）」与「PG 连不上」。同上：抓一个真的 psycopg2.Error。"""
+    _cfg(monkeypatch, startup_gate=False)
+    pg_err = None
+    try:
+        with pg_conn() as c, c.cursor() as cur:
+            cur.execute("SELECT * FROM no_such_table_zzz")
+    except psycopg2.Error as captured:
+        pg_err = captured
+    assert pg_err is not None
+
+    from api.ui import lead_time
+
+    def _boom(cur):
+        raise pg_err
+
+    monkeypatch.setattr(lead_time, "read_lead_time", _boom)
+    with scm_log.at_level(logging.WARNING, logger="scm.api"):  # noqa: SIM117
+        with TestClient(api.create_app()) as c:
+            assert c.get("/health").status_code == 200
+    line = next((ln for ln in scm_log.text.splitlines() if "stage=lead_time" in ln), "")
+    assert line, f"缺提前期失败日志：{scm_log.text!r}"
+    assert pg_err.pgcode in line, f"提前期失败日志缺 pgcode：{line!r}"

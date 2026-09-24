@@ -84,8 +84,9 @@ def test_the_fixture_covers_the_shapes_that_look_alike(client, seed):
     assert any(r["pipeline"]["ordered_open"] for r in saved["forecast_sku"]), \
         "缺「有在途但没归属」那一种 —— 它与「没有在途」必须长得不一样"
     # ★ spec §6 的预测块必须随 fixture 出去，否则前端永远在画一份没有它们的 mock
-    for key in ("params", "forecast", "forecast_store", "forecast_sku", "beyond_horizon",
-                "unallocated"):
+    # ★ forecast_msku 也在内：buildGridModel 无守卫地 .map 它，缺了整页崩而没有测试会红
+    for key in ("params", "forecast", "forecast_msku", "forecast_store", "forecast_sku",
+                "beyond_horizon", "unallocated"):
         assert key in saved, f"fixture 缺 {key}"
     assert any(r["state"] == "not_applicable" for r in saved["forecast_store"]), "缺「不适用」"
     # ★ 预测不适用（没有销量取数源）与 FBA 不适用是两件事，各要一个靶子

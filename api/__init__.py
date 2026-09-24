@@ -102,8 +102,10 @@ def _startup_check() -> None:
     except (KeyboardInterrupt, SystemExit):
         raise
     except Exception as e:  # noqa: BLE001 - 见上
-        log.warning("startup outcome=fail stage=lead_time err_type=%s err=%s",
-                    type(e).__name__, getattr(e, "detail", e))
+        log.warning("startup outcome=fail stage=lead_time err_type=%s pg=%s err=%s",
+                    type(e).__name__,
+                    pg_error_fields(e) if isinstance(e, psycopg2.Error) else {},
+                    getattr(e, "detail", e))
 
     try:
         stale = _stale_mirrors()
