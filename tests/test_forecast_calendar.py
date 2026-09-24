@@ -4,8 +4,16 @@ from fractions import Fraction
 import pytest
 
 from forecast.calendar import (
-    ANCHOR_DAY, add_months, days_in_month, halfmonth_daily, halfmonth_weight, month_end,
-    order_arrival, segment_daily, segment_units, units_for_month,
+    ANCHOR_DAY,
+    add_months,
+    days_in_month,
+    halfmonth_daily,
+    halfmonth_weight,
+    month_end,
+    order_arrival,
+    segment_daily,
+    segment_units,
+    units_for_month,
 )
 
 D = dt.date
@@ -45,6 +53,12 @@ def test_segment_daily_sums_to_segment_units():
 def test_segment_must_stay_inside_one_month():
     with pytest.raises(ValueError):
         segment_units(10, D(2026, 9, 30), D(2026, 10, 1))
+
+
+def test_segment_rejects_reversed_range_within_the_same_month():
+    """`_check_segment` 的第二个分支：同月但 first > last —— 跨月分支不会碰到它。"""
+    with pytest.raises(ValueError):
+        segment_units(10, D(2026, 9, 30), D(2026, 9, 22))
 
 
 def test_order_in_october_with_30_plus_60_arrives_in_january():

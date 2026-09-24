@@ -68,8 +68,9 @@ def segment_daily(total: int, first: dt.date, last: dt.date) -> dict[dt.date, Fr
     return out
 
 
-def order_arrival(order_period: dt.date, make_days: int, ship_days: int,
-                  anchor_day: int = ANCHOR_DAY) -> tuple[dt.date, dt.date, dt.date]:
+def order_arrival(
+    order_period: dt.date, make_days: int, ship_days: int, anchor_day: int = ANCHOR_DAY
+) -> tuple[dt.date, dt.date, dt.date]:
     """(下单日, 完工日, 到货日)。下单日 = 下单月的 anchor_day 号（14 §2.3 期望值模型）。"""
     placed = month_start(order_period).replace(day=anchor_day)
     made = placed + dt.timedelta(days=make_days)
