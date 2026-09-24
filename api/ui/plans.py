@@ -560,9 +560,9 @@ def grid(plan_id: int, request: Request,
                                        for sku in {r[0] for r in purchase} | {r[2] for r in demand}}
         as_of_date = source.as_of()
         as_of = as_of_date.isoformat()
-        # ★ OQ-5 陈旧闸：调用本身就是守卫（越线 → PurchaseTableStale），结果只
-        #   写进 source_notes.purchase_as_of 供前端显示；FixtureSource 没有这个
-        #   方法，按 hasattr 跳过。
+        # ★ OQ-5 陈旧闸：调用本身就是守卫（越线 → PurchaseTableStale）；结果写进
+        #   source_notes.purchase_as_of，并作在途「已逾期」的判据日（OQ-6，终审 I-2）。
+        #   FixtureSource 没有这个方法，按 hasattr 跳过。
         purchase_as_of = source.purchase_as_of() if hasattr(source, "purchase_as_of") else None
         dropped_stats = source.stats() if hasattr(source, "stats") else {}
     # ★ fix round 1 审计（team-lead 要求逐一核对 ChSource 实际会抛的异常集合是否都
@@ -576,7 +576,7 @@ def grid(plan_id: int, request: Request,
     payload = forecast_payload(
         as_of=as_of_date, periods=periods, demand_rows=out_demand, purchase_rows=purchase,
         fba=fba_by_msku, onhand=onhand_by_msku, base_rate=rate_by_msku, in_transit=in_transit,
-        lead=lead, embargo_days=EMBARGO_DAYS, plan_id=plan_id)
+        lead=lead, embargo_days=EMBARGO_DAYS, plan_id=plan_id, purchase_as_of=purchase_as_of)
     return {
         **payload,
         "plan_id": plan_id,

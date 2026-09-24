@@ -479,7 +479,8 @@
     "make_days": 30,
     "ship_days": 60,
     "anchor_day": 15,
-    "embargo_days": 7
+    "embargo_days": 7,
+    "in_transit_as_of": "2026-09-21"
   },
   "forecast": [
     {
@@ -505,6 +506,22 @@
           "month_totals": {
             "2026-09": 130
           },
+          "segments": [
+            {
+              "from": "2026-09-22",
+              "to": "2026-09-30",
+              "month_total": 130,
+              "month_days": 30,
+              "first_half_days": 0,
+              "first_half_divisor": 30,
+              "second_half_days": 9,
+              "second_half_divisor": 30,
+              "raw": 39.0,
+              "units": 39,
+              "month": "2026-09",
+              "month_total_raw": 129.754173668
+            }
+          ],
           "onhand_as_of": 300,
           "arrivals": [],
           "arrival_units": 0,
@@ -604,6 +621,22 @@
           "month_totals": {
             "2026-09": 10
           },
+          "segments": [
+            {
+              "from": "2026-09-22",
+              "to": "2026-09-30",
+              "month_total": 10,
+              "month_days": 30,
+              "first_half_days": 0,
+              "first_half_divisor": 30,
+              "second_half_days": 9,
+              "second_half_divisor": 30,
+              "raw": 3.0,
+              "units": 3,
+              "month": "2026-09",
+              "month_total_raw": 9.57528873
+            }
+          ],
           "onhand_as_of": 13,
           "arrivals": [],
           "arrival_units": 0,
@@ -901,18 +934,26 @@
       "pipeline": {
         "making": 200,
         "shipping": 0,
-        "ordered_open": 50,
+        "ordered_open": 90,
+        "ordered_open_overdue": 40,
         "ordered_open_sources": [
+          {
+            "period": "2026-07",
+            "units": 40,
+            "ref": "PO-2026-0701",
+            "overdue": true
+          },
           {
             "period": "2026-10",
             "units": 50,
-            "ref": "PO-2026-0918"
+            "ref": "PO-2026-0918",
+            "overdue": false
           }
         ],
         "fba_inbound": null,
         "fba_inbound_reason": "not_fetched"
       },
-      "in_transit": 250,
+      "in_transit": 290,
       "in_transit_excludes": [
         "fba_inbound"
       ],
@@ -938,18 +979,26 @@
       "pipeline": {
         "making": 80,
         "shipping": 200,
-        "ordered_open": 50,
+        "ordered_open": 90,
+        "ordered_open_overdue": 40,
         "ordered_open_sources": [
+          {
+            "period": "2026-07",
+            "units": 40,
+            "ref": "PO-2026-0701",
+            "overdue": true
+          },
           {
             "period": "2026-10",
             "units": 50,
-            "ref": "PO-2026-0918"
+            "ref": "PO-2026-0918",
+            "overdue": false
           }
         ],
         "fba_inbound": null,
         "fba_inbound_reason": "not_fetched"
       },
-      "in_transit": 330,
+      "in_transit": 370,
       "in_transit_excludes": [
         "fba_inbound"
       ],
@@ -975,18 +1024,26 @@
       "pipeline": {
         "making": 0,
         "shipping": 280,
-        "ordered_open": 50,
+        "ordered_open": 90,
+        "ordered_open_overdue": 40,
         "ordered_open_sources": [
+          {
+            "period": "2026-07",
+            "units": 40,
+            "ref": "PO-2026-0701",
+            "overdue": true
+          },
           {
             "period": "2026-10",
             "units": 50,
-            "ref": "PO-2026-0918"
+            "ref": "PO-2026-0918",
+            "overdue": false
           }
         ],
         "fba_inbound": null,
         "fba_inbound_reason": "not_fetched"
       },
-      "in_transit": 330,
+      "in_transit": 370,
       "in_transit_excludes": [
         "fba_inbound"
       ],
@@ -1012,18 +1069,26 @@
       "pipeline": {
         "making": 0,
         "shipping": 80,
-        "ordered_open": 50,
+        "ordered_open": 90,
+        "ordered_open_overdue": 40,
         "ordered_open_sources": [
+          {
+            "period": "2026-07",
+            "units": 40,
+            "ref": "PO-2026-0701",
+            "overdue": true
+          },
           {
             "period": "2026-10",
             "units": 50,
-            "ref": "PO-2026-0918"
+            "ref": "PO-2026-0918",
+            "overdue": false
           }
         ],
         "fba_inbound": null,
         "fba_inbound_reason": "not_fetched"
       },
-      "in_transit": 130,
+      "in_transit": 170,
       "in_transit_excludes": [
         "fba_inbound"
       ],

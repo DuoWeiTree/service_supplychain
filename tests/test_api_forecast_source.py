@@ -254,3 +254,13 @@ def test_grid_wires_purchase_as_of_into_source_notes(client, seed, use_source):
     r = client.get(f"/v1/plans/{plan['plan_id']}/grid", headers={"x-actor": seed.actor})
     assert r.status_code == 200
     assert r.json()["source_notes"]["purchase_as_of"] == "2026-09-20"
+    # ★ 终审 I-2：逾期 / 未来的分桶换到预测块里逐笔带 —— 预计到货月早于采购快照月即逾期
+    #   （is_overdue，OQ-6），period 原样（不改日期），货号行另给逾期合计
+    body = r.json()
+    assert body["params"]["in_transit_as_of"] == "2026-09-20"
+    sku_row = next(s for s in body["forecast_sku"] if s["sku"] == seed.sku_a)
+    assert sku_row["pipeline"]["ordered_open_sources"] == [
+        {"period": "2026-07", "units": 40, "ref": "PO-OLD", "overdue": True},
+        {"period": "2026-11", "units": 25, "ref": "PO-FUTURE", "overdue": False}]
+    assert (sku_row["pipeline"]["ordered_open"],
+            sku_row["pipeline"]["ordered_open_overdue"]) == (65, 40)

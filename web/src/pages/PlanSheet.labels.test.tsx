@@ -20,9 +20,10 @@ describe('spec §5：三种行各显示什么', () => {
     // ★ 沃尔玛店预测不适用、不进 Σ：货号预测 = 11072 的 145，不是 —
     expect(within(row).getByTestId('sku-system-SKU-1-2026-10')).toHaveTextContent('145');
     expect(within(row).getByTestId('sku-stock-SKU-1-2026-10')).toHaveTextContent('166');
-    // 在途 = 生产中 + 货运中 + 已下单：10 月 200 + 0 + 50；11 月 80（11 月单在产）+ 200（10 月单在船）+ 50
-    expect(within(row).getByTestId('transit-SKU-1-2026-10')).toHaveTextContent('250');
-    expect(within(row).getByTestId('transit-SKU-1-2026-11')).toHaveTextContent('330');
+    // 在途 = 生产中 + 货运中 + 已下单：10 月 200 + 0 + 90；11 月 80（11 月单在产）+ 200（10 月单在船）+ 90
+    //（已下单 90 = 已逾期的 40 + 10 月预计到的 50，逾期的照计，终审 I-2）
+    expect(within(row).getByTestId('transit-SKU-1-2026-10')).toHaveTextContent('290');
+    expect(within(row).getByTestId('transit-SKU-1-2026-11')).toHaveTextContent('370');
     const cell = within(row).getByTestId('sku-stock-SKU-1-2026-10').closest('.ps-c')!;
     expect(cell).toHaveTextContent(/预测.*库存.*在途/);
   });
@@ -139,7 +140,7 @@ describe('spec §5：三种行各显示什么', () => {
     const cell = () => screen.getByTestId('sku-stock-SKU-1-2026-10').closest('.ps-c')!;
     expect(cell()).toHaveTextContent(/预测.*库存.*在途/);
     await userEvent.click(screen.getByRole('button', { name: '紧凑' }));
-    expect(cell()).toHaveTextContent(/预\s*145.*存\s*166.*途\s*250/);
+    expect(cell()).toHaveTextContent(/预\s*145.*存\s*166.*途\s*290/);
     expect(cell()).not.toHaveTextContent(/预测|库存|在途/);
     for (const [short, full] of [['预', '预测'], ['存', '库存'], ['途', '在途']] as const) {
       expect(within(cell() as HTMLElement).getByText(short)).toHaveAttribute('title', full);

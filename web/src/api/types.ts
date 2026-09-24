@@ -161,15 +161,34 @@ export interface ForecastArrival {
   rule?: string; gap_part?: number; weight_part?: number;
   reason?: 'gap_unknown' | 'not_recomputed_in_mock';
 }
-/** W-6 桥接段（as_of 次日 → 首个计划月前一天，按预测扣）。★ `rate` 为 null 时 `units` 也是 null */
+/** 一段扣减的每一步（`forecast/calendar.py::segment_detail`，终审 I-4）：
+ *  month_total × (前半月天数 ÷ first_half_divisor + 后半月天数 ÷ second_half_divisor) = raw → 向上取整 units。
+ *  ★ 面板照这个复算，不自己再算一遍 */
+export interface SegmentDetail {
+  from: string; to: string; month_total: number; month_days: number;
+  first_half_days: number; first_half_divisor: number;
+  second_half_days: number; second_half_divisor: number;
+  raw: number; units: number;
+}
+/** 桥接段的一个月：月总量 = ceil(速率 × 当月天数)，`month_total_raw` 是取整前的乘积 */
+export interface BridgeSegment extends SegmentDetail { month: Period; month_total_raw: number }
+/** W-6 桥接段（as_of 次日 → 首个计划月前一天）。`by`：`forecast` 按预测速率；
+ *  `first_month_expected` 没有预测速率时按首月期望折成日速率（终审 I-5，`first_month_expected` 给折算用的数）；
+ *  `unknown` 两样都没有 —— `rate` / `units` 为 null */
 export interface ForecastBridge {
-  from: string; to: string; units: number | null; by: 'forecast'; rate: number | null;
-  month_totals: Record<Period, number>; onhand_as_of: number;
+  from: string; to: string; units: number | null;
+  by: 'forecast' | 'first_month_expected' | 'unknown'; rate: number | null;
+  first_month_expected?: { period: Period; units: number; days: number };
+  month_totals: Record<Period, number>; segments: BridgeSegment[]; onhand_as_of: number;
   arrivals: ForecastArrival[]; arrival_units: number | null; stockout_date: string | null;
 }
 /** as_of 落在本月里（state = partial）：台账从 `from`（as_of 次日）起，起点是 as_of 当天可售。
  *  ★ 本月已过去的那几天不在账上，所以这不是「期初」；其余月份为 null */
-export interface ForecastAsOfStart { as_of: string; onhand_as_of: number; from: string }
+export interface ForecastAsOfStart {
+  as_of: string; onhand_as_of: number; from: string;
+  /** 全月期望切到 as_of 次日起那一段；期望未填为 null */
+  segment: SegmentDetail | null;
+}
 export interface MskuForecast {
   seller_sku: string; sid: Sid; sku: string; period: Period;
   state: ForecastState; reason: ForecastReason; unknown_since: Period | null;
@@ -192,7 +211,11 @@ export interface StoreForecast {
 /** ★ making / shipping 由计划采购推出；null = mock 改了采购没重算（OP-17）。后端恒给数 */
 export interface SkuPipeline {
   making: number | null; shipping: number | null; ordered_open: number;
-  ordered_open_sources: { period: Period; units: number; ref: string }[];
+  /** ordered_open 里已逾期的那部分（OQ-6，终审 I-2） */
+  ordered_open_overdue: number;
+  /** ★ `period` 是**预计到货月**（采购单 ETA 所在月），不是下单月；
+   *  `overdue` = 预计到货月早于 `params.in_transit_as_of` 所在月（OQ-6，不改日期） */
+  ordered_open_sources: { period: Period; units: number; ref: string; overdue: boolean }[];
   /** ★ 没取，不是 0 */
   fba_inbound: null; fba_inbound_reason: 'not_fetched';
 }
@@ -236,6 +259,8 @@ export type Unallocated = UnallocatedBatch | UnallocatedMsku;
 export interface ForecastParams {
   as_of: string; route: 'oversea_sea'; make_days: number; ship_days: number;
   anchor_day: number; embargo_days: number | null;
+  /** 判在途「已逾期」用的快照日：CH 源是采购快照日，fixture 源退到 as_of */
+  in_transit_as_of: string;
 }
 
 export interface ClaimHolder { plan_id: PlanId; title: string; actor: string }

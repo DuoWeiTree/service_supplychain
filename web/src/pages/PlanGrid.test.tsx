@@ -45,7 +45,7 @@ function makeGrid(): GridResponse {
              d('MSKU-W', '90001', P[0]!, 60), d('MSKU-W', '90001', P[1]!, 65), d('MSKU-W', '90001', P[2]!, 70)],
     purchase: P.map((p, n) => ({ sku: 'SKU-1', period: p, planned_units: n === 0 ? 500 : null })),
     params: { as_of: '2026-09-21', route: 'oversea_sea', make_days: 30, ship_days: 60,
-              anchor_day: 15, embargo_days: 7 },
+              anchor_day: 15, embargo_days: 7, in_transit_as_of: '2026-09-21' },
     forecast: [],
     forecast_msku: [],
     forecast_store: [st('11072', P[0]!, 420, 200), st('11072', P[1]!, 200, -30),
@@ -63,7 +63,7 @@ function transitRow(sku: string, period: string, units: number): SkuForecast {
   return {
     sku, period, state: 'ok', reason: null, reason_from: null, demand: null, system: null, system_not_applicable: false,
     opening: null, stock_demand: null, inbound_planned: 0, closing: null, excluded_not_applicable: 0,
-    pipeline: { making: 0, shipping: 0, ordered_open: units, ordered_open_sources: [],
+    pipeline: { making: 0, shipping: 0, ordered_open: units, ordered_open_overdue: 0, ordered_open_sources: [],
                 fba_inbound: null, fba_inbound_reason: 'not_fetched' },
     in_transit: units, in_transit_excludes: ['fba_inbound'], unfilled_purchase: [],
   };

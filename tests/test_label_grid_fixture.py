@@ -79,7 +79,9 @@ def build(periods: list[dt.date], expected: dict[tuple[str, str], list[int]],
         fba={A: True, B: True, W: False},
         onhand={A: 300, B: 13},
         base_rate=rate,
-        in_transit={"SKU-1": [SimpleNamespace(period="2026-10", units=50, ref="PO-2026-0918")]},
+        # ★ PO-2026-0701 预计 7 月到、至今未到：已逾期那一形态（终审 I-2 · OQ-6）
+        in_transit={"SKU-1": [SimpleNamespace(period="2026-07", units=40, ref="PO-2026-0701"),
+                              SimpleNamespace(period="2026-10", units=50, ref="PO-2026-0918")]},
         lead=LeadTime("oversea_sea", 30, 60, 15, {}), embargo_days=7, plan_id=1)
     return {"periods": [p.strftime("%Y-%m") for p in periods], "demand": demand,
             "purchase": [{"sku": "SKU-1", "period": p.strftime("%Y-%m"), "planned_units": u}
@@ -126,6 +128,13 @@ def test_long_grid_has_a_plan_purchase_arrival():
     """★ 这份存在的理由：没有一笔到货落进周期，依据面板的「到货怎么分」就没东西可测。"""
     g = FIXTURES["labelGridLong.json"]()
     assert any(f["basis"]["arrivals"] for f in g["forecast"])
+
+
+def test_grid_has_an_overdue_open_order():
+    """★ 终审 I-2：依据面板的「已逾期」要有东西可测 —— 7 月预计到货、as_of 9 月仍未到。"""
+    pl = FIXTURES["labelGrid.json"]()["forecast_sku"][0]["pipeline"]
+    assert [s["overdue"] for s in pl["ordered_open_sources"]] == [True, False]
+    assert pl["ordered_open_overdue"] == 40
 
 
 if __name__ == "__main__":

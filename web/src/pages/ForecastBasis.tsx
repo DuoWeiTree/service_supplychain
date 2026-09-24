@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react';
 import { Fold } from '../components/Fold';
 import type {
-  ForecastArrival, ForecastReason, ForecastState, MskuForecast, NoSalesSourceCause, Period, StoreForecast, SystemBasis,
+  ForecastArrival, ForecastBridge, ForecastReason, ForecastState, MskuForecast, NoSalesSourceCause, Period, SegmentDetail,
+  StoreForecast, SystemBasis,
 } from '../api/types';
 import type { QtyValue } from '../components/Qty';
 import { demandAt, sumUnits, totalsAt, type GridModel, type MskuCell, type MskuRow, type SkuBlock } from './planGridModel';
@@ -16,7 +17,7 @@ export const FORECAST_WHY: Record<Exclude<ForecastReason, null>, string> = {
   as_of_inside_month: 'as_of 在本月中，从次日起扣',
   unknown_onhand: '无在仓数',
   unknown_demand: '期望销量待填',
-  bridge_rate_unknown: '没有预测速率，as_of 到首月之间扣不了',
+  bridge_rate_unknown: '没有预测速率、首月期望也未填，as_of 到首月之间扣不了',
   inbound_unknown: '到货数未知（有店缺口未知，分不出去）',
   not_applicable: '无 FBA',
   elapsed: '月份已过去',
@@ -31,6 +32,32 @@ const CAUSE: Record<NoSalesSourceCause, string> = {
 
 const md = (iso: string) => iso.slice(5);                       // "2026-09-22" → "09-22"
 const n = (v: number | null) => (v === null ? '—' : String(v));
+// 后端 units_for_month 先 round 到 9 位再取整（OP-10）：差在 1e-9 以内的就是整数
+const isInt = (x: number) => Math.abs(x - Math.round(x)) < 1e-9;
+/** 取整前的乘积。★ 位数不够时加位：123.001 印成「123.00 → 向上取整 124」就是屏上自相矛盾 */
+function fmtRaw(x: number): string {
+  for (let d = 2; d < 9; d++) {
+    const s = x.toFixed(d);
+    if (!isInt(Number(s))) return s.replace(/(\.\d*?)0+$/, '$1');
+  }
+  return x.toFixed(9);
+}
+/** 「= 乘积 → 向上取整 N」；乘积本来就是整数时不说取整 */
+function rawTail(raw: number, units: number | null): string {
+  return isInt(raw) ? `= ${Math.round(raw)}` : `= ${fmtRaw(raw)} → 向上取整 ${n(units)}`;
+}
+/** 一段扣减怎么来的（`forecast/calendar.py::segment_detail`）：月总量 × 半月权重 → 向上取整 */
+function segLine(s: SegmentDetail): string {
+  const terms = [
+    s.first_half_days > 0 ? `前半月 ${s.first_half_days} 天 ÷ ${s.first_half_divisor}` : null,
+    s.second_half_days > 0 ? `后半月 ${s.second_half_days} 天 ÷ ${s.second_half_divisor}` : null,
+  ].filter(Boolean).join(' + ');
+  return `${md(s.from)}–${md(s.to)} 扣 ${s.units} = 月总量 ${s.month_total} × (${terms}) ${rawTail(s.raw, s.units)}`;
+}
+const BRIDGE_BY: Record<ForecastBridge['by'], string> = {
+  forecast: '按预测扣', first_month_expected: '按首月期望折算（无预测速率）扣', unknown: '扣',
+};
+
 function prevMonth(p: Period): Period {
   const [y, m] = p.split('-').map(Number) as [number, number];
   return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`;
@@ -77,10 +104,31 @@ function openingLine(f: MskuForecast, periods: Period[], asOf: string): string {
   if (b) {
     const arr = b.arrival_units ? ` + 到货 ${b.arrival_units}` : '';
     return `期初 ${n(f.opening)}（= ${prevMonth(f.period)} 末；as_of ${asOf} 可售 ${b.onhand_as_of}`
-      + ` − ${md(b.from)}–${md(b.to)} 按预测扣 ${n(b.units)}${arr}）`;
+      + ` − ${md(b.from)}–${md(b.to)} ${BRIDGE_BY[b.by]} ${n(b.units)}${arr}）`;
   }
   if (i > 0) return `期初 ${n(f.opening)}（= ${periods[i - 1]} 期末）`;
   return `期初 ${n(f.opening)}（= as_of ${asOf} 可售）`;
+}
+
+/** 桥接扣减的每一步：速率从哪来 → 每个桥接月的月总量 → 该月那一段按半月权重切、取整（终审 I-4） */
+function BridgeDetail({ b }: { b: ForecastBridge }): ReactNode {
+  if (b.rate === null) return null;
+  const rate = b.rate;
+  const fme = b.first_month_expected;
+  return (
+    <>
+      {b.by === 'first_month_expected' && fme
+        && <div className="fb-sub">日速率 {rate.toFixed(4)} 件/天 = {fme.period} 期望 {fme.units} ÷ {fme.days} 天</div>}
+      {b.segments.map((s) => (
+        <div key={s.month}>
+          <div className="fb-sub">
+            {s.month} 月总量 {s.month_total} = {rate.toFixed(4)} 件/天 × {s.month_days} 天 {rawTail(s.month_total_raw, s.month_total)}
+          </div>
+          <div className="fb-sub">{segLine(s)}</div>
+        </div>
+      ))}
+    </>
+  );
 }
 
 /** 期初 → − 期望 → + 到货 → = 期末 → 下月期初。★ 链是恒等式③④（14 §1.1），每一环都要看得见 */
@@ -98,16 +146,21 @@ function MskuChain({ f, periods, asOf, firstStockout, monthExpected }: {
         <>
           {/* 期末未知时起点照给：as_of 可售是事实，与后面哪一环未知无关 */}
           {!stale && (f.opening !== null || f.basis.as_of_start) && <div>{openingLine(f, periods, asOf)}</div>}
+          {!stale && f.opening !== null && b && <BridgeDetail b={b} />}
           <div data-testid="fb-no-closing">{noClosing(f.state, f.reason, f.unknown_since)}</div>
         </>
       ) : (
         <>
           <div>{openingLine(f, periods, asOf)}</div>
+          {b && <BridgeDetail b={b} />}
           {b?.arrivals.map((a) => <div key={`b${a.date}${a.order_period}`} className="fb-sub">{arrivalLine(a)}</div>)}
           {b?.stockout_date && <div className="fb-sub">as_of 到首月之间断货 {b.stockout_date}</div>}
           {f.state === 'partial'
             // ★ 这里的数只是 as_of 次日到月末那一段，不是格子上的期望 —— 标出来，否则链对不上格子
-            ? <div>− 本月 as_of 后期望 {n(f.demand)}（{md(f.basis.as_of_start?.from ?? asOf)} 起，全月期望 {n(monthExpected)} 的剩余部分）</div>
+            ? <>
+                <div>− 本月 as_of 后期望 {n(f.demand)}（{md(f.basis.as_of_start?.from ?? asOf)} 起，全月期望 {n(monthExpected)} 的剩余部分）</div>
+                {f.basis.as_of_start?.segment && <div className="fb-sub">{segLine(f.basis.as_of_start.segment)}</div>}
+              </>
             : <div>− 期望 {n(f.demand)}</div>}
           <div>+ 到货 {n(f.inbound_planned)}</div>
           {f.basis.arrivals.map((a) => <div key={`a${a.date}${a.order_period}`} className="fb-sub">{arrivalLine(a)}</div>)}
@@ -132,7 +185,7 @@ function forecastLine(c: MskuCell | undefined): string {
     c.system_extrapolated ? '外推' : null,
   ].filter(Boolean).map((s) => `，${s}`).join('');
   // ★ 写出乘积与取整：只写 4.00 × 30 时 121 看起来是算错了
-  const product = sb.units_raw === null ? '' : ` = ${sb.units_raw.toFixed(2)} → 向上取整 ${n(c.system_units)}`;
+  const product = sb.units_raw === null ? '' : ` ${rawTail(sb.units_raw, c.system_units)}`;
   return `预测 ${n(c.system_units)} = ${sb.base_rate.toFixed(4)} 件/天 × ${sb.days_in_month} 天${product}`
     + `（窗口 ${md(sb.window.from)} ~ ${md(sb.window.until)}，禁言 ${sb.embargo_days} 天，剔断货 ${sb.censored_days} 天${extra}）`;
 }
@@ -252,8 +305,16 @@ function SkuBody({ model, sku, period }: { model: GridModel; sku: string; period
         {t.closing !== null && t.excluded_not_applicable > 0 && <div className="fb-sub">不含 {t.excluded_not_applicable} 家无 FBA 店铺</div>}
       </div>
       <div className="fb-chain">
-        <div>在途 {n(t.in_transit)} = 生产中 {n(pl.making)} + 货运中 {n(pl.shipping)} + 已下单未到 {pl.ordered_open}</div>
-        {pl.ordered_open_sources.map((o) => <div key={o.ref} className="fb-sub">{o.ref} {o.units}（{o.period} 下单）</div>)}
+        <div>
+          在途 {n(t.in_transit)} = 生产中 {n(pl.making)} + 货运中 {n(pl.shipping)} + 已下单未到 {pl.ordered_open}
+          {pl.ordered_open_overdue > 0 && `（其中已逾期 ${pl.ordered_open_overdue}）`}
+        </div>
+        {/* ★ period 是采购单的预计到货月（ETA），不是下单月；逾期的不改日期，照标（OQ-6） */}
+        {pl.ordered_open_sources.map((o) => (
+          <div key={`${o.ref}/${o.period}`} className="fb-sub">
+            {o.ref} {o.units}（预计 {o.period} 到货{o.overdue ? '，已逾期' : ''}）
+          </div>
+        ))}
         <div className="fb-sub">FBA 货件 未取</div>
       </div>
       {t.unfilled_purchase === null
@@ -303,12 +364,13 @@ export function ForecastBasis({ model, target: t0 }: { model: GridModel; target:
       </div>
       <Fold summary="怎么算的">
         {sb && sb.reason !== 'not_applicable_no_sales_source' && <RateDetail sb={sb} />}
-        <p>首月期初 = as_of 当天 FBA 可售 − as_of 次日到首月前一天按预测扣的量 + 这段到货</p>
+        <p>首月期初 = as_of 当天 FBA 可售 − as_of 次日到首月前一天按预测扣的量 + 这段到货；没有预测速率时按首月期望 ÷ 当月天数折成日速率</p>
+        <p>一段的扣减 = 月总量 × (前半月天数 ÷ 30 + 后半月天数 ÷ 2×(月长 − 15))，向上取整：前后半月各占月总量一半</p>
         <p>as_of 落在本月里：从 as_of 当天可售起算，只扣 as_of 次日到月末那一段期望，本月已过的天数不在账上</p>
         <p>期末 = 期初 − 期望 + 到货（负数照实显示）；下月期初 ≡ 本月期末</p>
         <p>到货日 = 下单月 {anchor_day} 号 + 生产 {make_days} 天 + 货运 {ship_days} 天；各 msku 先补缺口；缺口比这批多就按缺口比例分，比这批少则余量按期望销量比例摊</p>
         <p>预测 = 基线速率 × 当月天数，向上取整；店铺 = Σ msku，货号 = Σ 店铺（无 FBA 的不进库存求和）</p>
-        <p>在途 = 生产中 + 货运中 + 已下单未到；FBA 货件未取，不计入</p>
+        <p>在途 = 生产中 + 货运中 + 已下单未到；FBA 货件未取，不计入；已下单未到的预计到货月早于 {model.params.in_transit_as_of.slice(0, 7)} 即已逾期</p>
       </Fold>
     </>
   );

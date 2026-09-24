@@ -20,7 +20,7 @@ const GRID: GridResponse = {
              { sku: 'SKU-1', period: '2026-11', planned_units: null },
              { sku: 'SKU-1', period: '2026-12', planned_units: null }],
   params: { as_of: '2026-09-21', route: 'oversea_sea', make_days: 30, ship_days: 60,
-            anchor_day: 15, embargo_days: 7 },
+            anchor_day: 15, embargo_days: 7, in_transit_as_of: '2026-09-21' },
   forecast: [],
   forecast_msku: [],
   forecast_store: ['2026-10', '2026-11', '2026-12'].map((period, n) => ({

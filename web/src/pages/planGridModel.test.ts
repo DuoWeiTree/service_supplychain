@@ -39,7 +39,7 @@ const fk = (period: string, making: number, shipping = 0, ordered = 0): SkuForec
   sku: 'SKU-1', period, state: 'ok', reason: null, reason_from: null,
   demand: null, system: null, system_not_applicable: false, opening: null,
   stock_demand: null, inbound_planned: 0, closing: null, excluded_not_applicable: 1,
-  pipeline: { making, shipping, ordered_open: ordered, ordered_open_sources: [],
+  pipeline: { making, shipping, ordered_open: ordered, ordered_open_overdue: 0, ordered_open_sources: [],
               fba_inbound: null, fba_inbound_reason: 'not_fetched' },
   in_transit: making + shipping + ordered, in_transit_excludes: ['fba_inbound'],
   unfilled_purchase: [],
@@ -56,7 +56,7 @@ function makeGrid(): GridResponse {
     ],
     purchase: P.map((p, n) => ({ sku: 'SKU-1', period: p, planned_units: n === 0 ? 500 : null })),
     params: { as_of: '2026-09-21', route: 'oversea_sea', make_days: 30, ship_days: 60,
-              anchor_day: 15, embargo_days: 7 },
+              anchor_day: 15, embargo_days: 7, in_transit_as_of: '2026-09-21' },
     forecast: [],
     forecast_msku: [],
     forecast_store: [

@@ -18,6 +18,7 @@ from forecast.calendar import (
     month_start,
     order_arrival,
     segment_daily,
+    segment_detail,
     segment_units,
     span,
     units_for_month,
@@ -143,6 +144,7 @@ def project_msku(m: MskuInput, as_of: dt.date, periods: Sequence[dt.date],
     bridge = None
     if start < first_plan:                                   # ★ W-6 桥接段：按预测扣
         totals: dict[str, int] = {}
+        segs: list[dict] = []
         units: int | None = None
         rate, by, extra = m.base_rate, "forecast", {}
         first_eff = m.effective.get(first_plan)
@@ -162,12 +164,16 @@ def project_msku(m: MskuInput, as_of: dt.date, periods: Sequence[dt.date],
                 a, b = max(start, mm), min(first_plan - ONE, month_end(mm))
                 total = units_for_month(rate, days_in_month(mm))
                 totals[mm.strftime("%Y-%m")] = total
+                # ★ 终审 I-4：面板要能复算 —— 月总量的未取整乘积（同 units_for_month 的 round 9 位）
+                #   与段的半月天数 / 除数 / 乘积 / 向上取整，都由这里给
+                segs.append({**segment_detail(total, a, b), "month": mm.strftime("%Y-%m"),
+                             "month_total_raw": round(rate * days_in_month(mm), 9)})
                 demand.update(segment_daily(total, a, b))
                 units += segment_units(total, a, b)
                 mm = add_months(mm, 1)
         bridge = {"from": start.isoformat(), "to": (first_plan - ONE).isoformat(),
                   "units": units, "by": by, "rate": rate, **extra,
-                  "month_totals": totals, "onhand_as_of": m.onhand}
+                  "month_totals": totals, "segments": segs, "onhand_as_of": m.onhand}
     for p in live:                                           # ★ 计划月：扣期望销量
         a, eff = max(start, p), m.effective.get(p)
         if eff is None:
@@ -218,7 +224,9 @@ def project_msku(m: MskuInput, as_of: dt.date, periods: Sequence[dt.date],
         month_notes = tuple(n for d in sorted(notes) if a <= d <= b for n in notes[d])
         br = bridge if (p == first_plan and not partial) else None
         shown_opening = None if (partial or opening is None) else _int(opening)
-        start_note = ({"as_of": as_of.isoformat(), "onhand_as_of": m.onhand, "from": a.isoformat()}
+        eff = m.effective.get(p)
+        start_note = ({"as_of": as_of.isoformat(), "onhand_as_of": m.onhand, "from": a.isoformat(),
+                       "segment": None if eff is None else segment_detail(eff, a, b)}
                       if partial else None)
         if br is not None and shown_opening is not None and shown_opening != (
                 m.onhand - br["units"] + br["arrival_units"]):
@@ -247,7 +255,9 @@ class PlanForecastInput:
     ship_days: int
     mskus: list[MskuInput]
     purchase: dict[tuple[str, dt.date], int | None]
-    ordered_open: dict[str, list[tuple[str, int, str]]]     # sku → [(期间 "YYYY-MM", 件数, 单号)]
+    #: sku → [(预计到货月 "YYYY-MM", 件数, 单号, 已逾期)]。★ 月份是 ETA 所在月，不是下单月；
+    #: 已逾期由装配层按采购快照判（OQ-6），这里只搬运与合计 —— 不改日期
+    ordered_open: dict[str, list[tuple[str, int, str, bool]]]
 
 
 @dataclass(frozen=True)
@@ -280,6 +290,7 @@ class SkuMonth:
     making: int
     shipping: int
     ordered_open: int
+    ordered_open_overdue: int               # ordered_open 里预计到货月已过的那部分（OQ-6）
     ordered_sources: tuple[dict, ...]
     in_transit: int
     unfilled_purchase: tuple[str, ...]
@@ -393,9 +404,10 @@ def forecast_plan(inp: PlanForecastInput) -> PlanForecast:
             if len({m.applicable for m in group}) > 1:
                 raise ValueError(f"{sku} 店铺 {sid} 下 msku 的 has_fba 不一致："
                                  f"{[(m.seller_sku, m.applicable) for m in group]}")
-        refs = tuple({"period": per, "units": u, "ref": ref}
-                     for per, u, ref in inp.ordered_open.get(sku, []))
+        refs = tuple({"period": per, "units": u, "ref": ref, "overdue": od}
+                     for per, u, ref, od in inp.ordered_open.get(sku, []))
         ordered = sum(x["units"] for x in refs)
+        ordered_overdue = sum(x["units"] for x in refs if x["overdue"])
         for i, p in enumerate(inp.periods):
             month_stores: list[StoreMonth] = []
             for sid in sorted(groups):
@@ -440,7 +452,7 @@ def forecast_plan(inp: PlanForecastInput) -> PlanForecast:
                 stock(lambda s: s.opening),
                 _sum(final[m.key][i].demand for m in ms_list if m.applicable) if live else None,
                 stock(lambda s: s.inbound), stock(lambda s: s.closing),
-                len(month_stores) - len(live), making, shipping, ordered, refs,
+                len(month_stores) - len(live), making, shipping, ordered, ordered_overdue, refs,
                 making + shipping + ordered, tuple(unfilled[sku]), reason, reason_from,
                 system_not_applicable=bool(month_stores) and not sys_stores)
             if (row.state == "ok" and row.closing

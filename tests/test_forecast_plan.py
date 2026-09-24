@@ -22,8 +22,9 @@ def s1(make=30, ship=60, c_eff=(40, 44, 44), extra=()):
                m(DD, SKU_B, 40, (7, 8, 6), 1.0), *extra],
         purchase={(SKU_A, OCT): 200, (SKU_A, NOV): None, (SKU_A, DEC): 0,
                   (SKU_B, OCT): None, (SKU_B, NOV): None, (SKU_B, DEC): None},
-        ordered_open={SKU_A: [("2026-10", 50, "PO-2026-0912"), ("2026-10", 30, "PO-2026-0915"),
-                              ("2026-11", 120, "PO-2026-0920")]})
+        ordered_open={SKU_A: [("2026-10", 50, "PO-2026-0912", False),
+                              ("2026-10", 30, "PO-2026-0915", False),
+                              ("2026-11", 120, "PO-2026-0920", False)]})
 
 
 def chain(rows):
@@ -74,6 +75,20 @@ def test_pipeline_is_month_end_snapshot_and_ordered_open_never_arrives():
         (0, 200, 200, 400), (0, 0, 200, 200), (0, 0, 200, 200)]
     assert [x["ref"] for x in rows[0].ordered_sources] == ["PO-2026-0912", "PO-2026-0915",
                                                           "PO-2026-0920"]
+
+
+def test_overdue_open_orders_are_named_and_totalled_not_redated():
+    """★ 终审 I-2 · chsource OQ-6：预计到货月早于采购快照月的已下单未到是「已逾期」——
+    不许随 sku_pipeline[].bucket 一起消失，也不许被改日期：period 原样是预计到货月，
+    逐笔带 overdue，货号行另给逾期合计。"""
+    inp = s1()
+    inp = PlanForecastInput(**{**inp.__dict__, "ordered_open": {SKU_A: [
+        ("2026-07", 40, "PO-OLD", True), ("2026-10", 50, "PO-2026-0912", False)]}})
+    rows = sku_rows(forecast_plan(inp), SKU_A)
+    assert rows[0].ordered_sources == (
+        {"period": "2026-07", "units": 40, "ref": "PO-OLD", "overdue": True},
+        {"period": "2026-10", "units": 50, "ref": "PO-2026-0912", "overdue": False})
+    assert [(r.ordered_open, r.ordered_open_overdue) for r in rows] == [(90, 40)] * 3
 
 
 def test_unfilled_purchase_is_named_not_silent():

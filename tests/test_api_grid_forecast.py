@@ -50,7 +50,9 @@ def test_params_say_which_rules_were_used(client, seed, lead_time_reset):
     # PF-1：认领按 base_rate 种预测后，grid 如实报 embargo_days = 7（设计取值 · 未实测）
     g = grid(client, seed, s1(client, seed))
     assert g["params"] == {"as_of": "2026-09-21", "route": "oversea_sea", "make_days": 30,
-                           "ship_days": 60, "anchor_day": 15, "embargo_days": 7}
+                           "ship_days": 60, "anchor_day": 15, "embargo_days": 7,
+                           # FixtureSource 没有单独的采购快照 → 逾期按 as_of 判（终审 I-2）
+                           "in_transit_as_of": "2026-09-21"}
 
 
 def test_default_lead_time_msku_chain_and_beyond_horizon(client, seed, lead_time_reset):
@@ -205,7 +207,7 @@ def test_sku_whose_last_msku_was_released_keeps_its_pipeline(client, seed, lead_
     assert [(r["state"], r["reason"], r["pipeline"]["ordered_open"]) for r in b] == [
         ("no_msku", "no_msku", 60)] * 3
     assert b[0]["pipeline"]["ordered_open_sources"] == [
-        {"period": "2026-10", "units": 60, "ref": "PO-2026-0918"}]
+        {"period": "2026-10", "units": 60, "ref": "PO-2026-0918", "overdue": False}]
 
 
 def test_sku_with_no_purchase_cells_is_not_dropped(client, seed, lead_time_reset):

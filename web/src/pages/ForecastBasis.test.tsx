@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { GridResponse } from '../api/types';
@@ -29,6 +29,11 @@ describe('spec §5：点开一格看依据', () => {
     const d = await open('依据 MSKU-A 2026-10');
     expect(d).toHaveTextContent('库存 A4Pet-US / MSKU-A / 2026-10');
     expect(d).toHaveTextContent('期初 261（= 2026-09 末；as_of 2026-09-21 可售 300 − 09-22–09-30 按预测扣 39）');
+    // ★ 终审 I-4：桥接扣减在面板上复算得出 —— 月总量从哪来、半月天数与除数、取整各一步
+    expect(d).toHaveTextContent('2026-09 月总量 130 = 4.3251 件/天 × 30 天 = 129.75 → 向上取整 130');
+    // 130 × 9 ÷ 30 正好 39：不说「向上取整」
+    expect(d).toHaveTextContent('09-22–09-30 扣 39 = 月总量 130 × (后半月 9 天 ÷ 30) = 39');
+    expect(d).not.toHaveTextContent(/= 39\.0+|39 → 向上取整/);
     expect(d).toHaveTextContent('− 期望 100');
     expect(d).toHaveTextContent('+ 到货 0');
     expect(d).toHaveTextContent('= 期末 161');
@@ -61,9 +66,12 @@ describe('spec §5：点开一格看依据', () => {
     expect(d).toHaveTextContent('货号 SKU-1 / 2026-10');
     expect(d).toHaveTextContent('期初 271 − 期望 105 + 到货 0 = 期末 166');
     expect(d).toHaveTextContent('不含 1 家无 FBA 店铺');
-    expect(d).toHaveTextContent('在途 250 = 生产中 200 + 货运中 0 + 已下单未到 50');
+    expect(d).toHaveTextContent('在途 290 = 生产中 200 + 货运中 0 + 已下单未到 90（其中已逾期 40）');
     expect(d).toHaveTextContent('FBA 货件 未取');
-    expect(d).toHaveTextContent('PO-2026-0918 50');
+    // ★ 终审 I-2：period 是预计到货月（ETA），不是下单月；逾期的单独标出（OQ-6）
+    expect(d).toHaveTextContent('PO-2026-0701 40（预计 2026-07 到货，已逾期）');
+    expect(d).toHaveTextContent('PO-2026-0918 50（预计 2026-10 到货）');
+    expect(d).not.toHaveTextContent(/PO-2026-09\d+ \d+（[^）]*下单/);
     expect(d).toHaveTextContent('2026-10 下单 200 件 → 2027-01-13 到货（周期外）');
     expect(d).toHaveTextContent('2026-11 下单 80 件 → 2027-02-13 到货（周期外）');
   });
@@ -157,6 +165,7 @@ describe('spec §5：点开一格看依据', () => {
     const d = await open('依据 MSKU-A 2026-10');
     expect(d).toHaveTextContent('as_of 2026-10-10 可售 300（本月 10-01–10-10 已过，不计）');
     expect(d).toHaveTextContent('− 本月 as_of 后期望 67（10-11 起，全月期望 100 的剩余部分）');
+    expect(d).toHaveTextContent('10-11–10-31 扣 67 = 月总量 100 × (前半月 5 天 ÷ 30 + 后半月 16 天 ÷ 32) = 66.67 → 向上取整 67');
     expect(d).toHaveTextContent('+ 到货 0');
     expect(d).toHaveTextContent('= 期末 233 → 2026-11 期初');
     expect(data(d)).not.toHaveTextContent(/期初 —|− 期望 /);
@@ -227,6 +236,43 @@ describe('spec §5：点开一格看依据', () => {
     await userEvent.keyboard('i');
     expect(screen.getByRole('dialog')).toHaveTextContent('货号 SKU-1 / 2026-10');
     expect(screen.getByText('看依据')).toBeInTheDocument();
+  });
+
+  it('★ 预测乘积：整数不说「向上取整」；非整数不许印成 123.00 → 124', async () => {
+    const g = structuredClone(LABEL_GRID);
+    const cell = g.demand.find((c) => c.seller_sku === 'MSKU-A' && c.period === '2026-10')!;
+    const sb = cell.system_basis!;
+    if (sb.reason === 'not_applicable_no_sales_source') throw new Error('fixture 变了');
+    Object.assign(sb, { units_raw: 123.001 }); cell.system_units = 124;
+    renderSheet(g, true);
+    let d = await open('依据 MSKU-A 2026-10');
+    expect(d).toHaveTextContent('= 123.001 → 向上取整 124');
+    expect(d).not.toHaveTextContent('123.00 →');
+    cleanup();
+    Object.assign(sb, { units_raw: 124 });
+    renderSheet(g, true);
+    d = await open('依据 MSKU-A 2026-10');
+    expect(d).toHaveTextContent('× 31 天 = 124（');
+    expect(d).not.toHaveTextContent('向上取整 124');
+  });
+
+  it('★ 没有预测速率：桥接段按首月期望折算，面板说清折算用的数（终审 I-5）', async () => {
+    const g = structuredClone(LABEL_GRID);
+    const r = g.forecast.find((f) => f.seller_sku === 'MSKU-A' && f.period === '2026-10')!;
+    // 形状照 forecast/plan_forecast.py 的 first_month_expected 分支：100 ÷ 31 × 30 = 96.77 → 97；× 9/30 = 29.1 → 30
+    const seg = r.basis.bridge!.segments[0]!;
+    Object.assign(seg, { month_total: 97, month_total_raw: 96.774193548, raw: 29.1, units: 30 });
+    Object.assign(r.basis.bridge!, {
+      by: 'first_month_expected', rate: 100 / 31, units: 30, month_totals: { '2026-09': 97 },
+      first_month_expected: { period: '2026-10', units: 100, days: 31 },
+    });
+    renderSheet(g, true);
+    const d = data(await open('依据 MSKU-A 2026-10'));
+    expect(d).toHaveTextContent('09-22–09-30 按首月期望折算（无预测速率）扣 30');
+    expect(d).toHaveTextContent('日速率 3.2258 件/天 = 2026-10 期望 100 ÷ 31 天');
+    expect(d).toHaveTextContent('2026-09 月总量 97 = 3.2258 件/天 × 30 天 = 96.77 → 向上取整 97');
+    expect(d).toHaveTextContent('09-22–09-30 扣 30 = 月总量 97 × (后半月 9 天 ÷ 30) = 29.1 → 向上取整 30');
+    expect(d).not.toHaveTextContent('按预测扣');
   });
 
   it('★ 面板上没有 ` · ` 元串（文案纪律）', async () => {

@@ -13,6 +13,7 @@ import logging
 import time
 
 from api.ui.lead_time import LeadTime
+from dim.ch_source import is_overdue
 from forecast.plan_forecast import MskuInput, PlanForecastInput, forecast_plan
 
 log = logging.getLogger("scm.api")
@@ -51,7 +52,7 @@ def unallocated_json(u: dict) -> dict:
 def forecast_payload(*, as_of: dt.date, periods: list[dt.date], demand_rows: list[dict],
                      purchase_rows: list[tuple], fba: dict, onhand: dict, base_rate: dict,
                      in_transit: dict, lead: LeadTime, embargo_days: int | None,
-                     plan_id: int) -> dict:
+                     plan_id: int, purchase_as_of: dt.date | None = None) -> dict:
     t0 = time.perf_counter()
     by_key: dict[tuple[str, str], dict] = {}
     for r in demand_rows:
@@ -69,15 +70,20 @@ def forecast_payload(*, as_of: dt.date, periods: list[dt.date], demand_rows: lis
     plan_skus = {m.sku for m in mskus} | {s for s, _ in purchase} | set(in_transit)
     for sku in plan_skus - {s for s, _ in purchase}:
         purchase.update({(sku, p): None for p in periods})
+    # ★ 逾期按在途的快照日判（OQ-6：ETA 所在月早于它即逾期）。FixtureSource 没有单独的采购
+    #   快照，它的在途就是 as_of 那天的 —— 退到 as_of，并在 params 里写明用的是哪天。
+    in_transit_as_of = purchase_as_of or as_of
     inp = PlanForecastInput(
         as_of=as_of, periods=periods, make_days=lead.make_days, ship_days=lead.ship_days,
         mskus=mskus, purchase=purchase,
-        ordered_open={sku: [(t.period, t.units, t.ref) for t in ts]
+        ordered_open={sku: [(t.period, t.units, t.ref, is_overdue(t.period, in_transit_as_of))
+                            for t in ts]
                       for sku, ts in in_transit.items()})
     # ★ 推演本身与之后的每一道自检都在这一个 try 里：哪一步炸，都留下 plan_id · 耗时 · 原因
     try:
         f = forecast_plan(inp)
-        out = _serialize(f, {m.key: m.sku for m in mskus}, plan_skus, as_of, lead, embargo_days)
+        out = _serialize(f, {m.key: m.sku for m in mskus}, plan_skus, as_of, lead, embargo_days,
+                         in_transit_as_of)
     except Exception as e:
         log.error("op=grid_forecast plan_id=%s outcome=fail mskus=%d make_days=%d ship_days=%d"
                   " elapsed_ms=%d error=%s: %s", plan_id, len(mskus), lead.make_days,
@@ -91,7 +97,7 @@ def forecast_payload(*, as_of: dt.date, periods: list[dt.date], demand_rows: lis
 
 
 def _serialize(f, sku_of: dict[tuple[str, str], str], plan_skus: set[str], as_of: dt.date,
-               lead: LeadTime, embargo_days: int | None) -> dict:
+               lead: LeadTime, embargo_days: int | None, in_transit_as_of: dt.date) -> dict:
     got_skus = {s.sku for s in f.sku}
     if plan_skus - got_skus:            # ★ 静默丢失已踩六次：货号行少了就炸，不往下发
         raise AssertionError(f"计划货号在推演里丢了：{sorted(plan_skus - got_skus)}")
@@ -104,6 +110,7 @@ def _serialize(f, sku_of: dict[tuple[str, str], str], plan_skus: set[str], as_of
         "stock_demand": s.stock_demand, "inbound_planned": s.inbound, "closing": s.closing,
         "excluded_not_applicable": s.excluded_not_applicable,
         "pipeline": {"making": s.making, "shipping": s.shipping, "ordered_open": s.ordered_open,
+                     "ordered_open_overdue": s.ordered_open_overdue,
                      "ordered_open_sources": list(s.ordered_sources),
                      "fba_inbound": None, "fba_inbound_reason": "not_fetched"},
         "in_transit": s.in_transit, "in_transit_excludes": ["fba_inbound"],
@@ -111,7 +118,7 @@ def _serialize(f, sku_of: dict[tuple[str, str], str], plan_skus: set[str], as_of
     return {
         "params": {"as_of": as_of.isoformat(), "route": lead.route, "make_days": lead.make_days,
                    "ship_days": lead.ship_days, "anchor_day": lead.anchor_day,
-                   "embargo_days": embargo_days},
+                   "embargo_days": embargo_days, "in_transit_as_of": in_transit_as_of.isoformat()},
         "forecast": [{"seller_sku": k[0], "sid": k[1], "sku": sku_of[k],
                       "period": _ym(r.period), "state": r.state, "reason": r.reason,
                       "unknown_since": _ym(r.unknown_since), "opening": r.opening,

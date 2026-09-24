@@ -783,6 +783,22 @@
           },
           "onhand_as_of": 300,
           "rate": 4.325139122267325,
+          "segments": [
+            {
+              "first_half_days": 0,
+              "first_half_divisor": 30,
+              "from": "2026-09-22",
+              "month": "2026-09",
+              "month_days": 30,
+              "month_total": 130,
+              "month_total_raw": 129.754173668,
+              "raw": 39.0,
+              "second_half_days": 9,
+              "second_half_divisor": 30,
+              "to": "2026-09-30",
+              "units": 39
+            }
+          ],
           "stockout_date": null,
           "to": "2026-09-30",
           "units": 39
@@ -853,6 +869,22 @@
           },
           "onhand_as_of": 0,
           "rate": 3.243854341700494,
+          "segments": [
+            {
+              "first_half_days": 0,
+              "first_half_divisor": 30,
+              "from": "2026-09-22",
+              "month": "2026-09",
+              "month_days": 30,
+              "month_total": 98,
+              "month_total_raw": 97.315630251,
+              "raw": 29.4,
+              "second_half_days": 9,
+              "second_half_divisor": 30,
+              "to": "2026-09-30",
+              "units": 30
+            }
+          ],
           "stockout_date": "2026-09-22",
           "to": "2026-09-30",
           "units": 30
@@ -923,6 +955,22 @@
           },
           "onhand_as_of": 25,
           "rate": 2.15964558760763,
+          "segments": [
+            {
+              "first_half_days": 0,
+              "first_half_divisor": 30,
+              "from": "2026-09-22",
+              "month": "2026-09",
+              "month_days": 30,
+              "month_total": 65,
+              "month_total_raw": 64.789367628,
+              "raw": 19.5,
+              "second_half_days": 9,
+              "second_half_divisor": 30,
+              "to": "2026-09-30",
+              "units": 20
+            }
+          ],
           "stockout_date": null,
           "to": "2026-09-30",
           "units": 20
@@ -993,6 +1041,22 @@
           },
           "onhand_as_of": 40,
           "rate": 1.0812847805668313,
+          "segments": [
+            {
+              "first_half_days": 0,
+              "first_half_divisor": 30,
+              "from": "2026-09-22",
+              "month": "2026-09",
+              "month_days": 30,
+              "month_total": 33,
+              "month_total_raw": 32.438543417,
+              "raw": 9.9,
+              "second_half_days": 9,
+              "second_half_divisor": 30,
+              "to": "2026-09-30",
+              "units": 10
+            }
+          ],
           "stockout_date": null,
           "to": "2026-09-30",
           "units": 10
@@ -1219,8 +1283,10 @@
         "fba_inbound_reason": "not_fetched",
         "making": 0,
         "ordered_open": 60,
+        "ordered_open_overdue": 0,
         "ordered_open_sources": [
           {
+            "overdue": false,
             "period": "2026-10",
             "ref": "PO-2026-0918",
             "units": 60
@@ -1257,8 +1323,10 @@
         "fba_inbound_reason": "not_fetched",
         "making": 0,
         "ordered_open": 60,
+        "ordered_open_overdue": 0,
         "ordered_open_sources": [
           {
+            "overdue": false,
             "period": "2026-10",
             "ref": "PO-2026-0918",
             "units": 60
@@ -1295,8 +1363,10 @@
         "fba_inbound_reason": "not_fetched",
         "making": 0,
         "ordered_open": 60,
+        "ordered_open_overdue": 0,
         "ordered_open_sources": [
           {
+            "overdue": false,
             "period": "2026-10",
             "ref": "PO-2026-0918",
             "units": 60
@@ -1333,6 +1403,7 @@
         "fba_inbound_reason": "not_fetched",
         "making": 0,
         "ordered_open": 0,
+        "ordered_open_overdue": 0,
         "ordered_open_sources": [],
         "shipping": 0
       },
@@ -1368,6 +1439,7 @@
         "fba_inbound_reason": "not_fetched",
         "making": 0,
         "ordered_open": 0,
+        "ordered_open_overdue": 0,
         "ordered_open_sources": [],
         "shipping": 0
       },
@@ -1403,6 +1475,7 @@
         "fba_inbound_reason": "not_fetched",
         "making": 0,
         "ordered_open": 0,
+        "ordered_open_overdue": 0,
         "ordered_open_sources": [],
         "shipping": 0
       },
@@ -1438,18 +1511,22 @@
         "fba_inbound_reason": "not_fetched",
         "making": 500,
         "ordered_open": 200,
+        "ordered_open_overdue": 0,
         "ordered_open_sources": [
           {
+            "overdue": false,
             "period": "2026-10",
             "ref": "PO-2026-0912",
             "units": 50
           },
           {
+            "overdue": false,
             "period": "2026-10",
             "ref": "PO-2026-0915",
             "units": 30
           },
           {
+            "overdue": false,
             "period": "2026-11",
             "ref": "PO-2026-0920",
             "units": 120
@@ -1488,18 +1565,22 @@
         "fba_inbound_reason": "not_fetched",
         "making": 0,
         "ordered_open": 200,
+        "ordered_open_overdue": 0,
         "ordered_open_sources": [
           {
+            "overdue": false,
             "period": "2026-10",
             "ref": "PO-2026-0912",
             "units": 50
           },
           {
+            "overdue": false,
             "period": "2026-10",
             "ref": "PO-2026-0915",
             "units": 30
           },
           {
+            "overdue": false,
             "period": "2026-11",
             "ref": "PO-2026-0920",
             "units": 120
@@ -1538,18 +1619,22 @@
         "fba_inbound_reason": "not_fetched",
         "making": 0,
         "ordered_open": 200,
+        "ordered_open_overdue": 0,
         "ordered_open_sources": [
           {
+            "overdue": false,
             "period": "2026-10",
             "ref": "PO-2026-0912",
             "units": 50
           },
           {
+            "overdue": false,
             "period": "2026-10",
             "ref": "PO-2026-0915",
             "units": 30
           },
           {
+            "overdue": false,
             "period": "2026-11",
             "ref": "PO-2026-0920",
             "units": 120
@@ -1774,6 +1859,7 @@
     "anchor_day": 15,
     "as_of": "2026-09-21",
     "embargo_days": 7,
+    "in_transit_as_of": "2026-09-21",
     "make_days": 30,
     "route": "oversea_sea",
     "ship_days": 60

@@ -56,6 +56,21 @@ def segment_units(total: int, first: dt.date, last: dt.date) -> int:
     return math.ceil(Fraction(total) * sum(halfmonth_weight(d) for d in span(first, last)))
 
 
+def segment_detail(total: int, first: dt.date, last: dt.date) -> dict:
+    """segment_units 的每一步，给依据面板复算用（终审 I-4）：
+    total × (前半月天数 ÷ 30 + 后半月天数 ÷ 2·(月长−15)) = raw → 向上取整 units。"""
+    _check_segment(first, last)
+    n = days_in_month(first)
+    days = span(first, last)
+    raw = Fraction(total) * sum(halfmonth_weight(d) for d in days)
+    return {"from": first.isoformat(), "to": last.isoformat(), "month_total": total,
+            "month_days": n,
+            "first_half_days": sum(1 for d in days if d.day <= 15), "first_half_divisor": 30,
+            "second_half_days": sum(1 for d in days if d.day > 15),
+            "second_half_divisor": 2 * (n - 15),
+            "raw": float(raw), "units": segment_units(total, first, last)}
+
+
 def segment_daily(total: int, first: dt.date, last: dt.date) -> dict[dt.date, Fraction]:
     """把 segment_units 件按半月权重摊回每天。★ Σ ≡ segment_units（构造保证）——
     于是所有月末头寸都是整数，恒等式③④精确成立。"""

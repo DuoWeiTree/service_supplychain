@@ -12,6 +12,7 @@ from forecast.calendar import (
     month_end,
     order_arrival,
     segment_daily,
+    segment_detail,
     segment_units,
     units_for_month,
 )
@@ -42,6 +43,22 @@ def test_segment_units_rounds_up_and_full_month_is_exact():
     # 10/11~10/31：5×1/30 + 16×1/32 = 2/3
     assert segment_units(30, D(2026, 10, 11), D(2026, 10, 31)) == 20
     assert segment_units(137, D(2026, 10, 1), D(2026, 10, 31)) == 137
+
+
+def test_segment_detail_lets_the_panel_reproduce_the_units():
+    """★ 终审 I-4：依据面板要能从屏上的数复算出扣减量 —— 月总量、前后半月各几天、各自除数、
+    乘积（不取整）与向上取整后的件数，全由算的那一处给出，前端不再算一遍。"""
+    # 10/11~10/31：130 × (5 ÷ 30 + 16 ÷ 32) = 86.666… → 87
+    assert segment_detail(130, D(2026, 10, 11), D(2026, 10, 31)) == {
+        "from": "2026-10-11", "to": "2026-10-31", "month_total": 130, "month_days": 31,
+        "first_half_days": 5, "first_half_divisor": 30,
+        "second_half_days": 16, "second_half_divisor": 32,
+        "raw": pytest.approx(86.66666666666667, rel=1e-15), "units": 87}
+    # 9/22~9/30：130 × 9 ÷ 30 = 39 整 —— raw 与 units 相等，面板据此不说「向上取整」
+    d = segment_detail(130, D(2026, 9, 22), D(2026, 9, 30))
+    assert (d["first_half_days"], d["second_half_days"], d["second_half_divisor"],
+            d["raw"], d["units"]) == (0, 9, 30, 39, 39)
+    assert d["units"] == segment_units(130, D(2026, 9, 22), D(2026, 9, 30))
 
 
 def test_segment_daily_sums_to_segment_units():
