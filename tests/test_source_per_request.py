@@ -70,6 +70,17 @@ class FakeCh:
 
     def __call__(self, sql: str, parameters: dict | None = None) -> list[tuple]:
         one = " ".join(sql.split())
+        # spec §3.1：预测换成 base_rate × 天数，claim 改问日销与断货日。★ 这两支必须排在
+        #   最前：SQL_FBA_STOCK_DAYS 也含 `GROUP BY _captured_date`，SQL_DAILY_SALES 也含
+        #   ORDERS_TABLE —— 排在后面会被 capture_days / sales 截胡。
+        if "countIf(" in one:                       # SQL_FBA_STOCK_DAYS
+            self.calls.append("stock_days")
+            return []
+        if cs.ORDERS_TABLE in one and "GROUP BY d " in one + " ":   # SQL_DAILY_SALES
+            self.calls.append("daily_sales")
+            if self.gate is not None:
+                self.gate()
+            return []
         if "GROUP BY _captured_date" in one:
             self.calls.append("capture_days")
             return [(d, 8000, 21, True) for d in self.capture_days]
@@ -304,6 +315,9 @@ def test_purchase_staleness_gate_fires_when_only_the_order_table_freezes(client,
 
     def q(sql: str, parameters: dict | None = None) -> list[tuple]:
         one = " ".join(sql.split())
+        # spec §3.1：claim 改问日销与断货日 —— 同 FakeCh，这两支排在最前
+        if "countIf(" in one or (cs.ORDERS_TABLE in one and "GROUP BY d " in one + " "):
+            return []
         if "GROUP BY _captured_date" in one:
             return [(fba_day[0], 8000, 21, True)]
         if "GROUP BY sid, seller_sku" in one:

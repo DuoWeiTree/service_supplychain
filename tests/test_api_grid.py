@@ -21,9 +21,10 @@ def test_grid_blocks_carry_exactly_the_ruled_keys(client, seed):
     pid = setup_plan(client, seed)
     g = client.get(f"/v1/plans/{pid}/grid", headers=H(seed.actor)).json()
     assert g["periods"] == ["2026-10", "2026-11", "2026-12"]
+    # spec §3.3：依据随数走 —— demand 行多一个 system_basis
     assert set(g["demand"][0]) == {"seller_sku", "sid", "sku", "period", "system_units",
                                    "expected_units", "basis", "system_extrapolated",
-                                   "effective_units"}
+                                   "effective_units", "system_basis"}
     # ★ effective_units 是 effective_demand() 的单一来源，不许前端自己重算一遍
     for row in g["demand"]:
         expected = row["expected_units"] if row["expected_units"] is not None \
@@ -113,9 +114,12 @@ def test_demand_cell_keeps_system_and_human_apart(client, seed):
     pid = setup_plan(client, seed)
     g = client.get(f"/v1/plans/{pid}/grid", headers=H(seed.actor)).json()
     cell = next(r for r in g["demand"] if r["period"] == "2026-10")
+    # spec §3.1：预测换成 base_rate × 天数 —— ceil(4.325 × 31) = 135；依据随数走（§3.3）
+    basis = cell.pop("system_basis")
     assert cell == {"seller_sku": "MSKU-A", "sid": "11072", "sku": "DCC1800264G1",
-                    "period": "2026-10", "system_units": 100, "expected_units": None,
-                    "basis": "system", "system_extrapolated": False, "effective_units": 100}
+                    "period": "2026-10", "system_units": 135, "expected_units": None,
+                    "basis": "system", "system_extrapolated": False, "effective_units": 135}
+    assert (basis["days_in_month"], basis["reason"]) == (31, None)
 
 
 def test_extrapolated_flag_travels_with_the_number(client, seed):
@@ -124,10 +128,17 @@ def test_extrapolated_flag_travels_with_the_number(client, seed):
                                          "months": 7}, headers=H(seed.actor)).json()["plan_id"]
     client.post(f"/v1/plans/{pid}/claims", json={"seller_sku": "MSKU-A", "sid": "11072"},
                 headers=H(seed.actor))
+    # spec §3.3：base_rate × 天数不外推，算法如实给 false —— 7 个月全是 false
     g = client.get(f"/v1/plans/{pid}/grid", headers=H(seed.actor)).json()
     flags = [r["system_extrapolated"] for r in sorted(g["demand"], key=lambda r: r["period"])]
-    assert flags == [False, False, False, True, True, True, True]
-    assert not all(flags), "★ 恒真的标记等于白标"
+    assert flags == [False] * 7
+    # ★ 「随数走」而不是在 grid 里盖章：库里那一格是 true（旧种子），grid 就得如实回 true
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("UPDATE plan_demand_cell SET system_extrapolated = TRUE"
+                    " WHERE plan_id = %s AND period_start = DATE '2027-04-01'", (pid,))
+    g = client.get(f"/v1/plans/{pid}/grid", headers=H(seed.actor)).json()
+    flags = [r["system_extrapolated"] for r in sorted(g["demand"], key=lambda r: r["period"])]
+    assert flags == [False] * 6 + [True]
 
 
 def test_no_fba_seller_is_not_applicable_not_zero(client, seed):
@@ -186,11 +197,13 @@ def test_put_demand_and_purchase_are_one_cell_one_transaction(client, seed):
     cell = r1.json()["cell"]
     assert r1.status_code == 200 and cell["expected_units"] == 130
     assert cell["basis"] == "human"
-    # ★ team-lead 裁定：PUT 回的必须是 grid() 那一格同样的九键，不是 7 键的子集 ——
+    # ★ team-lead 裁定：PUT 回的必须是 grid() 那一格同样的十键，不是子集 ——
     #   少 sku/effective_units 两个字段，前端原地替换那一行时在真实 API 下会读到 undefined。
+    #   spec §3.3：依据随数走 —— 第十键 system_basis
     assert set(cell) == {"seller_sku", "sid", "sku", "period", "system_units",
                          "expected_units", "basis", "system_extrapolated",
-                         "effective_units"}
+                         "effective_units", "system_basis"}
+    assert cell["system_basis"]["days_in_month"] == 30, "PUT 回的依据必须是这一格（11 月）自己的"
     assert cell["sku"] == seed.sku_a
     assert cell["effective_units"] == 130          # 人填优先
     r2 = client.put(f"/v1/plans/{pid}/purchase/{seed.sku_a}/2026-11",

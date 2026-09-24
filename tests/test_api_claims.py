@@ -1,3 +1,4 @@
+import datetime as dt
 import threading
 
 import psycopg2.errors
@@ -91,8 +92,9 @@ def test_claim_seeds_both_grids_and_names_mskus_without_history(client, seed):
         cur.execute("SELECT period_start, system_units, system_extrapolated, expected_units"
                     " FROM plan_demand_cell WHERE plan_id = %s ORDER BY period_start", (p,))
         rows = cur.fetchall()
-    # fixture 里 MSKU-A 的历史是 100/120/90，计划 3 个月 → 不外推
-    assert [r[1] for r in rows] == [100, 120, 90]
+    # spec §3.1：预测换成 base_rate × 天数 —— fixture 日销 4 件/天 → base_rate 4.325（OP-3）
+    #   × 31/30/31 天向上取整
+    assert [r[1] for r in rows] == [135, 130, 135]
     assert [r[2] for r in rows] == [False, False, False]
     assert [r[3] for r in rows] == [None, None, None], "★ 人填列留空 = 未知，不预填"
 
@@ -108,8 +110,9 @@ def test_msku_without_history_is_seeded_null_and_named(client, seed, use_source)
     from dim.fixture_source import FixtureSource
 
     class NoHistory(FixtureSource):
-        def monthly_sales_history(self, seller_sku, sid, months):
-            return []
+        # spec §3.1：预测换成 base_rate × 天数，取数改走日销 —— 「查过了、一行都没有」
+        def daily_sales(self, *a):
+            return {}
 
     use_source(lambda: NoHistory(plans.FIXTURES))
     p = mk(client, seed)
@@ -322,6 +325,20 @@ def test_reclaiming_in_the_same_plan_revives_the_row(client, seed):
 GAP_SID = "11098"
 
 
+def _only_as_of(must_not_be_called):
+    """只放行 `as_of()` 那一条（fba_detail 的采集日），其余照旧一被调用就炸。
+
+    ★ spec §3.4 之后 claim() 要先拿 as_of 才定得出日销窗口（估计锚点 = as_of − embargo），
+      所以「一次往返都没有」不再成立 —— 但要钉的那件事不变：**没去查那个不存在的
+      销量取数源**（订单表、断货日一条都不许问）。按异常分派、不预检的裁定也不变。"""
+    def q(sql, parameters=None):
+        one = " ".join(sql.split())
+        if "GROUP BY _captured_date" in one and "countIf(" not in one:
+            return [(dt.date(2026, 9, 21), 8000, 21, True)]
+        return must_not_be_called(sql, parameters)
+    return q
+
+
 def _seed_gap_store(seed, seller_sku="MSKU-GAP"):
     """种一个 `NO_ORDER_REPORT_SID` 上的店 + 一个它名下的 msku。
 
@@ -352,8 +369,9 @@ def test_a_store_with_no_order_report_data_can_still_be_claimed(client, seed, us
     ★ **必须跑在 CH 档上**：503 只发生在 CH 档（fixture 档压根不查
       `store_for()`，它对这个 msku 给的是「查过了、没有历史」）。拿 fixture 档
       验这条，就是在一个从来不会 503 的路径上证明「不再 503」。
-      用真 `ChSource`，它的 `query` 是一条**一被调用就炸**的桩 —— `store_for()`
-      在任何一次往返之前就抛，所以这条桩顺带钉住了「没去查一个不存在的取数源」。
+      用真 `ChSource`，它的 `query` 除了 `as_of()` 那一条之外**一被调用就炸**
+      （`_only_as_of`）—— `store_for()` 在问订单表之前就抛，所以这条桩顺带钉住了
+      「没去查一个不存在的取数源」。
     """
     from dim import ch_source as cs
 
@@ -362,7 +380,7 @@ def test_a_store_with_no_order_report_data_can_still_be_claimed(client, seed, us
             f"没有销量来源的店去查了 CH —— 闸没拦住。SQL={' '.join(sql.split())[:120]}")
 
     ms = _seed_gap_store(seed)
-    use_source(lambda: cs.ChSource(must_not_be_called))
+    use_source(lambda: cs.ChSource(_only_as_of(must_not_be_called)))
     p = mk(client, seed)
     r = client.post(f"/v1/plans/{p}/claims",
                     json={"seller_sku": ms[0], "sid": ms[1]}, headers=H(seed.actor))
@@ -398,7 +416,7 @@ def test_the_two_no_sales_source_causes_share_one_reason(client, seed, use_sourc
         raise AssertionError("没有销量来源的店去查了 CH —— 闸没拦住")
 
     ms = _seed_gap_store(seed)
-    use_source(lambda: cs.ChSource(must_not_be_called))
+    use_source(lambda: cs.ChSource(_only_as_of(must_not_be_called)))
     p = mk(client, seed)
     gap = client.post(f"/v1/plans/{p}/claims",
                       json={"seller_sku": ms[0], "sid": ms[1]},
@@ -457,7 +475,7 @@ def test_the_two_unknown_store_causes_take_different_paths_end_to_end(client, se
         cur.execute("INSERT INTO msku_bridge VALUES (%s, %s, %s, now())",
                     ("MSKU-UNKNOWN", unknown_sid, seed.sku_a))
 
-    use_source(lambda: cs.ChSource(must_not_be_called))
+    use_source(lambda: cs.ChSource(_only_as_of(must_not_be_called)))
     p = mk(client, seed)
 
     # ① 已登记的缺口 → 200 + 不适用（认领成功，格子等人来填）
@@ -508,7 +526,7 @@ def test_an_unknown_sid_is_still_told_to_add_the_mapping_row(client, seed):
     def must_not_be_called(sql, parameters=None):
         raise AssertionError("认不出的 sid 不该走到真取数 —— store_for() 就该拦住")
 
-    client.app.dependency_overrides[source_dep] = lambda: cs.ChSource(must_not_be_called)
+    client.app.dependency_overrides[source_dep] = lambda: cs.ChSource(_only_as_of(must_not_be_called))
     try:
         p = mk(client, seed)
         r = client.post(f"/v1/plans/{p}/claims",

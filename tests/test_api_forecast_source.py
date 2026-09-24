@@ -9,7 +9,7 @@ from api.ui import source_factory as sf
 from dim import ch_source as cs
 from dim.fixture_source import FixtureSource
 from dim.order_store_map import UnknownStore
-from dim.source import InTransit
+from dim.source import InTransit, StockDays
 
 
 def test_default_source_is_fixture(monkeypatch):
@@ -99,7 +99,8 @@ def test_ch_unavailable_becomes_503_naming_the_kind(client, seed, use_source):
         def as_of(self):
             raise cs.ChUnavailable("192.168.66.211:8123/jxd_raw",
                                    {"kind": "connect_refused", "code": 111})
-        def monthly_sales_history(self, *a):
+        # spec §3.1：预测换成 base_rate × 天数，claim 取日销（此处只走 grid，不影响）
+        def daily_sales(self, *a):
             raise cs.ChUnavailable("x", {"kind": "timeout"})
         def onhand_available(self, *a):
             raise cs.ChUnavailable("x", {"kind": "timeout"})
@@ -141,7 +142,7 @@ def test_claim_returns_the_history_window(client, seed, use_source):
 def test_unknown_store_becomes_503_naming_it(client, seed, use_source):
     """★ fix round 1（阻塞项）：design §8 OQ-3 点名的真实缺口 —— 一个 sid 在
     dim/order_store_map.py::STORE_SID 里没有对应的 (store, sales_channel) 时，
-    monthly_sales_history() 经 order_store_map.store_for() 抛 UnknownStore。
+    daily_sales() 经 order_store_map.store_for() 抛 UnknownStore。
     这条异常曾经漏在 claim() 的 except 元组外，裸成没有 S-29 形状的 500 ——
     复核在 TestClient 上实测复现过。补上后必须落成与 ChUnavailable 同一家族的
     503 forecast_source_unusable，detail 里带着 store_for() 唯一已知的那个量
@@ -149,7 +150,8 @@ def test_unknown_store_becomes_503_naming_it(client, seed, use_source):
     from api.ui import plans
 
     class Src(FixtureSource):
-        def monthly_sales_history(self, *a):
+        # spec §3.1：预测换成 base_rate × 天数，store_for() 现在从 daily_sales() 抛
+        def daily_sales(self, *a):
             raise UnknownStore(
                 "sid='11072' 在订单报表里没有对应的 store —— "
                 "这个店的销量取不到，不能当成「卖了 0 件」")
@@ -177,8 +179,12 @@ def test_grid_wires_dropped_stats_into_source_notes(client, seed, use_source):
         def as_of(self):
             return dt.date(2026, 9, 21)
 
-        def monthly_sales_history(self, *a):
-            return []                      # → InsufficientHistory，claim() 照旧建格
+        # spec §3.1：预测换成 base_rate × 天数 —— 空日销 → 没 rate，claim() 照旧建格
+        def daily_sales(self, *a):
+            return {}
+
+        def fba_stock_days(self, *a):
+            return StockDays(frozenset(), frozenset(), ())
 
         def onhand_available(self, *a):
             return None
@@ -217,8 +223,12 @@ def test_grid_computes_bucket_from_purchase_as_of(client, seed, use_source):
         def as_of(self):
             return dt.date(2026, 9, 21)
 
-        def monthly_sales_history(self, *a):
-            return []
+        # spec §3.1：预测换成 base_rate × 天数 —— 空日销 → 没 rate，claim() 照旧建格
+        def daily_sales(self, *a):
+            return {}
+
+        def fba_stock_days(self, *a):
+            return StockDays(frozenset(), frozenset(), ())
 
         def onhand_available(self, *a):
             return None

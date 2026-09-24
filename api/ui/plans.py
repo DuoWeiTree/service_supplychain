@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
 from typing import Annotated
 
@@ -33,7 +34,18 @@ from dim.ch_source import (
 )
 from dim.order_store_map import UnknownStore
 from dim.source import Source
-from forecast.estimate import InsufficientHistory, monthly_estimate
+from forecast.baseline import (
+    EMBARGO_DAYS,
+    HALFLIFE_DAYS,
+    SHRINK_PRIOR,
+    TARGET_WINDOW_DAYS,
+    WINDOW_DAYS,
+    WINSOR_Q,
+    data_windows,
+    estimate_rate,
+    estimation_anchor,
+)
+from forecast.calendar import days_in_month, units_for_month
 from forecast.projection import inventory_projection
 from rules.effective import effective_demand
 from shared.pg_client import pg_conn, timed
@@ -50,7 +62,7 @@ router = APIRouter(dependencies=[Depends(require_fresh_mirrors)])
 #:   换源仍然只改 config.toml 的 [forecast] source，dim/source.py 的协议不变。
 
 
-#: 有月销量取数源的平台。★ 阶段 A 只有 Amazon：`monthly_sales_history` 唯一的
+#: 有销量取数源的平台。★ 阶段 A 只有 Amazon：`daily_sales` 唯一的
 #: 源是 `amazon_sp_api_report_all_orders`，按 `(store, sales_channel)` 取数
 #: （dim/order_store_map.py）。非 Amazon 的店在那张表里**按构造**就不会有行 ——
 #: 那是「不适用」，不是「认不出这个店」，更不是「卖了 0 件」。
@@ -100,7 +112,7 @@ def _source_error(e: Exception) -> ApiError:
                         {"detail": str(e)})
     if isinstance(e, UnknownStore):
         # ★ fix round 1：design §8 OQ-3 点名的真实缺口（6 组 (store, sales_channel)、
-        #   近 90 天 21 单没有对应 sid）会从 monthly_sales_history() → store_for()
+        #   近 90 天 21 单没有对应 sid）会从 daily_sales() → store_for()
         #   一路抛到这里。与 UnknownShape 同一类「认不出的形态」，不新开错误码；
         #   detail 里带着 store_for() 原样写出的 sid（它是唯一已知量——正因为它没有
         #   对应的 (store, channel) 才会抛这个异常）。
@@ -217,6 +229,44 @@ def _periods(cur, plan_id: int) -> list[dt.date]:
                     (start.month - 1 + i) % 12 + 1, 1) for i in range(months)]
 
 
+class StockWindowPastAnchor(RuntimeError):
+    """断货日窗口越过了估计锚点。★ task-14：SQL_FBA_STOCK_DAYS 不判 settled ——
+    还在写的采集日上，没写到的 msku 会被读成断货。只有止于 as_of − embargo_days 才安全。"""
+
+
+def _check_stock_window(as_of: dt.date, until: dt.date) -> None:
+    anchor = estimation_anchor(as_of)
+    if until > anchor:
+        raise StockWindowPastAnchor(
+            f"断货日窗口止于 {until}，越过了估计锚点 {anchor}（as_of {as_of} − "
+            f"embargo {EMBARGO_DAYS} 天）—— 未结算的采集日会被读成断货")
+
+
+def _system_basis(est, stock, win) -> dict:
+    """spec §3.3：依据随数一起存 —— 界面点开能看到「预测 124 = 4.13 件/天 × 30 天」。"""
+    r = est.result
+    window_days = (win.until - win.censor_from).days + 1
+    return {
+        "method": "baseline_rate_v1", "as_of": est.as_of.isoformat(),
+        "estimation_anchor": est.estimation_anchor.isoformat(),
+        "embargo_days": est.embargo_days,
+        "base_rate": r.rate if r else None, "raw_rate": r.raw_rate if r else None,
+        "n_eff": r.n_eff if r else None, "target_rate": r.target_rate if r else None,
+        "winsor_cap": r.winsor_cap if r else None,
+        "first_seen": r.first_seen.isoformat() if (r and r.first_seen) else None,
+        "window": {"from": win.censor_from.isoformat(), "until": win.until.isoformat()},
+        "target_window": {"from": win.sales_from.isoformat(), "until": win.until.isoformat()},
+        "censored_days": r.censored_days if r else len(stock.censored),
+        "stock_days_rejected": len(stock.rejected),
+        # ★ 没采到 ≠ 采到了没断货：这些天不 censor，数目必须说出来
+        "stock_days_uncaptured": window_days - len(stock.captured) - len(stock.rejected),
+        "reason": None if r else "no_sales_in_window",
+        "constants": {"halflife_days": HALFLIFE_DAYS, "window_days": WINDOW_DAYS,
+                      "target_window_days": TARGET_WINDOW_DAYS, "shrink_prior": SHRINK_PRIOR,
+                      "winsor_q": WINSOR_Q},
+    }
+
+
 @router.post("/plans/{plan_id}/claims")
 def claim(plan_id: int, body: dict, request: Request,
           source: Annotated[Source, Depends(source_dep)],
@@ -270,10 +320,11 @@ def claim(plan_id: int, body: dict, request: Request,
 
         no_history = []
         history_window = None
-        est = None
+        rate = None
+        basis = None
         if platform not in _SALES_PLATFORM:
             # ★ 终审 I-2：「这个店压根没有 Amazon 销量源」是**不适用**，不是未知。
-            #   走到 monthly_sales_history 的话，CH 档会在 store_for() 上抛
+            #   走到 daily_sales 的话，CH 档会在 store_for() 上抛
             #   UnknownStore → 503，而 fixture 档同一个 msku 是 200 —— 两档对同一
             #   件事给出两种答案，且 503 那一侧把「不适用」说成了「认不出这个店」。
             #   闸放在调用方，与 grid() 里 `has_fba` 那一闸同一个位置、同一个理由：
@@ -284,14 +335,11 @@ def claim(plan_id: int, body: dict, request: Request,
                                "platform": platform})
         else:
             try:
-                est = monthly_estimate(
-                    source.monthly_sales_history(seller_sku, sid, len(periods)), len(periods))
-            except InsufficientHistory:
-                # ★ 没有历史 ≠ 预估 0：格子照建（人还要在上面填），system_units 留 NULL 并点名
-                est = None
-                no_history.append({"seller_sku": seller_sku, "sid": sid,
-                                   "reason": "no_sales_history"})
-                history_window = _history_window(source, seller_sku, sid)
+                as_of = source.as_of()
+                win = data_windows(as_of)
+                _check_stock_window(as_of, win.until)
+                daily = source.daily_sales(seller_sku, sid, win.sales_from, win.until)
+                stock = source.fba_stock_days(seller_sku, sid, win.censor_from, win.until)
             except UnknownStore as e:
                 # ★★ 残留轮次裁定（第二轮）：**按异常分派，不预检**。
                 #   `NO_ORDER_REPORT_SID` 上的 179 个 msku 的形状与上面那一支
@@ -307,7 +355,6 @@ def claim(plan_id: int, body: dict, request: Request,
                 #   那一种，它那句「去补一行」也就只对着它该对的人说。
                 if not e.registered_gap:
                     raise _source_error(e) from e
-                est = None
                 no_history.append({"seller_sku": seller_sku, "sid": sid,
                                    "reason": NOT_APPLICABLE,
                                    "cause": CAUSE_STORE_ABSENT_FROM_ORDER_REPORT,
@@ -316,26 +363,43 @@ def claim(plan_id: int, body: dict, request: Request,
                 #   「查了，用的是这几个月」。给它一个标记就是说了一句没发生的事。
             except (ChUnavailable, ChDataUnusable, UnknownShape) as e:
                 # ★ fix round 1：`UnknownStore` 曾经漏在这个元组外——
-                #   monthly_sales_history() → order_store_map.store_for() 抛的这个
+                #   daily_sales() → order_store_map.store_for() 抛的这个
                 #   异常会裸着冒成无 S-29 形状的 500。现在它有了自己的 except
                 #   （上面那一支，按成因分派），所以不在这个元组里。
                 #   claim() 不碰采购表，所以这里不需要 PurchaseTableStale（同 grid()
                 #   不需要 UnknownStore 一个道理——见 _source_error() 上面的审计注释）。
                 raise _source_error(e) from e
             else:
-                # ★ 用了哪几个月、哪些是补 0、最新那个月距今多少天 —— 订单是滞后
-                #   采集的（CLAUDE.md 铁律三），一个没有标记的数比没有数更坏。
+                est = estimate_rate(daily, stock.censored, as_of)
+                basis = _system_basis(est, stock, win)
+                rate = est.result.rate if est.result else None
+                # ★ 用了哪段日子、订单是滞后采集的（CLAUDE.md 铁律三）——
+                #   一个没有标记的数比没有数更坏。
                 history_window = _history_window(source, seller_sku, sid)
-        for i, period in enumerate(periods):
+                log.info("op=claim_forecast plan_id=%s seller_sku=%s sid=%s as_of=%s anchor=%s"
+                         " sales_days=%d censored=%d rejected=%d base_rate=%s",
+                         plan_id, seller_sku, sid, as_of, est.estimation_anchor, len(daily),
+                         basis["censored_days"], basis["stock_days_rejected"], rate)
+                if rate is None:
+                    # ★ 没有历史 ≠ 预估 0：格子照建，system_units 留 NULL 并点名（spec §3.3）
+                    no_history.append({"seller_sku": seller_sku, "sid": sid,
+                                       "reason": "no_sales_history"})
+        for period in periods:
+            n = days_in_month(period)
+            units = units_for_month(rate, n) if rate is not None else None
+            cell_basis = (None if basis is None else
+                          json.dumps({**basis, "days_in_month": n,
+                                      "units_raw": rate * n if rate is not None else None}))
+            # ★ system_extrapolated 由算法如实给 false（spec §3.3）：base_rate × 天数不外推
             cur.execute(
                 "INSERT INTO plan_demand_cell (plan_id, seller_sku, sid, period_start,"
-                " system_units, system_extrapolated, updated_by)"
-                " VALUES (%s, %s, %s, %s, %s, %s, %s)"
+                " system_units, system_extrapolated, system_basis, updated_by)"
+                " VALUES (%s, %s, %s, %s, %s, FALSE, %s, %s)"
                 " ON CONFLICT (plan_id, seller_sku, sid, period_start) DO UPDATE"
                 "    SET system_units = EXCLUDED.system_units,"
-                "        system_extrapolated = EXCLUDED.system_extrapolated",
-                (plan_id, seller_sku, sid, period,
-                 est[i].units if est else None, bool(est and est[i].system_extrapolated), who))
+                "        system_extrapolated = EXCLUDED.system_extrapolated,"
+                "        system_basis = EXCLUDED.system_basis",
+                (plan_id, seller_sku, sid, period, units, cell_basis, who))
         for period in periods:
             # ★ 货号级采购格子必须先长出来：没有行和填了 0 不能长得一样，
             #   否则提交时它连一条 skipped 都留不下（判据②）
@@ -408,7 +472,8 @@ def _ym(d: dt.date) -> str:
 
 
 def _demand_row(seller_sku: str, sid: str, sku: str, period: str,
-                sysu: int | None, expu: int | None, extrap: bool) -> dict:
+                sysu: int | None, expu: int | None, extrap: bool,
+                system_basis: dict | None) -> dict:
     """grid() 与 put_demand() 共用的同一份构造器（team-lead 09-22 裁定：一个行形状一个来源）。
 
     ★ effective_demand() 是 effective_units 唯一裁定者 —— 两个端点各自算一遍迟早分叉，
@@ -419,6 +484,8 @@ def _demand_row(seller_sku: str, sid: str, sku: str, period: str,
             "system_units": sysu, "expected_units": expu, "basis": eff.basis,
             # ★ 外推 ≠ 预估，标记必须随数走（14 §5）
             "system_extrapolated": extrap,
+            # ★ 依据随数走（spec §3.3）：预测 = base_rate × 天数，点开要看得到
+            "system_basis": system_basis,
             # ★ 单一来源：前端按 (sid, sku) 分块、库存公式的入参都读这一个字段，
             #   不许各自重算 —— effective_demand() 是唯一裁定者（rules/effective.py）
             "effective_units": eff.units}
@@ -470,7 +537,7 @@ def grid(plan_id: int, request: Request,
 
     try:
         for seller_sku, sid, sku, period, sysu, extrap, expu, fba, sbasis in demand:
-            row = _demand_row(seller_sku, sid, sku, _ym(period), sysu, expu, extrap)
+            row = _demand_row(seller_sku, sid, sku, _ym(period), sysu, expu, extrap, sbasis)
             k = (seller_sku, sid)
             fba_by_msku[k] = fba
             # ★ OP-8：没有 system_basis 的旧认领 → rate 缺席 → 桥接段未知并点名，不当 0
@@ -511,7 +578,7 @@ def grid(plan_id: int, request: Request,
         dropped_stats = source.stats() if hasattr(source, "stats") else {}
     # ★ fix round 1 审计（team-lead 要求逐一核对 ChSource 实际会抛的异常集合是否都
     #   进了这个元组）：grid() 只调用 as_of/onhand_available/purchase_in_transit/
-    #   purchase_as_of/stats——没有一个会走 order_store_map（那是 monthly_sales_history
+    #   purchase_as_of/stats——没有一个会走 order_store_map（那是 daily_sales
     #   专属，只有 claim() 会碰），所以这里不需要 UnknownStore；PurchaseTableStale
     #   只从 purchase_as_of() 抛，grid() 确实会调用它，必须在。
     except (ChUnavailable, ChDataUnusable, PurchaseTableStale, UnknownShape) as e:
@@ -572,7 +639,7 @@ def grid(plan_id: int, request: Request,
     payload = forecast_payload(
         as_of=as_of_date, periods=periods, demand_rows=out_demand, purchase_rows=purchase,
         fba=fba_by_msku, onhand=onhand_by_msku, base_rate=rate_by_msku, in_transit=in_transit,
-        lead=lead, embargo_days=None, plan_id=plan_id)
+        lead=lead, embargo_days=EMBARGO_DAYS, plan_id=plan_id)
     return {
         **payload,
         "plan_id": plan_id,
@@ -610,7 +677,7 @@ def put_demand(plan_id: int, seller_sku: str, sid: str, period: str, body: dict,
     # ★ 一格一事务：重算（预测）放在事务外 —— 预测慢，不该把行锁攥着（01 §5）
     with timed("put_demand", actor=who, plan_id=plan_id), pg_conn() as c, c.cursor() as cur:
         ensure_writable(cur, plan_id)
-        # ★ 团队裁定：回整行九键，跟 grid() 里 demand[] 那一格同一个构造器（_demand_row）——
+        # ★ 团队裁定：回整行十键，跟 grid() 里 demand[] 那一格同一个构造器（_demand_row）——
         #   凭 UPDATE...FROM 顺带 JOIN msku_bridge 拿 sku，不必再开一次连接。
         cur.execute("UPDATE plan_demand_cell d SET expected_units = %s, updated_by = %s,"
                     " updated_at = now()"
@@ -618,17 +685,17 @@ def put_demand(plan_id: int, seller_sku: str, sid: str, period: str, body: dict,
                     " WHERE d.plan_id = %s AND d.seller_sku = %s AND d.sid = %s"
                     "   AND d.period_start = %s"
                     "   AND b.seller_sku = d.seller_sku AND b.sid = d.sid"
-                    " RETURNING d.system_units, d.system_extrapolated, b.sku",
+                    " RETURNING d.system_units, d.system_extrapolated, b.sku, d.system_basis",
                     (units, who, plan_id, seller_sku, sid, _date(period + "-01", "period")))
         row = cur.fetchone()
     if row is None:
         raise ApiError(404, "cell_not_found", "这一格还没长出来（先认领这个 msku）",
                        {"plan_id": plan_id, "seller_sku": seller_sku, "sid": sid,
                         "period": period})
-    sysu, extrap, sku = row
-    # ★ 回的是 grid 里 demand[] 那一格同样的九键形状 —— 前端拿它原地替换那一行，
+    sysu, extrap, sku, sbasis = row
+    # ★ 回的是 grid 里 demand[] 那一格同样的十键形状 —— 前端拿它原地替换那一行，
     #   形状不同就要在前端再写一遍映射，而两份映射迟早分叉（曾经漏了 sku/effective_units）
-    return {"cell": _demand_row(seller_sku, sid, sku, period, sysu, units, extrap)}
+    return {"cell": _demand_row(seller_sku, sid, sku, period, sysu, units, extrap, sbasis)}
 
 
 @router.put("/plans/{plan_id}/purchase/{sku}/{period}")

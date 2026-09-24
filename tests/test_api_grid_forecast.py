@@ -47,9 +47,10 @@ def chain(rs):
 
 
 def test_params_say_which_rules_were_used(client, seed, lead_time_reset):
+    # PF-1：认领按 base_rate 种预测后，grid 如实报 embargo_days = 7（设计取值 · 未实测）
     g = grid(client, seed, s1(client, seed))
     assert g["params"] == {"as_of": "2026-09-21", "route": "oversea_sea", "make_days": 30,
-                           "ship_days": 60, "anchor_day": 15, "embargo_days": None}
+                           "ship_days": 60, "anchor_day": 15, "embargo_days": 7}
 
 
 def test_default_lead_time_msku_chain_and_beyond_horizon(client, seed, lead_time_reset):
@@ -130,6 +131,9 @@ def test_claims_without_system_basis_are_unknown_not_zero(client, seed, lead_tim
                                          "months": 3}, headers=H(seed.actor)).json()["plan_id"]
     client.post(f"/v1/plans/{pid}/claims", json={"seller_sku": "MSKU-D", "sid": "11072"},
                 headers=H(seed.actor))
+    # spec §3.4：认领现在就种 system_basis —— 「旧认领」这一形态要显式造出来
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("UPDATE plan_demand_cell SET system_basis = NULL WHERE plan_id = %s", (pid,))
     g = grid(client, seed, pid)
     d = rows(g, "forecast", seller_sku="MSKU-D")
     assert [(r["state"], r["reason"], r["closing"]) for r in d] == [
