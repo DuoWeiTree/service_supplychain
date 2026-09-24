@@ -467,7 +467,6 @@ export function PlanSheet(props: PlanSheetProps) {
               {s.todo > 0 && <span className="ps-flag ps-flag--warn" title={`${s.todo} 格销量待填`}>待 {s.todo}</span>}
             </div>
             <div className="ps-sub">采购／预测·库存·在途</div>
-            <div className="ps-sub">在途不含 FBA 货件（未取）</div>
           </div>
         </div>
         {periods.map((p, ci) => {

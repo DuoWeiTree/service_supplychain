@@ -132,7 +132,7 @@ export type ClosingReason = null | 'not_applicable' | 'unknown_demand' | 'unknow
 export interface InventoryBasis {
   source: 'ch';
   as_of: string;
-  /** ★ 恒 false 且必须显式返回 —— 屏上标「未计本计划采购」 */
+  /** ★ 恒 false 且必须显式返回 —— 旧库存块（阶段 A）不含本计划采购；界面已改读预测块，Task 21 随块删 */
   includes_plan_purchase: false;
   /** 这一格用掉的期望销量（= 该店该货号各 msku 生效值之和）。★ 与前端自己算的那份互为证人 */
   demand: number | null;

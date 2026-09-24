@@ -1,0 +1,305 @@
+{
+  "params": {
+    "as_of": "2026-09-21",
+    "route": "oversea_sea",
+    "make_days": 30,
+    "ship_days": 60,
+    "anchor_day": 15,
+    "embargo_days": 7
+  },
+  "forecast": [
+    {
+      "seller_sku": "MSKU-A",
+      "sid": "11072",
+      "sku": "SKU-1",
+      "period": "2026-10",
+      "state": "ok",
+      "reason": null,
+      "unknown_since": null,
+      "opening": 261,
+      "demand": 100,
+      "inbound_planned": 0,
+      "closing": 161,
+      "stockout_date": null,
+      "basis": {
+        "bridge": {
+          "from": "2026-09-22",
+          "to": "2026-09-30",
+          "units": 39,
+          "by": "forecast",
+          "rate": 4.325139122267326,
+          "month_totals": {
+            "2026-09": 130
+          },
+          "onhand_as_of": 300,
+          "arrivals": [],
+          "arrival_units": 0,
+          "stockout_date": null
+        },
+        "arrivals": []
+      }
+    },
+    {
+      "seller_sku": "MSKU-A",
+      "sid": "11072",
+      "sku": "SKU-1",
+      "period": "2026-11",
+      "state": "ok",
+      "reason": null,
+      "unknown_since": null,
+      "opening": 161,
+      "demand": 90,
+      "inbound_planned": 0,
+      "closing": 71,
+      "stockout_date": null,
+      "basis": {
+        "bridge": null,
+        "arrivals": []
+      }
+    },
+    {
+      "seller_sku": "MSKU-B",
+      "sid": "11072",
+      "sku": "SKU-1",
+      "period": "2026-10",
+      "state": "ok",
+      "reason": null,
+      "unknown_since": null,
+      "opening": 10,
+      "demand": 5,
+      "inbound_planned": 0,
+      "closing": 5,
+      "stockout_date": null,
+      "basis": {
+        "bridge": {
+          "from": "2026-09-22",
+          "to": "2026-09-30",
+          "units": 3,
+          "by": "forecast",
+          "rate": 0.32,
+          "month_totals": {
+            "2026-09": 10
+          },
+          "onhand_as_of": 13,
+          "arrivals": [],
+          "arrival_units": 0,
+          "stockout_date": null
+        },
+        "arrivals": []
+      }
+    },
+    {
+      "seller_sku": "MSKU-B",
+      "sid": "11072",
+      "sku": "SKU-1",
+      "period": "2026-11",
+      "state": "ok",
+      "reason": null,
+      "unknown_since": null,
+      "opening": 5,
+      "demand": 5,
+      "inbound_planned": 0,
+      "closing": 0,
+      "stockout_date": null,
+      "basis": {
+        "bridge": null,
+        "arrivals": []
+      }
+    },
+    {
+      "seller_sku": "MSKU-W",
+      "sid": "90001",
+      "sku": "SKU-1",
+      "period": "2026-10",
+      "state": "not_applicable",
+      "reason": "not_applicable",
+      "unknown_since": null,
+      "opening": null,
+      "demand": null,
+      "inbound_planned": null,
+      "closing": null,
+      "stockout_date": null,
+      "basis": {
+        "bridge": null,
+        "arrivals": []
+      }
+    },
+    {
+      "seller_sku": "MSKU-W",
+      "sid": "90001",
+      "sku": "SKU-1",
+      "period": "2026-11",
+      "state": "not_applicable",
+      "reason": "not_applicable",
+      "unknown_since": null,
+      "opening": null,
+      "demand": null,
+      "inbound_planned": null,
+      "closing": null,
+      "stockout_date": null,
+      "basis": {
+        "bridge": null,
+        "arrivals": []
+      }
+    }
+  ],
+  "forecast_msku": [
+    {
+      "seller_sku": "MSKU-A",
+      "sid": "11072",
+      "sku": "SKU-1",
+      "first_stockout_date": null
+    },
+    {
+      "seller_sku": "MSKU-B",
+      "sid": "11072",
+      "sku": "SKU-1",
+      "first_stockout_date": null
+    },
+    {
+      "seller_sku": "MSKU-W",
+      "sid": "90001",
+      "sku": "SKU-1",
+      "first_stockout_date": null
+    }
+  ],
+  "forecast_store": [
+    {
+      "sku": "SKU-1",
+      "sid": "11072",
+      "period": "2026-10",
+      "state": "ok",
+      "reason": null,
+      "demand": 105,
+      "system": 145,
+      "opening": 271,
+      "inbound_planned": 0,
+      "closing": 166
+    },
+    {
+      "sku": "SKU-1",
+      "sid": "90001",
+      "period": "2026-10",
+      "state": "not_applicable",
+      "reason": "not_applicable",
+      "demand": 60,
+      "system": null,
+      "opening": null,
+      "inbound_planned": null,
+      "closing": null
+    },
+    {
+      "sku": "SKU-1",
+      "sid": "11072",
+      "period": "2026-11",
+      "state": "ok",
+      "reason": null,
+      "demand": 95,
+      "system": 140,
+      "opening": 166,
+      "inbound_planned": 0,
+      "closing": 71
+    },
+    {
+      "sku": "SKU-1",
+      "sid": "90001",
+      "period": "2026-11",
+      "state": "not_applicable",
+      "reason": "not_applicable",
+      "demand": 65,
+      "system": null,
+      "opening": null,
+      "inbound_planned": null,
+      "closing": null
+    }
+  ],
+  "forecast_sku": [
+    {
+      "sku": "SKU-1",
+      "period": "2026-10",
+      "state": "ok",
+      "reason": null,
+      "reason_from": null,
+      "demand": 165,
+      "system": null,
+      "opening": 271,
+      "stock_demand": 105,
+      "inbound_planned": 0,
+      "closing": 166,
+      "excluded_not_applicable": 1,
+      "pipeline": {
+        "making": 200,
+        "shipping": 0,
+        "ordered_open": 50,
+        "ordered_open_sources": [
+          {
+            "period": "2026-10",
+            "units": 50,
+            "ref": "PO-2026-0918"
+          }
+        ],
+        "fba_inbound": null,
+        "fba_inbound_reason": "not_fetched"
+      },
+      "in_transit": 250,
+      "in_transit_excludes": [
+        "fba_inbound"
+      ],
+      "unfilled_purchase": []
+    },
+    {
+      "sku": "SKU-1",
+      "period": "2026-11",
+      "state": "ok",
+      "reason": null,
+      "reason_from": null,
+      "demand": 160,
+      "system": null,
+      "opening": 166,
+      "stock_demand": 95,
+      "inbound_planned": 0,
+      "closing": 71,
+      "excluded_not_applicable": 1,
+      "pipeline": {
+        "making": 80,
+        "shipping": 200,
+        "ordered_open": 50,
+        "ordered_open_sources": [
+          {
+            "period": "2026-10",
+            "units": 50,
+            "ref": "PO-2026-0918"
+          }
+        ],
+        "fba_inbound": null,
+        "fba_inbound_reason": "not_fetched"
+      },
+      "in_transit": 330,
+      "in_transit_excludes": [
+        "fba_inbound"
+      ],
+      "unfilled_purchase": []
+    }
+  ],
+  "beyond_horizon": [
+    {
+      "sku": "SKU-1",
+      "order_period": "2026-10",
+      "units": 200,
+      "placed": "2026-10-15",
+      "made": "2026-11-14",
+      "arrive": "2027-01-13",
+      "reason": "arrives_after_horizon"
+    },
+    {
+      "sku": "SKU-1",
+      "order_period": "2026-11",
+      "units": 80,
+      "placed": "2026-11-15",
+      "made": "2026-12-15",
+      "arrive": "2027-02-13",
+      "reason": "arrives_after_horizon"
+    }
+  ],
+  "unallocated": []
+}

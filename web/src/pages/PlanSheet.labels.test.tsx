@@ -17,8 +17,10 @@ describe('spec §5：三种行各显示什么', () => {
     renderSheet();
     const row = screen.getByTestId('purchase-row-SKU-1');
     expect(within(row).getByTestId('sku-system-SKU-1-2026-10')).toHaveTextContent('—');
-    expect(within(row).getByTestId('sku-stock-SKU-1-2026-10')).toHaveTextContent('169');
+    expect(within(row).getByTestId('sku-stock-SKU-1-2026-10')).toHaveTextContent('166');
+    // 在途 = 生产中 + 货运中 + 已下单：10 月 200 + 0 + 50；11 月 80（11 月单在产）+ 200（10 月单在船）+ 50
     expect(within(row).getByTestId('transit-SKU-1-2026-10')).toHaveTextContent('250');
+    expect(within(row).getByTestId('transit-SKU-1-2026-11')).toHaveTextContent('330');
     const cell = within(row).getByTestId('sku-stock-SKU-1-2026-10').closest('.ps-c')!;
     expect(cell).toHaveTextContent(/预测.*库存.*在途/);
   });
@@ -29,14 +31,14 @@ describe('spec §5：三种行各显示什么', () => {
     const cell = within(block).getByTestId('sku-cell-2026-10');
     expect(within(cell).getByTestId('sum-expected-2026-10')).toHaveTextContent('105');
     expect(within(cell).getByTestId('store-system-11072-SKU-1-2026-10')).toHaveTextContent('145');
-    expect(within(cell).getByTestId('closing-sku')).toHaveTextContent('169');
+    expect(within(cell).getByTestId('closing-sku')).toHaveTextContent('166');
     expect(cell).toHaveTextContent(/预测.*库存/);
   });
 
   it('msku 行：期望 + 预测 · 库存', () => {
     renderSheet();
     expect(screen.getByTestId('msku-system-MSKU-A-11072-2026-10')).toHaveTextContent('135');
-    expect(screen.getByTestId('msku-stock-MSKU-A-11072-2026-10')).toHaveTextContent('164');
+    expect(screen.getByTestId('msku-stock-MSKU-A-11072-2026-10')).toHaveTextContent('161');
     expect(screen.getByTestId('msku-stock-MSKU-B-11072-2026-11')).toHaveTextContent('0');
     const cell = screen.getByTestId('cell-MSKU-A-11072-2026-10');
     expect(cell).toHaveTextContent(/预测.*库存/);
@@ -49,24 +51,26 @@ describe('spec §5：三种行各显示什么', () => {
     expect(within(block).getByTestId('sku-cell-2026-10')).toHaveTextContent(/预测.*库存/);
   });
 
-  it('OP-14：在途旁写明不含 FBA 货件（未取）', () => {
+  it('OP-14：在途的说明「不含 FBA 货件（未取）」挂在在途上，不常驻屏上', () => {
     renderSheet();
-    expect(screen.getByTestId('purchase-row-SKU-1')).toHaveTextContent('不含 FBA 货件');
+    const transit = screen.getByTestId('transit-SKU-1-2026-10');
+    expect(transit.closest('[title]')!.getAttribute('title')).toBe('不含 FBA 货件（未取）');
+    expect(screen.getByTestId('purchase-row-SKU-1')).not.toHaveTextContent('不含 FBA 货件');
   });
 
   it('★ 断货 / 偏低是「库存」后面的状态词，标签「库存」不被它顶掉', () => {
     renderSheet();
     const block = screen.getByTestId('block-11072-SKU-1');
-    // 期末 134 / 169 都 ≥ 50：不带状态词
+    // 期末 71 ≥ 50：不带状态词
     expect(within(block).getByTestId('sku-cell-2026-11')).not.toHaveTextContent(/断货|偏低/);
     const low = structuredClone(LABEL_GRID);
-    // 11 月 MSKU-B 期末 0 → 店铺期末 = 134；把 A 压到 10 让店铺偏低，链与 Σ 同步改
+    // 11 月 MSKU-B 期末 0 → 店铺期末 = A 的期末。A 期望 90 → 151 把期末压到 161 − 151 = 10，Σ 同步改
     low.forecast.find((f) => f.seller_sku === 'MSKU-A' && f.period === '2026-11')!.closing = 10;
-    low.forecast.find((f) => f.seller_sku === 'MSKU-A' && f.period === '2026-11')!.demand = 244;
-    low.demand.find((d) => d.seller_sku === 'MSKU-A' && d.period === '2026-11')!.expected_units = 244;
-    low.demand.find((d) => d.seller_sku === 'MSKU-A' && d.period === '2026-11')!.effective_units = 244;
+    low.forecast.find((f) => f.seller_sku === 'MSKU-A' && f.period === '2026-11')!.demand = 151;
+    low.demand.find((d) => d.seller_sku === 'MSKU-A' && d.period === '2026-11')!.expected_units = 151;
+    low.demand.find((d) => d.seller_sku === 'MSKU-A' && d.period === '2026-11')!.effective_units = 151;
     const st = low.forecast_store.find((s) => s.sid === '11072' && s.period === '2026-11')!;
-    st.closing = 10; st.demand = 249;
+    st.closing = 10; st.demand = 156;
     cleanup();
     renderSheet(low);
     const cell = within(screen.getByTestId('block-11072-SKU-1')).getByTestId('sku-cell-2026-11');
