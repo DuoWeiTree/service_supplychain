@@ -10,11 +10,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 
+from forecast.allocate import Batch, allocate
 from forecast.calendar import (
     add_months,
     days_in_month,
     month_end,
     month_start,
+    order_arrival,
     segment_daily,
     segment_units,
     span,
@@ -215,3 +217,199 @@ def project_msku(m: MskuInput, as_of: dt.date, periods: Sequence[dt.date],
                               "as_of_inside_month" if partial else None, None, shown_opening,
                               dem, inbound, _int(closing), L.first_unmet(a, b), br, month_notes))
     return MskuProjection(rows, L.first_unmet(start, end))
+
+
+@dataclass(frozen=True)
+class PlanForecastInput:
+    as_of: dt.date
+    periods: list[dt.date]
+    make_days: int
+    ship_days: int
+    mskus: list[MskuInput]
+    purchase: dict[tuple[str, dt.date], int | None]
+    ordered_open: dict[str, list[tuple[str, int, str]]]     # sku → [(期间 "YYYY-MM", 件数, 单号)]
+
+
+@dataclass(frozen=True)
+class StoreMonth:
+    sku: str
+    sid: str
+    period: dt.date
+    state: str
+    reason: str | None
+    demand: int | None
+    system: int | None
+    opening: int | None
+    inbound: int | None
+    closing: int | None
+
+
+@dataclass(frozen=True)
+class SkuMonth:
+    sku: str
+    period: dt.date
+    state: str
+    demand: int | None                      # 含不适用店（期望 Σ）
+    system: int | None
+    opening: int | None
+    stock_demand: int | None                # 只含进库存求和的 msku —— 恒等式用这个
+    inbound: int | None
+    closing: int | None
+    excluded_not_applicable: int
+    making: int
+    shipping: int
+    ordered_open: int
+    ordered_sources: tuple[dict, ...]
+    in_transit: int
+    unfilled_purchase: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PlanForecast:
+    msku: dict[tuple[str, str], list[MskuMonth]]    # 值是 MskuProjection，带 msku 级依据
+    store: list[StoreMonth]
+    sku: list[SkuMonth]
+    beyond_horizon: list[dict]
+    unallocated: list[dict]
+
+
+def _sum(vals) -> int | None:
+    vals = list(vals)
+    return None if (not vals or any(v is None for v in vals)) else sum(vals)
+
+
+def _beyond(b: Batch, reason: str) -> dict:
+    return {"sku": b.sku, "order_period": b.order_period.strftime("%Y-%m"), "units": b.units,
+            "placed": b.placed.isoformat(), "made": b.made.isoformat(),
+            "arrive": b.arrive.isoformat(), "reason": reason}
+
+
+def _combine_state(rows: list[MskuMonth]) -> tuple[str, str | None]:
+    if all(r.state == "elapsed" for r in rows):
+        return "elapsed", "elapsed"
+    bad = next((r for r in rows if r.closing is None), None)
+    if bad is not None:
+        return "unknown", bad.reason
+    if any(r.state == "partial" for r in rows):
+        return "partial", "as_of_inside_month"
+    return "ok", None
+
+
+def forecast_plan(inp: PlanForecastInput) -> PlanForecast:
+    _check_periods(inp.periods)
+    start, end = inp.as_of + ONE, month_end(inp.periods[-1])
+    by_sku: dict[str, list[MskuInput]] = {}
+    for m in inp.mskus:
+        by_sku.setdefault(m.sku, []).append(m)
+    skus = sorted(set(by_sku) | {s for s, _ in inp.purchase})
+
+    batches: dict[str, list[Batch]] = {s: [] for s in skus}
+    unfilled: dict[str, list[str]] = {s: [] for s in skus}
+    for (sku, p), units in sorted(inp.purchase.items()):
+        if units is None:
+            unfilled[sku].append(p.strftime("%Y-%m"))       # ★ OP-13：不静默
+        elif units > 0:
+            batches[sku].append(Batch(sku, p, units, *order_arrival(p, inp.make_days,
+                                                                     inp.ship_days)))
+    beyond: list[dict] = []
+    placeable: dict[str, list[Batch]] = {}
+    for sku, bs in batches.items():
+        for b in bs:
+            if b.arrive > end:
+                beyond.append(_beyond(b, "arrives_after_horizon"))
+            elif b.arrive < start:
+                beyond.append(_beyond(b, "arrives_before_as_of"))
+            else:
+                placeable.setdefault(sku, []).append(b)
+
+    # 第一遍 · 基线（不补货）
+    base = {m.key: project_msku(m, inp.as_of, inp.periods) for m in inp.mskus}
+    arrivals: dict[tuple[str, str], list[Arrival]] = {m.key: [] for m in inp.mskus}
+    unallocated: list[dict] = []
+    for sku in skus:
+        ms = {m.key: m for m in by_sku.get(sku, [])}
+        keys = sorted((k for k, m in ms.items() if m.applicable), key=lambda k: (k[1], k[0]))
+        baseline = {k: {r.period: r.closing for r in base[k]} for k in keys}
+        weights = {k: dict(ms[k].effective) for k in keys}
+        gives, lost = allocate(placeable.get(sku, []), keys, baseline, weights)   # 第二遍
+        unallocated += lost
+        for b, gs in gives.items():
+            for g in gs:
+                arrivals[g.key].append(Arrival(b.arrive, g.units, {
+                    "order_period": b.order_period.strftime("%Y-%m"), "rule": g.rule,
+                    "gap_part": g.gap_part, "weight_part": g.weight_part, "pool": g.pool}))
+        for u in lost:
+            if u["reason"] != "gap_unknown":
+                continue
+            # ★ OP-12：整批分不出 → 能推演的 msku 从到货日起未知。在仓未知的本来就未知，
+            #   且这批已在上面批次级点名 —— 再塞给它只会经 unplaced_arrivals 重复列一遍。
+            for k in keys:
+                if ms[k].onhand is not None:
+                    arrivals[k].append(Arrival(dt.date.fromisoformat(u["arrive"]), None,
+                                               {"order_period": u["order_period"],
+                                                "reason": "gap_unknown", "pool": u["units"]}))
+
+    final = {m.key: project_msku(m, inp.as_of, inp.periods, arrivals[m.key]) for m in inp.mskus}
+    for m in inp.mskus:              # ★ 推演不了的 msku 拿到的到货，上一层不许丢
+        unallocated += [{"sku": m.sku, "seller_sku": m.seller_sku, "sid": m.sid,
+                         "arrive": x["date"], **x} for x in final[m.key].unplaced_arrivals]
+
+    stores: list[StoreMonth] = []
+    sku_rows: list[SkuMonth] = []
+    for sku in skus:
+        ms_list = by_sku.get(sku, [])
+        groups: dict[str, list[MskuInput]] = {}
+        for m in ms_list:
+            groups.setdefault(m.sid, []).append(m)
+        for sid, group in groups.items():
+            if len({m.applicable for m in group}) > 1:
+                raise ValueError(f"{sku} 店铺 {sid} 下 msku 的 has_fba 不一致："
+                                 f"{[(m.seller_sku, m.applicable) for m in group]}")
+        refs = tuple({"period": per, "units": u, "ref": ref}
+                     for per, u, ref in inp.ordered_open.get(sku, []))
+        ordered = sum(x["units"] for x in refs)
+        for i, p in enumerate(inp.periods):
+            month_stores: list[StoreMonth] = []
+            for sid in sorted(groups):
+                group = groups[sid]
+                rows = [final[m.key][i] for m in group]
+                dem = _sum(m.effective.get(p) for m in group)
+                sysu = _sum(m.system.get(p) for m in group)
+                if not group[0].applicable:              # ★ 不适用 ≠ 0：库存三格留空
+                    month_stores.append(StoreMonth(sku, sid, p, "not_applicable",
+                                                   "not_applicable", dem, sysu, None, None, None))
+                    continue
+                state, reason = _combine_state(rows)
+                month_stores.append(StoreMonth(
+                    sku, sid, p, state, reason, dem, sysu,
+                    _sum(r.opening for r in rows), _sum(r.inbound for r in rows),
+                    _sum(r.closing for r in rows)))
+            stores += month_stores
+            live = [s for s in month_stores if s.state != "not_applicable"]
+            me = month_end(p)
+            making = sum(b.units for b in batches[sku] if b.placed <= me < b.made)
+            shipping = sum(b.units for b in batches[sku] if b.made <= me < b.arrive)
+            if not month_stores:
+                state = "no_msku"
+            elif not live:
+                state = "not_applicable"
+            else:
+                state = _combine_state([final[m.key][i] for m in ms_list if m.applicable])[0]
+
+            def stock(f, live=live):
+                return _sum(f(s) for s in live) if live else None
+
+            row = SkuMonth(
+                sku, p, state,
+                _sum(s.demand for s in month_stores) if month_stores else None,
+                _sum(s.system for s in month_stores) if month_stores else None,
+                stock(lambda s: s.opening),
+                _sum(final[m.key][i].demand for m in ms_list if m.applicable) if live else None,
+                stock(lambda s: s.inbound), stock(lambda s: s.closing),
+                len(month_stores) - len(live), making, shipping, ordered, refs,
+                making + shipping + ordered, tuple(unfilled[sku]))
+            if (row.state == "ok" and row.closing
+                    != row.opening - row.stock_demand + row.inbound):   # ★ 恒等式③ 货号层
+                raise AssertionError(f"{sku} {p} 货号层恒等式不成立：{row}")
+            sku_rows.append(row)
+    return PlanForecast(final, stores, sku_rows, beyond, unallocated)
