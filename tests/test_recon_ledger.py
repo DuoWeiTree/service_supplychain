@@ -1,4 +1,6 @@
 """★ 00 D-3 ①：兄弟仓 228 格对账门禁（台账）。必须一次绿 —— 红了就是搬错了，且能定位到格。"""
+from fractions import Fraction as F
+
 import pytest
 
 from tests.recon_adapter import CHECKPOINTS, at, excel_formula, rows, signed_positions
@@ -12,6 +14,13 @@ def positions():
 @pytest.fixture(scope="module")
 def target():
     return {(r["sku"], r["node"]): excel_formula(r) for r in rows("recon_components.csv")}
+
+
+@pytest.fixture(scope="module")
+def cached():
+    """运营表 `recon_expected.csv` 的缓存分量 —— 可能与 `target` 的自身公式不一致（陈旧格）。"""
+    return {(r["sku"], r["node"], r["checkpoint"]): F(r["expected"])
+            for r in rows("recon_expected.csv")}
 
 
 def test_every_one_of_228_cells_matches_exactly(positions, target):
@@ -32,11 +41,8 @@ def test_values_land_on_half_units(positions, target):
     assert all((2 * at(positions, k, cp)).denominator == 1 for k in target for cp in CHECKPOINTS)
 
 
-def test_workbook_has_exactly_two_stale_cells(target):
+def test_workbook_has_exactly_two_stale_cells(target, cached):
     """运营表里 2 格缓存与自身公式矛盾（兄弟仓 test_workbook_has_two_stale_cells）。"""
-    from fractions import Fraction as F
-    cached = {(r["sku"], r["node"], r["checkpoint"]): F(r["expected"])
-              for r in rows("recon_expected.csv")}
     stale = [(k[0], cp, cached[(*k, cp)] - v) for k, cps in target.items()
              for cp, v in cps.items() if cached[(*k, cp)] != v]
     assert [(s, cp) for s, cp, _ in stale] == [("DCC1045014LG", "2026-08-31"),
@@ -44,10 +50,7 @@ def test_workbook_has_exactly_two_stale_cells(target):
     assert all(abs(d) == 1 for _, _, d in stale)
 
 
-def test_model_matches_cache_wherever_cache_is_fresh(positions, target):
-    from fractions import Fraction as F
-    cached = {(r["sku"], r["node"], r["checkpoint"]): F(r["expected"])
-              for r in rows("recon_expected.csv")}
+def test_model_matches_cache_wherever_cache_is_fresh(positions, target, cached):
     fresh = [(k, cp) for k, cps in target.items() for cp, v in cps.items()
              if cached[(*k, cp)] == v]
     assert len(fresh) == 226
