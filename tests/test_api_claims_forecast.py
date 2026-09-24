@@ -105,6 +105,9 @@ def test_stock_days_are_never_asked_past_the_estimation_anchor(client, seed, use
     r = client.post(f"/v1/plans/{pid}/claims", json={"seller_sku": "MSKU-B", "sid": "11072"},
                     headers=H(seed.actor))
     assert r.status_code == 500
+    assert r.json() == {"error": "stock_window_past_anchor", "hint": r.json()["hint"],
+                        "until": "2026-09-15", "anchor": "2026-09-14", "as_of": "2026-09-21",
+                        "embargo_days": 7}
     assert asked == [], "越线的窗口一次都不许问到取数源"
     # ★ 炸了要能光看日志定位：点名是哪个守卫、越到了哪一天
     assert "outcome=StockWindowPastAnchor" in scm_log.text
@@ -112,3 +115,37 @@ def test_stock_days_are_never_asked_past_the_estimation_anchor(client, seed, use
     with pg_conn() as c, c.cursor() as cur:
         cur.execute("SELECT count(*) FROM plan_demand_cell WHERE plan_id = %s", (pid,))
         assert cur.fetchone()[0] == 0, "越线就整笔回滚，不许留半截格子"
+
+
+def test_extrapolated_flag_is_what_the_estimator_says(client, seed, use_source, monkeypatch):
+    """★ spec §3.3：system_extrapolated 由算法如实给，不是 claim() 盖章 ——
+    估计器说 True，格子就得是 True（现行 baseline_rate_v1 恒给 False，见上面第一条）。"""
+    import dataclasses
+
+    from api.ui import plans
+
+    real = plans.estimate_rate
+    monkeypatch.setattr(plans, "estimate_rate",
+                        lambda *a, **k: dataclasses.replace(real(*a, **k), extrapolated=True))
+    _, rows = claim(client, seed, seed.msku_a)
+    assert [r[1] for r in rows] == [True, True, True]
+    assert [r[0] for r in rows] == [135, 130, 135]
+
+
+def test_no_rate_is_never_marked_extrapolated(client, seed, use_source, monkeypatch):
+    """★ 没有数就没有外推（库层 CHECK：外推 ⇒ system_units 非空）—— 估计器说 True 也不许写上去。"""
+    import dataclasses
+
+    from api.ui import plans
+    from dim.fixture_source import FixtureSource
+
+    class NoSales(FixtureSource):
+        def daily_sales(self, *a):
+            return {}
+
+    use_source(lambda: NoSales(plans.FIXTURES))
+    real = plans.estimate_rate
+    monkeypatch.setattr(plans, "estimate_rate",
+                        lambda *a, **k: dataclasses.replace(real(*a, **k), extrapolated=True))
+    _, rows = claim(client, seed, seed.msku_a)
+    assert [(r[0], r[1]) for r in rows] == [(None, False)] * 3

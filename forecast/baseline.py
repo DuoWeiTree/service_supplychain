@@ -58,6 +58,8 @@ class Estimate:
     embargo_days: int
     estimation_anchor: dt.date
     result: BaselineResult | None
+    #: spec §3.3：由算法如实给出，调用方照写，不盖章
+    extrapolated: bool
 
 
 def _quantile_linear(xs: list[float], q: float) -> float:
@@ -122,4 +124,7 @@ def estimate_rate(daily: Mapping[dt.date, int], censor: Collection[dt.date], as_
                   embargo_days: int = EMBARGO_DAYS) -> Estimate:
     """生产入口：速率在估计锚点上算（spec §3.1 ②）。"""
     a = estimation_anchor(as_of, embargo_days)
-    return Estimate(as_of, embargo_days, a, baseline_rate(daily, censor, a))
+    result = baseline_rate(daily, censor, a)
+    # ★ 一条日速率 × 该月天数对任何月份都直接成立 —— 没有旧 monthly_estimate 那种
+    #   「历史月份不够、照搬最后一个月」的外推步；没有 rate 就更谈不上外推。
+    return Estimate(as_of, embargo_days, a, result, extrapolated=False)

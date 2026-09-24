@@ -229,17 +229,22 @@ def _periods(cur, plan_id: int) -> list[dt.date]:
                     (start.month - 1 + i) % 12 + 1, 1) for i in range(months)]
 
 
-class StockWindowPastAnchor(RuntimeError):
-    """断货日窗口越过了估计锚点。★ task-14：SQL_FBA_STOCK_DAYS 不判 settled ——
-    还在写的采集日上，没写到的 msku 会被读成断货。只有止于 as_of − embargo_days 才安全。"""
+#: ★ task-14：SQL_FBA_STOCK_DAYS 不判 settled —— 还在写的采集日上，没写到的 msku
+#:   会被读成断货。只有止于 as_of − embargo_days 才安全。越线是我们自己的代码错了 → 500。
+STOCK_WINDOW_PAST_ANCHOR = "stock_window_past_anchor"
 
 
-def _check_stock_window(as_of: dt.date, until: dt.date) -> None:
+def _check_stock_window(as_of: dt.date, until: dt.date, plan_id: int, seller_sku: str,
+                        sid: str) -> None:
     anchor = estimation_anchor(as_of)
     if until > anchor:
-        raise StockWindowPastAnchor(
-            f"断货日窗口止于 {until}，越过了估计锚点 {anchor}（as_of {as_of} − "
-            f"embargo {EMBARGO_DAYS} 天）—— 未结算的采集日会被读成断货")
+        log.error("op=claim_forecast outcome=StockWindowPastAnchor plan_id=%s seller_sku=%s"
+                  " sid=%s as_of=%s until=%s anchor=%s embargo_days=%s",
+                  plan_id, seller_sku, sid, as_of, until, anchor, EMBARGO_DAYS)
+        raise ApiError(500, STOCK_WINDOW_PAST_ANCHOR,
+                       "断货日窗口越过了估计锚点 —— 未结算的采集日会被读成断货，拒绝估计",
+                       {"until": until.isoformat(), "anchor": anchor.isoformat(),
+                        "as_of": as_of.isoformat(), "embargo_days": EMBARGO_DAYS})
 
 
 def _system_basis(est, stock, win) -> dict:
@@ -322,6 +327,8 @@ def claim(plan_id: int, body: dict, request: Request,
         history_window = None
         rate = None
         basis = None
+        # 没有数就没有外推可言（CHECK：外推 ⇒ system_units 非空）
+        extrapolated = False
         if platform not in _SALES_PLATFORM:
             # ★ 终审 I-2：「这个店压根没有 Amazon 销量源」是**不适用**，不是未知。
             #   走到 daily_sales 的话，CH 档会在 store_for() 上抛
@@ -337,7 +344,7 @@ def claim(plan_id: int, body: dict, request: Request,
             try:
                 as_of = source.as_of()
                 win = data_windows(as_of)
-                _check_stock_window(as_of, win.until)
+                _check_stock_window(as_of, win.until, plan_id, seller_sku, sid)
                 daily = source.daily_sales(seller_sku, sid, win.sales_from, win.until)
                 stock = source.fba_stock_days(seller_sku, sid, win.censor_from, win.until)
             except UnknownStore as e:
@@ -373,13 +380,16 @@ def claim(plan_id: int, body: dict, request: Request,
                 est = estimate_rate(daily, stock.censored, as_of)
                 basis = _system_basis(est, stock, win)
                 rate = est.result.rate if est.result else None
+                extrapolated = est.extrapolated and rate is not None
                 # ★ 用了哪段日子、订单是滞后采集的（CLAUDE.md 铁律三）——
                 #   一个没有标记的数比没有数更坏。
                 history_window = _history_window(source, seller_sku, sid)
                 log.info("op=claim_forecast plan_id=%s seller_sku=%s sid=%s as_of=%s anchor=%s"
-                         " sales_days=%d censored=%d rejected=%d base_rate=%s",
+                         " sales_days=%d censored=%d rejected=%d uncaptured=%d base_rate=%s"
+                         " extrapolated=%s",
                          plan_id, seller_sku, sid, as_of, est.estimation_anchor, len(daily),
-                         basis["censored_days"], basis["stock_days_rejected"], rate)
+                         basis["censored_days"], basis["stock_days_rejected"],
+                         basis["stock_days_uncaptured"], rate, extrapolated)
                 if rate is None:
                     # ★ 没有历史 ≠ 预估 0：格子照建，system_units 留 NULL 并点名（spec §3.3）
                     no_history.append({"seller_sku": seller_sku, "sid": sid,
@@ -390,16 +400,16 @@ def claim(plan_id: int, body: dict, request: Request,
             cell_basis = (None if basis is None else
                           json.dumps({**basis, "days_in_month": n,
                                       "units_raw": rate * n if rate is not None else None}))
-            # ★ system_extrapolated 由算法如实给 false（spec §3.3）：base_rate × 天数不外推
+            # ★ system_extrapolated 取估计器给的值（spec §3.3：如实给，不盖章）
             cur.execute(
                 "INSERT INTO plan_demand_cell (plan_id, seller_sku, sid, period_start,"
                 " system_units, system_extrapolated, system_basis, updated_by)"
-                " VALUES (%s, %s, %s, %s, %s, FALSE, %s, %s)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
                 " ON CONFLICT (plan_id, seller_sku, sid, period_start) DO UPDATE"
                 "    SET system_units = EXCLUDED.system_units,"
                 "        system_extrapolated = EXCLUDED.system_extrapolated,"
                 "        system_basis = EXCLUDED.system_basis",
-                (plan_id, seller_sku, sid, period, units, cell_basis, who))
+                (plan_id, seller_sku, sid, period, units, extrapolated, cell_basis, who))
         for period in periods:
             # ★ 货号级采购格子必须先长出来：没有行和填了 0 不能长得一样，
             #   否则提交时它连一条 skipped 都留不下（判据②）
