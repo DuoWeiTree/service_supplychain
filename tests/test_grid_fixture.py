@@ -77,3 +77,10 @@ def test_the_fixture_covers_the_shapes_that_look_alike(client, seed):
     assert all(r["basis"]["includes_plan_purchase"] is False for r in inv)
     assert saved["sku_pipeline"] and all(r["no_seller_attribution"] is True
                                          for r in saved["sku_pipeline"])
+    # ★ spec §6 的预测块必须随 fixture 出去，否则前端永远在画一份没有它们的 mock
+    for key in ("params", "forecast", "forecast_store", "forecast_sku", "beyond_horizon",
+                "unallocated"):
+        assert key in saved, f"fixture 缺 {key}"
+    assert any(r["state"] == "not_applicable" for r in saved["forecast_store"]), "缺「不适用」"
+    assert any(r["reason"] == "unknown_onhand" for r in saved["forecast"]), "缺「未知在仓」"
+    assert saved["beyond_horizon"], "缺「周期外到货」—— 默认 30/60 下 10 月的 500 件必然在周期外"

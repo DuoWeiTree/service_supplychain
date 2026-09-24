@@ -1,4 +1,15 @@
 {
+  "beyond_horizon": [
+    {
+      "arrive": "2027-01-13",
+      "made": "2026-11-14",
+      "order_period": "2026-10",
+      "placed": "2026-10-15",
+      "reason": "arrives_after_horizon",
+      "sku": "DCC1800264G1",
+      "units": 500
+    }
+  ],
   "demand": [
     {
       "basis": "system",
@@ -197,6 +208,967 @@
       "sku": "DCC1800264G1",
       "system_extrapolated": true,
       "system_units": 44
+    }
+  ],
+  "forecast": [
+    {
+      "basis": {
+        "arrivals": [],
+        "bridge": {
+          "arrival_units": 0,
+          "arrivals": [],
+          "by": "forecast",
+          "from": "2026-09-22",
+          "month_totals": {},
+          "onhand_as_of": 300,
+          "rate": null,
+          "stockout_date": null,
+          "to": "2026-09-30",
+          "units": null
+        }
+      },
+      "closing": null,
+      "demand": 130,
+      "inbound_planned": 0,
+      "opening": null,
+      "period": "2026-10",
+      "reason": "bridge_rate_unknown",
+      "seller_sku": "MSKU-A",
+      "sid": "11072",
+      "sku": "DCC1800264G1",
+      "state": "unknown",
+      "stockout_date": null,
+      "unknown_since": "2026-10"
+    },
+    {
+      "basis": {
+        "arrivals": [],
+        "bridge": null
+      },
+      "closing": null,
+      "demand": 120,
+      "inbound_planned": 0,
+      "opening": null,
+      "period": "2026-11",
+      "reason": "bridge_rate_unknown",
+      "seller_sku": "MSKU-A",
+      "sid": "11072",
+      "sku": "DCC1800264G1",
+      "state": "unknown",
+      "stockout_date": null,
+      "unknown_since": "2026-10"
+    },
+    {
+      "basis": {
+        "arrivals": [],
+        "bridge": null
+      },
+      "closing": null,
+      "demand": 90,
+      "inbound_planned": 0,
+      "opening": null,
+      "period": "2026-12",
+      "reason": "bridge_rate_unknown",
+      "seller_sku": "MSKU-A",
+      "sid": "11072",
+      "sku": "DCC1800264G1",
+      "state": "unknown",
+      "stockout_date": null,
+      "unknown_since": "2026-10"
+    },
+    {
+      "basis": {
+        "arrivals": [],
+        "bridge": {
+          "arrival_units": 0,
+          "arrivals": [],
+          "by": "forecast",
+          "from": "2026-09-22",
+          "month_totals": {},
+          "onhand_as_of": 0,
+          "rate": null,
+          "stockout_date": null,
+          "to": "2026-09-30",
+          "units": null
+        }
+      },
+      "closing": null,
+      "demand": null,
+      "inbound_planned": 0,
+      "opening": null,
+      "period": "2026-10",
+      "reason": "bridge_rate_unknown",
+      "seller_sku": "MSKU-B",
+      "sid": "11072",
+      "sku": "DCC1800264G1",
+      "state": "unknown",
+      "stockout_date": null,
+      "unknown_since": "2026-10"
+    },
+    {
+      "basis": {
+        "arrivals": [],
+        "bridge": null
+      },
+      "closing": null,
+      "demand": null,
+      "inbound_planned": 0,
+      "opening": null,
+      "period": "2026-11",
+      "reason": "bridge_rate_unknown",
+      "seller_sku": "MSKU-B",
+      "sid": "11072",
+      "sku": "DCC1800264G1",
+      "state": "unknown",
+      "stockout_date": null,
+      "unknown_since": "2026-10"
+    },
+    {
+      "basis": {
+        "arrivals": [],
+        "bridge": null
+      },
+      "closing": null,
+      "demand": null,
+      "inbound_planned": 0,
+      "opening": null,
+      "period": "2026-12",
+      "reason": "bridge_rate_unknown",
+      "seller_sku": "MSKU-B",
+      "sid": "11072",
+      "sku": "DCC1800264G1",
+      "state": "unknown",
+      "stockout_date": null,
+      "unknown_since": "2026-10"
+    },
+    {
+      "basis": {
+        "arrivals": [],
+        "bridge": {
+          "arrival_units": 0,
+          "arrivals": [],
+          "by": "forecast",
+          "from": "2026-09-22",
+          "month_totals": {},
+          "onhand_as_of": 25,
+          "rate": null,
+          "stockout_date": null,
+          "to": "2026-09-30",
+          "units": null
+        }
+      },
+      "closing": null,
+      "demand": 40,
+      "inbound_planned": 0,
+      "opening": null,
+      "period": "2026-10",
+      "reason": "bridge_rate_unknown",
+      "seller_sku": "MSKU-C",
+      "sid": "11094",
+      "sku": "DCC1800264G1",
+      "state": "unknown",
+      "stockout_date": null,
+      "unknown_since": "2026-10"
+    },
+    {
+      "basis": {
+        "arrivals": [],
+        "bridge": null
+      },
+      "closing": null,
+      "demand": 44,
+      "inbound_planned": 0,
+      "opening": null,
+      "period": "2026-11",
+      "reason": "bridge_rate_unknown",
+      "seller_sku": "MSKU-C",
+      "sid": "11094",
+      "sku": "DCC1800264G1",
+      "state": "unknown",
+      "stockout_date": null,
+      "unknown_since": "2026-10"
+    },
+    {
+      "basis": {
+        "arrivals": [],
+        "bridge": null
+      },
+      "closing": null,
+      "demand": 44,
+      "inbound_planned": 0,
+      "opening": null,
+      "period": "2026-12",
+      "reason": "bridge_rate_unknown",
+      "seller_sku": "MSKU-C",
+      "sid": "11094",
+      "sku": "DCC1800264G1",
+      "state": "unknown",
+      "stockout_date": null,
+      "unknown_since": "2026-10"
+    },
+    {
+      "basis": {
+        "arrivals": [],
+        "bridge": {
+          "arrival_units": 0,
+          "arrivals": [],
+          "by": "forecast",
+          "from": "2026-09-22",
+          "month_totals": {},
+          "onhand_as_of": 40,
+          "rate": null,
+          "stockout_date": null,
+          "to": "2026-09-30",
+          "units": null
+        }
+      },
+      "closing": null,
+      "demand": 7,
+      "inbound_planned": 0,
+      "opening": null,
+      "period": "2026-10",
+      "reason": "bridge_rate_unknown",
+      "seller_sku": "MSKU-D",
+      "sid": "11072",
+      "sku": "A4P-TOY-002",
+      "state": "unknown",
+      "stockout_date": null,
+      "unknown_since": "2026-10"
+    },
+    {
+      "basis": {
+        "arrivals": [],
+        "bridge": null
+      },
+      "closing": null,
+      "demand": 8,
+      "inbound_planned": 0,
+      "opening": null,
+      "period": "2026-11",
+      "reason": "bridge_rate_unknown",
+      "seller_sku": "MSKU-D",
+      "sid": "11072",
+      "sku": "A4P-TOY-002",
+      "state": "unknown",
+      "stockout_date": null,
+      "unknown_since": "2026-10"
+    },
+    {
+      "basis": {
+        "arrivals": [],
+        "bridge": null
+      },
+      "closing": null,
+      "demand": 6,
+      "inbound_planned": 0,
+      "opening": null,
+      "period": "2026-12",
+      "reason": "bridge_rate_unknown",
+      "seller_sku": "MSKU-D",
+      "sid": "11072",
+      "sku": "A4P-TOY-002",
+      "state": "unknown",
+      "stockout_date": null,
+      "unknown_since": "2026-10"
+    },
+    {
+      "basis": {
+        "arrivals": [],
+        "bridge": null
+      },
+      "closing": null,
+      "demand": 5,
+      "inbound_planned": null,
+      "opening": null,
+      "period": "2026-10",
+      "reason": "unknown_onhand",
+      "seller_sku": "MSKU-E",
+      "sid": "11072",
+      "sku": "A4P-TOY-003",
+      "state": "unknown",
+      "stockout_date": null,
+      "unknown_since": "2026-10"
+    },
+    {
+      "basis": {
+        "arrivals": [],
+        "bridge": null
+      },
+      "closing": null,
+      "demand": 6,
+      "inbound_planned": null,
+      "opening": null,
+      "period": "2026-11",
+      "reason": "unknown_onhand",
+      "seller_sku": "MSKU-E",
+      "sid": "11072",
+      "sku": "A4P-TOY-003",
+      "state": "unknown",
+      "stockout_date": null,
+      "unknown_since": "2026-10"
+    },
+    {
+      "basis": {
+        "arrivals": [],
+        "bridge": null
+      },
+      "closing": null,
+      "demand": 7,
+      "inbound_planned": null,
+      "opening": null,
+      "period": "2026-12",
+      "reason": "unknown_onhand",
+      "seller_sku": "MSKU-E",
+      "sid": "11072",
+      "sku": "A4P-TOY-003",
+      "state": "unknown",
+      "stockout_date": null,
+      "unknown_since": "2026-10"
+    },
+    {
+      "basis": {
+        "arrivals": [],
+        "bridge": null
+      },
+      "closing": null,
+      "demand": null,
+      "inbound_planned": null,
+      "opening": null,
+      "period": "2026-10",
+      "reason": "not_applicable",
+      "seller_sku": "MSKU-W",
+      "sid": "90001",
+      "sku": "A4P-TOY-002",
+      "state": "not_applicable",
+      "stockout_date": null,
+      "unknown_since": null
+    },
+    {
+      "basis": {
+        "arrivals": [],
+        "bridge": null
+      },
+      "closing": null,
+      "demand": null,
+      "inbound_planned": null,
+      "opening": null,
+      "period": "2026-11",
+      "reason": "not_applicable",
+      "seller_sku": "MSKU-W",
+      "sid": "90001",
+      "sku": "A4P-TOY-002",
+      "state": "not_applicable",
+      "stockout_date": null,
+      "unknown_since": null
+    },
+    {
+      "basis": {
+        "arrivals": [],
+        "bridge": null
+      },
+      "closing": null,
+      "demand": null,
+      "inbound_planned": null,
+      "opening": null,
+      "period": "2026-12",
+      "reason": "not_applicable",
+      "seller_sku": "MSKU-W",
+      "sid": "90001",
+      "sku": "A4P-TOY-002",
+      "state": "not_applicable",
+      "stockout_date": null,
+      "unknown_since": null
+    }
+  ],
+  "forecast_msku": [
+    {
+      "first_stockout_date": null,
+      "seller_sku": "MSKU-A",
+      "sid": "11072",
+      "sku": "DCC1800264G1"
+    },
+    {
+      "first_stockout_date": null,
+      "seller_sku": "MSKU-B",
+      "sid": "11072",
+      "sku": "DCC1800264G1"
+    },
+    {
+      "first_stockout_date": null,
+      "seller_sku": "MSKU-C",
+      "sid": "11094",
+      "sku": "DCC1800264G1"
+    },
+    {
+      "first_stockout_date": null,
+      "seller_sku": "MSKU-D",
+      "sid": "11072",
+      "sku": "A4P-TOY-002"
+    },
+    {
+      "first_stockout_date": null,
+      "seller_sku": "MSKU-E",
+      "sid": "11072",
+      "sku": "A4P-TOY-003"
+    },
+    {
+      "first_stockout_date": null,
+      "seller_sku": "MSKU-W",
+      "sid": "90001",
+      "sku": "A4P-TOY-002"
+    }
+  ],
+  "forecast_sku": [
+    {
+      "closing": null,
+      "demand": null,
+      "excluded_not_applicable": 1,
+      "in_transit": 60,
+      "in_transit_excludes": [
+        "fba_inbound"
+      ],
+      "inbound_planned": 0,
+      "opening": null,
+      "period": "2026-10",
+      "pipeline": {
+        "fba_inbound": null,
+        "fba_inbound_reason": "not_fetched",
+        "making": 0,
+        "ordered_open": 60,
+        "ordered_open_sources": [
+          {
+            "period": "2026-10",
+            "ref": "PO-2026-0918",
+            "units": 60
+          }
+        ],
+        "shipping": 0
+      },
+      "reason": "bridge_rate_unknown",
+      "reason_from": {
+        "seller_sku": "MSKU-D",
+        "sid": "11072"
+      },
+      "sku": "A4P-TOY-002",
+      "state": "unknown",
+      "stock_demand": 7,
+      "system": null,
+      "unfilled_purchase": [
+        "2026-10",
+        "2026-11",
+        "2026-12"
+      ]
+    },
+    {
+      "closing": null,
+      "demand": null,
+      "excluded_not_applicable": 1,
+      "in_transit": 60,
+      "in_transit_excludes": [
+        "fba_inbound"
+      ],
+      "inbound_planned": 0,
+      "opening": null,
+      "period": "2026-11",
+      "pipeline": {
+        "fba_inbound": null,
+        "fba_inbound_reason": "not_fetched",
+        "making": 0,
+        "ordered_open": 60,
+        "ordered_open_sources": [
+          {
+            "period": "2026-10",
+            "ref": "PO-2026-0918",
+            "units": 60
+          }
+        ],
+        "shipping": 0
+      },
+      "reason": "bridge_rate_unknown",
+      "reason_from": {
+        "seller_sku": "MSKU-D",
+        "sid": "11072"
+      },
+      "sku": "A4P-TOY-002",
+      "state": "unknown",
+      "stock_demand": 8,
+      "system": null,
+      "unfilled_purchase": [
+        "2026-10",
+        "2026-11",
+        "2026-12"
+      ]
+    },
+    {
+      "closing": null,
+      "demand": null,
+      "excluded_not_applicable": 1,
+      "in_transit": 60,
+      "in_transit_excludes": [
+        "fba_inbound"
+      ],
+      "inbound_planned": 0,
+      "opening": null,
+      "period": "2026-12",
+      "pipeline": {
+        "fba_inbound": null,
+        "fba_inbound_reason": "not_fetched",
+        "making": 0,
+        "ordered_open": 60,
+        "ordered_open_sources": [
+          {
+            "period": "2026-10",
+            "ref": "PO-2026-0918",
+            "units": 60
+          }
+        ],
+        "shipping": 0
+      },
+      "reason": "bridge_rate_unknown",
+      "reason_from": {
+        "seller_sku": "MSKU-D",
+        "sid": "11072"
+      },
+      "sku": "A4P-TOY-002",
+      "state": "unknown",
+      "stock_demand": 6,
+      "system": null,
+      "unfilled_purchase": [
+        "2026-10",
+        "2026-11",
+        "2026-12"
+      ]
+    },
+    {
+      "closing": null,
+      "demand": 5,
+      "excluded_not_applicable": 0,
+      "in_transit": 0,
+      "in_transit_excludes": [
+        "fba_inbound"
+      ],
+      "inbound_planned": null,
+      "opening": null,
+      "period": "2026-10",
+      "pipeline": {
+        "fba_inbound": null,
+        "fba_inbound_reason": "not_fetched",
+        "making": 0,
+        "ordered_open": 0,
+        "ordered_open_sources": [],
+        "shipping": 0
+      },
+      "reason": "unknown_onhand",
+      "reason_from": {
+        "seller_sku": "MSKU-E",
+        "sid": "11072"
+      },
+      "sku": "A4P-TOY-003",
+      "state": "unknown",
+      "stock_demand": 5,
+      "system": 5,
+      "unfilled_purchase": [
+        "2026-10",
+        "2026-11",
+        "2026-12"
+      ]
+    },
+    {
+      "closing": null,
+      "demand": 6,
+      "excluded_not_applicable": 0,
+      "in_transit": 0,
+      "in_transit_excludes": [
+        "fba_inbound"
+      ],
+      "inbound_planned": null,
+      "opening": null,
+      "period": "2026-11",
+      "pipeline": {
+        "fba_inbound": null,
+        "fba_inbound_reason": "not_fetched",
+        "making": 0,
+        "ordered_open": 0,
+        "ordered_open_sources": [],
+        "shipping": 0
+      },
+      "reason": "unknown_onhand",
+      "reason_from": {
+        "seller_sku": "MSKU-E",
+        "sid": "11072"
+      },
+      "sku": "A4P-TOY-003",
+      "state": "unknown",
+      "stock_demand": 6,
+      "system": 6,
+      "unfilled_purchase": [
+        "2026-10",
+        "2026-11",
+        "2026-12"
+      ]
+    },
+    {
+      "closing": null,
+      "demand": 7,
+      "excluded_not_applicable": 0,
+      "in_transit": 0,
+      "in_transit_excludes": [
+        "fba_inbound"
+      ],
+      "inbound_planned": null,
+      "opening": null,
+      "period": "2026-12",
+      "pipeline": {
+        "fba_inbound": null,
+        "fba_inbound_reason": "not_fetched",
+        "making": 0,
+        "ordered_open": 0,
+        "ordered_open_sources": [],
+        "shipping": 0
+      },
+      "reason": "unknown_onhand",
+      "reason_from": {
+        "seller_sku": "MSKU-E",
+        "sid": "11072"
+      },
+      "sku": "A4P-TOY-003",
+      "state": "unknown",
+      "stock_demand": 7,
+      "system": 7,
+      "unfilled_purchase": [
+        "2026-10",
+        "2026-11",
+        "2026-12"
+      ]
+    },
+    {
+      "closing": null,
+      "demand": null,
+      "excluded_not_applicable": 0,
+      "in_transit": 700,
+      "in_transit_excludes": [
+        "fba_inbound"
+      ],
+      "inbound_planned": 0,
+      "opening": null,
+      "period": "2026-10",
+      "pipeline": {
+        "fba_inbound": null,
+        "fba_inbound_reason": "not_fetched",
+        "making": 500,
+        "ordered_open": 200,
+        "ordered_open_sources": [
+          {
+            "period": "2026-10",
+            "ref": "PO-2026-0912",
+            "units": 50
+          },
+          {
+            "period": "2026-10",
+            "ref": "PO-2026-0915",
+            "units": 30
+          },
+          {
+            "period": "2026-11",
+            "ref": "PO-2026-0920",
+            "units": 120
+          }
+        ],
+        "shipping": 0
+      },
+      "reason": "bridge_rate_unknown",
+      "reason_from": {
+        "seller_sku": "MSKU-A",
+        "sid": "11072"
+      },
+      "sku": "DCC1800264G1",
+      "state": "unknown",
+      "stock_demand": null,
+      "system": null,
+      "unfilled_purchase": [
+        "2026-11",
+        "2026-12"
+      ]
+    },
+    {
+      "closing": null,
+      "demand": null,
+      "excluded_not_applicable": 0,
+      "in_transit": 700,
+      "in_transit_excludes": [
+        "fba_inbound"
+      ],
+      "inbound_planned": 0,
+      "opening": null,
+      "period": "2026-11",
+      "pipeline": {
+        "fba_inbound": null,
+        "fba_inbound_reason": "not_fetched",
+        "making": 0,
+        "ordered_open": 200,
+        "ordered_open_sources": [
+          {
+            "period": "2026-10",
+            "ref": "PO-2026-0912",
+            "units": 50
+          },
+          {
+            "period": "2026-10",
+            "ref": "PO-2026-0915",
+            "units": 30
+          },
+          {
+            "period": "2026-11",
+            "ref": "PO-2026-0920",
+            "units": 120
+          }
+        ],
+        "shipping": 500
+      },
+      "reason": "bridge_rate_unknown",
+      "reason_from": {
+        "seller_sku": "MSKU-A",
+        "sid": "11072"
+      },
+      "sku": "DCC1800264G1",
+      "state": "unknown",
+      "stock_demand": null,
+      "system": null,
+      "unfilled_purchase": [
+        "2026-11",
+        "2026-12"
+      ]
+    },
+    {
+      "closing": null,
+      "demand": null,
+      "excluded_not_applicable": 0,
+      "in_transit": 700,
+      "in_transit_excludes": [
+        "fba_inbound"
+      ],
+      "inbound_planned": 0,
+      "opening": null,
+      "period": "2026-12",
+      "pipeline": {
+        "fba_inbound": null,
+        "fba_inbound_reason": "not_fetched",
+        "making": 0,
+        "ordered_open": 200,
+        "ordered_open_sources": [
+          {
+            "period": "2026-10",
+            "ref": "PO-2026-0912",
+            "units": 50
+          },
+          {
+            "period": "2026-10",
+            "ref": "PO-2026-0915",
+            "units": 30
+          },
+          {
+            "period": "2026-11",
+            "ref": "PO-2026-0920",
+            "units": 120
+          }
+        ],
+        "shipping": 500
+      },
+      "reason": "bridge_rate_unknown",
+      "reason_from": {
+        "seller_sku": "MSKU-A",
+        "sid": "11072"
+      },
+      "sku": "DCC1800264G1",
+      "state": "unknown",
+      "stock_demand": null,
+      "system": null,
+      "unfilled_purchase": [
+        "2026-11",
+        "2026-12"
+      ]
+    }
+  ],
+  "forecast_store": [
+    {
+      "closing": null,
+      "demand": 7,
+      "inbound_planned": 0,
+      "opening": null,
+      "period": "2026-10",
+      "reason": "bridge_rate_unknown",
+      "sid": "11072",
+      "sku": "A4P-TOY-002",
+      "state": "unknown",
+      "system": 7
+    },
+    {
+      "closing": null,
+      "demand": null,
+      "inbound_planned": null,
+      "opening": null,
+      "period": "2026-10",
+      "reason": "not_applicable",
+      "sid": "90001",
+      "sku": "A4P-TOY-002",
+      "state": "not_applicable",
+      "system": null
+    },
+    {
+      "closing": null,
+      "demand": 8,
+      "inbound_planned": 0,
+      "opening": null,
+      "period": "2026-11",
+      "reason": "bridge_rate_unknown",
+      "sid": "11072",
+      "sku": "A4P-TOY-002",
+      "state": "unknown",
+      "system": 8
+    },
+    {
+      "closing": null,
+      "demand": null,
+      "inbound_planned": null,
+      "opening": null,
+      "period": "2026-11",
+      "reason": "not_applicable",
+      "sid": "90001",
+      "sku": "A4P-TOY-002",
+      "state": "not_applicable",
+      "system": null
+    },
+    {
+      "closing": null,
+      "demand": 6,
+      "inbound_planned": 0,
+      "opening": null,
+      "period": "2026-12",
+      "reason": "bridge_rate_unknown",
+      "sid": "11072",
+      "sku": "A4P-TOY-002",
+      "state": "unknown",
+      "system": 6
+    },
+    {
+      "closing": null,
+      "demand": null,
+      "inbound_planned": null,
+      "opening": null,
+      "period": "2026-12",
+      "reason": "not_applicable",
+      "sid": "90001",
+      "sku": "A4P-TOY-002",
+      "state": "not_applicable",
+      "system": null
+    },
+    {
+      "closing": null,
+      "demand": 5,
+      "inbound_planned": null,
+      "opening": null,
+      "period": "2026-10",
+      "reason": "unknown_onhand",
+      "sid": "11072",
+      "sku": "A4P-TOY-003",
+      "state": "unknown",
+      "system": 5
+    },
+    {
+      "closing": null,
+      "demand": 6,
+      "inbound_planned": null,
+      "opening": null,
+      "period": "2026-11",
+      "reason": "unknown_onhand",
+      "sid": "11072",
+      "sku": "A4P-TOY-003",
+      "state": "unknown",
+      "system": 6
+    },
+    {
+      "closing": null,
+      "demand": 7,
+      "inbound_planned": null,
+      "opening": null,
+      "period": "2026-12",
+      "reason": "unknown_onhand",
+      "sid": "11072",
+      "sku": "A4P-TOY-003",
+      "state": "unknown",
+      "system": 7
+    },
+    {
+      "closing": null,
+      "demand": null,
+      "inbound_planned": 0,
+      "opening": null,
+      "period": "2026-10",
+      "reason": "bridge_rate_unknown",
+      "sid": "11072",
+      "sku": "DCC1800264G1",
+      "state": "unknown",
+      "system": null
+    },
+    {
+      "closing": null,
+      "demand": 40,
+      "inbound_planned": 0,
+      "opening": null,
+      "period": "2026-10",
+      "reason": "bridge_rate_unknown",
+      "sid": "11094",
+      "sku": "DCC1800264G1",
+      "state": "unknown",
+      "system": 40
+    },
+    {
+      "closing": null,
+      "demand": null,
+      "inbound_planned": 0,
+      "opening": null,
+      "period": "2026-11",
+      "reason": "bridge_rate_unknown",
+      "sid": "11072",
+      "sku": "DCC1800264G1",
+      "state": "unknown",
+      "system": null
+    },
+    {
+      "closing": null,
+      "demand": 44,
+      "inbound_planned": 0,
+      "opening": null,
+      "period": "2026-11",
+      "reason": "bridge_rate_unknown",
+      "sid": "11094",
+      "sku": "DCC1800264G1",
+      "state": "unknown",
+      "system": 44
+    },
+    {
+      "closing": null,
+      "demand": null,
+      "inbound_planned": 0,
+      "opening": null,
+      "period": "2026-12",
+      "reason": "bridge_rate_unknown",
+      "sid": "11072",
+      "sku": "DCC1800264G1",
+      "state": "unknown",
+      "system": null
+    },
+    {
+      "closing": null,
+      "demand": 44,
+      "inbound_planned": 0,
+      "opening": null,
+      "period": "2026-12",
+      "reason": "bridge_rate_unknown",
+      "sid": "11094",
+      "sku": "DCC1800264G1",
+      "state": "unknown",
+      "system": 44
     }
   ],
   "inventory": [
@@ -471,6 +1443,14 @@
       "sku": "DCC1800264G1"
     }
   ],
+  "params": {
+    "anchor_day": 15,
+    "as_of": "2026-09-21",
+    "embargo_days": null,
+    "make_days": 30,
+    "route": "oversea_sea",
+    "ship_days": 60
+  },
   "periods": [
     "2026-10",
     "2026-11",
@@ -577,5 +1557,6 @@
     "as_of": "2026-09-21",
     "dropped": {},
     "purchase_as_of": null
-  }
+  },
+  "unallocated": []
 }
