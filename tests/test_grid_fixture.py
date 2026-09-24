@@ -59,7 +59,12 @@ def test_the_fixture_covers_the_shapes_that_look_alike(client, seed):
     # ★ 四选四：任何一种形态的种子路径被删掉，这条测试都必须红，
     #   不能只守住其中一部分（子集断言会让「缺一种」蒙混过关）。
     assert {r["basis"] for r in saved["demand"]} == {"human", "system", "unknown"}
-    assert any(r["system_extrapolated"] for r in saved["demand"]), "缺「外推」那一种"
+    # ★ spec §3.3：速率模型对任何月份都算得出 → 不再产生外推；标记列保留、由算法如实给 false
+    assert not any(r["system_extrapolated"] for r in saved["demand"])
+    a = [r for r in saved["forecast"] if r["seller_sku"] == "MSKU-A"]
+    assert a[0]["basis"]["bridge"]["units"] == 39 and a[0]["opening"] == 261
+    assert any(r["state"] == "ok" and r["closing"] is not None for r in saved["forecast"])
+    assert any(r["reason"] == "unknown_demand" for r in saved["forecast"]), "缺「期望未知」"
     inv = saved["inventory"]
     assert {r["basis"]["closing_reason"] for r in inv} == {
         None, "not_applicable", "unknown_demand", "unknown_onhand"}, \

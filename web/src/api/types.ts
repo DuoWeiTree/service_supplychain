@@ -80,10 +80,14 @@ export interface DemandCell {
   /** 生效值 = 人填优先，否则系统预估，两者都没有则 null */
   effective_units: number | null;
   basis: DemandBasis;
+  /** ★ F16：预测依据快照（spec §3.3，`api/ui/plans.py::_system_basis`）；
+   *  null = 旧认领没种过（OP-8，桥接段读到时按未知处置，不当 0）。
+   *  形状由后端定，Phase 3 渲染前先原样透传，不在前端重复声明字段。 */
+  system_basis: Record<string, unknown> | null;
 }
 
 /** `PUT .../demand/...` 的信封。★ team-lead 09-22 裁定：回的是 grid() 里 demand[] 同一格
- *  的完整九键（`api/ui/plans.py` 的 `_demand_row()`），不是它的子集 —— 曾经漏过
+ *  的完整键集（`api/ui/plans.py` 的 `_demand_row()`），不是它的子集 —— 曾经漏过
  *  `sku`/`effective_units`，http.ts 用 `Awaited<ReturnType<...>>` 从接口签名反推类型，
  *  掩盖了「真正的响应比类型声称的少两个键」这件事。这里改成显式命名的信封类型，
  *  不再从签名里套一个部分形状回来。 */

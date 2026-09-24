@@ -797,7 +797,7 @@ def test_month_window_never_includes_the_current_month():
 
 
 def test_interior_empty_months_are_filled_with_zero_and_counted():
-    """★ 补 0 是为了 monthly_estimate 不抛 HistoryGap（forecast/estimate.py:57），
+    """★ 补 0 是为了速率模型（forecast/baseline.py）看到的窗口内部没有断点 ——
     而「这个月一件没卖」与「这个月没数据」是两件事 —— 后者不许补，要截短窗口。"""
     window = [dt.date(2026, 6, 1), dt.date(2026, 7, 1), dt.date(2026, 8, 1)]
     series, filled = cs.fill_months(window, {dt.date(2026, 6, 1): 561,
@@ -809,7 +809,7 @@ def test_interior_empty_months_are_filled_with_zero_and_counted():
 
 def test_no_rows_at_all_returns_empty_not_zeros():
     """★ 协议原话：没有行就返回空列表 —— 不补 0（dim/source.py:25）。
-    新品没数据与卖了 0 件必须分得开（forecast/estimate.py:22）。"""
+    新品没数据与卖了 0 件必须分得开。"""
     series, filled = cs.fill_months([dt.date(2026, 8, 1)], {})
     assert series == []
     assert filled == 0

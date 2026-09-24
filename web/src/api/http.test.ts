@@ -47,16 +47,17 @@ describe('http 数据源', () => {
     expect(JSON.parse((spy.mock.calls[1]![1] as RequestInit).body as string)).toEqual({ planned_units: 500 });
   });
 
-  it('★ putDemand 拿到的是完整九键，不是接口签名替它"声称"出来的 —— stub 用真实 fixture 的一整行', async () => {
+  it('★ putDemand 拿到的是完整十键，不是接口签名替它"声称"出来的 —— stub 用真实 fixture 的一整行', async () => {
     // ★ team-lead 09-22 裁定（找到 4）：http.ts 曾经用 Awaited<ReturnType<...>> 从
     //   SupplyChainApi['putDemand'] 的签名反推类型，签名说 9 键，真实后端一度只发 7 键
     //   （漏 sku/effective_units），TS 却因为这个反推走过场而不报错。改用显式的
-    //   PutDemandResult 信封后，这条测试拿 grid-1.json 里一整行真实 9 键数据当 stub，
+    //   PutDemandResult 信封后，这条测试拿 grid-1.json 里一整行真实数据当 stub，
     //   证明 http.ts 原样透传而不是自己拼了一份缺字段的假格子。
+    // ★ F16：claim() 现在种 system_basis（第十键），fixture 重固化后第一次真实带出这个字段。
     const realCell = (gridFixture as { demand: DemandCell[] }).demand[0]!;
     expect(Object.keys(realCell).sort()).toEqual(
       ['basis', 'effective_units', 'expected_units', 'period', 'seller_sku',
-       'sid', 'sku', 'system_extrapolated', 'system_units'].sort(),
+       'sid', 'sku', 'system_basis', 'system_extrapolated', 'system_units'].sort(),
     );
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(ok({ cell: realCell }));
     const got = await mk().putDemand(1, realCell.seller_sku, realCell.sid, realCell.period, null);

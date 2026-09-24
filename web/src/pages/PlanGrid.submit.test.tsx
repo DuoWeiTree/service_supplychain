@@ -15,7 +15,7 @@ const GRID: GridResponse = {
   plan_id: 1, periods: ['2026-10', '2026-11', '2026-12'],
   demand: [{ seller_sku: 'MSKU-A', sid: '11072', sku: 'SKU-1', period: '2026-10',
              system_units: 100, system_extrapolated: false, expected_units: 100,
-             effective_units: 100, basis: 'human' }],
+             effective_units: 100, basis: 'human', system_basis: null }],
   purchase: [{ sku: 'SKU-1', period: '2026-10', planned_units: 500 },
              { sku: 'SKU-1', period: '2026-11', planned_units: null },
              { sku: 'SKU-1', period: '2026-12', planned_units: null }],

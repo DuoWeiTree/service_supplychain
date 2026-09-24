@@ -426,7 +426,7 @@ def month_window(as_of: dt.date, months: int) -> list[dt.date]:
 def fill_months(window: list[dt.date],
                 hits: dict[dt.date, int]) -> tuple[list[tuple[dt.date, int]], int]:
     """窗口内空月补 0 并计数。★ 一条命中都没有 → 返回 `[]`（协议：不补 0）——
-    「新品没数据」与「卖了 0 件」必须分得开（forecast/estimate.py:22）。"""
+    「新品没数据」与「卖了 0 件」必须分得开（forecast/baseline.py 的 estimate_rate 同样不补）。"""
     if not hits:
         return [], 0
     series = [(m, int(hits.get(m, 0))) for m in window]

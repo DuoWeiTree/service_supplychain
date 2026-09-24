@@ -16,6 +16,7 @@ const sellers: Seller[] = [
 const d = (seller_sku: string, sid: string, period: string, eff: number | null): DemandCell => ({
   seller_sku, sid, sku: 'SKU-1', period, system_units: 100, system_extrapolated: false,
   expected_units: eff, effective_units: eff, basis: eff === null ? 'unknown' : 'human',
+  system_basis: null,
 });
 const inv = (sid: string, period: string, onhand: number | null, closing: number | null,
              closing_reason: ClosingReason = null, transit: number | null = 80,

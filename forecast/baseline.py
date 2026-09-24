@@ -125,6 +125,6 @@ def estimate_rate(daily: Mapping[dt.date, int], censor: Collection[dt.date], as_
     """生产入口：速率在估计锚点上算（spec §3.1 ②）。"""
     a = estimation_anchor(as_of, embargo_days)
     result = baseline_rate(daily, censor, a)
-    # ★ 一条日速率 × 该月天数对任何月份都直接成立 —— 没有旧 monthly_estimate 那种
+    # ★ 一条日速率 × 该月天数对任何月份都直接成立 —— 没有按位置沿用的外推法那种
     #   「历史月份不够、照搬最后一个月」的外推步；没有 rate 就更谈不上外推。
     return Estimate(as_of, embargo_days, a, result, extrapolated=False)

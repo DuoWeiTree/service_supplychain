@@ -20,6 +20,7 @@ function makeGrid(): GridResponse {
     seller_sku: ss, sid, sku: 'SKU-1', period: p, system_units: 100, system_extrapolated: extrap,
     expected_units: eff, effective_units: eff,
     basis: (eff === null ? 'unknown' : 'human') as 'unknown' | 'human',
+    system_basis: null,
   });
   const i = (sid: string, p: string, onhand: number | null, closing: number | null,
              closing_reason: ClosingReason = null, transit: number | null = 80) => ({
@@ -563,7 +564,10 @@ describe('计划整表', () => {
     expect(screen.queryByTestId('orphans')).toBeNull();
   });
 
-  it('★ 真 fixture：外推标签在 MSKU-C 的 2026-12 上能找到，10 月没有（F15）', async () => {
+  it('★ 真 fixture：没有任何一格带外推标签（spec §3.3：速率模型不外推）', async () => {
+    // ★ F16：monthly_estimate 退役，base_rate × 天数对任何月份都算得出，fixture 重固化后
+    //   不会再产生外推那一格。标签本身的渲染逻辑不删——上面 makeGrid() 的合成数据仍在喂
+    //   system_extrapolated:true 给 PlanSheet，这条测试只改成断言真 fixture 上找不到它。
     vi.resetModules();
     const { createMockApi } = await import('../api/mock');
     vi.doMock('../api', () => ({ api: createMockApi(), ApiError }));
@@ -573,8 +577,7 @@ describe('计划整表', () => {
         <Routes><Route path="/plans/:planId" element={<PlanGrid />} /></Routes>
       </MemoryRouter>,
     );
-    const block = await screen.findByTestId('block-11094-DCC1800264G1');
-    expect(within(within(block).getByTestId('cell-MSKU-C-11094-2026-12')).getByLabelText('系统外推')).toHaveTextContent('外推');
-    expect(within(within(block).getByTestId('cell-MSKU-C-11094-2026-10')).queryByLabelText('系统外推')).toBeNull();
+    await screen.findByTestId('block-11094-DCC1800264G1');
+    expect(screen.queryAllByLabelText('系统外推')).toHaveLength(0);
   });
 });

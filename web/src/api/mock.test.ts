@@ -169,8 +169,8 @@ describe('mock 数据源', () => {
 
   it('★ 认领成功要带 seeded 与 no_history（team-lead 09-22 裁定，找到 2）', async () => {
     // plan 1 是唯一带着真实 grid-1.json 网格的 mock 计划，no_history 就从这张网格现查。
-    // MSKU-A@11072：grid-1.json 里三个月 system_units 都有数（100/120/90），
-    // 有历史可估 ⇒ no_history 必须是空数组，不是随手塞一条
+    // MSKU-A@11072：grid-1.json 里三个月 system_units 都有数（135/130/135，
+    // base_rate × 天数重固化后的真数——F16），有历史可估 ⇒ no_history 必须是空数组，不是随手塞一条
     const withHistory = await api.claim(1, { seller_sku: 'MSKU-A', sid: '11072' });
     expect(withHistory.seeded).toEqual({ demand_cells: 3, purchase_cells: 3 });
     expect(withHistory.no_history).toEqual([]);
