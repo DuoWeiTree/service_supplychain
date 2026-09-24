@@ -18,6 +18,8 @@ from api.ui.deps import (
     require_fresh_mirrors,
 )
 from api.ui.errors import ApiError
+from api.ui.grid_forecast import forecast_payload
+from api.ui.lead_time import read_lead_time
 from api.ui.source_factory import (  # noqa: F401 - 供测试用 plans.FIXTURES 构造替身源
     FIXTURES,
     source_dep,
@@ -426,7 +428,7 @@ def _load_grid(cur, plan_id: int):
     periods = _periods(cur, plan_id)
     cur.execute(
         "SELECT d.seller_sku, d.sid, b.sku, d.period_start, d.system_units,"
-        "       d.system_extrapolated, d.expected_units, s.has_fba"
+        "       d.system_extrapolated, d.expected_units, s.has_fba, d.system_basis"
         "  FROM plan_demand_cell d"
         "  JOIN msku_bridge b ON b.seller_sku = d.seller_sku AND b.sid = d.sid"
         "  JOIN seller s ON s.seller_id = d.sid"
@@ -445,6 +447,7 @@ def grid(plan_id: int, request: Request,
     declared(request)
     with timed("grid", actor=who, plan_id=plan_id), pg_conn() as c, c.cursor() as cur:
         periods, demand, purchase = _load_grid(cur, plan_id)
+        lead = read_lead_time(cur)
 
     out_demand: list[dict] = []
     #: (sku, sid) → {period: 该店该货号各 msku 的期望销量之和}
@@ -460,10 +463,19 @@ def grid(plan_id: int, request: Request,
     # ★ demand 每个 msku 有 N 个月份行；在仓事实与月份无关，只能对每个 msku 累加一次 ——
     #   否则一个 3 个月的计划会把在仓数算成 3 倍。
     onhand_added: set[tuple[str, str]] = set()
+    #: msku → 推演入参（grid_forecast）。★ 在仓只在 has_fba 时取，与上面同一个闸
+    fba_by_msku: dict[tuple[str, str], bool] = {}
+    onhand_by_msku: dict[tuple[str, str], int | None] = {}
+    rate_by_msku: dict[tuple[str, str], float] = {}
 
     try:
-        for seller_sku, sid, sku, period, sysu, extrap, expu, fba in demand:
+        for seller_sku, sid, sku, period, sysu, extrap, expu, fba, sbasis in demand:
             row = _demand_row(seller_sku, sid, sku, _ym(period), sysu, expu, extrap)
+            k = (seller_sku, sid)
+            fba_by_msku[k] = fba
+            # ★ OP-8：没有 system_basis 的旧认领 → rate 缺席 → 桥接段未知并点名，不当 0
+            if sbasis and sbasis.get("base_rate") is not None:
+                rate_by_msku[k] = float(sbasis["base_rate"])
             out_demand.append(row)
             eff_units = row["effective_units"]
             key, ym = (sku, sid), _ym(period)
@@ -483,11 +495,13 @@ def grid(plan_id: int, request: Request,
             if fba and (seller_sku, sid) not in onhand_added:
                 onhand_added.add((seller_sku, sid))
                 got = source.onhand_available(seller_sku, sid)
+                onhand_by_msku[k] = got
                 if got is not None:
                     onhand_by_store[key] = (onhand_by_store[key] or 0) + got
 
+        # ★ 采购格子 ∪ 认领的货号：没采购格子的货号，它的在途也要进推演（grid_forecast）
         in_transit: dict[str, list] = {sku: source.purchase_in_transit(sku)
-                                       for sku in {r[0] for r in purchase}}
+                                       for sku in {r[0] for r in purchase} | {r[2] for r in demand}}
         as_of_date = source.as_of()
         as_of = as_of_date.isoformat()
         # ★ OQ-6 裁定：sku_pipeline[] 的 bucket 只在 CH 源（具备 purchase_as_of）下
@@ -555,7 +569,12 @@ def grid(plan_id: int, request: Request,
             slot["units"] += t.units
             slot["sources"].append({"units": t.units, "kind": "purchase_in_transit", "ref": t.ref})
 
+    payload = forecast_payload(
+        as_of=as_of_date, periods=periods, demand_rows=out_demand, purchase_rows=purchase,
+        fba=fba_by_msku, onhand=onhand_by_msku, base_rate=rate_by_msku, in_transit=in_transit,
+        lead=lead, embargo_days=None, plan_id=plan_id)
     return {
+        **payload,
         "plan_id": plan_id,
         "periods": [_ym(p) for p in periods],
         "demand": out_demand,
