@@ -238,3 +238,27 @@ def test_failure_after_forecast_plan_is_logged_with_plan_id(client, seed, lead_t
                 if "op=grid_forecast" in r.getMessage() and "outcome=fail" in r.getMessage())
     assert f"plan_id={pid}" in line and "elapsed_ms=" in line
     assert "AssertionError" in line and "计划货号在推演里丢了" in line
+
+
+def test_no_sales_source_store_forecast_is_not_applicable_and_left_out_of_the_sku_sum(
+        client, seed, lead_time_reset):
+    """★ 预测不适用 ≠ 未知：Walmart 店的预测不进货号 Σ、也不把它拖成未知；
+    旧认领（system_basis 为 NULL，OP-8）仍是未知 —— 两者必须分得开。"""
+    pid = s1(client, seed, extra=(seed.msku_nofba,))
+    g = grid(client, seed, pid)
+    w = [r for r in g["demand"] if (r["seller_sku"], r["sid"]) == tuple(seed.msku_nofba)]
+    assert all(r["system_basis"]["reason"] == "not_applicable_no_sales_source" for r in w)
+    wm = rows(g, "forecast_store", sid=seed.msku_nofba[1])
+    assert [(r["system"], r["system_not_applicable"]) for r in wm] == [(None, True)] * 3
+    d_sys = [r["system_units"] for r in g["demand"] if r["seller_sku"] == seed.msku_d[0]]
+    assert None not in d_sys
+    skub = rows(g, "forecast_sku", sku=seed.sku_b)
+    assert [(r["system"], r["system_not_applicable"]) for r in skub] == [(u, False) for u in d_sys]
+
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("UPDATE plan_demand_cell SET system_basis = NULL"
+                    " WHERE plan_id = %s AND seller_sku = %s AND sid = %s", (pid, *seed.msku_nofba))
+    g = grid(client, seed, pid)
+    wm = rows(g, "forecast_store", sid=seed.msku_nofba[1])
+    assert [(r["system"], r["system_not_applicable"]) for r in wm] == [(None, False)] * 3
+    assert [r["system"] for r in rows(g, "forecast_sku", sku=seed.sku_b)] == [None] * 3

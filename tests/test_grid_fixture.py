@@ -87,5 +87,9 @@ def test_the_fixture_covers_the_shapes_that_look_alike(client, seed):
                 "unallocated"):
         assert key in saved, f"fixture 缺 {key}"
     assert any(r["state"] == "not_applicable" for r in saved["forecast_store"]), "缺「不适用」"
+    # ★ 预测不适用（没有销量取数源）与 FBA 不适用是两件事，各要一个靶子
+    assert any(r["system_not_applicable"] for r in saved["forecast_store"]), "缺「预测不适用」"
+    assert any((r["system_basis"] or {}).get("reason") == "not_applicable_no_sales_source"
+               for r in saved["demand"]), "缺「认领时记下的无销量源」"
     assert any(r["reason"] == "unknown_onhand" for r in saved["forecast"]), "缺「未知在仓」"
     assert saved["beyond_horizon"], "缺「周期外到货」—— 默认 30/60 下 10 月的 500 件必然在周期外"

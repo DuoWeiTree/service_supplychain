@@ -7,6 +7,8 @@ import type {
 export interface MskuCell {
   period: Period;
   system_units: number | null;
+  /** ★ 认领时记下的「没有销量取数源」—— 预测不适用，不是未知 */
+  system_na: boolean;
   system_extrapolated: boolean;
   expected_units: number | null;
   effective_units: number | null;
@@ -63,6 +65,7 @@ export function mskuStockAt(row: MskuRow, period: Period): QtyValue {
 
 export function systemAt(block: SkuBlock, period: Period): QtyValue {
   const r = block.stock.find((s) => s.period === period);
+  if (r?.system_not_applicable) return { kind: 'na' };
   return r?.system == null ? { kind: 'unknown' } : { kind: 'num', value: r.system };
 }
 
@@ -130,7 +133,9 @@ export function buildGridModel(grid: GridResponse, sellers: Seller[]): GridModel
       block.mskus.push(row);
     }
     row.cells.push({
-      period: d.period, system_units: d.system_units, system_extrapolated: d.system_extrapolated,
+      period: d.period, system_units: d.system_units,
+      system_na: d.system_basis?.reason === 'not_applicable_no_sales_source',
+      system_extrapolated: d.system_extrapolated,
       expected_units: d.expected_units, effective_units: d.effective_units, basis: d.basis,
     });
   }

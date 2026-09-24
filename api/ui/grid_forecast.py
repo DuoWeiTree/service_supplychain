@@ -19,6 +19,15 @@ log = logging.getLogger("scm.api")
 
 _UNALLOCATED_CORE = ("sku", "order_period", "arrive", "units", "reason")
 
+#: 「这个 msku 压根没有销量取数源」—— claim() 记进 system_basis.reason 的那个词（plans.NOT_APPLICABLE）。
+NO_SALES_SOURCE = "not_applicable_no_sales_source"
+
+
+def system_not_applicable(system_basis: dict | None) -> bool:
+    """★ 预测「不适用」的唯一判据：认领时记下的事实，不是 system_units 为 NULL ——
+    NULL 还可能是旧认领没种（OP-8）或查过没卖（no_sales_history），那两种是未知。"""
+    return bool(system_basis) and system_basis.get("reason") == NO_SALES_SOURCE
+
 
 def _ym(d: dt.date | None) -> str | None:
     return d.strftime("%Y-%m") if d else None
@@ -47,11 +56,13 @@ def forecast_payload(*, as_of: dt.date, periods: list[dt.date], demand_rows: lis
     by_key: dict[tuple[str, str], dict] = {}
     for r in demand_rows:
         k = (r["seller_sku"], r["sid"])
-        slot = by_key.setdefault(k, {"sku": r["sku"], "eff": {}, "sys": {}})
+        slot = by_key.setdefault(k, {"sku": r["sku"], "eff": {}, "sys": {}, "sys_na": False})
+        slot["sys_na"] = slot["sys_na"] or system_not_applicable(r.get("system_basis"))
         slot["eff"][_p(r["period"])] = r["effective_units"]
         slot["sys"][_p(r["period"])] = r["system_units"]
     mskus = [MskuInput(k[0], k[1], v["sku"], bool(fba[k]), onhand.get(k), v["eff"], v["sys"],
-                       base_rate.get(k)) for k, v in sorted(by_key.items())]
+                       base_rate.get(k), system_applicable=not v["sys_na"])
+             for k, v in sorted(by_key.items())]
     purchase: dict[tuple[str, dt.date], int | None] = {(s, p): u for s, p, u in purchase_rows}
     # ★ forecast_plan 的货号全集 = msku ∪ purchase 的键；只在在途里出现的货号会被丢掉。
     #   没有采购格子的计划货号以「采购未填」补进去 —— 在途照算，未填照报。
@@ -88,7 +99,8 @@ def _serialize(f, sku_of: dict[tuple[str, str], str], plan_skus: set[str], as_of
         "sku": s.sku, "period": _ym(s.period), "state": s.state, "reason": s.reason,
         "reason_from": (None if s.reason_from is None else
                         {"seller_sku": s.reason_from[0], "sid": s.reason_from[1]}),
-        "demand": s.demand, "system": s.system, "opening": s.opening,
+        "demand": s.demand, "system": s.system, "system_not_applicable": s.system_not_applicable,
+        "opening": s.opening,
         "stock_demand": s.stock_demand, "inbound_planned": s.inbound, "closing": s.closing,
         "excluded_not_applicable": s.excluded_not_applicable,
         "pipeline": {"making": s.making, "shipping": s.shipping, "ordered_open": s.ordered_open,
@@ -113,7 +125,8 @@ def _serialize(f, sku_of: dict[tuple[str, str], str], plan_skus: set[str], as_of
                           for k, rs in sorted(f.msku.items())],
         "forecast_store": [{"sku": s.sku, "sid": s.sid, "period": _ym(s.period),
                             "state": s.state, "reason": s.reason, "demand": s.demand,
-                            "system": s.system, "opening": s.opening,
+                            "system": s.system, "system_not_applicable": s.system_not_applicable,
+                            "opening": s.opening,
                             "inbound_planned": s.inbound, "closing": s.closing}
                            for s in f.store],
         "forecast_sku": sku_json,

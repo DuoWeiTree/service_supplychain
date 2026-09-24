@@ -232,6 +232,13 @@ describe('mock 数据源', () => {
     expect(noHistory.no_history).toEqual([
       { seller_sku: 'MSKU-B', sid: '11072', reason: 'no_sales_history' },
     ]);
+
+    // MSKU-W@90001（沃尔玛）：system_units 同样全 null，但 system_basis 记着「无销量取数源」
+    // ⇒ 不适用，不是没历史 —— 与后端 claim() 同一个答案
+    const noSource = await api.claim(1, { seller_sku: 'MSKU-W', sid: '90001' });
+    expect(noSource.no_history).toEqual([
+      { seller_sku: 'MSKU-W', sid: '90001', reason: 'not_applicable_no_sales_source', cause: 'non_amazon_platform' },
+    ]);
   });
 
   // ★ I2（终审）：mock 与真 API 在「归档」这件事上语义相反，而唯一那条门禁看不见 ——

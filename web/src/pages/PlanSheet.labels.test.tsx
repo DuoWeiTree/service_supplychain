@@ -1,4 +1,5 @@
 import { cleanup, render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { GridResponse } from '../api/types';
 import { PlanSheet } from './PlanSheet';
@@ -16,7 +17,8 @@ describe('spec §5：三种行各显示什么', () => {
   it('货号行：主数采购，副数 预测 · 库存 · 在途（带文字标签）', () => {
     renderSheet();
     const row = screen.getByTestId('purchase-row-SKU-1');
-    expect(within(row).getByTestId('sku-system-SKU-1-2026-10')).toHaveTextContent('—');
+    // ★ 沃尔玛店预测不适用、不进 Σ：货号预测 = 11072 的 145，不是 —
+    expect(within(row).getByTestId('sku-system-SKU-1-2026-10')).toHaveTextContent('145');
     expect(within(row).getByTestId('sku-stock-SKU-1-2026-10')).toHaveTextContent('166');
     // 在途 = 生产中 + 货运中 + 已下单：10 月 200 + 0 + 50；11 月 80（11 月单在产）+ 200（10 月单在船）+ 50
     expect(within(row).getByTestId('transit-SKU-1-2026-10')).toHaveTextContent('250');
@@ -103,5 +105,44 @@ describe('spec §5：三种行各显示什么', () => {
     renderSheet();
     expect(screen.getByText('库存含计划采购到货（生产 30 天 + 货运 60 天）')).toBeInTheDocument();
     expect(screen.queryByText('未计本计划采购')).toBeNull();
+  });
+
+  it('★ 没有销量取数源的店：预测写「不适用」；旧认领没种依据的仍是 —（OP-8）', () => {
+    renderSheet();
+    expect(screen.getByTestId('store-system-90001-SKU-1-2026-10')).toHaveTextContent('不适用');
+
+    const old = structuredClone(LABEL_GRID);
+    for (const d of old.demand) if (d.sid === '90001') d.system_basis = null;
+    for (const s of old.forecast_store) if (s.sid === '90001') s.system_not_applicable = false;
+    for (const k of old.forecast_sku) k.system = null;
+    cleanup();
+    renderSheet(old);
+    expect(screen.getByTestId('store-system-90001-SKU-1-2026-10')).toHaveTextContent('—');
+    expect(screen.getByTestId('store-system-90001-SKU-1-2026-10')).not.toHaveTextContent('不适用');
+    expect(screen.getByTestId('sku-system-SKU-1-2026-10')).toHaveTextContent('—');
+  });
+
+  it('★ msku 行：认领时记下无销量源 → 预测「不适用」', () => {
+    const g = structuredClone(LABEL_GRID);
+    for (const d of g.demand) if (d.seller_sku === 'MSKU-B') {
+      d.system_units = null;
+      d.system_basis = { reason: 'not_applicable_no_sales_source', cause: 'store_absent_from_order_report',
+                         days_in_month: 31, units_raw: null };
+    }
+    renderSheet(g);
+    expect(screen.getByTestId('msku-system-MSKU-B-11072-2026-10')).toHaveTextContent('不适用');
+    expect(screen.getByTestId('msku-system-MSKU-A-11072-2026-10')).toHaveTextContent('135');
+  });
+
+  it('★ 紧凑：货号行副数用单字标签 预 / 存 / 途，全称在 title 上', async () => {
+    renderSheet();
+    const cell = () => screen.getByTestId('sku-stock-SKU-1-2026-10').closest('.ps-c')!;
+    expect(cell()).toHaveTextContent(/预测.*库存.*在途/);
+    await userEvent.click(screen.getByRole('button', { name: '紧凑' }));
+    expect(cell()).toHaveTextContent(/预\s*145.*存\s*166.*途\s*250/);
+    expect(cell()).not.toHaveTextContent(/预测|库存|在途/);
+    for (const [short, full] of [['预', '预测'], ['存', '库存'], ['途', '在途']] as const) {
+      expect(within(cell() as HTMLElement).getByText(short)).toHaveAttribute('title', full);
+    }
   });
 });

@@ -82,7 +82,14 @@ export interface DemandCell {
   basis: DemandBasis;
   /** ★ F16：预测依据快照（spec §3.3，`api/ui/plans.py::_system_basis`）；
    *  null = 旧认领没种过（OP-8，桥接段读到时按未知处置，不当 0） */
-  system_basis: SystemBasis | null;
+  system_basis: SystemBasis | SystemBasisNoSource | null;
+}
+
+/** 认领时记下「这个 msku 压根没有销量取数源」（`api/ui/plans.py::_no_sales_source_basis`）。
+ *  ★ 预测是**不适用**，不是未知：`system_basis` 为 null 的旧认领（OP-8）与查过没卖的才是未知 */
+export interface SystemBasisNoSource {
+  reason: 'not_applicable_no_sales_source'; cause: NoSalesSourceCause;
+  days_in_month: number; units_raw: null;
 }
 
 /** `api/ui/plans.py::_system_basis` + 认领时逐月补的 `days_in_month` / `units_raw`。
@@ -225,6 +232,8 @@ export interface MskuFirstStockout {
 export interface StoreForecast {
   sku: string; sid: Sid; period: Period; state: ForecastState; reason: ForecastReason;
   demand: number | null; system: number | null;
+  /** ★ 店里每个 msku 都没有销量取数源 ⇒ 预测不适用（`system` 为 null 但不是未知） */
+  system_not_applicable: boolean;
   opening: number | null; inbound_planned: number | null; closing: number | null;
 }
 /** ★ making / shipping 由计划采购推出；null = mock 改了采购没重算（OP-17）。后端恒给数 */
@@ -239,6 +248,8 @@ export interface SkuForecast {
   /** 未知时：让它未知的那个 msku */
   reason_from: { seller_sku: string; sid: Sid } | null;
   demand: number | null; system: number | null;
+  /** ★ 每家店的预测都不适用；不适用的店不进 `system` 的 Σ（不当 0，也不让它变未知） */
+  system_not_applicable: boolean;
   opening: number | null;
   /** ★ 只含进库存求和的 msku —— 恒等式用这个，不是 demand */
   stock_demand: number | null; inbound_planned: number | null;

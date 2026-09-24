@@ -129,7 +129,9 @@
 .ps-v--todo { font-size: 12px; color: var(--warn); border-bottom: 1px dashed currentColor; line-height: 15px; }
 /* ★ 副数带文字标签（spec §5）。一行放不下就折行、不裁：列宽保证一行至少并排两项
    （「库存 -1,234」≈ 59px × 2 + 8px 间距 = 126px ≤ 152 − 24 内边距），
-   于是货号行三项 = 两行，14 + 14 + 主数 18 = 46px ≤ 舒适行高 48。字宽按 11px 估 · 未实测 */
+   于是货号行三项 = 两行，14 + 14 + 主数 18 = 46px ≤ 舒适行高 48。
+   紧凑（34px）：主数与副数并排，副数只剩约 80px —— 货号行改用单字标签 预/存/途（全称在 title），
+   三位数时两项一行（「预 145」≈ 33px），两行 28px ≤ 34。字宽按 11px 估 · 未实测 */
 .ps-d { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; column-gap: var(--space-2); row-gap: 0; white-space: nowrap; font-size: 11px; line-height: 14px; color: var(--text-3); max-width: 100%; overflow: hidden; }
 .ps-d em { font-style: normal; margin-left: var(--space-1); }
 .ps-d b { font-weight: 600; color: var(--text-2); font-variant-numeric: tabular-nums; }

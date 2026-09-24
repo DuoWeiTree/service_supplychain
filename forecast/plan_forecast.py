@@ -37,6 +37,9 @@ class MskuInput:
     effective: dict[dt.date, int | None]    # 计划月（月初）→ 期望销量生效值
     system: dict[dt.date, int | None]       # 计划月 → 预测销量（只汇总，不进台账）
     base_rate: float | None                 # system_basis.base_rate；W-6 桥接段用
+    # ★ False = 这个 msku 没有销量取数源（认领时记进 system_basis），预测「不适用」——
+    #   与 FBA 不适用同一种排除：不进上一层的预测 Σ，不当 0，也不把上一层拖成未知
+    system_applicable: bool = True
 
     @property
     def key(self) -> tuple[str, str]:
@@ -242,6 +245,7 @@ class StoreMonth:
     opening: int | None
     inbound: int | None
     closing: int | None
+    system_not_applicable: bool = False     # 店里每个 msku 的预测都不适用
 
 
 @dataclass(frozen=True)
@@ -264,6 +268,7 @@ class SkuMonth:
     unfilled_purchase: tuple[str, ...]
     reason: str | None = None
     reason_from: tuple[str, str] | None = None   # 未知时：让它未知的那个 msku（seller_sku, sid）
+    system_not_applicable: bool = False     # 每家店的预测都不适用
 
 
 @dataclass(frozen=True)
@@ -380,16 +385,19 @@ def forecast_plan(inp: PlanForecastInput) -> PlanForecast:
                 group = groups[sid]
                 rows = [final[m.key][i] for m in group]
                 dem = _sum(m.effective.get(p) for m in group)
-                sysu = _sum(m.system.get(p) for m in group)
+                sys_live = [m for m in group if m.system_applicable]
+                sysu = _sum(m.system.get(p) for m in sys_live) if sys_live else None
+                sys_na = not sys_live
                 if not group[0].applicable:              # ★ 不适用 ≠ 0：库存三格留空
                     month_stores.append(StoreMonth(sku, sid, p, "not_applicable",
-                                                   "not_applicable", dem, sysu, None, None, None))
+                                                   "not_applicable", dem, sysu, None, None, None,
+                                                   system_not_applicable=sys_na))
                     continue
                 state, reason, _ = _combine_state([(m.key, final[m.key][i]) for m in group])
                 month_stores.append(StoreMonth(
                     sku, sid, p, state, reason, dem, sysu,
                     _sum(r.opening for r in rows), _sum(r.inbound for r in rows),
-                    _sum(r.closing for r in rows)))
+                    _sum(r.closing for r in rows), system_not_applicable=sys_na))
             stores += month_stores
             live = [s for s in month_stores if s.state != "not_applicable"]
             me = month_end(p)
@@ -403,18 +411,21 @@ def forecast_plan(inp: PlanForecastInput) -> PlanForecast:
                 state, reason, reason_from = _combine_state(
                     [(m.key, final[m.key][i]) for m in ms_list if m.applicable])
 
+            sys_stores = [s for s in month_stores if not s.system_not_applicable]
+
             def stock(f, live=live):
                 return _sum(f(s) for s in live) if live else None
 
             row = SkuMonth(
                 sku, p, state,
                 _sum(s.demand for s in month_stores) if month_stores else None,
-                _sum(s.system for s in month_stores) if month_stores else None,
+                _sum(s.system for s in sys_stores) if sys_stores else None,
                 stock(lambda s: s.opening),
                 _sum(final[m.key][i].demand for m in ms_list if m.applicable) if live else None,
                 stock(lambda s: s.inbound), stock(lambda s: s.closing),
                 len(month_stores) - len(live), making, shipping, ordered, refs,
-                making + shipping + ordered, tuple(unfilled[sku]), reason, reason_from)
+                making + shipping + ordered, tuple(unfilled[sku]), reason, reason_from,
+                system_not_applicable=bool(month_stores) and not sys_stores)
             if (row.state == "ok" and row.closing
                     != row.opening - row.stock_demand + row.inbound):   # ★ 恒等式③ 货号层
                 raise AssertionError(f"{sku} {p} 货号层恒等式不成立：{row}")

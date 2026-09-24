@@ -206,3 +206,31 @@ def test_sku_row_carries_the_reason_of_the_msku_that_made_it_unknown():
     assert {(r.sku, r.state, r.reason, r.reason_from) for r in f.sku} == {
         (SKU_B, "not_applicable", "not_applicable", None),
         ("NO-MSKU", "no_msku", "no_msku", None)}
+
+
+def test_no_sales_source_msku_is_left_out_of_the_forecast_sums_not_made_unknown():
+    """★ 预测「不适用」（没有销量取数源）与 FBA 不适用同一种排除：不当 0，也不把上一层拖成未知；
+    店里全是不适用 → 店铺预测不适用。旧认领没种依据（system=None 但可适用，OP-8）仍是未知。"""
+    W = ("MSKU-W", "90001")
+    nosrc = MskuInput(W[0], W[1], SKU_B, False, None, dict(zip(P, (60, 65, 70))),
+                      dict(zip(P, (None, None, None))), None, system_applicable=False)
+    f = forecast_plan(s1(extra=(nosrc,)))
+    wm = [s for s in f.store if s.sid == "90001"]
+    assert [(s.system, s.system_not_applicable) for s in wm] == [(None, True)] * 3
+    b = sku_rows(f, SKU_B)
+    assert [(r.system, r.system_not_applicable) for r in b] == [(7, False), (8, False), (6, False)]
+
+    # 同一个店里混着一个不适用的 msku：只加可适用的那个
+    mixed = MskuInput("MSKU-X", DD[1], SKU_B, True, 5, dict(zip(P, (1, 1, 1))),
+                      dict(zip(P, (None, None, None))), None, system_applicable=False)
+    f = forecast_plan(s1(extra=(mixed,)))
+    st = [s for s in f.store if s.sku == SKU_B and s.sid == DD[1]]
+    assert [(s.system, s.system_not_applicable) for s in st] == [(7, False), (8, False), (6, False)]
+
+    # 反面：旧认领（可适用、system 为 None）→ 未知，不是不适用
+    old = MskuInput("MSKU-X", DD[1], SKU_B, True, 5, dict(zip(P, (1, 1, 1))),
+                    dict(zip(P, (None, None, None))), None)
+    f = forecast_plan(s1(extra=(old,)))
+    st = [s for s in f.store if s.sku == SKU_B and s.sid == DD[1]]
+    assert [(s.system, s.system_not_applicable) for s in st] == [(None, False)] * 3
+    assert [r.system for r in sku_rows(f, SKU_B)] == [None] * 3

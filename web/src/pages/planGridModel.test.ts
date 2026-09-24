@@ -27,7 +27,7 @@ const st = (sid: string, period: string, opening: number | null, closing: number
 ): StoreForecast => ({
   sku: 'SKU-1', sid, period, state,
   reason: state === 'ok' ? null : state === 'not_applicable' ? 'not_applicable' : 'unknown_demand',
-  demand, system: null, opening, inbound_planned: 0, closing,
+  demand, system: null, system_not_applicable: false, opening, inbound_planned: 0, closing,
 });
 const fm = (seller_sku: string, sid: string, period: string, closing: number | null): MskuForecast => ({
   seller_sku, sid, sku: 'SKU-1', period, state: closing === null ? 'unknown' : 'ok',
@@ -37,7 +37,7 @@ const fm = (seller_sku: string, sid: string, period: string, closing: number | n
 });
 const fk = (period: string, making: number, shipping = 0, ordered = 0): SkuForecast => ({
   sku: 'SKU-1', period, state: 'ok', reason: null, reason_from: null,
-  demand: null, system: null, opening: null,
+  demand: null, system: null, system_not_applicable: false, opening: null,
   stock_demand: null, inbound_planned: 0, closing: null, excluded_not_applicable: 1,
   pipeline: { making, shipping, ordered_open: ordered, ordered_open_sources: [],
               fba_inbound: null, fba_inbound_reason: 'not_fetched' },

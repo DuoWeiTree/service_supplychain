@@ -30,7 +30,7 @@ function makeGrid(): GridResponse {
     sku: 'SKU-1', sid, period: p, state,
     reason: state === 'ok' ? null : state === 'not_applicable' ? 'not_applicable' : 'unknown_demand',
     demand: opening !== null && closing !== null ? opening - closing : null,
-    system: null, opening, inbound_planned: 0, closing,
+    system: null, system_not_applicable: false, opening, inbound_planned: 0, closing,
   });
   return {
     plan_id: 1, periods: [...P],
@@ -61,7 +61,7 @@ function makeGrid(): GridResponse {
 /** 货号级一行：在途全记在 ordered_open 上，组成与总数一致 */
 function transitRow(sku: string, period: string, units: number): SkuForecast {
   return {
-    sku, period, state: 'ok', reason: null, reason_from: null, demand: null, system: null,
+    sku, period, state: 'ok', reason: null, reason_from: null, demand: null, system: null, system_not_applicable: false,
     opening: null, stock_demand: null, inbound_planned: 0, closing: null, excluded_not_applicable: 0,
     pipeline: { making: 0, shipping: 0, ordered_open: units, ordered_open_sources: [],
                 fba_inbound: null, fba_inbound_reason: 'not_fetched' },

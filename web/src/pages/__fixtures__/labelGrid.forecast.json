@@ -172,6 +172,7 @@
       "reason": null,
       "demand": 105,
       "system": 145,
+      "system_not_applicable": false,
       "opening": 271,
       "inbound_planned": 0,
       "closing": 166
@@ -184,6 +185,7 @@
       "reason": "not_applicable",
       "demand": 60,
       "system": null,
+      "system_not_applicable": true,
       "opening": null,
       "inbound_planned": null,
       "closing": null
@@ -196,6 +198,7 @@
       "reason": null,
       "demand": 95,
       "system": 140,
+      "system_not_applicable": false,
       "opening": 166,
       "inbound_planned": 0,
       "closing": 71
@@ -208,6 +211,7 @@
       "reason": "not_applicable",
       "demand": 65,
       "system": null,
+      "system_not_applicable": true,
       "opening": null,
       "inbound_planned": null,
       "closing": null
@@ -221,7 +225,8 @@
       "reason": null,
       "reason_from": null,
       "demand": 165,
-      "system": null,
+      "system": 145,
+      "system_not_applicable": false,
       "opening": 271,
       "stock_demand": 105,
       "inbound_planned": 0,
@@ -254,7 +259,8 @@
       "reason": null,
       "reason_from": null,
       "demand": 160,
-      "system": null,
+      "system": 140,
+      "system_not_applicable": false,
       "opening": 166,
       "stock_demand": 95,
       "inbound_planned": 0,

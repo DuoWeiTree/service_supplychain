@@ -22,9 +22,14 @@ P10, P11 = dt.date(2026, 10, 1), dt.date(2026, 11, 1)
 A, B, W = ("MSKU-A", "11072"), ("MSKU-B", "11072"), ("MSKU-W", "90001")
 
 
-def _row(k: tuple[str, str], period: str, eff: int, sysu: int | None) -> dict:
+#: 沃尔玛店：认领时记下「没有销量取数源」（plans._no_sales_source_basis）
+NO_SOURCE = {"reason": "not_applicable_no_sales_source", "cause": "non_amazon_platform"}
+
+
+def _row(k: tuple[str, str], period: str, eff: int, sysu: int | None,
+         basis: dict | None = None) -> dict:
     return {"seller_sku": k[0], "sid": k[1], "sku": "SKU-1", "period": period,
-            "effective_units": eff, "system_units": sysu}
+            "effective_units": eff, "system_units": sysu, "system_basis": basis}
 
 
 def build() -> dict:
@@ -33,7 +38,7 @@ def build() -> dict:
         as_of=dt.date(2026, 9, 21), periods=[P10, P11],
         demand_rows=[_row(A, "2026-10", 100, 135), _row(A, "2026-11", 90, 130),
                      _row(B, "2026-10", 5, 10), _row(B, "2026-11", 5, 10),
-                     _row(W, "2026-10", 60, None), _row(W, "2026-11", 65, None)],
+                     _row(W, "2026-10", 60, None, NO_SOURCE), _row(W, "2026-11", 65, None, NO_SOURCE)],
         purchase_rows=[("SKU-1", P10, 200), ("SKU-1", P11, 80)],
         fba={A: True, B: True, W: False},
         onhand={A: 300, B: 13},

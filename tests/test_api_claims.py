@@ -545,3 +545,57 @@ def test_an_unknown_sid_is_still_told_to_add_the_mapping_row(client, seed):
     #   缺口：…」。两句话在 detail 里不许混 —— 运维照 detail 去查那一行。
     assert "新开的店" in body["detail"], body["detail"]
     assert "已登记的取数缺口" not in body["detail"], body["detail"]
+
+
+def _bases(pid, ms):
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT system_units, system_basis FROM plan_demand_cell"
+                    " WHERE plan_id = %s AND seller_sku = %s AND sid = %s ORDER BY period_start",
+                    (pid, *ms))
+        return cur.fetchall()
+
+
+def test_no_sales_source_is_persisted_into_system_basis_for_both_causes(client, seed, use_source):
+    """★ 「不适用」要活过认领那一次响应：grid 只读得到格子，读不到当时的 no_history。
+    记进 system_basis（不加列），reason 与 no_history 同一个词；system_units 仍是 NULL。"""
+    from dim import ch_source as cs
+
+    def must_not_be_called(sql, parameters=None):
+        raise AssertionError("没有销量来源的店去查了 CH —— 闸没拦住")
+
+    gap = _seed_gap_store(seed)
+    use_source(lambda: cs.ChSource(_only_as_of(must_not_be_called)))
+    p = mk(client, seed)
+    for ms in (seed.msku_nofba, gap):
+        r = client.post(f"/v1/plans/{p}/claims", json={"seller_sku": ms[0], "sid": ms[1]},
+                        headers=H(seed.actor))
+        assert r.status_code == 200, r.text
+    for ms, cause in ((seed.msku_nofba, "non_amazon_platform"),
+                      (gap, "store_absent_from_order_report")):
+        rows = _bases(p, ms)
+        assert len(rows) == 3
+        for units, basis in rows:
+            assert units is None
+            assert basis["reason"] == "not_applicable_no_sales_source", basis
+            assert basis["cause"] == cause
+            assert basis["units_raw"] is None
+            assert "base_rate" not in basis, "不适用不是速率 0 —— 不许长出一个 base_rate"
+
+
+def test_no_sales_history_is_not_marked_not_applicable(client, seed, use_source):
+    """反面：Amazon 店查过了、窗口里没卖（no_sales_history）—— 那是未知，不是不适用。"""
+    from api.ui import plans
+    from dim.fixture_source import FixtureSource
+
+    class NoHistory(FixtureSource):
+        def daily_sales(self, *a):
+            return {}
+
+    use_source(lambda: NoHistory(plans.FIXTURES))
+    p = mk(client, seed)
+    r = client.post(f"/v1/plans/{p}/claims", json={"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]},
+                    headers=H(seed.actor)).json()
+    assert r["no_history"][0]["reason"] == "no_sales_history"
+    for units, basis in _bases(p, seed.msku_a):
+        assert units is None
+        assert basis["reason"] != "not_applicable_no_sales_source", basis

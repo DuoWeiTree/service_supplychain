@@ -1,6 +1,7 @@
 import { ApiError, type SupplyChainApi } from './client';
 import type {
-  CatalogResult, CountKey, ForecastArrival, ForecastState, GridResponse, PlanSummary, RevList, Seller, SkippedCell,
+  CatalogResult, CountKey, ForecastArrival, ForecastState, GridResponse, NoHistoryEntry, PlanSummary, RevList, Seller,
+  SkippedCell, SystemBasisNoSource,
 } from './types';
 import plansFixture from './fixtures/plans.json';
 import gridFixture from './fixtures/grid-1.json';
@@ -261,9 +262,14 @@ export function createMockApi(): SupplyChainApi {
       //   全为 null 才算「没历史」，不是拍脑袋写死的固定名单。
       const g = grids.get(planId);
       const mine = g?.demand.filter((d) => d.seller_sku === target.seller_sku && d.sid === target.sid) ?? [];
-      const noHistory = mine.length > 0 && mine.every((d) => d.system_units === null)
-        ? [{ seller_sku: target.seller_sku, sid: target.sid, reason: 'no_sales_history' as const }]
-        : [];
+      // ★ 与后端同一个判据：认领时记进 system_basis 的「无销量取数源」是不适用，不是没历史
+      const noSource = mine.map((d) => d.system_basis)
+        .find((b): b is SystemBasisNoSource => b?.reason === 'not_applicable_no_sales_source');
+      const noHistory: NoHistoryEntry[] = noSource
+        ? [{ seller_sku: target.seller_sku, sid: target.sid, reason: 'not_applicable_no_sales_source', cause: noSource.cause }]
+        : mine.length > 0 && mine.every((d) => d.system_units === null)
+          ? [{ seller_sku: target.seller_sku, sid: target.sid, reason: 'no_sales_history' }]
+          : [];
       const months = plan(planId).months;
       return {
         claimed: { ...target, sku: item.sku },

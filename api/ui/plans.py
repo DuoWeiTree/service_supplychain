@@ -19,7 +19,7 @@ from api.ui.deps import (
     require_fresh_mirrors,
 )
 from api.ui.errors import ApiError
-from api.ui.grid_forecast import forecast_payload
+from api.ui.grid_forecast import NO_SALES_SOURCE, forecast_payload
 from api.ui.lead_time import read_lead_time
 from api.ui.source_factory import (  # noqa: F401 - 供测试用 plans.FIXTURES 构造替身源
     FIXTURES,
@@ -74,13 +74,21 @@ _SALES_PLATFORM = ("amazon",)
 #: ★★ 残留轮次裁定：同一件事不许有两套词汇。两种成因（下面的 `cause`）都落在
 #:   这一个 `reason` 上 —— 前端判「要不要让人来填这一格」只看 `reason`，
 #:   不必跟着后端每接一个新平台就加一个分支。
-NOT_APPLICABLE = "not_applicable_no_sales_source"
+NOT_APPLICABLE = NO_SALES_SOURCE      # 词只定义一处：grid_forecast 按它排出预测 Σ
 #: 成因。★ 与 `reason` 分开是因为它们回答的是两个问题：`reason` 是「这一格
 #:   是什么」（事实），`cause` 是「为什么」（出处）。挤进一个字段，就会出现
 #:   `not_applicable_non_amazon_platform` 被用在一个 **Amazon** 店上 ——
 #:   那个标记会如实地撒谎。
 CAUSE_NON_AMAZON_PLATFORM = "non_amazon_platform"
 CAUSE_STORE_ABSENT_FROM_ORDER_REPORT = "store_absent_from_order_report"
+
+
+def _no_sales_source_basis(cause: str) -> dict:
+    """★ 「不适用」要活过认领那一次响应 —— grid 读不到当时的 no_history，只读得到格子。
+    记进 system_basis（不加列），`reason` 与 no_history 同一个词；没有 base_rate ——
+    不适用不是速率 0。旧认领 system_basis 为 NULL 的仍是未知（OP-8），与这个分得开。"""
+    return {"reason": NOT_APPLICABLE, "cause": cause}
+
 
 
 def _source_error(e: Exception) -> ApiError:
@@ -340,6 +348,7 @@ def claim(plan_id: int, body: dict, request: Request,
                                "reason": NOT_APPLICABLE,
                                "cause": CAUSE_NON_AMAZON_PLATFORM,
                                "platform": platform})
+            basis = _no_sales_source_basis(CAUSE_NON_AMAZON_PLATFORM)
         else:
             try:
                 as_of = source.as_of()
@@ -366,6 +375,7 @@ def claim(plan_id: int, body: dict, request: Request,
                                    "reason": NOT_APPLICABLE,
                                    "cause": CAUSE_STORE_ABSENT_FROM_ORDER_REPORT,
                                    "detail": e.registered_gap})
+                basis = _no_sales_source_basis(CAUSE_STORE_ABSENT_FROM_ORDER_REPORT)
                 # ★ 不设 history_window：这一支压根没查过，而口径标记的意思是
                 #   「查了，用的是这几个月」。给它一个标记就是说了一句没发生的事。
             except (ChUnavailable, ChDataUnusable, UnknownShape) as e:

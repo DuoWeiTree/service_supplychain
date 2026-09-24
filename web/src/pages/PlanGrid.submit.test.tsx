@@ -27,7 +27,7 @@ const GRID: GridResponse = {
     sku: 'SKU-1', sid: '11072', period,
     state: n === 0 ? 'ok' as const : 'unknown' as const,
     reason: n === 0 ? null : 'unknown_demand' as const,
-    demand: n === 0 ? 100 : null, system: null,
+    demand: n === 0 ? 100 : null, system: null, system_not_applicable: false,
     opening: n === 0 ? 300 : 200, inbound_planned: 0, closing: n === 0 ? 200 : null,
   })),
   forecast_sku: [],
