@@ -77,7 +77,8 @@ def test_ch_source_has_no_remaining_stub_methods():
     """
     import inspect
 
-    for name in ("as_of", "monthly_sales_history", "onhand_available", "purchase_in_transit"):
+    for name in ("as_of", "monthly_sales_history", "onhand_available", "purchase_in_transit",
+                 "daily_sales", "fba_stock_days"):
         src = inspect.getsource(getattr(ChSource, name))
         assert "NotImplementedError" not in src, (
             f"ChSource.{name} 仍是占位实现——空实现会让「该做没做」和"

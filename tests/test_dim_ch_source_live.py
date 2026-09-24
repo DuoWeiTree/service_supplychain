@@ -577,7 +577,7 @@ def test_no_value_operand_is_string_interpolated_in_the_forecast_sql():
     """
     import re
     for name in ("SQL_FBA_CAPTURE_DAYS", "SQL_MONTHLY_SALES", "SQL_FBA_ONHAND",
-                 "SQL_PURCHASE_IN_TRANSIT"):
+                 "SQL_PURCHASE_IN_TRANSIT", "SQL_DAILY_SALES", "SQL_FBA_STOCK_DAYS"):
         sql = getattr(cs, name)
         bad = re.findall(r"'\{[^}]*\}'|toDate\('\{[^}]*\}'\)", sql)
         assert not bad, (
