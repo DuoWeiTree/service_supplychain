@@ -1,0 +1,8 @@
+lane_id,src_node,dst_node,mode,p50_days,p80_days,receive_to_sellable_days
+CN->FBA_US:sea,OWN_CN,FBA:US,sea,45.0,55.0,3.0
+CN->FBA_US:air,OWN_CN,FBA:US,air,34.0,37.0,3.0
+CN->US3PL_WEST:sea,OWN_CN,3PL,sea,33.0,33.0,1.0
+CN->US3PL_EAST:sea,OWN_CN,3PL,sea,46.0,48.0,1.0
+CN->WALMART:sea,OWN_CN,US3PL:34111,sea,49.0,62.0,1.0
+US3PL->FBA_US:truck,3PL,FBA:US,truck,7.0,11.0,3.0
+CN_BUFFER->CN_STAGE:internal,CN:36782,OWN_CN,internal,2.0,4.0,0.0

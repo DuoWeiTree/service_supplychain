@@ -1,0 +1,43 @@
+node,provider,warehouse_id,name,in_market,sellable,sells_direct,feeds_downstream,market,channel
+FBA:US:PETSFIT,FBA,21415,PETSFIT-JXD-US美国仓,True,True,True,False,US,amazon
+FBA:US:A4PET,FBA,21438,A4Pet-BS-US-US美国仓,True,True,True,False,US,amazon
+US3PL:34110,3PL,34110,73-Tiktok-CHI-CA仓,True,True,True,False,US,tiktok
+US3PL:34111,3PL,34111,74-Walmart-CHI-CA仓,True,True,True,False,US,walmart
+US3PL:34112,3PL,34112,75-Chewy-CHI-CA仓,True,True,True,False,US,chewy
+US3PL:34113,3PL,34113,76-TEMU-CHI-CA仓,True,True,True,False,US,temu
+US3PL:34115,3PL,34115,78-Wayfair-CHI-CA仓,True,True,True,False,US,wayfair
+US3PL:34116,3PL,34116,79-shopify-CHI-CA仓,True,True,True,False,US,shopify
+US3PL:36770,3PL,36770,96-SUNNEYPET-Wayfair-CHI-CA仓,True,True,True,False,US,wayfair
+US3PL:22890,3PL,22890,30-LA自有海外仓CHI-CA,True,True,False,True,US,
+US3PL:24741,3PL,24741,魔方云仓BCI NL-TX,True,True,False,True,US,
+US3PL:25418,3PL,25418,魔方云仓BCI BC-GA,True,True,False,True,US,
+US3PL:25419,3PL,25419,魔方云仓BCI LD-NJ,True,True,False,True,US,
+US3PL:25420,3PL,25420,魔方云仓BCI WL-CA,True,True,False,True,US,
+US3PL:33290,3PL,33290,领星WMS[2] 美东08691,True,True,False,True,US,
+US3PL:34114,3PL,34114,77-AMZ-CHI-CA仓,True,True,False,True,US,amazon
+US3PL:34716,3PL,34716,86-次品仓-CHI-CA,True,False,False,False,US,pool
+US3PL:35505,3PL,35505,88-二手仓-CHI-CA,True,False,False,False,US,pool
+US3PL:35801,3PL,35801,89-SM-CHI-CA仓,True,True,False,True,US,
+US3PL:36913,3PL,36913,97-捐赠仓-CHI-CA,True,False,False,False,US,pool
+US3PL:38306,3PL,38306,沃尔玛WFS仓,True,True,False,False,US,walmart
+CN:20048,OWN_CN,20048,默认仓库,False,True,False,True,,pool
+CN:22914,OWN_CN,22914,11-PETSFIT北美亚马逊东孚仓,False,True,False,True,US,amazon
+CN:22917,OWN_CN,22917,14-A4pet北美亚马逊东孚仓,False,True,False,True,US,amazon
+CN:22935,OWN_CN,22935,03-A4pet公共仓武平仓,False,True,False,True,,pool
+CN:22936,OWN_CN,22936,06-PETSFIT公共仓武平仓,False,True,False,True,,pool
+CN:22937,OWN_CN,22937,07-PETSFIT独立站东孚仓,False,True,False,True,,shopify
+CN:27908,OWN_CN,27908,55-PETSFIT-上海愉辉工厂仓,False,True,False,True,,pool
+CN:30264,OWN_CN,30264,64-PETSFIT北美亚马逊上海愉辉仓,False,True,False,True,US,amazon
+CN:30266,OWN_CN,30266,66-PETSFITWalmart上海愉辉仓,False,True,False,True,US,walmart
+CN:33125,OWN_CN,33125,32-PETSFIT北美tiktok东孚仓,False,True,False,True,US,tiktok
+CN:33126,OWN_CN,33126,59-PETSFIT北美Walmart东孚仓,False,True,False,True,US,walmart
+CN:33127,OWN_CN,33127,60-PETSFIT北美TEMU东孚仓,False,True,False,True,US,temu
+CN:33128,OWN_CN,33128,61-PETSFIT北美Chewy东孚仓,False,True,False,True,US,chewy
+CN:33129,OWN_CN,33129,67-PETSFITTiktok上海愉辉仓,False,True,False,True,US,tiktok
+CN:33130,OWN_CN,33130,68-PETSFITChewy上海愉辉仓,False,True,False,True,US,chewy
+CN:33719,OWN_CN,33719,87-PETSFIT独立站上海愉辉仓,False,True,False,True,,shopify
+CN:34806,OWN_CN,34806,10-临时借用仓,False,False,False,False,,pool
+CN:35019,OWN_CN,35019,04-PETSFIT东孚公共仓,False,True,False,True,,pool
+CN:35464,OWN_CN,35464,95-SUNNYPET北美Wayfair东孚仓,False,True,False,True,US,wayfair
+CN:36782,OWN_CN,36782,100-东孚备货待发仓,False,True,False,True,,pool
+CN:37277,OWN_CN,37277,39-PETSFIT海外社媒东孚仓,False,True,False,True,,social
