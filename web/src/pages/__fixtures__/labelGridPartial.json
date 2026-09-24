@@ -1,0 +1,736 @@
+{
+  "periods": [
+    "2026-09",
+    "2026-10",
+    "2026-11"
+  ],
+  "demand": [
+    {
+      "seller_sku": "MSKU-A",
+      "sid": "11072",
+      "sku": "SKU-1",
+      "period": "2026-09",
+      "system_units": 130,
+      "system_extrapolated": false,
+      "expected_units": 120,
+      "effective_units": 120,
+      "basis": "human",
+      "system_basis": {
+        "method": "baseline_rate_v1",
+        "as_of": "2026-10-10",
+        "estimation_anchor": "2026-10-03",
+        "embargo_days": 7,
+        "base_rate": 4.325139122267325,
+        "raw_rate": 4.0,
+        "n_eff": 19.407990262470044,
+        "target_rate": 6.428571428571429,
+        "winsor_cap": 4.0,
+        "first_seen": "2026-08-09",
+        "window": {
+          "from": "2026-08-09",
+          "until": "2026-10-03"
+        },
+        "target_window": {
+          "from": "2026-07-06",
+          "until": "2026-10-03"
+        },
+        "censored_days": 0,
+        "stock_days_rejected": 0,
+        "stock_days_uncaptured": 0,
+        "reason": null,
+        "constants": {
+          "halflife_days": 14.0,
+          "window_days": 56,
+          "target_window_days": 90,
+          "shrink_prior": 3.0,
+          "winsor_q": 0.95
+        },
+        "days_in_month": 30,
+        "units_raw": 129.75417366801975
+      }
+    },
+    {
+      "seller_sku": "MSKU-A",
+      "sid": "11072",
+      "sku": "SKU-1",
+      "period": "2026-10",
+      "system_units": 135,
+      "system_extrapolated": false,
+      "expected_units": 100,
+      "effective_units": 100,
+      "basis": "human",
+      "system_basis": {
+        "method": "baseline_rate_v1",
+        "as_of": "2026-10-10",
+        "estimation_anchor": "2026-10-03",
+        "embargo_days": 7,
+        "base_rate": 4.325139122267325,
+        "raw_rate": 4.0,
+        "n_eff": 19.407990262470044,
+        "target_rate": 6.428571428571429,
+        "winsor_cap": 4.0,
+        "first_seen": "2026-08-09",
+        "window": {
+          "from": "2026-08-09",
+          "until": "2026-10-03"
+        },
+        "target_window": {
+          "from": "2026-07-06",
+          "until": "2026-10-03"
+        },
+        "censored_days": 0,
+        "stock_days_rejected": 0,
+        "stock_days_uncaptured": 0,
+        "reason": null,
+        "constants": {
+          "halflife_days": 14.0,
+          "window_days": 56,
+          "target_window_days": 90,
+          "shrink_prior": 3.0,
+          "winsor_q": 0.95
+        },
+        "days_in_month": 31,
+        "units_raw": 134.07931279028708
+      }
+    },
+    {
+      "seller_sku": "MSKU-A",
+      "sid": "11072",
+      "sku": "SKU-1",
+      "period": "2026-11",
+      "system_units": 130,
+      "system_extrapolated": false,
+      "expected_units": 90,
+      "effective_units": 90,
+      "basis": "human",
+      "system_basis": {
+        "method": "baseline_rate_v1",
+        "as_of": "2026-10-10",
+        "estimation_anchor": "2026-10-03",
+        "embargo_days": 7,
+        "base_rate": 4.325139122267325,
+        "raw_rate": 4.0,
+        "n_eff": 19.407990262470044,
+        "target_rate": 6.428571428571429,
+        "winsor_cap": 4.0,
+        "first_seen": "2026-08-09",
+        "window": {
+          "from": "2026-08-09",
+          "until": "2026-10-03"
+        },
+        "target_window": {
+          "from": "2026-07-06",
+          "until": "2026-10-03"
+        },
+        "censored_days": 0,
+        "stock_days_rejected": 0,
+        "stock_days_uncaptured": 0,
+        "reason": null,
+        "constants": {
+          "halflife_days": 14.0,
+          "window_days": 56,
+          "target_window_days": 90,
+          "shrink_prior": 3.0,
+          "winsor_q": 0.95
+        },
+        "days_in_month": 30,
+        "units_raw": 129.75417366801975
+      }
+    },
+    {
+      "seller_sku": "MSKU-B",
+      "sid": "11072",
+      "sku": "SKU-1",
+      "period": "2026-09",
+      "system_units": 10,
+      "system_extrapolated": false,
+      "expected_units": 5,
+      "effective_units": 5,
+      "basis": "human",
+      "system_basis": {
+        "method": "baseline_rate_v1",
+        "as_of": "2026-10-10",
+        "estimation_anchor": "2026-10-03",
+        "embargo_days": 7,
+        "base_rate": 0.3191762910062934,
+        "raw_rate": 0.31697266735571067,
+        "n_eff": 19.273312377949605,
+        "target_rate": 0.3333333333333333,
+        "winsor_cap": 1.0,
+        "first_seen": "2026-08-11",
+        "window": {
+          "from": "2026-08-09",
+          "until": "2026-10-03"
+        },
+        "target_window": {
+          "from": "2026-07-06",
+          "until": "2026-10-03"
+        },
+        "censored_days": 0,
+        "stock_days_rejected": 0,
+        "stock_days_uncaptured": 0,
+        "reason": null,
+        "constants": {
+          "halflife_days": 14.0,
+          "window_days": 56,
+          "target_window_days": 90,
+          "shrink_prior": 3.0,
+          "winsor_q": 0.95
+        },
+        "days_in_month": 30,
+        "units_raw": 9.575288730188802
+      }
+    },
+    {
+      "seller_sku": "MSKU-B",
+      "sid": "11072",
+      "sku": "SKU-1",
+      "period": "2026-10",
+      "system_units": 10,
+      "system_extrapolated": false,
+      "expected_units": 5,
+      "effective_units": 5,
+      "basis": "human",
+      "system_basis": {
+        "method": "baseline_rate_v1",
+        "as_of": "2026-10-10",
+        "estimation_anchor": "2026-10-03",
+        "embargo_days": 7,
+        "base_rate": 0.3191762910062934,
+        "raw_rate": 0.31697266735571067,
+        "n_eff": 19.273312377949605,
+        "target_rate": 0.3333333333333333,
+        "winsor_cap": 1.0,
+        "first_seen": "2026-08-11",
+        "window": {
+          "from": "2026-08-09",
+          "until": "2026-10-03"
+        },
+        "target_window": {
+          "from": "2026-07-06",
+          "until": "2026-10-03"
+        },
+        "censored_days": 0,
+        "stock_days_rejected": 0,
+        "stock_days_uncaptured": 0,
+        "reason": null,
+        "constants": {
+          "halflife_days": 14.0,
+          "window_days": 56,
+          "target_window_days": 90,
+          "shrink_prior": 3.0,
+          "winsor_q": 0.95
+        },
+        "days_in_month": 31,
+        "units_raw": 9.894465021195096
+      }
+    },
+    {
+      "seller_sku": "MSKU-B",
+      "sid": "11072",
+      "sku": "SKU-1",
+      "period": "2026-11",
+      "system_units": 10,
+      "system_extrapolated": false,
+      "expected_units": 5,
+      "effective_units": 5,
+      "basis": "human",
+      "system_basis": {
+        "method": "baseline_rate_v1",
+        "as_of": "2026-10-10",
+        "estimation_anchor": "2026-10-03",
+        "embargo_days": 7,
+        "base_rate": 0.3191762910062934,
+        "raw_rate": 0.31697266735571067,
+        "n_eff": 19.273312377949605,
+        "target_rate": 0.3333333333333333,
+        "winsor_cap": 1.0,
+        "first_seen": "2026-08-11",
+        "window": {
+          "from": "2026-08-09",
+          "until": "2026-10-03"
+        },
+        "target_window": {
+          "from": "2026-07-06",
+          "until": "2026-10-03"
+        },
+        "censored_days": 0,
+        "stock_days_rejected": 0,
+        "stock_days_uncaptured": 0,
+        "reason": null,
+        "constants": {
+          "halflife_days": 14.0,
+          "window_days": 56,
+          "target_window_days": 90,
+          "shrink_prior": 3.0,
+          "winsor_q": 0.95
+        },
+        "days_in_month": 30,
+        "units_raw": 9.575288730188802
+      }
+    },
+    {
+      "seller_sku": "MSKU-W",
+      "sid": "90001",
+      "sku": "SKU-1",
+      "period": "2026-09",
+      "system_units": null,
+      "system_extrapolated": false,
+      "expected_units": 60,
+      "effective_units": 60,
+      "basis": "human",
+      "system_basis": {
+        "reason": "not_applicable_no_sales_source",
+        "cause": "non_amazon_platform",
+        "days_in_month": 30,
+        "units_raw": null
+      }
+    },
+    {
+      "seller_sku": "MSKU-W",
+      "sid": "90001",
+      "sku": "SKU-1",
+      "period": "2026-10",
+      "system_units": null,
+      "system_extrapolated": false,
+      "expected_units": 60,
+      "effective_units": 60,
+      "basis": "human",
+      "system_basis": {
+        "reason": "not_applicable_no_sales_source",
+        "cause": "non_amazon_platform",
+        "days_in_month": 31,
+        "units_raw": null
+      }
+    },
+    {
+      "seller_sku": "MSKU-W",
+      "sid": "90001",
+      "sku": "SKU-1",
+      "period": "2026-11",
+      "system_units": null,
+      "system_extrapolated": false,
+      "expected_units": 65,
+      "effective_units": 65,
+      "basis": "human",
+      "system_basis": {
+        "reason": "not_applicable_no_sales_source",
+        "cause": "non_amazon_platform",
+        "days_in_month": 30,
+        "units_raw": null
+      }
+    }
+  ],
+  "purchase": [
+    {
+      "sku": "SKU-1",
+      "period": "2026-09",
+      "planned_units": 0
+    },
+    {
+      "sku": "SKU-1",
+      "period": "2026-10",
+      "planned_units": 0
+    },
+    {
+      "sku": "SKU-1",
+      "period": "2026-11",
+      "planned_units": 0
+    }
+  ],
+  "params": {
+    "as_of": "2026-10-10",
+    "route": "oversea_sea",
+    "make_days": 30,
+    "ship_days": 60,
+    "anchor_day": 15,
+    "embargo_days": 7
+  },
+  "forecast": [
+    {
+      "seller_sku": "MSKU-A",
+      "sid": "11072",
+      "sku": "SKU-1",
+      "period": "2026-09",
+      "state": "elapsed",
+      "reason": "elapsed",
+      "unknown_since": null,
+      "opening": null,
+      "demand": null,
+      "inbound_planned": null,
+      "closing": null,
+      "stockout_date": null,
+      "basis": {
+        "bridge": null,
+        "arrivals": [],
+        "as_of_start": null
+      }
+    },
+    {
+      "seller_sku": "MSKU-A",
+      "sid": "11072",
+      "sku": "SKU-1",
+      "period": "2026-10",
+      "state": "partial",
+      "reason": "as_of_inside_month",
+      "unknown_since": null,
+      "opening": null,
+      "demand": 67,
+      "inbound_planned": 0,
+      "closing": 233,
+      "stockout_date": null,
+      "basis": {
+        "bridge": null,
+        "arrivals": [],
+        "as_of_start": {
+          "as_of": "2026-10-10",
+          "onhand_as_of": 300,
+          "from": "2026-10-11"
+        }
+      }
+    },
+    {
+      "seller_sku": "MSKU-A",
+      "sid": "11072",
+      "sku": "SKU-1",
+      "period": "2026-11",
+      "state": "ok",
+      "reason": null,
+      "unknown_since": null,
+      "opening": 233,
+      "demand": 90,
+      "inbound_planned": 0,
+      "closing": 143,
+      "stockout_date": null,
+      "basis": {
+        "bridge": null,
+        "arrivals": [],
+        "as_of_start": null
+      }
+    },
+    {
+      "seller_sku": "MSKU-B",
+      "sid": "11072",
+      "sku": "SKU-1",
+      "period": "2026-09",
+      "state": "elapsed",
+      "reason": "elapsed",
+      "unknown_since": null,
+      "opening": null,
+      "demand": null,
+      "inbound_planned": null,
+      "closing": null,
+      "stockout_date": null,
+      "basis": {
+        "bridge": null,
+        "arrivals": [],
+        "as_of_start": null
+      }
+    },
+    {
+      "seller_sku": "MSKU-B",
+      "sid": "11072",
+      "sku": "SKU-1",
+      "period": "2026-10",
+      "state": "partial",
+      "reason": "as_of_inside_month",
+      "unknown_since": null,
+      "opening": null,
+      "demand": 4,
+      "inbound_planned": 0,
+      "closing": 9,
+      "stockout_date": null,
+      "basis": {
+        "bridge": null,
+        "arrivals": [],
+        "as_of_start": {
+          "as_of": "2026-10-10",
+          "onhand_as_of": 13,
+          "from": "2026-10-11"
+        }
+      }
+    },
+    {
+      "seller_sku": "MSKU-B",
+      "sid": "11072",
+      "sku": "SKU-1",
+      "period": "2026-11",
+      "state": "ok",
+      "reason": null,
+      "unknown_since": null,
+      "opening": 9,
+      "demand": 5,
+      "inbound_planned": 0,
+      "closing": 4,
+      "stockout_date": null,
+      "basis": {
+        "bridge": null,
+        "arrivals": [],
+        "as_of_start": null
+      }
+    },
+    {
+      "seller_sku": "MSKU-W",
+      "sid": "90001",
+      "sku": "SKU-1",
+      "period": "2026-09",
+      "state": "not_applicable",
+      "reason": "not_applicable",
+      "unknown_since": null,
+      "opening": null,
+      "demand": null,
+      "inbound_planned": null,
+      "closing": null,
+      "stockout_date": null,
+      "basis": {
+        "bridge": null,
+        "arrivals": [],
+        "as_of_start": null
+      }
+    },
+    {
+      "seller_sku": "MSKU-W",
+      "sid": "90001",
+      "sku": "SKU-1",
+      "period": "2026-10",
+      "state": "not_applicable",
+      "reason": "not_applicable",
+      "unknown_since": null,
+      "opening": null,
+      "demand": null,
+      "inbound_planned": null,
+      "closing": null,
+      "stockout_date": null,
+      "basis": {
+        "bridge": null,
+        "arrivals": [],
+        "as_of_start": null
+      }
+    },
+    {
+      "seller_sku": "MSKU-W",
+      "sid": "90001",
+      "sku": "SKU-1",
+      "period": "2026-11",
+      "state": "not_applicable",
+      "reason": "not_applicable",
+      "unknown_since": null,
+      "opening": null,
+      "demand": null,
+      "inbound_planned": null,
+      "closing": null,
+      "stockout_date": null,
+      "basis": {
+        "bridge": null,
+        "arrivals": [],
+        "as_of_start": null
+      }
+    }
+  ],
+  "forecast_msku": [
+    {
+      "seller_sku": "MSKU-A",
+      "sid": "11072",
+      "sku": "SKU-1",
+      "first_stockout_date": null
+    },
+    {
+      "seller_sku": "MSKU-B",
+      "sid": "11072",
+      "sku": "SKU-1",
+      "first_stockout_date": null
+    },
+    {
+      "seller_sku": "MSKU-W",
+      "sid": "90001",
+      "sku": "SKU-1",
+      "first_stockout_date": null
+    }
+  ],
+  "forecast_store": [
+    {
+      "sku": "SKU-1",
+      "sid": "11072",
+      "period": "2026-09",
+      "state": "elapsed",
+      "reason": "elapsed",
+      "demand": 125,
+      "system": 140,
+      "system_not_applicable": false,
+      "opening": null,
+      "inbound_planned": null,
+      "closing": null
+    },
+    {
+      "sku": "SKU-1",
+      "sid": "90001",
+      "period": "2026-09",
+      "state": "not_applicable",
+      "reason": "not_applicable",
+      "demand": 60,
+      "system": null,
+      "system_not_applicable": true,
+      "opening": null,
+      "inbound_planned": null,
+      "closing": null
+    },
+    {
+      "sku": "SKU-1",
+      "sid": "11072",
+      "period": "2026-10",
+      "state": "partial",
+      "reason": "as_of_inside_month",
+      "demand": 105,
+      "system": 145,
+      "system_not_applicable": false,
+      "opening": null,
+      "inbound_planned": 0,
+      "closing": 242
+    },
+    {
+      "sku": "SKU-1",
+      "sid": "90001",
+      "period": "2026-10",
+      "state": "not_applicable",
+      "reason": "not_applicable",
+      "demand": 60,
+      "system": null,
+      "system_not_applicable": true,
+      "opening": null,
+      "inbound_planned": null,
+      "closing": null
+    },
+    {
+      "sku": "SKU-1",
+      "sid": "11072",
+      "period": "2026-11",
+      "state": "ok",
+      "reason": null,
+      "demand": 95,
+      "system": 140,
+      "system_not_applicable": false,
+      "opening": 242,
+      "inbound_planned": 0,
+      "closing": 147
+    },
+    {
+      "sku": "SKU-1",
+      "sid": "90001",
+      "period": "2026-11",
+      "state": "not_applicable",
+      "reason": "not_applicable",
+      "demand": 65,
+      "system": null,
+      "system_not_applicable": true,
+      "opening": null,
+      "inbound_planned": null,
+      "closing": null
+    }
+  ],
+  "forecast_sku": [
+    {
+      "sku": "SKU-1",
+      "period": "2026-09",
+      "state": "elapsed",
+      "reason": "elapsed",
+      "reason_from": null,
+      "demand": 185,
+      "system": 140,
+      "system_not_applicable": false,
+      "opening": null,
+      "stock_demand": null,
+      "inbound_planned": null,
+      "closing": null,
+      "excluded_not_applicable": 1,
+      "pipeline": {
+        "making": 0,
+        "shipping": 0,
+        "ordered_open": 50,
+        "ordered_open_sources": [
+          {
+            "period": "2026-10",
+            "units": 50,
+            "ref": "PO-2026-0918"
+          }
+        ],
+        "fba_inbound": null,
+        "fba_inbound_reason": "not_fetched"
+      },
+      "in_transit": 50,
+      "in_transit_excludes": [
+        "fba_inbound"
+      ],
+      "unfilled_purchase": []
+    },
+    {
+      "sku": "SKU-1",
+      "period": "2026-10",
+      "state": "partial",
+      "reason": "as_of_inside_month",
+      "reason_from": null,
+      "demand": 165,
+      "system": 145,
+      "system_not_applicable": false,
+      "opening": null,
+      "stock_demand": 71,
+      "inbound_planned": 0,
+      "closing": 242,
+      "excluded_not_applicable": 1,
+      "pipeline": {
+        "making": 0,
+        "shipping": 0,
+        "ordered_open": 50,
+        "ordered_open_sources": [
+          {
+            "period": "2026-10",
+            "units": 50,
+            "ref": "PO-2026-0918"
+          }
+        ],
+        "fba_inbound": null,
+        "fba_inbound_reason": "not_fetched"
+      },
+      "in_transit": 50,
+      "in_transit_excludes": [
+        "fba_inbound"
+      ],
+      "unfilled_purchase": []
+    },
+    {
+      "sku": "SKU-1",
+      "period": "2026-11",
+      "state": "ok",
+      "reason": null,
+      "reason_from": null,
+      "demand": 160,
+      "system": 140,
+      "system_not_applicable": false,
+      "opening": 242,
+      "stock_demand": 95,
+      "inbound_planned": 0,
+      "closing": 147,
+      "excluded_not_applicable": 1,
+      "pipeline": {
+        "making": 0,
+        "shipping": 0,
+        "ordered_open": 50,
+        "ordered_open_sources": [
+          {
+            "period": "2026-10",
+            "units": 50,
+            "ref": "PO-2026-0918"
+          }
+        ],
+        "fba_inbound": null,
+        "fba_inbound_reason": "not_fetched"
+      },
+      "in_transit": 50,
+      "in_transit_excludes": [
+        "fba_inbound"
+      ],
+      "unfilled_purchase": []
+    }
+  ],
+  "beyond_horizon": [],
+  "unallocated": []
+}

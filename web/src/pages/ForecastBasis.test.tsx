@@ -5,7 +5,7 @@ import type { GridResponse } from '../api/types';
 import { markForecastStale } from '../api/mock';
 import { PlanSheet } from './PlanSheet';
 import { buildGridModel } from './planGridModel';
-import { LABEL_GRID, LABEL_GRID_LONG, LABEL_SELLERS } from './__fixtures__/labelGrid';
+import { LABEL_GRID, LABEL_GRID_LONG, LABEL_GRID_PARTIAL, LABEL_SELLERS } from './__fixtures__/labelGrid';
 
 function renderSheet(grid: GridResponse = LABEL_GRID, orphansOk = false) {
   const model = buildGridModel(grid, LABEL_SELLERS);
@@ -33,7 +33,7 @@ describe('spec §5：点开一格看依据', () => {
     expect(d).toHaveTextContent('+ 到货 0');
     expect(d).toHaveTextContent('= 期末 161');
     expect(d).toHaveTextContent('→ 2026-11 期初');
-    expect(d).toHaveTextContent('预测 135 = 4.33 件/天 × 31 天（窗口 07-21 ~ 09-14，禁言 7 天，剔断货 0 天）');
+    expect(d).toHaveTextContent('预测 135 = 4.3251 件/天 × 31 天 = 134.08 → 向上取整 135（窗口 07-21 ~ 09-14，禁言 7 天，剔断货 0 天）');
   });
 
   it('次月期初 ≡ 上月期末：链逐月相接', async () => {
@@ -41,7 +41,7 @@ describe('spec §5：点开一格看依据', () => {
     const d = await open('依据 MSKU-A 2026-11');
     expect(d).toHaveTextContent('期初 161（= 2026-10 期末）');
     expect(d).toHaveTextContent('= 期末 71');
-    expect(d).not.toHaveTextContent('→');            // 最后一个月没有下月
+    expect(d).not.toHaveTextContent(/→ \d{4}-\d{2} 期初/);   // 最后一个月没有下月
   });
 
   it('到货逐笔说清怎么分的（14 §3.2 依据必须说实话）；断货日照报', async () => {
@@ -150,6 +150,56 @@ describe('spec §5：点开一格看依据', () => {
     markForecastStale(g, 'SKU-1', 'demand');
     rerender(<PlanSheet model={buildGridModel(g, LABEL_SELLERS)} {...props} />);
     expect(screen.getByRole('dialog')).toHaveTextContent('改后未重算（mock）');
+  });
+
+  it('★ as_of 落在本月里：起点是 as_of 可售，期望只扣 as_of 后那一段并标明，链对得上', async () => {
+    renderSheet(LABEL_GRID_PARTIAL);
+    const d = await open('依据 MSKU-A 2026-10');
+    expect(d).toHaveTextContent('as_of 2026-10-10 可售 300（本月 10-01–10-10 已过，不计）');
+    expect(d).toHaveTextContent('− 本月 as_of 后期望 67（10-11 起，全月期望 100 的剩余部分）');
+    expect(d).toHaveTextContent('+ 到货 0');
+    expect(d).toHaveTextContent('= 期末 233 → 2026-11 期初');
+    expect(data(d)).not.toHaveTextContent(/期初 —|− 期望 /);
+    await userEvent.keyboard('{Escape}');
+    expect(await open('依据 MSKU-A 2026-11')).toHaveTextContent('期初 233（= 2026-10 期末）');
+  });
+
+  it('★ partial 月的店铺 / 货号：起点与期望取 Σ msku 那一段（行上的期望是全月，不能拿来扣）', async () => {
+    renderSheet(LABEL_GRID_PARTIAL);
+    const line = 'as_of 2026-10-10 可售 313（Σ msku，本月 10-01–10-10 已过，不计） − 本月 as_of 后期望 71 + 到货 0 = 期末 242 → 2026-11 期初';
+    expect(await open('依据 A4Pet-US SKU-1 2026-10')).toHaveTextContent(line);
+    await userEvent.keyboard('{Escape}');
+    expect(await open('依据 SKU-1 2026-10')).toHaveTextContent(line);
+  });
+
+  it('★ 已过去的月：说「已过去」，库存一个数都不给', async () => {
+    renderSheet(LABEL_GRID_PARTIAL);
+    for (const name of ['依据 MSKU-A 2026-09', '依据 A4Pet-US SKU-1 2026-09', '依据 SKU-1 2026-09']) {
+      const d = await open(name);
+      const chain = within(d).getByTestId('fb-chain');
+      expect(chain).toHaveTextContent('月份已过去');
+      expect(chain).not.toHaveTextContent(/\d/);
+      await userEvent.keyboard('{Escape}');
+    }
+  });
+
+  it('怎么算的：收缩的中间量照 claim 记下的给（n/(n+3) 加权）', async () => {
+    renderSheet();
+    const d = await open('依据 MSKU-A 2026-10');
+    const fold = within(d).getByText('怎么算的').closest('details')!;
+    expect(fold).toHaveTextContent('速率 4.3251 = (n × 收缩前 + 3 × 自身 90 天均值) ÷ (n + 3) = (19.41 × 4.0000 + 3 × 6.4286) ÷ 22.41');
+    expect(fold).toHaveTextContent('估计锚点 2026-09-14 = as_of 2026-09-21 − 禁言 7 天');
+    expect(fold).toHaveTextContent('截到非零日 p95（4）');
+  });
+
+  it('★ 依据按钮不进 Tab 序；光标格上按 I 打开它的依据', async () => {
+    renderSheet();
+    for (const b of screen.getAllByRole('button', { name: /^依据 / })) expect(b).toHaveAttribute('tabIndex', '-1');
+    // 光标在第一格（货号行 SKU-1 2026-10）
+    screen.getByRole('grid').focus();
+    await userEvent.keyboard('i');
+    expect(screen.getByRole('dialog')).toHaveTextContent('货号 SKU-1 / 2026-10');
+    expect(screen.getByText('看依据')).toBeInTheDocument();
   });
 
   it('★ 面板上没有 ` · ` 元串（文案纪律）', async () => {

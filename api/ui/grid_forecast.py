@@ -117,7 +117,8 @@ def _serialize(f, sku_of: dict[tuple[str, str], str], plan_skus: set[str], as_of
                       "unknown_since": _ym(r.unknown_since), "opening": r.opening,
                       "demand": r.demand, "inbound_planned": r.inbound, "closing": r.closing,
                       "stockout_date": _iso(r.stockout_date),
-                      "basis": {"bridge": r.bridge, "arrivals": list(r.arrivals)}}
+                      "basis": {"bridge": r.bridge, "arrivals": list(r.arrivals),
+                                "as_of_start": r.as_of_start}}
                      for k, rs in sorted(f.msku.items()) for r in rs],
         # ★ MskuProjection 是 list 子类：通用序列化会丢掉 msku 级依据，这里显式发出去
         "forecast_msku": [{"seller_sku": k[0], "sid": k[1], "sku": sku_of[k],

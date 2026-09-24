@@ -271,6 +271,15 @@ export function PlanSheet(props: PlanSheetProps) {
     }
     else if (mod && (k === 'a' || k === 'A')) { e.preventDefault(); setAnchor({ r: 0, c: 0 }); setCur({ r: nav.length - 1, c: periods.length - 1 }); }
     else if (!mod && (k === 'n' || k === 'N')) { e.preventDefault(); nextTodo(); }
+    else if (!mod && (k === 'i' || k === 'I')) {
+      // 光标格的库存依据 —— 依据按钮不进 Tab 序，键盘从这里到
+      e.preventDefault();
+      const n = nav[cr]; const p = periods[cur.c];
+      if (!n || !p) return;
+      setBasis(n.kind === 'purchase' ? { kind: 'sku', sku: n.card.sku, period: p }
+        : n.block.mskus.length === 1 ? { kind: 'store', block: n.block, period: p }
+        : { kind: 'msku', block: n.block, row: n.row, period: p });
+    }
     else if (!mod && k === ' ') {
       e.preventDefault();
       const n = nav[cr];
@@ -423,9 +432,10 @@ export function PlanSheet(props: PlanSheetProps) {
     return `期初 ${inv.opening ?? '—'} · 数据截至 ${model.params.as_of}`;
   }
 
-  /** 库存数字包成按钮：点开看它的依据。★ mousedown 不冒泡 —— 否则先把格子光标挪过来 */
+  /** 库存数字包成按钮：点开看它的依据。★ mousedown 不冒泡 —— 否则先把格子光标挪过来；
+   *  不进 Tab 序（整表是一个光标，几百个按钮会让 Tab 出不去），键盘用光标格上的 I */
   const basisBtn = (label: string, target: BasisTarget, inner: ReactNode) => (
-    <button type="button" className="ps-basis" aria-label={`依据 ${label} ${target.period}`}
+    <button type="button" className="ps-basis" tabIndex={-1} aria-label={`依据 ${label} ${target.period}`}
       onMouseDown={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}
       onClick={(e) => { e.stopPropagation(); setBasis(target); }}>{inner}</button>
   );
@@ -721,6 +731,7 @@ export function PlanSheet(props: PlanSheetProps) {
         <span className="pm-status__keys">
           <span><kbd className="pm-kbd">0-9</kbd>直接改</span>
           <span><kbd className="pm-kbd">N</kbd>下一个待填</span>
+          <span><kbd className="pm-kbd">I</kbd>看依据</span>
           <span><kbd className="pm-kbd">空格</kbd>折叠货号</span>
           <span><kbd className="pm-kbd">Del</kbd>清掉人填</span>
           <span><kbd className="pm-kbd">⌘V</kbd>粘贴 Excel</span>

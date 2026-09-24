@@ -217,6 +217,9 @@ export interface ForecastBridge {
   month_totals: Record<Period, number>; onhand_as_of: number;
   arrivals: ForecastArrival[]; arrival_units: number | null; stockout_date: string | null;
 }
+/** as_of 落在本月里（state = partial）：台账从 `from`（as_of 次日）起，起点是 as_of 当天可售。
+ *  ★ 本月已过去的那几天不在账上，所以这不是「期初」；其余月份为 null */
+export interface ForecastAsOfStart { as_of: string; onhand_as_of: number; from: string }
 export interface MskuForecast {
   seller_sku: string; sid: Sid; sku: string; period: Period;
   state: ForecastState; reason: ForecastReason; unknown_since: Period | null;
@@ -224,7 +227,7 @@ export interface MskuForecast {
   closing: number | null;
   /** 该月内第一个断货日（OP-18）；整本台账第一个在 `forecast_msku` */
   stockout_date: string | null;
-  basis: { bridge: ForecastBridge | null; arrivals: ForecastArrival[] };
+  basis: { bridge: ForecastBridge | null; arrivals: ForecastArrival[]; as_of_start: ForecastAsOfStart | null };
 }
 export interface MskuFirstStockout {
   seller_sku: string; sid: Sid; sku: string; first_stockout_date: string | null;

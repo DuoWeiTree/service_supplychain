@@ -94,6 +94,9 @@ def test_as_of_inside_first_month_starts_the_day_after():
     assert (rows[0].state, rows[0].reason, rows[0].opening, rows[0].demand, rows[0].closing) == (
         "partial", "as_of_inside_month", None, 20, 80)
     assert (rows[1].opening, rows[1].closing) == (80, 50)
+    # ★ 依据要说得出 80 从哪来：起点是 as_of 当天可售，不是月初期初（月初那几天不在账上）
+    assert rows[0].as_of_start == {"as_of": "2026-10-10", "onhand_as_of": 100, "from": "2026-10-11"}
+    assert rows[1].as_of_start is None
 
 
 def test_elapsed_month_is_named_not_computed():

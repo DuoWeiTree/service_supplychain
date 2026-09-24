@@ -19,6 +19,12 @@
         "as_of": "2026-09-21",
         "estimation_anchor": "2026-09-14",
         "embargo_days": 7,
+        "base_rate": 4.325139122267325,
+        "raw_rate": 4.0,
+        "n_eff": 19.407990262470044,
+        "target_rate": 6.428571428571429,
+        "winsor_cap": 4.0,
+        "first_seen": "2026-07-21",
         "window": {
           "from": "2026-07-21",
           "until": "2026-09-14"
@@ -31,21 +37,15 @@
         "stock_days_rejected": 0,
         "stock_days_uncaptured": 0,
         "reason": null,
-        "raw_rate": null,
-        "n_eff": null,
-        "target_rate": null,
-        "winsor_cap": null,
-        "first_seen": null,
         "constants": {
-          "halflife_days": 14,
+          "halflife_days": 14.0,
           "window_days": 56,
           "target_window_days": 90,
-          "shrink_prior": 3,
+          "shrink_prior": 3.0,
           "winsor_q": 0.95
         },
-        "base_rate": 4.325139122267326,
         "days_in_month": 31,
-        "units_raw": 134.0793127902871
+        "units_raw": 134.07931279028708
       }
     },
     {
@@ -63,6 +63,12 @@
         "as_of": "2026-09-21",
         "estimation_anchor": "2026-09-14",
         "embargo_days": 7,
+        "base_rate": 4.325139122267325,
+        "raw_rate": 4.0,
+        "n_eff": 19.407990262470044,
+        "target_rate": 6.428571428571429,
+        "winsor_cap": 4.0,
+        "first_seen": "2026-07-21",
         "window": {
           "from": "2026-07-21",
           "until": "2026-09-14"
@@ -75,21 +81,15 @@
         "stock_days_rejected": 0,
         "stock_days_uncaptured": 0,
         "reason": null,
-        "raw_rate": null,
-        "n_eff": null,
-        "target_rate": null,
-        "winsor_cap": null,
-        "first_seen": null,
         "constants": {
-          "halflife_days": 14,
+          "halflife_days": 14.0,
           "window_days": 56,
           "target_window_days": 90,
-          "shrink_prior": 3,
+          "shrink_prior": 3.0,
           "winsor_q": 0.95
         },
-        "base_rate": 4.325139122267326,
         "days_in_month": 30,
-        "units_raw": 129.75417366801977
+        "units_raw": 129.75417366801975
       }
     },
     {
@@ -107,6 +107,12 @@
         "as_of": "2026-09-21",
         "estimation_anchor": "2026-09-14",
         "embargo_days": 7,
+        "base_rate": 0.3191762910062934,
+        "raw_rate": 0.31697266735571067,
+        "n_eff": 19.273312377949605,
+        "target_rate": 0.3333333333333333,
+        "winsor_cap": 1.0,
+        "first_seen": "2026-07-23",
         "window": {
           "from": "2026-07-21",
           "until": "2026-09-14"
@@ -119,21 +125,15 @@
         "stock_days_rejected": 0,
         "stock_days_uncaptured": 0,
         "reason": null,
-        "raw_rate": null,
-        "n_eff": null,
-        "target_rate": null,
-        "winsor_cap": null,
-        "first_seen": null,
         "constants": {
-          "halflife_days": 14,
+          "halflife_days": 14.0,
           "window_days": 56,
           "target_window_days": 90,
-          "shrink_prior": 3,
+          "shrink_prior": 3.0,
           "winsor_q": 0.95
         },
-        "base_rate": 0.32,
         "days_in_month": 31,
-        "units_raw": 9.92
+        "units_raw": 9.894465021195096
       }
     },
     {
@@ -151,6 +151,12 @@
         "as_of": "2026-09-21",
         "estimation_anchor": "2026-09-14",
         "embargo_days": 7,
+        "base_rate": 0.3191762910062934,
+        "raw_rate": 0.31697266735571067,
+        "n_eff": 19.273312377949605,
+        "target_rate": 0.3333333333333333,
+        "winsor_cap": 1.0,
+        "first_seen": "2026-07-23",
         "window": {
           "from": "2026-07-21",
           "until": "2026-09-14"
@@ -163,21 +169,15 @@
         "stock_days_rejected": 0,
         "stock_days_uncaptured": 0,
         "reason": null,
-        "raw_rate": null,
-        "n_eff": null,
-        "target_rate": null,
-        "winsor_cap": null,
-        "first_seen": null,
         "constants": {
-          "halflife_days": 14,
+          "halflife_days": 14.0,
           "window_days": 56,
           "target_window_days": 90,
-          "shrink_prior": 3,
+          "shrink_prior": 3.0,
           "winsor_q": 0.95
         },
-        "base_rate": 0.32,
         "days_in_month": 30,
-        "units_raw": 9.6
+        "units_raw": 9.575288730188802
       }
     },
     {
@@ -255,7 +255,7 @@
           "to": "2026-09-30",
           "units": 39,
           "by": "forecast",
-          "rate": 4.325139122267326,
+          "rate": 4.325139122267325,
           "month_totals": {
             "2026-09": 130
           },
@@ -264,7 +264,8 @@
           "arrival_units": 0,
           "stockout_date": null
         },
-        "arrivals": []
+        "arrivals": [],
+        "as_of_start": null
       }
     },
     {
@@ -282,7 +283,8 @@
       "stockout_date": null,
       "basis": {
         "bridge": null,
-        "arrivals": []
+        "arrivals": [],
+        "as_of_start": null
       }
     },
     {
@@ -304,7 +306,7 @@
           "to": "2026-09-30",
           "units": 3,
           "by": "forecast",
-          "rate": 0.32,
+          "rate": 0.3191762910062934,
           "month_totals": {
             "2026-09": 10
           },
@@ -313,7 +315,8 @@
           "arrival_units": 0,
           "stockout_date": null
         },
-        "arrivals": []
+        "arrivals": [],
+        "as_of_start": null
       }
     },
     {
@@ -331,7 +334,8 @@
       "stockout_date": null,
       "basis": {
         "bridge": null,
-        "arrivals": []
+        "arrivals": [],
+        "as_of_start": null
       }
     },
     {
@@ -349,7 +353,8 @@
       "stockout_date": null,
       "basis": {
         "bridge": null,
-        "arrivals": []
+        "arrivals": [],
+        "as_of_start": null
       }
     },
     {
@@ -367,7 +372,8 @@
       "stockout_date": null,
       "basis": {
         "bridge": null,
-        "arrivals": []
+        "arrivals": [],
+        "as_of_start": null
       }
     }
   ],

@@ -66,6 +66,9 @@ class MskuMonth:
     stockout_date: dt.date | None
     bridge: dict | None
     arrivals: tuple[dict, ...]
+    #: as_of 落在本月里（partial）：台账从 as_of 次日起算，起点是 as_of 当天的可售 ——
+    #: 本月已过去的那几天不在账上。★ 不叫「期初」：它不是月初的数
+    as_of_start: dict | None = None
 
 
 class MskuProjection(list):
@@ -205,6 +208,8 @@ def project_msku(m: MskuInput, as_of: dt.date, periods: Sequence[dt.date],
         month_notes = tuple(n for d in sorted(notes) if a <= d <= b for n in notes[d])
         br = bridge if (p == first_plan and not partial) else None
         shown_opening = None if (partial or opening is None) else _int(opening)
+        start_note = ({"as_of": as_of.isoformat(), "onhand_as_of": m.onhand, "from": a.isoformat()}
+                      if partial else None)
         if br is not None and shown_opening is not None and shown_opening != (
                 m.onhand - br["units"] + br["arrival_units"]):
             raise AssertionError(f"{m.key} {p}: 期初 {shown_opening} ≠ {m.onhand} − "
@@ -212,13 +217,15 @@ def project_msku(m: MskuInput, as_of: dt.date, periods: Sequence[dt.date],
         if closing is None:
             # first_unmet 跳过未知日：月中转未知之前已发生的断货照报
             rows.append(MskuMonth(p, "unknown", cause, since, shown_opening, dem, inbound, None,
-                                  L.first_unmet(a, b), br, month_notes))
+                                  L.first_unmet(a, b), br, month_notes, start_note))
             continue
-        if not partial and closing != opening - dem + inbound:   # ★ 恒等式③
+        # ★ 恒等式③；partial 月的起点是 as_of 可售，dem 是 as_of 次日到月末那一段
+        if closing != opening - dem + inbound:
             raise AssertionError(f"{m.key} {p}: {closing} ≠ {opening} − {dem} + {inbound}")
         rows.append(MskuMonth(p, "partial" if partial else "ok",
                               "as_of_inside_month" if partial else None, None, shown_opening,
-                              dem, inbound, _int(closing), L.first_unmet(a, b), br, month_notes))
+                              dem, inbound, _int(closing), L.first_unmet(a, b), br, month_notes,
+                              start_note))
     return MskuProjection(rows, L.first_unmet(start, end))
 
 

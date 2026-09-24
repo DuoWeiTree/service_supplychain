@@ -33,7 +33,7 @@ const fm = (seller_sku: string, sid: string, period: string, closing: number | n
   seller_sku, sid, sku: 'SKU-1', period, state: closing === null ? 'unknown' : 'ok',
   reason: closing === null ? 'unknown_demand' : null, unknown_since: null,
   opening: null, demand: null, inbound_planned: 0, closing, stockout_date: null,
-  basis: { bridge: null, arrivals: [] },
+  basis: { bridge: null, arrivals: [], as_of_start: null },
 });
 const fk = (period: string, making: number, shipping = 0, ordered = 0): SkuForecast => ({
   sku: 'SKU-1', period, state: 'ok', reason: null, reason_from: null,
