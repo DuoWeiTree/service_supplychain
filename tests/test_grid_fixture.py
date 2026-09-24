@@ -65,23 +65,24 @@ def test_the_fixture_covers_the_shapes_that_look_alike(client, seed):
     assert a[0]["basis"]["bridge"]["units"] == 39 and a[0]["opening"] == 261
     assert any(r["state"] == "ok" and r["closing"] is not None for r in saved["forecast"])
     assert any(r["reason"] == "unknown_demand" for r in saved["forecast"]), "缺「期望未知」"
-    inv = saved["inventory"]
-    assert {r["basis"]["closing_reason"] for r in inv} == {
-        None, "not_applicable", "unknown_demand", "unknown_onhand"}, \
-        "四种 closing_reason（有数 / 该平台无 FBA / 需求未知 / 有 FBA 但未知在仓）必须齐全"
-    # ★ 09-23 真实缺陷：这两种都会让 onhand/closing 是 null，但必须分得开 ——
+    # ★ 阶段 A 的 inventory[]/sku_pipeline[] 已退役（spec §6）；四种「看起来像 0」的
+    #   形态改从 forecast_store 取，等价事实原样保留：
+    fs = saved["forecast_store"]
+    # ★ 四选四：任何一种形态的种子路径被删掉，这条测试都必须红 ——
+    #   子集断言会让「缺一种」蒙混过关，所以用恰好相等而不是 any()
+    assert {(r["state"], r["reason"]) for r in fs} == {
+        ("ok", None), ("not_applicable", "not_applicable"),
+        ("unknown", "unknown_demand"), ("unknown", "unknown_onhand")}, \
+        "四种店铺行状态（有数 / 该平台无 FBA / 需求未知 / 有 FBA 但未知在仓）必须齐全"
+    # ★ 09-23 真实缺陷：不适用与未知在仓都会让 opening/closing 是 null，但必须分得开 ——
     #   压成一个就是负责人在真实数据上撞见的 na_disagrees_with_seller 坍缩
-    assert not any(r["basis"]["closing_reason"] == "unknown_onhand" and r["onhand"] is not None
-                  for r in inv)
-    # ★ 在途恒无店铺归属：每一格都这么标，而总量只在 sku_level_in_transit / sku_pipeline 里
-    assert all(r["inbound"] is None for r in inv)
-    assert all(r["basis"]["reason"] == "no_seller_attribution" for r in inv)
-    assert any(r["basis"]["sku_level_in_transit"] for r in inv), \
+    assert not any(r["state"] == "not_applicable" and r["reason"] == "unknown_onhand" for r in fs)
+    assert any(r["state"] == "ok" and r["closing"] is not None for r in fs), "缺「有数」那一种"
+    # ★ 在途恒无店铺归属：forecast_store 的 inbound_planned 不因为货号已有在途而非零 ——
+    #   总量只在货号层 forecast_sku 的 pipeline.ordered_open 里
+    assert all(r["inbound_planned"] == 0 for r in fs if r["inbound_planned"] is not None)
+    assert any(r["pipeline"]["ordered_open"] for r in saved["forecast_sku"]), \
         "缺「有在途但没归属」那一种 —— 它与「没有在途」必须长得不一样"
-    assert any(r["closing"] is not None for r in inv), "期末不该因为在途没归属而全是 null"
-    assert all(r["basis"]["includes_plan_purchase"] is False for r in inv)
-    assert saved["sku_pipeline"] and all(r["no_seller_attribution"] is True
-                                         for r in saved["sku_pipeline"])
     # ★ spec §6 的预测块必须随 fixture 出去，否则前端永远在画一份没有它们的 mock
     for key in ("params", "forecast", "forecast_store", "forecast_sku", "beyond_horizon",
                 "unallocated"):

@@ -101,42 +101,6 @@ export function createMockApi(): SupplyChainApi {
     return g;
   };
 
-  /** ★ 一格的库存 = 该**店铺 × 货号**的在仓 − 该店该货号各 msku 的生效期望销量之和。
-   *  任何一个 msku 未知 ⇒ 整格未知（M-8 向后传染）。落回 0 就是把「算不出来」说成「没货」。
-   *  ★ 跨月是一条链：本月期初 = 上月期末（后端接口形状块 `onhand` 那一行写死了这一点）。 */
-  function recompute(g: GridResponse, sku: string, sid: string): void {
-    const rows = (g.inventory ?? [])
-      .filter((i) => i.sku === sku && i.sid === sid)
-      .sort((a, b) => a.period.localeCompare(b.period));
-    let carried: number | null = rows[0]?.onhand ?? null;
-    for (const row of rows) {
-      if (row.basis.closing_reason === 'not_applicable') {
-        // ★ 不适用：不是 0，也不参与链。reason 不动 —— 它恒为 no_seller_attribution
-        row.onhand = null; row.basis.demand = null; row.closing = null; continue;
-      }
-      if (row.basis.closing_reason === 'unknown_onhand') {
-        // ★ 09-23 真实缺陷：有 FBA 但阶段 A 没取到这个 (sku,sid) 的在仓数字 ——
-        //   与 not_applicable 一样，这个原因跟需求编辑无关，锁定不许被下面按
-        //   demand 算出来的 'unknown_demand' 覆盖掉（那是另一种成因，后端
-        //   forecast/projection.py 的同名注释）。需求本身仍按正常路径算出来展示。
-        const mine = g.demand.filter((d) => d.sku === sku && d.sid === sid && d.period === row.period);
-        const demand = mine.length === 0 || mine.some((d) => d.effective_units === null)
-          ? null : mine.reduce((a, d) => a + (d.effective_units as number), 0);
-        row.onhand = null; row.basis.demand = demand; row.closing = null;
-        continue;
-      }
-      const mine = g.demand.filter((d) => d.sku === sku && d.sid === sid && d.period === row.period);
-      const demand = mine.length === 0 || mine.some((d) => d.effective_units === null)
-        ? null : mine.reduce((a, d) => a + (d.effective_units as number), 0);
-      row.onhand = carried;
-      row.basis.demand = demand;
-      row.closing = carried === null || demand === null ? null : carried - demand;
-      // ★ 只改 closing_reason；reason 是另一件事，改它就会把「在途没归属」这条信息抹掉
-      row.basis.closing_reason = row.closing === null ? 'unknown_demand' : null;
-      carried = row.closing;                      // ★ 本月期末 = 下月期初（链）
-    }
-  }
-
   return {
     async listPlans(q) {
       // ★ `archived` 不给时后端**排除**已归档（`api/ui/plans.py:69` 的默认值 false），
@@ -156,7 +120,7 @@ export function createMockApi(): SupplyChainApi {
       });
       inFlight.set(plan_id, null);
       grids.set(plan_id, {
-        plan_id, periods: [], demand: [], purchase: [], inventory: [], sku_pipeline: [],
+        plan_id, periods: [], demand: [], purchase: [],
         params: clone((gridFixture as GridResponse).params),
         forecast: [], forecast_msku: [], forecast_store: [], forecast_sku: [],
         beyond_horizon: [], unallocated: [],
@@ -236,7 +200,6 @@ export function createMockApi(): SupplyChainApi {
       cell.expected_units = units;
       cell.effective_units = units ?? cell.system_units;
       cell.basis = units !== null ? 'human' : cell.system_units !== null ? 'system' : 'unknown';
-      recompute(g, cell.sku, sid);
       markForecastStale(g, cell.sku, 'demand');
       return clone(cell);
     },

@@ -26,93 +26,70 @@ describe('mock 数据源', () => {
     expect(back.expected_units).toBeNull();
   });
 
-  it('★ 09-23 真实缺陷：未知在仓（有 FBA 但没取到数字）编辑需求后不许被recompute()'
-     + ' 改判成「需求未知」——两者成因不同，且这个 (sku,sid) 从一开始就没有在仓数字，'
-     + '与需求编辑无关', async () => {
-    const g0 = await api.getGrid(1);
-    const cell0 = g0.inventory!.find((i) => i.sku === 'A4P-TOY-003' && i.sid === '11072'
-      && i.period === '2026-10')!;
-    // ★ 先确认 fixture 本身是这一形态：有 FBA 但在仓未知，不是不适用
-    expect(cell0.onhand).toBeNull();
-    expect(cell0.basis.closing_reason).toBe('unknown_onhand');
-    const msku = g0.demand.find((d) => d.sku === 'A4P-TOY-003' && d.sid === '11072'
-      && d.period === '2026-10')!;
-    // ★ 编辑需求触发 recompute() —— 在仓数字依旧没取到，reason 不该被顺手改成
-    //   'unknown_demand'（那是另一种成因：需求本身未知，这一格的需求其实是已知的）
-    await api.putDemand(1, msku.seller_sku, msku.sid, msku.period, 42);
-    const g1 = await api.getGrid(1);
-    const cell1 = g1.inventory!.find((i) => i.sku === 'A4P-TOY-003' && i.sid === '11072'
-      && i.period === '2026-10')!;
-    expect(cell1.onhand).toBeNull();
-    expect(cell1.closing).toBeNull();
-    expect(cell1.basis.closing_reason).toBe('unknown_onhand');
-    expect(cell1.basis.closing_reason).not.toBe('not_applicable');
-  });
+  // ★ Task 21：inventory[]/sku_pipeline[] 与 recompute() 一起退役（spec §6，阶段 A 的
+  //   「在仓 − 期望」口径已被预测块取代）。recompute() 曾经专门保留 unknown_onhand 不被
+  //   demand 编辑顺手覆盖成 unknown_demand —— 那条精细区分现在没有等价物了：
+  //   markForecastStale()（OP-17，Task 9 引入）对同一 sku 的任何相关编辑一律改判成
+  //   通用的 'not_recomputed_in_mock'（demand/onhand 都清空），不再区分「原本是哪种未知」。
+  //   这不是本任务引入的回退 —— 是 mock 早就选择的「不重跑台账」简化（见上面 OP-17 注释），
+  //   真正的成因区分（unknown_onhand ≠ unknown_demand）只在后端算，已由
+  //   tests/test_api_grid.py 覆盖。故原 09-23 专项测试随 recompute() 一起删，不强行造等价物。
 
-  it('★ 库存的身份是「店铺 × 货号」—— 一格对应多个 msku，不是每个 msku 一格', async () => {
+  it('★ forecast_store 的身份是「店铺 × 货号」—— 一格对应多个 msku，不是每个 msku 一格', async () => {
     const g = await api.getGrid(1);
-    expect(g.inventory!.every((i) => 'sku' in i && 'sid' in i && !('seller_sku' in i))).toBe(true);
-    const keys = new Set(g.inventory!.map((i) => `${i.sku}/${i.sid}/${i.period}`));
-    expect(keys.size).toBe(g.inventory!.length);           // ★ 每个 (货号,店铺,月) 只有一行
+    expect(g.forecast_store.every((r) => 'sku' in r && 'sid' in r && !('seller_sku' in r))).toBe(true);
+    const keys = new Set(g.forecast_store.map((r) => `${r.sku}/${r.sid}/${r.period}`));
+    expect(keys.size).toBe(g.forecast_store.length);        // ★ 每个 (货号,店铺,月) 只有一行
   });
 
   it('★ 任何一个 msku 未知 → 整格未知（不是把它当 0 再把别的 msku 加进来）', async () => {
-    // ★ 与 brief 原文不同：不用 firstMsku()（demand[0] = A4P-TOY-002/11072 的 MSKU-D，
-    //   system_units=7，清空后按契约退回系统预估 7，格子仍是「已知」，测不出这条判据）。
-    //   改用 DCC1800264G1/11072/2026-10 —— 它天生挂两个 msku：MSKU-A（人填 130，系统 100）
-    //   与 MSKU-B（系统也是 null，本就未知）。清空 MSKU-A 后落回系统 100（不是 null），
-    //   但整格必须仍是未知 —— 若实现把 MSKU-B 的 null 当 0 跳过、只加 MSKU-A 的 100，
-    //   这条断言才会抓到。
-    const g0 = await api.getGrid(1);
-    const known = g0.demand.find(
-      (d) => d.sku === 'DCC1800264G1' && d.sid === '11072' && d.period === '2026-10',
-    )!;
-    expect(known.seller_sku).toBe('MSKU-A');
-    await api.putDemand(1, known.seller_sku, known.sid, known.period, null);
+    // ★ fixture 本身就种了这一形态（tests/test_grid_fixture.py 的 _build）：
+    //   DCC1800264G1/11072 挂两个 msku —— MSKU-A（人填 130）与 MSKU-B（system_units
+    //   被清空、demand 本就未知）。后端已经把整格算成未知，mock 原样透传，不必自己重算；
+    //   若实现把 MSKU-B 的 null 当 0 跳过、只算 MSKU-A 的 130，这条断言会抓到。
     const g = await api.getGrid(1);
-    const cell = g.inventory!.find((i) => i.sku === 'DCC1800264G1' && i.sid === '11072' && i.period === '2026-10')!;
-    expect(cell.closing).toBeNull();
-    expect(cell.basis.closing_reason).toBe('unknown_demand');
-    // ★ reason 是另一件事，不许被顺手改掉 —— 改了就把「在途没归属」这条信息抹掉了
-    expect(cell.basis.reason).toBe('no_seller_attribution');
+    const row = g.forecast_store.find(
+      (r) => r.sku === 'DCC1800264G1' && r.sid === '11072' && r.period === '2026-10',
+    )!;
+    expect(row.state).toBe('unknown');
+    expect(row.reason).toBe('unknown_demand');
+    expect(row.closing).toBeNull();
   });
 
-  it('★ inbound 恒 null（不是 0）；在途总量只在 basis 与 sku_pipeline 里出现', async () => {
+  it('★ 已有在途恒无店铺归属：inbound_planned 不因货号已有在途而非零，'
+     + '总量只在货号层 forecast_sku.pipeline.ordered_open 里出现', async () => {
     const g = await api.getGrid(1);
-    expect(g.inventory!.every((i) => i.inbound === null)).toBe(true);
-    expect(g.inventory!.every((i) => i.basis.includes_plan_purchase === false)).toBe(true);
-    expect(g.sku_pipeline!.every((r) => r.no_seller_attribution === true)).toBe(true);
-    // ★ 在途一件都没有并进任何一格库存
-    for (const i of g.inventory!) {
-      const t = i.basis.sku_level_in_transit;
-      if (t !== null && i.onhand !== null && i.closing !== null) expect(i.closing).not.toBe(i.onhand + t);
-    }
+    const known = g.forecast_store.filter((r) => r.inbound_planned !== null);
+    expect(known.length).toBeGreaterThan(0);
+    expect(known.every((r) => r.inbound_planned === 0)).toBe(true);
+    const withPipeline = g.forecast_sku.filter((r) => r.pipeline.ordered_open > 0);
+    expect(withPipeline.length).toBeGreaterThan(0);          // ★「有在途但没归属」这一形态必须在
   });
 
   it('★ 跨月是一条链：本月期初 = 上月期末（不是同一个在仓快照抄三遍）', async () => {
     const g0 = await api.getGrid(1);
-    const groups = new Map<string, NonNullable<typeof g0.inventory>>();
-    for (const i of g0.inventory!) {
-      const k = `${i.sku}/${i.sid}`;
-      groups.set(k, [...(groups.get(k) ?? []), i]);
+    const groups = new Map<string, typeof g0.forecast_store>();
+    for (const r of g0.forecast_store) {
+      const k = `${r.sku}/${r.sid}`;
+      groups.set(k, [...(groups.get(k) ?? []), r]);
     }
     const chain = [...groups.values()]
       .map((rows) => rows.sort((a, b) => a.period.localeCompare(b.period)))
       .find((rows) => rows.length >= 2 && rows[0]!.closing !== null
-                      && rows[0]!.closing !== rows[0]!.onhand);   // ★ 有消耗，两种口径才分得开
+                      && rows[0]!.closing !== rows[0]!.opening);   // ★ 有消耗，两种口径才分得开
     // ★ fixture 里没有一个「有消耗」的月份时必须硬失败：那说明这条门禁什么都没测
-    expect(chain, 'fixture 里没有 closing ≠ onhand 的月份，链式口径无法证伪，请让后端补一个').toBeDefined();
-    expect(chain![1]!.onhand).toBe(chain![0]!.closing);
+    expect(chain, 'fixture 里没有 closing ≠ opening 的月份，链式口径无法证伪，请让后端补一个').toBeDefined();
+    expect(chain![1]!.opening).toBe(chain![0]!.closing);
   });
 
-  it('★ basis.demand 与前端自己算的 Σ 是两个证人，必须一致', async () => {
+  it('★ forecast_store.demand 与前端自己算的 Σ 是两个证人，必须一致', async () => {
     const g = await api.getGrid(1);
-    for (const i of g.inventory!) {
-      if (i.basis.closing_reason === 'not_applicable') continue;
-      const mine = g.demand.filter((d) => d.sku === i.sku && d.sid === i.sid && d.period === i.period);
+    for (const r of g.forecast_store) {
+      if (r.state === 'not_applicable') continue;
+      const mine = g.demand.filter((d) => d.sku === r.sku && d.sid === r.sid && d.period === r.period);
       const sum = mine.length === 0 || mine.some((d) => d.effective_units === null)
         ? null : mine.reduce((a, d) => a + (d.effective_units as number), 0);
-      expect(i.basis.demand).toBe(sum);
+      expect(r.demand).toBe(sum);
     }
   });
 

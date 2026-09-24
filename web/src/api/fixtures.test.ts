@@ -17,18 +17,17 @@ describe('grid fixture 与后端同源', () => {
   });
 
   it('★ fixture 覆盖三种长得像的形态，缺一种前端就永远画不出它', () => {
+    // ★ Task 21：旧库存块 inventory[] 已退役（spec §6），改从 forecast_store 取等价事实。
     const g = JSON.parse(readFileSync(MINE(), 'utf8'));
-    const inv = g.inventory as { closing: number | null; onhand: number | null; inbound: null;
-                                 basis: { reason: string; closing_reason: string | null } }[];
-    expect(inv.some((r) => r.basis.closing_reason === 'not_applicable')).toBe(true);  // 不适用
-    expect(inv.some((r) => r.basis.closing_reason === 'unknown_demand')).toBe(true);  // 未知
-    expect(inv.some((r) => typeof r.closing === 'number')).toBe(true);                // 有数
-    // ★ 两种 null 成因必须靠 closing_reason 分得开，不能只看 closing===null
-    expect(new Set(inv.filter((r) => r.closing === null).map((r) => r.basis.closing_reason)).size)
-      .toBeGreaterThan(1);
-    // ★ inbound 恒 null（不是 0）；reason 恒定 —— 它解释的是 inbound，不是 closing
-    expect(inv.every((r) => r.inbound === null)).toBe(true);
-    expect(new Set(inv.map((r) => r.basis.reason))).toEqual(new Set(['no_seller_attribution']));
+    const fs = g.forecast_store as { state: string; reason: string | null;
+                                      closing: number | null; inbound_planned: number | null }[];
+    expect(fs.some((r) => r.state === 'not_applicable' && r.reason === 'not_applicable')).toBe(true); // 不适用
+    expect(fs.some((r) => r.state === 'unknown' && r.reason === 'unknown_demand')).toBe(true);        // 未知
+    expect(fs.some((r) => typeof r.closing === 'number')).toBe(true);                                 // 有数
+    // ★ 两种 null 成因必须靠 reason 分得开，不能只看 closing===null
+    expect(new Set(fs.filter((r) => r.closing === null).map((r) => r.reason)).size).toBeGreaterThan(1);
+    // ★ 已有在途恒无店铺归属：inbound_planned 已知时恒为 0，不会因货号已有在途而非零
+    expect(fs.every((r) => r.inbound_planned === null || r.inbound_planned === 0)).toBe(true);
     expect(g.demand.some((d: { basis: string }) => d.basis === 'human')).toBe(true);
     expect(g.demand.some((d: { basis: string }) => d.basis === 'system')).toBe(true);
   });

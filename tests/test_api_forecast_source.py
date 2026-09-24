@@ -213,11 +213,14 @@ def test_grid_wires_dropped_stats_into_source_notes(client, seed, use_source):
         "source_notes.dropped 必须原样透传 SOURCE.stats()，不是猜的默认值 {}")
 
 
-def test_grid_computes_bucket_from_purchase_as_of(client, seed, use_source):
-    """★ fix round 1（must #3）：sku_pipeline[].bucket 的 'overdue'/'future' 取值
-    在 tracked 套件里此前零覆盖 —— fixture 路径下 purchase_as_of 恒 None、
-    bucket 因此恒 null，从没有一条测试验过「传对了 purchase_as_of、算出了对的
-    bucket 值」这一步（OQ-6 存在的意义正是这个判断）。"""
+def test_grid_wires_purchase_as_of_into_source_notes(client, seed, use_source):
+    """★ Task 21：sku_pipeline[].bucket（'overdue'/'future'，靠 is_overdue() 算）随
+    sku_pipeline[] 一起退役 —— 阶段 A 的「逾期 / 未来」分桶在新的预测块（forecast_sku
+    的 pipeline.ordered_open）里没有等价物，OQ-6 的判断已经没有消费者。
+    purchase_as_of() 本身没有退役：它还是 OQ-5 陈旧闸（PurchaseTableStale 的判据），
+    只是现在唯一的出口是 source_notes.purchase_as_of —— fixture 路径下这条此前零
+    覆盖（FixtureSource 没有 purchase_as_of() 方法，恒 None），这里钉住 CH 路径下
+    真的把 SOURCE.purchase_as_of() 原样传进了响应。"""
 
     class ChStub:
         def as_of(self):
@@ -234,7 +237,6 @@ def test_grid_computes_bucket_from_purchase_as_of(client, seed, use_source):
             return None
 
         def purchase_in_transit(self, sku):
-            # ★ purchase_as_of 所在月是 2026-09：07 月早于它（逾期），11 月晚于它（未来）。
             return [InTransit("2026-07", 40, "PO-OLD"), InTransit("2026-11", 25, "PO-FUTURE")]
 
         def purchase_as_of(self):
@@ -251,8 +253,4 @@ def test_grid_computes_bucket_from_purchase_as_of(client, seed, use_source):
                headers={"x-actor": seed.actor})
     r = client.get(f"/v1/plans/{plan['plan_id']}/grid", headers={"x-actor": seed.actor})
     assert r.status_code == 200
-    bucket_by_period = {row["period"]: row["bucket"] for row in r.json()["sku_pipeline"]}
-    assert bucket_by_period["2026-07"] == "overdue", \
-        "2026-07 早于 purchase_as_of(2026-09) 所在月，必须是 overdue"
-    assert bucket_by_period["2026-11"] == "future", \
-        "2026-11 晚于 purchase_as_of(2026-09) 所在月，必须是 future"
+    assert r.json()["source_notes"]["purchase_as_of"] == "2026-09-20"

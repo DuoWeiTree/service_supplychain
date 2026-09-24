@@ -30,7 +30,6 @@ from dim.ch_source import (
     ChUnavailable,
     PurchaseTableStale,
     UnknownShape,
-    is_overdue,
 )
 from dim.order_store_map import UnknownStore
 from dim.source import Source
@@ -47,7 +46,6 @@ from forecast.baseline import (
     estimation_anchor,
 )
 from forecast.calendar import days_in_month, units_for_month
-from forecast.projection import inventory_projection
 from rules.effective import effective_demand
 from shared.pg_client import pg_conn, timed
 
@@ -540,20 +538,7 @@ def grid(plan_id: int, request: Request,
         lead = read_lead_time(cur)
 
     out_demand: list[dict] = []
-    #: (sku, sid) → {period: 该店该货号各 msku 的期望销量之和}
-    demand_by_store: dict[tuple[str, str], dict[str, int | None]] = {}
-    #: (sku, sid) → 在仓合计。★ 该店无 FBA / 各 msku 全无在仓数据 → None，
-    #  但这两种「None」不是一回事 —— 下面 applicable_by_store 把它们分开（09-23 真实缺陷）
-    onhand_by_store: dict[tuple[str, str], int | None] = {}
-    #: (sku, sid) → 该店是否有 FBA（= 该 sid 的 seller.has_fba，同一 sid 下恒定）。
-    #  ★ 决定 onhand 为 None 时读作「不适用」还是「未知在仓」——
-    #    不能靠 onhand is None 反推，那会把「有 FBA 但没数字」错认成「不适用」，
-    #    而这正是负责人在真实数据上撞见的 12 个 na_disagrees_with_seller 孤儿的成因。
-    applicable_by_store: dict[tuple[str, str], bool] = {}
-    # ★ demand 每个 msku 有 N 个月份行；在仓事实与月份无关，只能对每个 msku 累加一次 ——
-    #   否则一个 3 个月的计划会把在仓数算成 3 倍。
-    onhand_added: set[tuple[str, str]] = set()
-    #: msku → 推演入参（grid_forecast）。★ 在仓只在 has_fba 时取，与上面同一个闸
+    #: msku → 推演入参（grid_forecast）。★ 在仓只在 has_fba 时取
     fba_by_msku: dict[tuple[str, str], bool] = {}
     onhand_by_msku: dict[tuple[str, str], int | None] = {}
     rate_by_msku: dict[tuple[str, str], float] = {}
@@ -567,36 +552,17 @@ def grid(plan_id: int, request: Request,
             if sbasis and sbasis.get("base_rate") is not None:
                 rate_by_msku[k] = float(sbasis["base_rate"])
             out_demand.append(row)
-            eff_units = row["effective_units"]
-            key, ym = (sku, sid), _ym(period)
-            slot = demand_by_store.setdefault(key, {})
-            # ★ 合计行 = 各 msku 之和（14 §1 ①）；只要有一个 msku 未知，这一格就是未知
-            if ym not in slot:
-                slot[ym] = eff_units
-            elif slot[ym] is not None and eff_units is not None:
-                slot[ym] += eff_units
-            else:
-                slot[ym] = None
-            if key not in onhand_by_store:
-                onhand_by_store[key] = None
-            # ★ fba 只取决于 sid（同一 key 下每行都一样），但用 or 而不是覆盖 ——
-            #   同一 key 可能被多个 msku 行访问到，任何一次看见 True 就定了
-            applicable_by_store[key] = applicable_by_store.get(key, False) or fba
-            if fba and (seller_sku, sid) not in onhand_added:
-                onhand_added.add((seller_sku, sid))
-                got = source.onhand_available(seller_sku, sid)
-                onhand_by_msku[k] = got
-                if got is not None:
-                    onhand_by_store[key] = (onhand_by_store[key] or 0) + got
+            if fba:
+                onhand_by_msku[k] = source.onhand_available(seller_sku, sid)
 
         # ★ 采购格子 ∪ 认领的货号：没采购格子的货号，它的在途也要进推演（grid_forecast）
         in_transit: dict[str, list] = {sku: source.purchase_in_transit(sku)
                                        for sku in {r[0] for r in purchase} | {r[2] for r in demand}}
         as_of_date = source.as_of()
         as_of = as_of_date.isoformat()
-        # ★ OQ-6 裁定：sku_pipeline[] 的 bucket 只在 CH 源（具备 purchase_as_of）下
-        #   有意义；FixtureSource 没有这个方法，按 hasattr 跳过 —— fixture 路径的
-        #   sku_pipeline 形状因此逐字节不变（tests/test_grid_fixture.py 核实）。
+        # ★ OQ-5 陈旧闸：调用本身就是守卫（越线 → PurchaseTableStale），结果只
+        #   写进 source_notes.purchase_as_of 供前端显示；FixtureSource 没有这个
+        #   方法，按 hasattr 跳过。
         purchase_as_of = source.purchase_as_of() if hasattr(source, "purchase_as_of") else None
         dropped_stats = source.stats() if hasattr(source, "stats") else {}
     # ★ fix round 1 审计（team-lead 要求逐一核对 ChSource 实际会抛的异常集合是否都
@@ -606,58 +572,6 @@ def grid(plan_id: int, request: Request,
     #   只从 purchase_as_of() 抛，grid() 确实会调用它，必须在。
     except (ChUnavailable, ChDataUnusable, PurchaseTableStale, UnknownShape) as e:
         raise _source_error(e) from e
-
-    inventory = []
-    for (sku, sid), by_month in sorted(demand_by_store.items()):
-        sku_total_by_period = {p: sum(t.units for t in in_transit.get(sku, ()) if t.period == p)
-                               for p in by_month}
-        # ★ 采购在途一律不进任何店铺的加项（阶段 A 恒 null）：它是货号级的，而
-        #   「计划内只有一家店认领」不等于它是这批货的唯一消费者 —— 同一货号可能被
-        #   本计划之外的店铺在卖。按单店给全额与平摊一样，都是发明分配规则（C4 禁）。
-        #   所以推演的入库项是空的，closing = onhand − demand。
-        rows = inventory_projection(onhand_by_store[(sku, sid)], {}, by_month,
-                                    applicable=applicable_by_store.get((sku, sid), False))
-        for row in rows:
-            inventory.append({
-                "sku": sku, "sid": sid, "period": row["period"],
-                # onhand = 这一格的期初：第一个月是当前在仓事实，其后是上月期末
-                "onhand": row["opening"],
-                "inbound": None,
-                "closing": row["closing"],
-                "basis": {
-                    "source": "ch", "as_of": as_of,
-                    # ★ 裁定：阶段 A 恒 false，但必须**由明细算出**而不是盖章 ——
-                    #   盖死的那个在阶段 B 真掺进计划采购时会撒谎，而标记撒谎比
-                    #   没有标记更坏（forecast/projection.py 的同名注释）
-                    "includes_plan_purchase": not row["basis"]["excludes_plan_purchase"],
-                    "demand": row["demand"],
-                    # ★ 恒定：这一格的入库为什么是 null
-                    "reason": "no_seller_attribution",
-                    # ★ 与上面那条分开：这一格的期末为什么是 null（没有就是 None）。
-                    #   两件事挤进一个字段，「既未知又恒定」的那一格只说得出一件
-                    "closing_reason": row["basis"].get("reason"),
-                    # ★ 店铺级入库的逐笔依据。阶段 A 无数据源 ⇒ 恒空，而它必须与下面
-                    #   非零的 sku_level_in_transit 并排出现：否则「没有货」和
-                    #   「有货但不知道是谁的」长得一模一样
-                    "sources": [],
-                    "sku_level_in_transit": sku_total_by_period[row["period"]],
-                },
-            })
-
-    pipeline: dict[tuple[str, str], dict] = {}
-    for sku, rows in sorted(in_transit.items()):
-        for t in rows:
-            slot = pipeline.setdefault((sku, t.period),
-                                       {"sku": sku, "period": t.period, "units": 0,
-                                        "sources": [], "no_seller_attribution": True,
-                                        # ★ E-13 实测 98.8% 的在途会落进 overdue——这是
-                                        #   数据的形状，不是 bug，但不许因为不匹配任何
-                                        #   计划月份就从 sku_pipeline 里悄悄消失。
-                                        "bucket": (None if purchase_as_of is None else
-                                                  ("overdue" if is_overdue(t.period, purchase_as_of)
-                                                   else "future"))})
-            slot["units"] += t.units
-            slot["sources"].append({"units": t.units, "kind": "purchase_in_transit", "ref": t.ref})
 
     payload = forecast_payload(
         as_of=as_of_date, periods=periods, demand_rows=out_demand, purchase_rows=purchase,
@@ -669,8 +583,6 @@ def grid(plan_id: int, request: Request,
         "periods": [_ym(p) for p in periods],
         "demand": out_demand,
         "purchase": [{"sku": s, "period": _ym(p), "planned_units": u} for s, p, u in purchase],
-        "inventory": inventory,
-        "sku_pipeline": [pipeline[k] for k in sorted(pipeline)],
         "source_notes": {
             "as_of": as_of,
             "purchase_as_of": (purchase_as_of.isoformat() if purchase_as_of else None),

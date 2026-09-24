@@ -129,66 +129,12 @@ export interface PurchaseCell {
  *  抄一遍，真实响应少发了键也照样通过。这半边此前没跟着改。 */
 export interface PutPurchaseResult { cell: PurchaseCell }
 
-/** ★ `inbound` 为什么是 null。阶段 A **恒定**是这一个值 —— 它不说明 closing 的任何事 */
-export type InboundReason = 'no_seller_attribution';
-
-/** ★ `closing` 为什么是 null。三种成因处置各不相同，**不许合成一个裸 null**：
- *  `not_applicable` 该店没有 FBA（02 §3.1a）；`unknown_demand` 期望销量未知；
- *  `unknown_onhand` 该店**有** FBA，但阶段 A 没取到这个 msku 的在仓数字 ——
- *  与 `not_applicable` 长得像（onhand 都是 null）但成因不同，09-23 真实缺陷：
- *  压成一个会在真实 FBA 店上误判成「不适用」，前端 `na_disagrees_with_seller`
- *  守卫正是靠这个区分抓到的。 */
-export type ClosingReason = null | 'not_applicable' | 'unknown_demand' | 'unknown_onhand';
-
-export interface InventoryBasis {
-  source: 'ch';
-  as_of: string;
-  /** ★ 恒 false 且必须显式返回 —— 旧库存块（阶段 A）不含本计划采购；界面已改读预测块，Task 21 随块删 */
-  includes_plan_purchase: false;
-  /** 这一格用掉的期望销量（= 该店该货号各 msku 生效值之和）。★ 与前端自己算的那份互为证人 */
-  demand: number | null;
-  /** ★ 恒 'no_seller_attribution' —— 只解释 inbound，不解释 closing */
-  reason: InboundReason;
-  /** ★ closing 的成因，与 reason 分开的那一个 */
-  closing_reason: ClosingReason;
-  /** 该货号该月的在途总量。★ 放在这里是因为它**不属于这一格**（没有店铺归属），只展示不分摊 */
-  sku_level_in_transit: number | null;
-  sources: { units: number; kind: string; ref: string }[];
-}
-
-/** ★ 可售库存的身份是 **[店铺, 货号]**（`02` §3.1a）—— 不是 msku，也不带任何分摊 */
-export interface InventoryCell {
-  sku: string;
-  sid: Sid;
-  period: Period;
-  /** 该格期初：首月是在仓事实，其后是**上月期末**（★ 跨月是一条链，不是同一个快照） */
-  onhand: number | null;
-  /** ★ 阶段 A 恒 null —— 在途是货号级，按单店给全额也是分摊假设（C4 禁） */
-  inbound: null;
-  /** ★ = onhand − basis.demand。null 时看 basis.closing_reason */
-  closing: number | null;
-  basis: InventoryBasis;
-}
-
-/** 货号级在途总量。★ 只展示，不分摊到任何店铺 */
-export interface SkuPipelineRow {
-  sku: string;
-  period: Period;
-  units: number | null;
-  sources: { units: number; kind: string; ref: string }[];
-  no_seller_attribution: true;
-}
-
 export interface GridResponse {
   plan_id: PlanId;
   /** ["2026-10","2026-11","2026-12"] */
   periods: Period[];
   demand: DemandCell[];
   purchase: PurchaseCell[];
-  /** 旧库存块（阶段 A）。★ 界面已不读，Task 21 删 */
-  inventory?: InventoryCell[];
-  /** 旧在途块（阶段 A）。★ 界面已不读，Task 21 删 */
-  sku_pipeline?: SkuPipelineRow[];
   params: ForecastParams;
   /** msku × 月 */
   forecast: MskuForecast[];
