@@ -79,7 +79,10 @@ def test_l1_rules_is_pure():
 
 
 def test_l2_forecast_only_stdlib_and_rules():
-    allowed = set(sys.stdlib_module_names) | {"rules"}
+    """★ Task 5：`forecast` 自己也在 allowed 里 —— L2 防的是外部系统依赖
+    （api/dim/erp/jobs/shared 等要连库连网的层），不是 forecast 内部互相 import
+    纯函数（allocate.py 复用 calendar.month_start，两者都是 stdlib-only）。"""
+    allowed = set(sys.stdlib_module_names) | {"rules", "forecast"}
     bad = {p.name: sorted(imports(p) - allowed)
            for p in sources("forecast") if imports(p) - allowed}
     assert not bad, f"L2 违规（移植来的算法必须可独立回归）：{bad}"
