@@ -102,8 +102,12 @@ export interface SystemBasis {
   reason: null | 'no_sales_in_window';
   raw_rate: number | null; n_eff: number | null; target_rate: number | null;
   winsor_cap: number | null; first_seen: string | null;
+  /** target_rate = target_units ÷ target_days。★ 可选：这两个键之前认领的格子里没有 */
+  target_units?: number | null; target_days?: number | null;
   constants: { halflife_days: number; window_days: number; target_window_days: number;
-               shrink_prior: number; winsor_q: number };
+               shrink_prior: number; winsor_q: number;
+               /** 非零日少于它就不削峰。★ 可选：之前认领的格子里没有 */
+               winsor_min_nonzero?: number };
 }
 
 /** `PUT .../demand/...` 的信封。★ team-lead 09-22 裁定：回的是 grid() 里 demand[] 同一格

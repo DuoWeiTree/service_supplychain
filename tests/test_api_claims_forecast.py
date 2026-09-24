@@ -36,6 +36,8 @@ def test_claim_seeds_rate_times_days_rounded_up(client, seed):
     assert (b["days_in_month"], b["censored_days"]) == (31, 0)
     assert b["units_raw"] == pytest.approx(4.325139122267326 * 31)
     assert rows[1][2]["days_in_month"] == 30
+    assert (b["target_units"], b["target_days"]) == (360, 56)      # target_rate = 360 ÷ 56
+    assert b["constants"]["winsor_min_nonzero"] == 5
     assert body["no_history"] == []
 
 

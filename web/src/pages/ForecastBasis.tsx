@@ -3,7 +3,8 @@ import { Fold } from '../components/Fold';
 import type {
   ForecastArrival, ForecastReason, ForecastState, MskuForecast, NoSalesSourceCause, Period, StoreForecast, SystemBasis,
 } from '../api/types';
-import { totalsAt, type GridModel, type MskuCell, type MskuRow, type SkuBlock } from './planGridModel';
+import type { QtyValue } from '../components/Qty';
+import { demandAt, sumUnits, totalsAt, type GridModel, type MskuCell, type MskuRow, type SkuBlock } from './planGridModel';
 
 export type BasisTarget =
   | { kind: 'msku'; block: SkuBlock; row: MskuRow; period: Period }
@@ -70,7 +71,7 @@ function partialSum(rows: (MskuForecast | undefined)[]) {
 }
 
 function openingLine(f: MskuForecast, periods: Period[], asOf: string): string {
-  if (f.state === 'partial') return asOfStartLine(asOf, f.basis.as_of_start?.onhand_as_of ?? null, f.period);
+  if (f.basis.as_of_start) return asOfStartLine(asOf, f.basis.as_of_start.onhand_as_of, f.period);
   const i = periods.indexOf(f.period);
   const b = f.basis.bridge;
   if (b) {
@@ -95,7 +96,8 @@ function MskuChain({ f, periods, asOf, firstStockout, monthExpected }: {
     <div className="fb-chain" data-testid="fb-chain">
       {f.closing === null ? (
         <>
-          {!stale && f.opening !== null && <div>{openingLine(f, periods, asOf)}</div>}
+          {/* 期末未知时起点照给：as_of 可售是事实，与后面哪一环未知无关 */}
+          {!stale && (f.opening !== null || f.basis.as_of_start) && <div>{openingLine(f, periods, asOf)}</div>}
           <div data-testid="fb-no-closing">{noClosing(f.state, f.reason, f.unknown_since)}</div>
         </>
       ) : (
@@ -155,24 +157,33 @@ function RateDetail({ sb }: { sb: SystemBasis }) {
   return (
     <>
       <p>
-        速率 {f4(sb.base_rate)} = (n × 收缩前 + {k.shrink_prior} × 自身 {k.target_window_days} 天均值) ÷ (n + {k.shrink_prior})
+        速率 {f4(sb.base_rate)} = (n × 收缩前 + {k.shrink_prior} × 目标窗日均) ÷ (n + {k.shrink_prior})
         = ({sb.n_eff.toFixed(2)} × {f4(sb.raw_rate)} + {k.shrink_prior} × {f4(sb.target_rate)}) ÷ {(sb.n_eff + k.shrink_prior).toFixed(2)}
       </p>
       <p>
         收缩前 {f4(sb.raw_rate)}：估计窗 {sb.window.from} ~ {sb.window.until} 的 {k.window_days} 天日销，剔断货日，
-        {sb.winsor_cap === null ? '非零日不足 5 天不削峰' : `截到非零日 p${Math.round(k.winsor_q * 100)}（${sb.winsor_cap}）`}，
+        {sb.winsor_cap !== null ? `截到非零日 p${Math.round(k.winsor_q * 100)}（${sb.winsor_cap}）`
+          : k.winsor_min_nonzero !== undefined ? `非零日不足 ${k.winsor_min_nonzero} 天不削峰` : '非零日太少不削峰'}，
         半衰期 {k.halflife_days} 天指数加权；n = 权重和 {sb.n_eff.toFixed(2)}
       </p>
-      <p>自身 {k.target_window_days} 天均值 {f4(sb.target_rate)}：目标窗 {sb.target_window.from} ~ {sb.target_window.until}{sb.first_seen ? `，首次有销量 ${sb.first_seen}` : ''}</p>
+      <p>
+        {/* ★ 按实际算法命名：天数从首次有销量起算、最多 {k.target_window_days}，不是「近 90 天均值」（OP-3） */}
+        目标窗日均 {f4(sb.target_rate)} = 目标窗 {sb.target_window.from} ~ {sb.target_window.until} 的销量
+        {sb.target_units != null && sb.target_days != null ? ` ${sb.target_units} ÷ ${sb.target_days} 天` : ' ÷ 天数'}
+        （天数自首次有销量{sb.first_seen ? ` ${sb.first_seen} ` : ''}起算，最多 {k.target_window_days}）
+      </p>
       <p>估计锚点 {sb.estimation_anchor} = as_of {sb.as_of} − 禁言 {sb.embargo_days} 天</p>
     </>
   );
 }
 
 /** partial 月的 Σ 链：店铺 / 货号的 opening 是 null、期望是全月 —— 起点与期望都改取 Σ msku 的那一段 */
-function partialChain(rows: (MskuForecast | undefined)[], closing: number, asOf: string, month: Period, nxt: Period | undefined): string {
+function partialChain(rows: (MskuForecast | undefined)[], fullMonth: QtyValue, closing: number, asOf: string,
+                      month: Period, nxt: Period | undefined): string {
   const p = partialSum(rows);
-  return `${asOfStartLine(asOf, p.onhand, month, 'Σ msku，')} − 本月 as_of 后期望 ${n(p.demand)} + 到货 ${n(p.inbound)} = 期末 ${closing}`
+  const full = fullMonth.kind === 'num' ? fullMonth.value : null;
+  return `${asOfStartLine(asOf, p.onhand, month, 'Σ msku，')} − 本月 as_of 后期望 ${n(p.demand)}（全月期望 ${n(full)} 的剩余部分）`
+    + ` + 到货 ${n(p.inbound)} = 期末 ${closing}`
     + (nxt ? `　→ ${nxt} 期初` : '');
 }
 
@@ -181,7 +192,8 @@ function storeChain(s: StoreForecast | undefined, block: SkuBlock, periods: Peri
   if (s.closing === null) return noClosing(s.state, s.reason);
   const nxt = periods[periods.indexOf(s.period) + 1];
   if (s.state === 'partial') {
-    return partialChain(block.mskus.map((r) => r.forecast.find((f) => f.period === s.period)), s.closing, asOf, s.period, nxt);
+    return partialChain(block.mskus.map((r) => r.forecast.find((f) => f.period === s.period)),
+      demandAt(block, s.period), s.closing, asOf, s.period, nxt);
   }
   return `期初 ${n(s.opening)} − 期望 ${n(s.demand)} + 到货 ${n(s.inbound_planned)} = 期末 ${s.closing}`
     + (nxt ? `　→ ${nxt} 期初` : '');
@@ -221,12 +233,13 @@ function SkuBody({ model, sku, period }: { model: GridModel; sku: string; period
   if (!t) return <p>没有这一月的货号行</p>;
   const pl = t.pipeline;
   const nxt = model.periods[model.periods.indexOf(period) + 1];
+  const fba = model.blocks.filter((b) => b.sku === sku && b.has_fba);   // 只有它们进库存求和
   const chain = t.closing === null
     ? (t.reason_from && t.reason !== 'not_recomputed_in_mock'
       ? `${t.reason_from.seller_sku}：${noClosing(t.state, t.reason)}` : noClosing(t.state, t.reason))
     : t.state === 'partial'
-      ? partialChain(model.blocks.filter((b) => b.sku === sku && b.has_fba)
-          .flatMap((b) => b.mskus.map((r) => r.forecast.find((f) => f.period === period))),
+      ? partialChain(fba.flatMap((b) => b.mskus.map((r) => r.forecast.find((f) => f.period === period))),
+        sumUnits(fba.map((b) => demandAt(b, period)).map((q) => (q.kind === 'num' ? q.value : null))),
         t.closing, model.params.as_of, period, nxt)
       : `期初 ${n(t.opening)} − 期望 ${n(t.stock_demand)} + 到货 ${n(t.inbound_planned)} = 期末 ${t.closing}`
         + (nxt ? `　→ ${nxt} 期初` : '');

@@ -40,6 +40,7 @@ from forecast.baseline import (
     SHRINK_PRIOR,
     TARGET_WINDOW_DAYS,
     WINDOW_DAYS,
+    WINSOR_MIN_NONZERO,
     WINSOR_Q,
     data_windows,
     estimate_rate,
@@ -265,6 +266,8 @@ def _system_basis(est, stock, win) -> dict:
         "embargo_days": est.embargo_days,
         "base_rate": r.rate if r else None, "raw_rate": r.raw_rate if r else None,
         "n_eff": r.n_eff if r else None, "target_rate": r.target_rate if r else None,
+        # ★ target_rate = target_units ÷ target_days；天数从首次有销量起算、最多 90（OP-3 原样）
+        "target_units": r.target_units if r else None, "target_days": r.target_days if r else None,
         "winsor_cap": r.winsor_cap if r else None,
         "first_seen": r.first_seen.isoformat() if (r and r.first_seen) else None,
         "window": {"from": win.censor_from.isoformat(), "until": win.until.isoformat()},
@@ -276,7 +279,7 @@ def _system_basis(est, stock, win) -> dict:
         "reason": None if r else "no_sales_in_window",
         "constants": {"halflife_days": HALFLIFE_DAYS, "window_days": WINDOW_DAYS,
                       "target_window_days": TARGET_WINDOW_DAYS, "shrink_prior": SHRINK_PRIOR,
-                      "winsor_q": WINSOR_Q},
+                      "winsor_q": WINSOR_Q, "winsor_min_nonzero": WINSOR_MIN_NONZERO},
     }
 
 

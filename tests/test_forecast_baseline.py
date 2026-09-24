@@ -71,6 +71,8 @@ def test_known_sibling_defect_is_ported_verbatim():
     恒卖 4 件/天 120 天 → 4.325（高估 8.1%）。先搬不修：修的那一次这条**应当**变红。"""
     r = baseline_rate({back(i): 4 for i in range(120)}, set(), A)
     assert r.rate == pytest.approx(4.325139122267326, rel=1e-12)
+    # 目标窗日均 = 近 90 天销量 ÷ 天数（从 56 天窗里找到的首销日起算，最多 90）—— 依据回显这两个数
+    assert (r.target_units, r.target_days) == (360, 56) and r.target_rate == 360 / 56
 
 
 def test_estimation_anchor_moves_back_embargo_days():

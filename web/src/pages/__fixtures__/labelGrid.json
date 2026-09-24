@@ -23,6 +23,8 @@
         "raw_rate": 4.0,
         "n_eff": 19.407990262470044,
         "target_rate": 6.428571428571429,
+        "target_units": 360,
+        "target_days": 56,
         "winsor_cap": 4.0,
         "first_seen": "2026-07-21",
         "window": {
@@ -42,7 +44,8 @@
           "window_days": 56,
           "target_window_days": 90,
           "shrink_prior": 3.0,
-          "winsor_q": 0.95
+          "winsor_q": 0.95,
+          "winsor_min_nonzero": 5
         },
         "days_in_month": 31,
         "units_raw": 134.07931279028708
@@ -67,6 +70,8 @@
         "raw_rate": 4.0,
         "n_eff": 19.407990262470044,
         "target_rate": 6.428571428571429,
+        "target_units": 360,
+        "target_days": 56,
         "winsor_cap": 4.0,
         "first_seen": "2026-07-21",
         "window": {
@@ -86,7 +91,8 @@
           "window_days": 56,
           "target_window_days": 90,
           "shrink_prior": 3.0,
-          "winsor_q": 0.95
+          "winsor_q": 0.95,
+          "winsor_min_nonzero": 5
         },
         "days_in_month": 30,
         "units_raw": 129.75417366801975
@@ -111,6 +117,8 @@
         "raw_rate": 0.31697266735571067,
         "n_eff": 19.273312377949605,
         "target_rate": 0.3333333333333333,
+        "target_units": 18,
+        "target_days": 54,
         "winsor_cap": 1.0,
         "first_seen": "2026-07-23",
         "window": {
@@ -130,7 +138,8 @@
           "window_days": 56,
           "target_window_days": 90,
           "shrink_prior": 3.0,
-          "winsor_q": 0.95
+          "winsor_q": 0.95,
+          "winsor_min_nonzero": 5
         },
         "days_in_month": 31,
         "units_raw": 9.894465021195096
@@ -155,6 +164,8 @@
         "raw_rate": 0.31697266735571067,
         "n_eff": 19.273312377949605,
         "target_rate": 0.3333333333333333,
+        "target_units": 18,
+        "target_days": 54,
         "winsor_cap": 1.0,
         "first_seen": "2026-07-23",
         "window": {
@@ -174,7 +185,8 @@
           "window_days": 56,
           "target_window_days": 90,
           "shrink_prior": 3.0,
-          "winsor_q": 0.95
+          "winsor_q": 0.95,
+          "winsor_min_nonzero": 5
         },
         "days_in_month": 30,
         "units_raw": 9.575288730188802

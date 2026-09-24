@@ -166,7 +166,8 @@ describe('spec §5：点开一格看依据', () => {
 
   it('★ partial 月的店铺 / 货号：起点与期望取 Σ msku 那一段（行上的期望是全月，不能拿来扣）', async () => {
     renderSheet(LABEL_GRID_PARTIAL);
-    const line = 'as_of 2026-10-10 可售 313（Σ msku，本月 10-01–10-10 已过，不计） − 本月 as_of 后期望 71 + 到货 0 = 期末 242 → 2026-11 期初';
+    const line = 'as_of 2026-10-10 可售 313（Σ msku，本月 10-01–10-10 已过，不计） − 本月 as_of 后期望 71（全月期望 105 的剩余部分）'
+      + ' + 到货 0 = 期末 242 → 2026-11 期初';
     expect(await open('依据 A4Pet-US SKU-1 2026-10')).toHaveTextContent(line);
     await userEvent.keyboard('{Escape}');
     expect(await open('依据 SKU-1 2026-10')).toHaveTextContent(line);
@@ -187,9 +188,35 @@ describe('spec §5：点开一格看依据', () => {
     renderSheet();
     const d = await open('依据 MSKU-A 2026-10');
     const fold = within(d).getByText('怎么算的').closest('details')!;
-    expect(fold).toHaveTextContent('速率 4.3251 = (n × 收缩前 + 3 × 自身 90 天均值) ÷ (n + 3) = (19.41 × 4.0000 + 3 × 6.4286) ÷ 22.41');
+    expect(fold).toHaveTextContent('速率 4.3251 = (n × 收缩前 + 3 × 目标窗日均) ÷ (n + 3) = (19.41 × 4.0000 + 3 × 6.4286) ÷ 22.41');
+    // ★ 按实际算法命名：360 ÷ 56，不是「90 天均值」
+    expect(fold).toHaveTextContent('目标窗日均 6.4286 = 目标窗 2026-06-17 ~ 2026-09-14 的销量 360 ÷ 56 天（天数自首次有销量 2026-07-21 起算，最多 90）');
+    expect(fold).not.toHaveTextContent('天均值');
     expect(fold).toHaveTextContent('估计锚点 2026-09-14 = as_of 2026-09-21 − 禁言 7 天');
     expect(fold).toHaveTextContent('截到非零日 p95（4）');
+  });
+
+  it('怎么算的：削峰阈值取自依据（不写死）；旧认领缺总量 / 天数时只给公式不编数', async () => {
+    const g = structuredClone(LABEL_GRID);
+    const sb = g.demand.find((c) => c.seller_sku === 'MSKU-A' && c.period === '2026-10')!.system_basis!;
+    if (sb.reason === 'not_applicable_no_sales_source') throw new Error('fixture 变了');
+    sb.winsor_cap = null; sb.constants.winsor_min_nonzero = 7;
+    delete sb.target_units; delete sb.target_days;
+    renderSheet(g, true);
+    const fold = within(await open('依据 MSKU-A 2026-10')).getByText('怎么算的').closest('details')!;
+    expect(fold).toHaveTextContent('非零日不足 7 天不削峰');
+    expect(fold).toHaveTextContent('的销量 ÷ 天数（天数自首次有销量');
+  });
+
+  it('partial 月期末未知：as_of 起点照给，再说为什么未知', async () => {
+    const g = structuredClone(LABEL_GRID_PARTIAL);
+    const r = g.forecast.find((f) => f.seller_sku === 'MSKU-A' && f.period === '2026-10')!;
+    Object.assign(r, { state: 'unknown', reason: 'inbound_unknown', unknown_since: '2026-10', closing: null });
+    renderSheet(g, true);
+    const chain = within(await open('依据 MSKU-A 2026-10')).getByTestId('fb-chain');
+    expect(chain).toHaveTextContent('as_of 2026-10-10 可售 300（本月 10-01–10-10 已过，不计）');
+    expect(chain).toHaveTextContent('未知：2026-10 起到货数未知');
+    expect(chain).not.toHaveTextContent('= 期末');
   });
 
   it('★ 依据按钮不进 Tab 序；光标格上按 I 打开它的依据', async () => {

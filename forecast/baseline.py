@@ -42,6 +42,9 @@ class BaselineResult:
     kept_days: int
     censored_days: int
     winsor_cap: float | None
+    #: target_rate = target_units ÷ target_days —— 依据要能说出这两个数（spec §3.3）
+    target_units: int = 0
+    target_days: int = TARGET_WINDOW_DAYS
 
 
 @dataclass(frozen=True)
@@ -97,13 +100,14 @@ def baseline_rate(daily: Mapping[dt.date, int], censor: Collection[dt.date], anc
     else:
         raw, n = 0.0, 0.0
     t_start = anchor - dt.timedelta(days=target_window - 1)
-    tot = float(sum(u for d, u in daily.items() if t_start <= d <= anchor))
+    tot_units = sum(u for d, u in daily.items() if t_start <= d <= anchor)
+    tot = float(tot_units)
     span_days = target_window if born is None else min(target_window, (anchor - born).days + 1)
     target = tot / span_days
     rate = (n * raw + prior * target) / (n + prior) if (n + prior) else 0.0
     censored = sum(1 for d in grid if d in censor and (born is None or d >= born))
     return BaselineResult(anchor, rate, raw, n, target, start, t_start, born, sum(keep),
-                          censored, cap)
+                          censored, cap, tot_units, span_days)
 
 
 def estimation_anchor(as_of: dt.date, embargo_days: int = EMBARGO_DAYS) -> dt.date:
