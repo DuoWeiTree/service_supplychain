@@ -9,7 +9,7 @@ import csv
 import datetime as dt
 from pathlib import Path
 
-from dim.source import InTransit
+from dim.source import InTransit, StockDays
 
 
 def _int_or_none(s: str) -> int | None:
@@ -44,3 +44,23 @@ class FixtureSource:
     def purchase_in_transit(self, sku: str) -> list[InTransit]:
         return [InTransit(r["period"], int(r["units"]), r["ref"])
                 for r in self._rows("purchase_in_transit.csv") if r["sku"] == sku]
+
+    def daily_sales(self, seller_sku: str, sid: str, start: dt.date, end: dt.date
+                    ) -> dict[dt.date, int]:
+        """★ 同一天两行（同 msku/sid/date）在这里就加总 —— baseline_rate 按天只认
+        一个数，取数层悄悄留一条丢一条会比加错更难查。"""
+        out: dict[dt.date, int] = {}
+        for r in self._rows("daily_sales.csv"):
+            if r["seller_sku"] == seller_sku and r["sid"] == sid:
+                d = dt.date.fromisoformat(r["date"])
+                if start <= d <= end:
+                    out[d] = out.get(d, 0) + int(r["units"])
+        return out
+
+    def fba_stock_days(self, seller_sku: str, sid: str, start: dt.date, end: dt.date
+                       ) -> StockDays:
+        """★ fixture 口径：窗口里每一天都算「采到了」—— 底料里只有断货日需要点名。"""
+        days = frozenset(start + dt.timedelta(days=i) for i in range((end - start).days + 1))
+        out = frozenset(dt.date.fromisoformat(r["date"]) for r in self._rows("fba_stockout_days.csv")
+                        if r["seller_sku"] == seller_sku and r["sid"] == sid)
+        return StockDays(out & days, days, ())

@@ -82,3 +82,30 @@ def test_ch_source_has_no_remaining_stub_methods():
         assert "NotImplementedError" not in src, (
             f"ChSource.{name} 仍是占位实现——空实现会让「该做没做」和"
             "「本来就不用做」长得一模一样")
+
+
+def test_daily_sales_returns_only_days_with_orders(s):
+    D = dt.date
+    assert s.daily_sales("MSKU-A", "11072", D(2026, 9, 1), D(2026, 9, 3)) == {
+        D(2026, 9, 1): 4, D(2026, 9, 2): 4, D(2026, 9, 3): 4}
+    # ★ 断货那几天没有行 —— 补 0 是 baseline_rate densify 的事，不是取数层的
+    assert s.daily_sales("MSKU-C", "11094", D(2026, 9, 6), D(2026, 9, 9)) == {
+        D(2026, 9, 8): 2, D(2026, 9, 9): 2}
+    assert s.daily_sales("MSKU-W", "90001", D(2026, 6, 1), D(2026, 9, 21)) == {}
+
+
+def test_daily_sales_sums_duplicate_rows_for_same_day(s):
+    """★ Task 11 复核要求的绑定约束：baseline_rate 每个 (msku, sid, date) 只认一个数。
+    fixture 里同一天出现两行（MSKU-DUP@99999 09-10 分别 3 与 5）时，取数层必须把
+    它们加总成一个数（3+5=8）交给调用方 —— 不许悄悄留一条、丢一条。"""
+    D = dt.date
+    assert s.daily_sales("MSKU-DUP", "99999", D(2026, 9, 10), D(2026, 9, 10)) == {
+        D(2026, 9, 10): 8}
+
+
+def test_fba_stock_days_names_censored_and_captured_days(s):
+    D = dt.date
+    got = s.fba_stock_days("MSKU-C", "11094", D(2026, 8, 30), D(2026, 9, 2))
+    assert got.censored == frozenset({D(2026, 9, 1), D(2026, 9, 2)})
+    assert got.captured == frozenset(D(2026, 8, 30) + dt.timedelta(days=i) for i in range(4))
+    assert got.rejected == ()

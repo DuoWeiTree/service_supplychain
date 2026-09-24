@@ -15,6 +15,15 @@ class InTransit(NamedTuple):
     ref: str        # 可回查的单号
 
 
+class StockDays(NamedTuple):
+    """censor 用的断货日（spec §3.2 · OP-15）。★ 三个集合分开：
+    「那天断货」「那天采到了、没断」「那天没采到 / 没过掉档守卫」是三件事 ——
+    第三种不 censor，也不许被当成第二种。"""
+    censored: frozenset[dt.date]
+    captured: frozenset[dt.date]
+    rejected: tuple[dict, ...]
+
+
 class Source(Protocol):
     def as_of(self) -> dt.date:
         """这批事实是哪一天的。★ 必须跟着数一起出去（grid 的 basis.as_of）——
@@ -29,3 +38,14 @@ class Source(Protocol):
 
     def purchase_in_transit(self, sku: str) -> list[InTransit]:
         """采购在途（CH `quantity_receive`）。★ 返回逐笔明细，合计由调用方求和。"""
+
+    def daily_sales(self, seller_sku: str, sid: str, start: dt.date, end: dt.date
+                    ) -> dict[dt.date, int]:
+        """[start, end] 每天的实际销量（按 order_item 去重、排除 Cancelled/Pending）。
+        ★ 每个 (msku, sid, date) 只出一个数 —— 同一天的多条底料在这里就要合计好，
+        `forecast/baseline.py` 的 `baseline_rate` 按天只认一个数，不做二次去重。
+        ★ 没单的日子**不出现** —— 补 0 是 baseline_rate densify 的事。"""
+
+    def fba_stock_days(self, seller_sku: str, sid: str, start: dt.date, end: dt.date
+                       ) -> StockDays:
+        """[start, end] 里哪些天该 msku FBA 可售 ≤ 0（censor）。"""
