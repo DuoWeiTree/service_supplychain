@@ -11,7 +11,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from api.ui import catalog, dashboard, lines, ops, plans, source_factory, submit, system
+from api.ui import catalog, dashboard, lead_time, lines, ops, plans, source_factory, submit, system
 from api.ui.errors import ApiError, translate
 from dim.registry import gate_503_names
 from jobs import refresh_dims
@@ -91,6 +91,20 @@ def _startup_check() -> None:
       读不到就不知道该不该刷，所以这里只记一条点名成因的日志然后照常返回，
       不猜「大概是新鲜的」也不猜「大概该刷一轮」。
     """
+    # ★ CLAUDE.md「配置类错误往启动钩子放」：提前期配错时第一屏就要看见，而不是等第一次 grid 500。
+    #   同本函数其它段：只记日志，不许中断 lifespan。
+    try:
+        from api.ui.lead_time import read_lead_time
+        with pg_conn() as c, c.cursor() as cur:
+            lt = read_lead_time(cur)
+        log.info("startup lead_time route=%s make_days=%d ship_days=%d",
+                 lt.route, lt.make_days, lt.ship_days)
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as e:  # noqa: BLE001 - 见上
+        log.warning("startup outcome=fail stage=lead_time err_type=%s err=%s",
+                    type(e).__name__, getattr(e, "detail", e))
+
     try:
         stale = _stale_mirrors()
     except (KeyboardInterrupt, SystemExit):
@@ -216,4 +230,5 @@ def create_app() -> FastAPI:
     app.include_router(lines.router, prefix="/v1")
     app.include_router(dashboard.router, prefix="/v1")
     app.include_router(ops.router, prefix="/v1")
+    app.include_router(lead_time.router, prefix="/v1")
     return app

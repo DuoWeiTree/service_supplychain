@@ -242,3 +242,18 @@ def use_source(client):
 
     yield _use
     client.app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def lead_time_reset(business_db):
+    """lead_time 是配置不是数据（不在 DATA_TABLES 里被清）—— 改了就必须还原成 008 的种子，
+    否则后面的测试会读到上一个测试留下的提前期。★ 整表重灌（有的测试会删行）。"""
+    yield
+    from shared.pg_client import pg_conn
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("DELETE FROM lead_time")
+        cur.execute("INSERT INTO lead_time (route, segment, days, valid_from) VALUES"
+                    " ('oversea_sea', 'making', 30, DATE '2026-01-01'),"
+                    " ('oversea_sea', 'shipping', 60, DATE '2026-01-01'),"
+                    " ('air', 'shipping', 10, DATE '2026-01-01'),"
+                    " ('domestic', 'shipping', 3, DATE '2026-01-01')")
