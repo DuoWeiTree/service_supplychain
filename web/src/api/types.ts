@@ -417,6 +417,18 @@ export interface CancelRevResult {
   reason: string;
 }
 
+/** 14 B12：提前期是用户变量，全局配置，所有计划共用。★ `route` 目前只有一种，
+ *  但字段保留是因为后端按航线区分（`GET/PUT /v1/lead-time`，Task 8） */
+export interface LeadTime {
+  route: 'oversea_sea'; make_days: number; ship_days: number; anchor_day: number;
+  valid_from: { making: string; shipping: string };
+}
+export interface LeadTimeInput { make_days?: number; ship_days?: number }
+/** ★ `changed` 只列真变了的段（后端按 old→to 记日志，Task 8）；没变的段不进这个数组 */
+export interface LeadTimeResult extends LeadTime {
+  changed: { segment: 'making' | 'shipping'; from: number; to: number }[];
+}
+
 export interface ListPlansQuery {
   /** ★ 只发契约里声明过的参数 —— 未声明查询参数一律 400 */
   state?: LineState;

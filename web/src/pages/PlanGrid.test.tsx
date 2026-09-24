@@ -79,6 +79,10 @@ interface MockApi {
   putPurchase: (...args: unknown[]) => Promise<PurchaseCell>;
   releaseClaim: (...args: unknown[]) => Promise<ReleaseResult>;
   submit: (...args: unknown[]) => Promise<unknown>;
+  // ★ Task 20：PlanGrid 现在挂 LeadTimeBar，挂载即调 getLeadTime —— 这个测试替身
+  //   不覆盖它就会在每个用例里抛 TypeError（不是本测试关心的路径，给固定值即可）
+  getLeadTime: () => Promise<{ route: 'oversea_sea'; make_days: number; ship_days: number;
+    anchor_day: number; valid_from: { making: string; shipping: string } }>;
 }
 
 function buildMockApi(grid: GridResponse) {
@@ -120,6 +124,8 @@ function buildMockApi(grid: GridResponse) {
       return { released: { seller_sku: sellerSku, sid }, dropped_cells, stranded_purchase_cells: [] };
     }),
     submit: vi.fn(async () => ({ rev: 1, lines: 1, in_flight: true, content_digest: 'x', skipped: [] })),
+    getLeadTime: async () => ({ route: 'oversea_sea', make_days: 30, ship_days: 60, anchor_day: 15,
+      valid_from: { making: '2026-01-01', shipping: '2026-01-01' } }),
   };
   return { state, api };
 }

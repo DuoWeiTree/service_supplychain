@@ -1,7 +1,7 @@
 import { ApiError, type SupplyChainApi } from './client';
 import type {
-  CatalogResult, CountKey, ForecastArrival, ForecastState, GridResponse, NoHistoryEntry, PlanSummary, RevList, Seller,
-  SkippedCell, SystemBasisNoSource,
+  CatalogResult, CountKey, ForecastArrival, ForecastState, GridResponse, LeadTime, LeadTimeResult,
+  NoHistoryEntry, PlanSummary, RevList, Seller, SkippedCell, SystemBasisNoSource,
 } from './types';
 import plansFixture from './fixtures/plans.json';
 import gridFixture from './fixtures/grid-1.json';
@@ -65,6 +65,11 @@ export function createMockApi(): SupplyChainApi {
   const revs = new Map<number, RevList>([[2, clone(revsFixture) as RevList]]);
   const sellers = (clone(sellersFixture) as { sellers: Seller[] }).sellers;
   const inFlight = new Map<number, number | null>([[1, null], [2, 2], [3, null], [4, null]]);
+  // ★ 14 B12：全局配置，与 grid-1.json 的 params 出厂值一致（30/60/15）
+  let lead: LeadTime = {
+    route: 'oversea_sea', make_days: 30, ship_days: 60, anchor_day: 15,
+    valid_from: { making: '2026-01-01', shipping: '2026-01-01' },
+  };
 
   const plan = (id: number): PlanSummary => {
     const p = list.plans.find((x) => x.plan_id === id);
@@ -192,6 +197,29 @@ export function createMockApi(): SupplyChainApi {
     async listSellers() { return clone(sellers); },
 
     async getGrid(planId) { return clone(grid(planId)); },
+
+    async getLeadTime() { return clone(lead); },
+    // ★ OP-17：mock 不重跑逐日台账 —— 改完把每张网格的 params 同步（界面靠它显示图注），
+    //   再对网格里出现过的每个货号调 markForecastStale('purchase')（提前期只影响到货日，
+    //   与改采购量同一条失效路径：在制/在船/在途、未填采购月、超出推演窗）
+    async putLeadTime(input) {
+      const changed: LeadTimeResult['changed'] = [];
+      const today = new Date().toISOString().slice(0, 10);
+      if (input.make_days !== undefined && input.make_days !== lead.make_days) {
+        changed.push({ segment: 'making', from: lead.make_days, to: input.make_days });
+        lead = { ...lead, make_days: input.make_days, valid_from: { ...lead.valid_from, making: today } };
+      }
+      if (input.ship_days !== undefined && input.ship_days !== lead.ship_days) {
+        changed.push({ segment: 'shipping', from: lead.ship_days, to: input.ship_days });
+        lead = { ...lead, ship_days: input.ship_days, valid_from: { ...lead.valid_from, shipping: today } };
+      }
+      for (const g of grids.values()) {
+        g.params = { ...g.params, make_days: lead.make_days, ship_days: lead.ship_days };
+        const skus = new Set(g.purchase.map((p) => p.sku));
+        for (const sku of skus) markForecastStale(g, sku, 'purchase');
+      }
+      return { ...clone(lead), changed };
+    },
 
     async putDemand(planId, sellerSku, sid, period, units) {
       writable(planId);

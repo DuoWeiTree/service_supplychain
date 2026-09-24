@@ -9,6 +9,7 @@ import { api, ApiError } from '../api';
 import type { GridResponse, PlanSummary, Seller, SubmitResult } from '../api/types';
 import { buildGridModel } from './planGridModel';
 import { usePlanGridSaves } from './usePlanGridSaves';
+import { LeadTimeBar } from './LeadTimeBar';
 import { PlanSheet } from './PlanSheet';
 import { SubmitPanel, type InFlightBlock } from './SubmitPanel';
 
@@ -132,6 +133,8 @@ export function PlanGrid() {
           ))}
         </div>
       )}
+
+      {model && <LeadTimeBar onChanged={load} />}
 
       {model && (
         <PlanSheet

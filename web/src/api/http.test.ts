@@ -118,4 +118,22 @@ describe('http 数据源', () => {
     expect((err as ApiError).error).toBe('timeout');
     expect(logged[0]!.join(' ')).toContain('TimeoutError');
   });
+
+  it('★ 提前期：putLeadTime 发 PUT /v1/lead-time，body 带 make_days，getLeadTime 发 GET', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch')
+      .mockImplementation(() => Promise.resolve(ok({
+        route: 'oversea_sea', make_days: 10, ship_days: 60, anchor_day: 15,
+        valid_from: { making: '2026-09-24', shipping: '2026-01-01' }, changed: [],
+      })));
+    const api = mk();
+    await api.putLeadTime({ make_days: 10 });
+    expect(String(spy.mock.calls[0]![0])).toBe('/v1/lead-time');
+    expect((spy.mock.calls[0]![1] as RequestInit).method).toBe('PUT');
+    expect(JSON.parse((spy.mock.calls[0]![1] as RequestInit).body as string)).toEqual({ make_days: 10 });
+    expect(new Headers((spy.mock.calls[0]![1] as RequestInit).headers).get('x-actor')).not.toBeNull();
+
+    await api.getLeadTime();
+    expect(String(spy.mock.calls[1]![0])).toBe('/v1/lead-time');
+    expect((spy.mock.calls[1]![1] as RequestInit).method).toBe('GET');
+  });
 });

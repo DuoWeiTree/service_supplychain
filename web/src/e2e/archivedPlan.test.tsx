@@ -32,7 +32,11 @@ function stubFetch(seen: string[]) {
     }
     // ★ 桩照后端的口径答：archived=true 才给全集，不给就排除已归档 —— 桩要是无条件
     //   把归档计划一起返回，这条测试就证明不了 http.ts 真的把参数发出去了
-    const body = url.includes('/grid') ? gridFixture
+    // ★ Task 20：PlanGrid 挂载即调 getLeadTime（LeadTimeBar），与归档判据无关，给固定值
+    const body = url.includes('/lead-time')
+        ? { route: 'oversea_sea', make_days: 30, ship_days: 60, anchor_day: 15,
+            valid_from: { making: '2026-01-01', shipping: '2026-01-01' } }
+      : url.includes('/grid') ? gridFixture
       : url.includes('/sellers') ? sellersFixture
       : url.includes('/plans')
         ? { plans: url.includes('archived=true')

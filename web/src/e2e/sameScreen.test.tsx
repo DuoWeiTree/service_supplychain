@@ -12,7 +12,12 @@ afterEach(() => { vi.restoreAllMocks(); vi.doUnmock('../api'); });
 function stubFetch() {
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
     const url = String(input);
-    const body = url.includes('/grid') ? gridFixture
+    // ★ Task 20：PlanGrid 挂载即调 getLeadTime（LeadTimeBar），不覆盖会在两边跑出
+    //   不同的屏（mock 正常显示、api 因未覆盖的桩报错）——靠时序侥幸通过不是真的相同
+    const body = url.includes('/lead-time')
+        ? { route: 'oversea_sea', make_days: 30, ship_days: 60, anchor_day: 15,
+            valid_from: { making: '2026-01-01', shipping: '2026-01-01' } }
+      : url.includes('/grid') ? gridFixture
       : url.includes('/sellers') ? sellersFixture
       : url.includes('/plans') ? plansFixture
       : null;
@@ -40,6 +45,9 @@ async function screenText(source: 'mock' | 'api'): Promise<string> {
   );
   // ★ 多 msku 的店铺默认展开 —— 比的是整屏，不是折叠后的两行字
   await screen.findAllByTestId(/^block-/);
+  // ★ Task 20：LeadTimeBar 的 getLeadTime 是独立于 grid/sellers 的另一次异步 —— 不等它
+  //   落地就读 body.textContent，两边会因为谁先回来而偶然「相同」，测不出真的一致
+  await screen.findByTestId('lt-bar-meta');
   const text = (document.body.textContent ?? '').replace(/\s+/g, ' ').trim();
   unmount();
   return text;

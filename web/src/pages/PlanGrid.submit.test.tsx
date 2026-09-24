@@ -49,6 +49,9 @@ async function renderGrid(submit: (...args: unknown[]) => Promise<SubmitResult>)
       putPurchase: async () => GRID.purchase[0]!,
       releaseClaim: async () => ({ released: { seller_sku: '', sid: '' }, dropped_cells: [], stranded_purchase_cells: [] }),
       submit,
+      // ★ Task 20：PlanGrid 挂载即调 getLeadTime（LeadTimeBar）—— 与本测试无关，给固定值
+      getLeadTime: async () => ({ route: 'oversea_sea', make_days: 30, ship_days: 60, anchor_day: 15,
+        valid_from: { making: '2026-01-01', shipping: '2026-01-01' } }),
     },
   }));
   const { PlanGrid } = await import('./PlanGrid');

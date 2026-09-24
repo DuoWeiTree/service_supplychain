@@ -1,6 +1,7 @@
 import type {
   CancelRevResult, CatalogQuery, CatalogResult, ClaimResult, ClaimTarget, CreatePlanInput,
-  DashboardPlans, DemandCell, GridResponse, ListPlansQuery, Period, PlanDiff, PlanId,
+  DashboardPlans, DemandCell, GridResponse, LeadTime, LeadTimeInput, LeadTimeResult,
+  ListPlansQuery, Period, PlanDiff, PlanId,
   PlanList, PlanSummary, PurchaseCell, ReleaseResult, RevList, Seller, Sid, SubmitResult,
   UnsubmittedBoard,
 } from './types';
@@ -41,6 +42,10 @@ export interface SupplyChainApi {
   /** ★ 一次一个 msku（后端只有单条端点）；页面循环并逐条收集 409 */
   claim(planId: PlanId, target: ClaimTarget): Promise<ClaimResult>;
   releaseClaim(planId: PlanId, sellerSku: string, sid: Sid): Promise<ReleaseResult>;
+
+  /** 14 B12：全局配置，不带 planId */
+  getLeadTime(): Promise<LeadTime>;
+  putLeadTime(input: LeadTimeInput): Promise<LeadTimeResult>;
 
   submit(planId: PlanId): Promise<SubmitResult>;
   listRevs(planId: PlanId): Promise<RevList>;

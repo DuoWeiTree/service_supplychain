@@ -389,4 +389,14 @@ describe('★ OP-17 复核 R1：依赖计划采购 / 期望销量的每一项都
     const g = await api.getGrid(1);
     expect(g.forecast_sku.filter((r) => r.sku === SKU).every((r) => r.in_transit === null)).toBe(true);
   });
+
+  it('mock 提前期：可读可改；改了之后所有预测库存如实变「未知」（OP-17）', async () => {
+    const api = createMockApi();
+    expect(await api.getLeadTime()).toMatchObject({ make_days: 30, ship_days: 60, anchor_day: 15 });
+    const r = await api.putLeadTime({ make_days: 10 });
+    expect(r.changed).toEqual([{ segment: 'making', from: 30, to: 10 }]);
+    const g = await api.getGrid(1);
+    expect(g.params.make_days).toBe(10);
+    expect(g.forecast_store.every((x) => x.reason === 'not_recomputed_in_mock' || x.state === 'not_applicable')).toBe(true);
+  });
 });
