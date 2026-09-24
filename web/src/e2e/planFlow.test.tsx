@@ -55,7 +55,7 @@ describe('判据① · 建 → 加货品 → 填两种量 → 提交 → 铸出 
     //   而不是内容不对）。判据①要的是"新建后走到网格"这件事本身，不是内部实现细节，
     //   所以改成认网格页确实渲染出了刚填的标题——不依赖 mock 派发的自增 plan_id 数字。
     expect(await screen.findByRole('heading', { name: '2027 Q1 销售计划' })).toBeInTheDocument();
-    expect(screen.getByTestId('purchase-block')).toBeInTheDocument();
+    expect(screen.getByTestId('plan-matrix')).toBeInTheDocument();
   });
 
   it('② 加货品：认领 msku 后可返回网格', async () => {
@@ -74,18 +74,15 @@ describe('判据① · 建 → 加货品 → 填两种量 → 提交 → 铸出 
 
   it('③④ 填两种量 → 提交 → 铸出 rev，且两种量各自生效', async () => {
     await app('/plans/1');
-    await screen.findByTestId('purchase-block');
+    await screen.findByTestId('plan-matrix');
     const block = await screen.findByTestId(`block-${FIRST_INV.sid}-${FIRST_INV.sku}`);
-    // ★ 可及名称带店铺与货号（F11 裁定），不是裸的「展开」——用前缀正则匹配
-    await userEvent.click(within(block).getByRole('button', { name: /^展开 / }));
+    // 多 msku 的店铺默认展开，单 msku 的店铺直接在店铺行上填 —— 都不用先点展开
 
     // 期望销量（msku 级输入）。★ testid 带 sid（`cell-${seller_sku}-${sid}-${period}`），
     //   brief 一稿漏了 sid —— 同一 seller_sku 在不同 sid 下是不同 listing（CLAUDE.md 铁律）
     const cell = within(block).getByTestId(`cell-${EDITED.seller_sku}-${EDITED.sid}-${FIRST_INV.period}`);
-    const demandInput = within(cell).getByRole('textbox');
-    await userEvent.clear(demandInput);
-    await userEvent.type(demandInput, '10');
-    await userEvent.tab();
+    await userEvent.click(cell);
+    await userEvent.keyboard('10{Enter}');
 
     // ★ 库存画在店铺·货号行上；期望值从 fixture 现算，不写死
     const othersUnknown = OTHERS.some((d) => d.effective_units === null);
@@ -99,11 +96,10 @@ describe('判据① · 建 → 加货品 → 填两种量 → 提交 → 铸出 
     expect(within(skuCell).getByTestId('closing-sku')).toHaveTextContent(expected);
 
     // 计划采购量（货号 × 月，不带店铺）
-    const purchase = within(screen.getByTestId('purchase-block'))
-      .getByLabelText(`计划采购量 ${FIRST_SKU} ${LAST_PERIOD}`);
-    await userEvent.clear(purchase);
-    await userEvent.type(purchase, '300');
-    await userEvent.tab();
+    const purchase = within(screen.getByTestId(`purchase-row-${FIRST_SKU}`))
+      .getByRole('gridcell', { name: `计划采购量 ${FIRST_SKU} ${LAST_PERIOD}` });
+    await userEvent.click(purchase);
+    await userEvent.keyboard('300{Enter}');
 
     await userEvent.click(screen.getByRole('button', { name: '提交' }));
     const report = await screen.findByTestId('submit-report');

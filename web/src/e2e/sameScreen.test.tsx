@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
+import { render, screen } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import gridFixture from '../api/fixtures/grid-1.json';
 import plansFixture from '../api/fixtures/plans.json';
@@ -39,10 +38,8 @@ async function screenText(source: 'mock' | 'api'): Promise<string> {
       <Routes><Route path="/plans/:planId" element={<PlanGrid />} /></Routes>
     </MemoryRouter>,
   );
-  const blocks = await screen.findAllByTestId(/^block-/);
-  // ★ 展开全部：折叠着比，等于只比了两行字
-  // ★ 可及名称是「展开 {店铺} 的 {货号}」（F11 裁定），不是裸的「展开」二字 —— 用前缀正则匹配
-  for (const b of blocks) await userEvent.click(within(b).getByRole('button', { name: /^展开 / }));
+  // ★ 多 msku 的店铺默认展开 —— 比的是整屏，不是折叠后的两行字
+  await screen.findAllByTestId(/^block-/);
   const text = (document.body.textContent ?? '').replace(/\s+/g, ' ').trim();
   unmount();
   return text;
@@ -55,7 +52,8 @@ describe('判据⑥ · 两种数据源跑出同一屏', () => {
     expect(b).toBe(a);
     // ★ 顺带守住「这一屏确实有内容」—— 两边都空也会相等，那是假绿
     expect(a).toContain('未计本计划采购');
-    expect(a).toContain('未分摊到店铺');      // ★ 货号级在途那一行也画出来了
+    expect(a).toContain('在途未分摊到店铺');
+    expect(a).toContain('计划采购');            // ★ 货号级采购与在途那一行也画出来了
     expect(a.length).toBeGreaterThan(200);
   });
 });

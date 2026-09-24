@@ -1,37 +1,46 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
-import { prototypeAsset, webRoot } from '../testing/paths';
+import { webRoot } from '../testing/paths';
 
-// ★ 路径解析交给 testing/paths.ts 的 prototypeAsset() / webRoot() 统一做
-//   （不在这里各自 resolve(process.cwd(), …)一遍）—— 不在 web/ 下跑，
-//   会在 webRoot() 那一处点名报错，而不是这里 7 个用例各自 ENOENT。
-const SRC = prototypeAsset('shell.css');
-const DST = resolve(webRoot(), 'src/styles/shell.css');
-
-// ★ 墨迹系统的六个承重 token —— 值写死在这里，因为 #F0F1ED（冷纸）与 #F4F1EA（暖奶油）
-//   只差几个色阶而方向相反，"顺手微调" 不会有任何东西报错。
-const TOKENS: Record<string, string> = {
-  '--paper': '#F0F1ED',
-  '--paper-lo': '#E7E9E3',
-  '--ink': '#16293D',
-  '--pencil': '#8B939B',
-  '--vermilion': '#C4342A',
-  '--jade': '#2E6B54',
+// ★ 颜色只许有一个出处：tokens.css（由设计系统「供应链工作台」的 tokens.json 转写）。
+//   值写死在这里，是因为「顺手微调」一个色值不会让任何别的东西报错 ——
+//   而对比度（text-3 在 surface-2 上 ≥4.5:1 等）是按这些值算过的。
+const TOKENS = resolve(webRoot(), 'src/styles/tokens.css');
+const LIGHT: Record<string, string> = {
+  '--bg': '#f5f6f8', '--surface': '#ffffff', '--text': '#141a22', '--text-3': '#626b78',
+  '--primary': '#0a716b', '--danger': '#c92f22', '--warn': '#9a5200', '--ok': '#1b6e44',
+};
+const DARK: Record<string, string> = {
+  '--bg': '#0e1115', '--surface': '#15191f', '--text': '#e8ebef', '--text-3': '#8f99a6',
+  '--primary': '#43c6b8', '--danger': '#ff7a6b', '--warn': '#f0a950', '--ok': '#5bc98f',
 };
 
-describe('shell.css 原样带走', () => {
-  it('与原型的那一份逐字节相同', () => {
-    const src = readFileSync(SRC);
-    const dst = readFileSync(DST);
-    const h = (b: Buffer) => createHash('sha256').update(b).digest('hex');
-    expect(h(dst)).toBe(h(src));
+function block(css: string, selector: string): string {
+  const i = css.indexOf(`${selector} {`);
+  expect(i, `${selector} 这一段不见了`).toBeGreaterThanOrEqual(0);
+  return css.slice(i, css.indexOf('}', i));
+}
+const valueIn = (text: string, name: string) =>
+  new RegExp(`${name}:\\s*([^;]+);`).exec(text)?.[1]?.trim();
+
+describe('tokens.css', () => {
+  const css = readFileSync(TOKENS, 'utf8');
+
+  it.each(Object.entries(LIGHT))('浅色 %s = %s', (name, value) => {
+    expect(valueIn(block(css, ':root, [data-theme="light"]'), name)).toBe(value);
   });
 
-  it.each(Object.entries(TOKENS))('%s = %s', (name, value) => {
-    const css = readFileSync(DST, 'utf8');
-    const m = new RegExp(`${name}:\\s*([#A-Za-z0-9(),. %-]+);`).exec(css);
-    expect(m?.[1]?.trim()).toBe(value);
+  it.each(Object.entries(DARK))('深色 %s = %s', (name, value) => {
+    expect(valueIn(block(css, '[data-theme="dark"]'), name)).toBe(value);
+    // ★ 跟随系统的那份与强制深色的那份必须一致 —— 两份各改一边不会报错
+    expect(valueIn(block(css, ':root:not([data-theme="light"])'), name)).toBe(value);
+  });
+});
+
+describe('样式表不写颜色字面量', () => {
+  it.each(['shell.css', 'app.css'])('%s 只用 var(--…)', (file) => {
+    const text = readFileSync(resolve(webRoot(), 'src/styles', file), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    expect(text.match(/#[0-9a-fA-F]{3,8}\b|rgba?\(/g) ?? []).toEqual([]);
   });
 });

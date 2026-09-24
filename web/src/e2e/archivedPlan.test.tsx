@@ -78,13 +78,9 @@ describe('I1 · 已归档的计划打得开，说得出「已归档」', () => {
     const seen: string[] = [];
     await renderArchived(seen);
     const block = await screen.findByTestId('block-11072-A4P-TOY-002');
-    await userEvent.click(within(block).getByRole('button', { name: /^展开 / }));
-
-    const cell = within(block).getByTestId('cell-MSKU-D-11072-2026-10');
-    const input = within(cell).getByRole('textbox');
-    await userEvent.clear(input);
-    await userEvent.type(input, '42');
-    await userEvent.tab();
+    // 单 msku 的店铺直接在店铺行上填
+    await userEvent.click(within(block).getByTestId('cell-MSKU-D-11072-2026-10'));
+    await userEvent.keyboard('42{Enter}');
 
     expect(await screen.findByText('409 plan_archived')).toBeInTheDocument();
     // ★ 断言钉在 ErrorDetail 本身：同一句话 toast 上也有一份，不点名范围就会被它托住

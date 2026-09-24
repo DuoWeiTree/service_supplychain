@@ -1,0 +1,117 @@
+/* web/src/styles/tokens.css —— 设计系统「供应链工作台」的 token（浅色 / 深色）。
+   唯一来源是设计系统的 tokens.json；这里只做转写，不在别处写颜色字面量。
+   深色：跟随系统（prefers-color-scheme），也可用 <html data-theme="dark|light"> 强制。 */
+
+:root, [data-theme="light"] {
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --surface-2: #f0f2f5;
+  --surface-3: #e7eaee;
+  --border: #e3e6eb;
+  --border-strong: #cdd2da;
+  --control-border: #7d8692;
+  --text: #141a22;
+  --text-2: #4d5663;
+  --text-3: #626b78;
+  --primary: #0a716b;
+  --primary-hover: #085e59;
+  --primary-soft: #e6f4f2;
+  --on-primary: #ffffff;
+  --danger: #c92f22;
+  --danger-hover: #a8261b;
+  --danger-soft: #fdecea;
+  --on-danger: #ffffff;
+  --warn: #9a5200;
+  --warn-soft: #fdf1e1;
+  --ok: #1b6e44;
+  --ok-soft: #e5f4ec;
+  --scrim: rgba(14, 17, 21, 0.45);
+  --shadow-card: 0 1px 2px rgba(20, 26, 34, 0.06);
+  --shadow-pop: 0 6px 20px rgba(20, 26, 34, 0.14);
+  --shadow-modal: 0 20px 48px rgba(20, 26, 34, 0.22);
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1115;
+    --surface: #15191f;
+    --surface-2: #1b2028;
+    --surface-3: #232932;
+    --border: #2a3039;
+    --border-strong: #3a414c;
+    --control-border: #687280;
+    --text: #e8ebef;
+    --text-2: #b1b9c4;
+    --text-3: #8f99a6;
+    --primary: #43c6b8;
+    --primary-hover: #5fd3c6;
+    --primary-soft: #16312f;
+    --on-primary: #0b1615;
+    --danger: #ff7a6b;
+    --danger-hover: #ff948a;
+    --danger-soft: #3a1d1b;
+    --on-danger: #1a0c0a;
+    --warn: #f0a950;
+    --warn-soft: #36291a;
+    --ok: #5bc98f;
+    --ok-soft: #17301f;
+    --scrim: rgba(0, 0, 0, 0.6);
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-pop: 0 6px 20px rgba(0, 0, 0, 0.5);
+    --shadow-modal: 0 20px 48px rgba(0, 0, 0, 0.6);
+    color-scheme: dark;
+  }
+}
+
+[data-theme="dark"] {
+  --bg: #0e1115;
+  --surface: #15191f;
+  --surface-2: #1b2028;
+  --surface-3: #232932;
+  --border: #2a3039;
+  --border-strong: #3a414c;
+  --control-border: #687280;
+  --text: #e8ebef;
+  --text-2: #b1b9c4;
+  --text-3: #8f99a6;
+  --primary: #43c6b8;
+  --primary-hover: #5fd3c6;
+  --primary-soft: #16312f;
+  --on-primary: #0b1615;
+  --danger: #ff7a6b;
+  --danger-hover: #ff948a;
+  --danger-soft: #3a1d1b;
+  --on-danger: #1a0c0a;
+  --warn: #f0a950;
+  --warn-soft: #36291a;
+  --ok: #5bc98f;
+  --ok-soft: #17301f;
+  --scrim: rgba(0, 0, 0, 0.6);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-pop: 0 6px 20px rgba(0, 0, 0, 0.5);
+  --shadow-modal: 0 20px 48px rgba(0, 0, 0, 0.6);
+  color-scheme: dark;
+}
+
+:root {
+  --space-0_5: 2px;
+  --space-1: 4px;
+  --space-1_5: 6px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-full: 999px;
+  --control-h: 32px;
+  --control-h-sm: 26px;
+  --row-head-w: 220px;
+  --col-w: 120px;
+  --font-sans: "Manrope", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
