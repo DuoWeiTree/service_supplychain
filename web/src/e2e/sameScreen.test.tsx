@@ -51,7 +51,8 @@ describe('判据⑥ · 两种数据源跑出同一屏', () => {
     const b = await screenText('api');
     expect(b).toBe(a);
     // ★ 顺带守住「这一屏确实有内容」—— 两边都空也会相等，那是假绿
-    expect(a).toContain('未计本计划采购');
+    expect(a).toContain('库存含计划采购到货（生产 30 天 + 货运 60 天）');
+    expect(a).not.toContain('未计本计划采购');
     expect(a).toContain('在途未分摊到店铺');
     expect(a).toContain('计划采购');            // ★ 货号级采购与在途那一行也画出来了
     expect(a.length).toBeGreaterThan(200);

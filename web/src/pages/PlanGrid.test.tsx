@@ -179,10 +179,12 @@ describe('计划整表', () => {
     // ★ 预测库存已计入本计划采购 —— 格子上不许再说「不含」
     expect(cell.getAttribute('title')).not.toContain('不含本计划采购');
     expect(within(cell).getByTestId('sum-expected-2026-10')).toHaveTextContent('220');
-    expect(screen.getByText('未计本计划采购')).toBeInTheDocument();
+    // ★ 预测库存已含计划采购到货：图例说「含」并回显提前期，旧的「未计」必须消失
+    expect(screen.getByText('库存含计划采购到货（生产 30 天 + 货运 60 天）')).toBeInTheDocument();
+    expect(screen.queryByText('未计本计划采购')).toBeNull();
   });
 
-  it('★ 多 msku 的店铺默认展开；库存只画在店铺行，msku 行不重复画', async () => {
+  it('★ 多 msku 的店铺默认展开；店铺库存只画在店铺行，msku 行画自己的库存（spec §5）', async () => {
     await renderGrid();
     const block = await screen.findByTestId('block-11072-SKU-1');
     expect(block).toHaveAttribute('data-open', 'true');
@@ -191,6 +193,7 @@ describe('计划整表', () => {
     expect(cell).toHaveClass('is-human');                   // 人填：三角标记
     expect(within(cell).queryByTestId('closing-sku')).toBeNull();
     expect(within(block).getAllByTestId('closing-sku')).toHaveLength(3);
+    expect(within(cell).getByTestId('msku-stock-MSKU-A-11072-2026-10')).toBeInTheDocument();
   });
 
   it('★ 只有一个 msku 的店铺直接在店铺行上填（不用展开）', async () => {
@@ -204,8 +207,10 @@ describe('计划整表', () => {
     await renderGrid();
     const block = await screen.findByTestId('block-11072-SKU-1');
     const cell = within(block).getByTestId('cell-MSKU-A-11072-2026-12');
-    expect(cell).toHaveTextContent('待填');
-    expect(cell).not.toHaveTextContent('0');
+    // ★ 主数是「待填」不是 0。只看主数：副数里的「预测 100」本来就带 0
+    const main = cell.querySelector('.ps-v')!;
+    expect(main).toHaveTextContent('待填');
+    expect(main).not.toHaveTextContent('0');
     expect(within(within(block).getByTestId('sku-cell-2026-12')).getByTestId('closing-sku')).toHaveTextContent('—');
   });
 
@@ -574,7 +579,9 @@ describe('计划整表', () => {
     const blocks = await screen.findAllByTestId(/^block-/);
     expect(blocks.length).toBeGreaterThan(0);
     expect(screen.getAllByTestId('closing-na').length).toBeGreaterThan(0);
-    expect(screen.getByText('未计本计划采购')).toBeInTheDocument();
+    // ★ 预测库存已含计划采购到货：图例说「含」并回显提前期，旧的「未计」必须消失
+    expect(screen.getByText('库存含计划采购到货（生产 30 天 + 货运 60 天）')).toBeInTheDocument();
+    expect(screen.queryByText('未计本计划采购')).toBeNull();
     expect(screen.getByText('在途未分摊到店铺')).toBeInTheDocument();
     expect(screen.queryByText('不可求和')).toBeNull();
     expect(screen.queryByTestId('orphans')).toBeNull();

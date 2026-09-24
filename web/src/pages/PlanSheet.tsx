@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react';
 import { Qty, type QtyValue } from '../components/Qty';
-import type { Period, Sid } from '../api/types';
+import type { ForecastReason, Period, Sid } from '../api/types';
 import {
-  closingOfLast, demandAt, stockAt, sumUnits,
+  closingOfLast, demandAt, mskuStockAt, stockAt, sumUnits, systemAt, totalsAt,
   type GridModel, type MskuCell, type MskuRow, type SkuBlock,
 } from './planGridModel';
 import { buildCards, cardMatches, monthLabel, riskOrder, stockState, summarize, type CardSummary, type SkuCard } from './planSheetModel';
@@ -49,8 +49,22 @@ type Density = keyof typeof ROW_H;
 
 function cellOf(row: MskuRow, p: Period): MskuCell | undefined { return row.cells.find((c) => c.period === p); }
 const fmt = (n: number | null) => (n === null ? '—' : n.toLocaleString('en-US'));
-const qtyNum = (v: QtyValue) => (v.kind === 'num' ? v.value : null);
 const blockKey = (b: SkuBlock) => `${b.sid}-${b.sku}`;
+
+/** 库存为什么是 — 。★ 光秃秃一根 — 分不出「没在仓数」「销量待填」「mock 没重算」 */
+const UNKNOWN_WHY: Partial<Record<Exclude<ForecastReason, null>, string>> = {
+  unknown_onhand: '无在仓数',
+  unknown_demand: '销量待填',
+  bridge_rate_unknown: '计划首月前的销速未知',
+  inbound_unknown: '到货数未知',
+  not_recomputed_in_mock: '改后未重算（mock）',
+  elapsed: '月份已过',
+  no_msku: '无 msku',
+};
+function unknownWhy(reason: ForecastReason | undefined): string {
+  if (reason == null) return '无数据';
+  return UNKNOWN_WHY[reason] ?? `未知（${reason}）`;
+}
 
 export function PlanSheet(props: PlanSheetProps) {
   const { model, pending, inputErr } = props;
@@ -387,16 +401,23 @@ export function PlanSheet(props: PlanSheetProps) {
     );
   }
 
+  /** 店铺行副数：预测 + 库存。★ 断货 / 偏低是跟在库存后面的状态词，不顶掉「库存」这个标签 */
   function stockLine(v: QtyValue, block: SkuBlock, p: Period): ReactNode {
-    if (v.kind === 'na') return <span className="ps-d" data-testid="closing-na">无 FBA</span>;
     const s = stockState(v, low);
-    const word = s === 'out' ? '断货' : s === 'low' ? '偏低' : '库存';
-    const inv = block.stock.find((s) => s.period === p);
-    const why = inv?.reason === 'unknown_onhand' ? '没有在仓数'
-      : inv?.reason === 'unknown_demand' ? '当月销量待填' : undefined;
+    const inv = block.stock.find((r) => r.period === p);
     return (
-      <span className="ps-d" title={why}>
-        {word} <b data-testid="closing-sku">{v.kind === 'num' ? fmt(v.value) : '—'}</b>
+      <span className="ps-d">
+        <span>预测 <b data-testid={`store-system-${block.sid}-${block.sku}-${p}`}><Qty v={systemAt(block, p)} /></b></span>
+        {v.kind === 'na'
+          ? <span>库存 <b data-testid="closing-na">无 FBA</b></span>
+          : (
+            <span title={v.kind === 'num' ? undefined : unknownWhy(inv?.reason)}>
+              库存 <b data-testid="closing-sku">{v.kind === 'num' ? fmt(v.value) : '—'}</b>
+              {(s === 'out' || s === 'low') && (
+                <em className={`ps-flag ps-flag--${s === 'out' ? 'danger' : 'warn'}`}>{s === 'out' ? '断货' : '偏低'}</em>
+              )}
+            </span>
+          )}
       </span>
     );
   }
@@ -418,12 +439,16 @@ export function PlanSheet(props: PlanSheetProps) {
     const buy = card.purchase;
     const transitAt = (p: Period) => card.transit?.cells.find((c) => c.period === p)?.units ?? null;
     const sub = (p: Period) => {
-      // ★ 各店销量：有一家待填就是未知，不按 0 加
-      const sold = sumUnits(card.stores.map((b) => qtyNum(demandAt(b, p))));
+      const t = totalsAt(model, card.sku, p);
+      const stockTxt = !t ? '—' : t.state === 'not_applicable' ? '无 FBA' : fmt(t.closing);
+      const stockWhy = !t ? '无货号行'
+        : t.closing !== null || t.state === 'not_applicable' ? undefined
+        : t.reason_from ? `${t.reason_from.seller_sku}：${unknownWhy(t.reason)}` : unknownWhy(t.reason);
       return (
         <span className="ps-d">
-          <span>销 <b>{fmt(qtyNum(sold))}</b></span>
-          <span>途 <b data-testid={`transit-${card.sku}-${p}`}>{fmt(transitAt(p))}</b></span>
+          <span>预测 <b data-testid={`sku-system-${card.sku}-${p}`}>{fmt(t?.system ?? null)}</b></span>
+          <span title={stockWhy}>库存 <b data-testid={`sku-stock-${card.sku}-${p}`}>{stockTxt}</b></span>
+          <span title="不含 FBA 货件（未取）">在途 <b data-testid={`transit-${card.sku}-${p}`}>{fmt(transitAt(p))}</b></span>
         </span>
       );
     };
@@ -441,7 +466,8 @@ export function PlanSheet(props: PlanSheetProps) {
               )}
               {s.todo > 0 && <span className="ps-flag ps-flag--warn" title={`${s.todo} 格销量待填`}>待 {s.todo}</span>}
             </div>
-            <div className="ps-sub">计划采购／各店销量／在途</div>
+            <div className="ps-sub">采购／预测·库存·在途</div>
+            <div className="ps-sub">在途不含 FBA 货件（未取）</div>
           </div>
         </div>
         {periods.map((p, ci) => {
@@ -461,7 +487,7 @@ export function PlanSheet(props: PlanSheetProps) {
         })}
         <div className="ps-sum">
           <span className="ps-v"><Qty v={known(buy?.cells.map((c) => c.planned_units) ?? [])} /></span>
-          <span className="ps-d">销量 <b>{fmt(s.demandKnown)}</b></span>
+          <span className="ps-d">期望 <b>{fmt(s.demandKnown)}</b></span>
         </div>
       </div>
     );
@@ -534,6 +560,19 @@ export function PlanSheet(props: PlanSheetProps) {
     );
   }
 
+  function mskuLine(r: MskuRow, c: MskuCell | undefined, p: Period): ReactNode {
+    const v = mskuStockAt(r, p);
+    const f = r.forecast.find((x) => x.period === p);
+    return (
+      <span className="ps-d">
+        <span>预测 <b data-testid={`msku-system-${r.seller_sku}-${r.sid}-${p}`}>{fmt(c?.system_units ?? null)}</b></span>
+        <span title={v.kind === 'unknown' ? unknownWhy(f?.reason) : undefined}>
+          库存 <b data-testid={`msku-stock-${r.seller_sku}-${r.sid}-${p}`}>{v.kind === 'na' ? '无 FBA' : <Qty v={v} />}</b>
+        </span>
+      </span>
+    );
+  }
+
   function mskuRow(row: Extract<SheetRow, { type: 'msku' }>, i: number): ReactNode {
     const r = row.row;
     return (
@@ -550,7 +589,8 @@ export function PlanSheet(props: PlanSheetProps) {
             key: p, n: { kind: 'demand', block: row.block, row: r }, ni: row.nav, p, ci,
             label: `期望销量 ${r.seller_sku}`, testId: `cell-${r.seller_sku}-${r.sid}-${p}`, human: c?.basis === 'human',
             title: c?.system_units != null ? `系统预估 ${c.system_units}` : '没有预估，需要人填',
-            value: demandValue(c, pending.has(k) ? drafts[k] : undefined), sub: null,
+            value: demandValue(c, pending.has(k) ? drafts[k] : undefined),
+            sub: mskuLine(r, c, p),
           });
         })}
         <div className="ps-sum"><span className="ps-v"><Qty v={sumUnits(r.cells.map((c) => c.effective_units))} /></span></div>
@@ -632,7 +672,7 @@ export function PlanSheet(props: PlanSheetProps) {
         <span><i className="pm-sw" style={{ background: 'var(--text-3)' }} />系统预估</span>
         <span><i className="pm-sw" style={{ background: 'var(--warn-soft)', boxShadow: 'inset 0 0 0 1px var(--warn)' }} />待填 / 库存偏低（&lt; {low}）</span>
         <span><i className="pm-sw" style={{ background: 'var(--danger-soft)', boxShadow: 'inset 0 0 0 1px var(--danger)' }} />断货</span>
-        <span className="chip chip--dim">未计本计划采购</span>
+        <span className="chip chip--dim">{`库存含计划采购到货（生产 ${model.params.make_days} 天 + 货运 ${model.params.ship_days} 天）`}</span>
         <span className="chip chip--dim">在途未分摊到店铺</span>
       </div>
 
