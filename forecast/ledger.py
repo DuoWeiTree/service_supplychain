@@ -21,16 +21,23 @@ class DailyLedger:
     daily_unmet: tuple[Fraction | None, ...]
     unknown_from: dt.date | None
 
-    def signed_at(self, d: dt.date) -> Fraction | None:
+    def _span_index(self, d: dt.date) -> int:
+        """★ 校验 d 落在 [start, start + len-1] 内 —— 越界不许静默 wraparound
+        （负下标）或裸抛 IndexError，必须报出日期和台账范围。"""
         i = (d - self.start).days
-        if i == -1:
-            return self.onhand0
         if not 0 <= i < len(self.signed):
-            raise ValueError(f"{d} 不在台账 [{self.start - dt.timedelta(days=1)}, ...] 内")
-        return self.signed[i]
+            last = self.start + dt.timedelta(days=len(self.signed) - 1)
+            raise ValueError(f"{d} 不在台账 [{self.start}, {last}] 内")
+        return i
+
+    def signed_at(self, d: dt.date) -> Fraction | None:
+        if d == self.start - dt.timedelta(days=1):
+            return self.onhand0
+        return self.signed[self._span_index(d)]
 
     def first_unmet(self, first: dt.date, last: dt.date) -> dt.date | None:
-        for i in range((first - self.start).days, (last - self.start).days + 1):
+        i0, i1 = self._span_index(first), self._span_index(last)
+        for i in range(i0, i1 + 1):
             u = self.daily_unmet[i]
             if u is not None and u > 0:
                 return self.start + dt.timedelta(days=i)
@@ -50,15 +57,18 @@ def run_ledger(onhand0: int | Fraction, start: dt.date,
     unmet: list[Fraction | None] = []
     unknown_from: dt.date | None = None
     for i, (dem, arr) in enumerate(zip(demand, arrivals)):
+        day = start + dt.timedelta(days=i)
+        # ★ 负值校验必须在「今天把 unknown_from 定下来」的 continue 之前——
+        #   否则那天（demand/arrivals 只有一个是 None）另一边的负值永远不会被查。
+        if (dem is not None and dem < 0) or (arr is not None and arr < 0):
+            raise ValueError(f"{day} 需求 {dem} / 到货 {arr} 为负")
         if unknown_from is None and (dem is None or arr is None):
-            unknown_from = start + dt.timedelta(days=i)
+            unknown_from = day
         if unknown_from is not None:
             signed.append(None)
             avail.append(None)
             unmet.append(None)
             continue
-        if dem < 0 or arr < 0:
-            raise ValueError(f"{start + dt.timedelta(days=i)} 需求 {dem} / 到货 {arr} 为负")
         short = max(_ZERO, dem - a - arr)
         a = max(_ZERO, a + arr - dem)
         s = s + arr - dem

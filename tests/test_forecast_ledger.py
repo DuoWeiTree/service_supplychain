@@ -65,3 +65,19 @@ def test_negative_inputs_are_rejected():
         run_ledger(0, D(2026, 10, 1), [F(-1)], [F(0)])
     with pytest.raises(ValueError):
         run_ledger(0, D(2026, 10, 1), [F(0), F(0)], [F(0)])
+
+
+def test_negative_value_on_the_unknown_flip_day_is_still_rejected():
+    """负值校验不能被「这天恰好把 unknown_from 定下来」的 continue 绕过去。"""
+    with pytest.raises(ValueError):
+        run_ledger(10, D(2026, 10, 1), [None], [F(-1)])
+    with pytest.raises(ValueError):
+        run_ledger(10, D(2026, 10, 1), [F(-1)], [None])
+
+
+def test_first_unmet_rejects_dates_outside_the_ledger_span():
+    L = run_ledger(7, D(2026, 10, 1), [F(4, 3)] * 10, [F(0)] * 10)
+    with pytest.raises(ValueError):
+        L.first_unmet(D(2026, 9, 30), D(2026, 10, 10))
+    with pytest.raises(ValueError):
+        L.first_unmet(D(2026, 10, 1), D(2026, 10, 11))
