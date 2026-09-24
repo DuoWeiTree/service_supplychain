@@ -36,7 +36,7 @@ class MskuInput:
     onhand: int | None                      # as_of 当天 FBA 可售；None + applicable → 未知在仓
     effective: dict[dt.date, int | None]    # 计划月（月初）→ 期望销量生效值
     system: dict[dt.date, int | None]       # 计划月 → 预测销量（只汇总，不进台账）
-    base_rate: float | None                 # system_basis.base_rate；W-6 桥接段用
+    base_rate: float | None                 # system_basis.base_rate；W-6 桥接段用（缺则按首月期望，I-5）
     # ★ False = 这个 msku 没有销量取数源（认领时记进 system_basis），预测「不适用」——
     #   与 FBA 不适用同一种排除：不进上一层的预测 Σ，不当 0，也不把上一层拖成未知
     system_applicable: bool = True
@@ -144,19 +144,29 @@ def project_msku(m: MskuInput, as_of: dt.date, periods: Sequence[dt.date],
     if start < first_plan:                                   # ★ W-6 桥接段：按预测扣
         totals: dict[str, int] = {}
         units: int | None = None
-        if m.base_rate is None:
+        rate, by, extra = m.base_rate, "forecast", {}
+        first_eff = m.effective.get(first_plan)
+        if rate is None and first_eff is not None:
+            # ★ 终审 I-5（我的建议，未裁定 · 00 W 组）：没有预测速率（新品 / 无销量源）时按
+            #   首月期望折成日速率 —— 否则 OP-8 是死胡同：人填了期望，库存照样永远未知。
+            days = days_in_month(first_plan)
+            rate, by = first_eff / days, "first_month_expected"
+            extra = {"first_month_expected": {"period": first_plan.strftime("%Y-%m"),
+                                              "units": first_eff, "days": days}}
+        if rate is None:
+            by = "unknown"
             demand.update({d: None for d in span(start, first_plan - ONE)})
         else:
             units, mm = 0, month_start(start)
             while mm < first_plan:
                 a, b = max(start, mm), min(first_plan - ONE, month_end(mm))
-                total = units_for_month(m.base_rate, days_in_month(mm))
+                total = units_for_month(rate, days_in_month(mm))
                 totals[mm.strftime("%Y-%m")] = total
                 demand.update(segment_daily(total, a, b))
                 units += segment_units(total, a, b)
                 mm = add_months(mm, 1)
         bridge = {"from": start.isoformat(), "to": (first_plan - ONE).isoformat(),
-                  "units": units, "by": "forecast", "rate": m.base_rate,
+                  "units": units, "by": by, "rate": rate, **extra,
                   "month_totals": totals, "onhand_as_of": m.onhand}
     for p in live:                                           # ★ 计划月：扣期望销量
         a, eff = max(start, p), m.effective.get(p)

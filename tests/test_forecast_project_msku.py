@@ -45,12 +45,40 @@ def test_bridge_across_two_months():
     assert rows[0].bridge["month_totals"] == {"2026-08": 62, "2026-09": 60}
 
 
-def test_no_rate_means_the_whole_msku_is_unknown_not_zero():
-    """OP-8：扣不了桥接段 → 未知，不当 0。"""
-    rows = project_msku(msku(onhand=300, rate=None), D(2026, 9, 21), [OCT, NOV])
+def test_no_rate_and_no_first_month_expected_means_the_whole_msku_is_unknown_not_zero():
+    """OP-8 + 终审 I-5：没有预测速率、首月期望也空 → 桥接段扣不了 → 未知并点名，不当 0。"""
+    rows = project_msku(msku(onhand=300, rate=None, eff={OCT: None, NOV: 50}),
+                        D(2026, 9, 21), [OCT, NOV])
     assert [(r.state, r.reason, r.closing) for r in rows] == [
         ("unknown", "bridge_rate_unknown", None), ("unknown", "bridge_rate_unknown", None)]
     assert rows[0].unknown_since == OCT
+    assert rows[0].bridge["by"] == "unknown" and rows[0].bridge["units"] is None
+
+
+def test_no_rate_falls_back_to_first_month_expected_per_day():
+    """★ 终审 I-5（我的建议，未裁定 · 00 W 组）：新品 / 无销量源的 msku 没有 base_rate ——
+    桥接段改按首个计划月的期望折成日速率（124 ÷ 31 = 4/天），与预测同一个函数算桥接月总量
+    （9 月 = ceil(4 × 30) = 120），再按半月权重切（× 0.3 = 36）。人填了期望，库存就算得出来 ——
+    OP-8 的死胡同有了退路。"""
+    rows = project_msku(msku(onhand=300, rate=None, eff={OCT: 124, NOV: 50}),
+                        D(2026, 9, 21), [OCT, NOV])
+    assert chain(rows) == [(264, 124, 0, 140), (140, 50, 0, 90)]
+    assert [r.state for r in rows] == ["ok", "ok"]
+    assert rows[0].bridge == {"from": "2026-09-22", "to": "2026-09-30", "units": 36,
+                              "by": "first_month_expected", "rate": 4.0,
+                              "first_month_expected": {"period": "2026-10", "units": 124,
+                                                       "days": 31},
+                              "month_totals": {"2026-09": 120},
+                              "onhand_as_of": 300, "arrivals": [], "arrival_units": 0,
+                              "stockout_date": None}
+
+
+def test_rate_wins_over_first_month_expected_when_both_exist():
+    """有预测速率就按预测扣（W-6 原样）；首月期望只在没有速率时顶上。"""
+    rows = project_msku(msku(onhand=300, rate=4.0, eff={OCT: 999, NOV: 50}),
+                        D(2026, 9, 21), [OCT, NOV])
+    assert rows[0].bridge["by"] == "forecast" and rows[0].bridge["units"] == 36
+    assert "first_month_expected" not in rows[0].bridge
 
 
 def test_unknown_demand_propagates_forward():
@@ -144,12 +172,14 @@ def test_plan_months_must_be_sorted_contiguous_month_starts(periods, bad):
 
 
 def test_no_rate_rows_still_show_expected_demand_and_name_the_bridge():
-    """OP-8：未知的是头寸，不是期望销量 —— 期望销量照常回显，桥接依据点名 rate 缺失。"""
-    rows = project_msku(msku(onhand=300, rate=None), D(2026, 9, 21), [OCT, NOV])
+    """OP-8：未知的是头寸，不是期望销量 —— 期望销量照常回显，桥接依据点名 rate 缺失。
+    （首月期望也空 —— 否则按 I-5 折算，就不是未知了）"""
+    rows = project_msku(msku(onhand=300, rate=None, eff={OCT: None, NOV: 50}),
+                        D(2026, 9, 21), [OCT, NOV])
     assert [(r.opening, r.demand, r.inbound, r.closing) for r in rows] == [
-        (None, 100, 0, None), (None, 50, 0, None)]
+        (None, None, 0, None), (None, 50, 0, None)]
     assert rows[0].bridge == {"from": "2026-09-22", "to": "2026-09-30", "units": None,
-                              "by": "forecast", "rate": None, "month_totals": {},
+                              "by": "unknown", "rate": None, "month_totals": {},
                               "onhand_as_of": 300, "arrivals": [], "arrival_units": 0,
                               "stockout_date": None}
     assert rows[1].bridge is None

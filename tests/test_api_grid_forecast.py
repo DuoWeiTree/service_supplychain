@@ -112,11 +112,37 @@ def test_grid_unknown_demand_makes_the_batch_unallocated(client, seed, lead_time
     assert rows(g, "forecast_sku", sku=seed.sku_a)[1]["closing"] is None
 
 
-def test_missing_rate_and_missing_onhand_are_named(client, seed, lead_time_reset):
+def _no_rate_no_first_month(pid: int, seller_sku: str) -> None:
+    """旧认领（system_basis NULL → 没有速率）且首月期望也空 —— 否则按 I-5 折算，就不是未知了。"""
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("UPDATE plan_demand_cell SET system_basis = NULL"
+                    " WHERE plan_id = %s AND seller_sku = %s", (pid, seller_sku))
+        cur.execute("UPDATE plan_demand_cell SET system_units = NULL, expected_units = NULL,"
+                    " system_extrapolated = FALSE WHERE plan_id = %s AND seller_sku = %s"
+                    " AND period_start = DATE '2026-10-01'", (pid, seller_sku))
+
+
+def test_no_rate_with_first_month_expected_is_computable(client, seed, lead_time_reset):
+    """★ 终审 I-5：旧认领没有速率，但首月期望有数 → 桥接段按首月期望折算，库存算得出来；
+    依据点名 by=first_month_expected 与折算用的那个期望。"""
     pid = s1(client, seed, extra=(seed.msku_e,))
     with pg_conn() as c, c.cursor() as cur:
         cur.execute("UPDATE plan_demand_cell SET system_basis = NULL"
                     " WHERE plan_id = %s AND seller_sku = %s", (pid, seed.msku_d[0]))
+    client.put(f"/v1/plans/{pid}/demand/{seed.msku_d[0]}/{seed.msku_d[1]}/2026-10",
+               json={"expected_units": 62}, headers=H(seed.actor))
+    g = grid(client, seed, pid)
+    d = rows(g, "forecast", seller_sku="MSKU-D")
+    assert all(r["closing"] is not None for r in d), d
+    br = d[0]["basis"]["bridge"]
+    assert (br["by"], br["rate"], br["first_month_expected"]) == (
+        "first_month_expected", 2.0, {"period": "2026-10", "units": 62, "days": 31})
+    assert br["month_totals"] == {"2026-09": 60} and br["units"] == 18
+
+
+def test_missing_rate_and_missing_onhand_are_named(client, seed, lead_time_reset):
+    pid = s1(client, seed, extra=(seed.msku_e,))
+    _no_rate_no_first_month(pid, seed.msku_d[0])
     g = grid(client, seed, pid)
     assert {r["reason"] for r in rows(g, "forecast", seller_sku="MSKU-D")} == {"bridge_rate_unknown"}
     assert {r["reason"] for r in rows(g, "forecast", seller_sku="MSKU-E")} == {"unknown_onhand"}
@@ -132,8 +158,7 @@ def test_claims_without_system_basis_are_unknown_not_zero(client, seed, lead_tim
     client.post(f"/v1/plans/{pid}/claims", json={"seller_sku": "MSKU-D", "sid": "11072"},
                 headers=H(seed.actor))
     # spec §3.4：认领现在就种 system_basis —— 「旧认领」这一形态要显式造出来
-    with pg_conn() as c, c.cursor() as cur:
-        cur.execute("UPDATE plan_demand_cell SET system_basis = NULL WHERE plan_id = %s", (pid,))
+    _no_rate_no_first_month(pid, "MSKU-D")
     g = grid(client, seed, pid)
     d = rows(g, "forecast", seller_sku="MSKU-D")
     assert [(r["state"], r["reason"], r["closing"]) for r in d] == [
@@ -147,9 +172,7 @@ def test_claims_without_system_basis_are_unknown_not_zero(client, seed, lead_tim
 def test_unknown_sku_row_says_why_and_which_msku(client, seed, lead_time_reset):
     """SkuMonth 没有 reason 字段：货号行未知时，原因从下面的 msku 带上来，并指到是哪一个。"""
     pid = s1(client, seed, extra=(seed.msku_e,))
-    with pg_conn() as c, c.cursor() as cur:
-        cur.execute("UPDATE plan_demand_cell SET system_basis = NULL"
-                    " WHERE plan_id = %s AND seller_sku = %s", (pid, seed.msku_d[0]))
+    _no_rate_no_first_month(pid, seed.msku_d[0])
     g = grid(client, seed, pid)
     b = rows(g, "forecast_sku", sku=seed.sku_b)
     assert [(r["state"], r["reason"], r["reason_from"]) for r in b] == [
