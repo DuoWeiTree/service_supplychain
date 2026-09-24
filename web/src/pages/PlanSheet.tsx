@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEv
 import { Qty, type QtyValue } from '../components/Qty';
 import type { Period, Sid } from '../api/types';
 import {
-  closingOfLast, demandAt, inventoryAt, sumUnits,
+  closingOfLast, demandAt, stockAt, sumUnits,
   type GridModel, type MskuCell, type MskuRow, type SkuBlock,
 } from './planGridModel';
 import { buildCards, cardMatches, monthLabel, riskOrder, stockState, summarize, type CardSummary, type SkuCard } from './planSheetModel';
@@ -391,9 +391,9 @@ export function PlanSheet(props: PlanSheetProps) {
     if (v.kind === 'na') return <span className="ps-d" data-testid="closing-na">无 FBA</span>;
     const s = stockState(v, low);
     const word = s === 'out' ? '断货' : s === 'low' ? '偏低' : '库存';
-    const inv = block.inventory.find((i) => i.period === p);
-    const why = inv?.basis.closing_reason === 'unknown_onhand' ? '没有在仓数'
-      : inv?.basis.closing_reason === 'unknown_demand' ? '当月销量待填' : undefined;
+    const inv = block.stock.find((s) => s.period === p);
+    const why = inv?.reason === 'unknown_onhand' ? '没有在仓数'
+      : inv?.reason === 'unknown_demand' ? '当月销量待填' : undefined;
     return (
       <span className="ps-d" title={why}>
         {word} <b data-testid="closing-sku">{v.kind === 'num' ? fmt(v.value) : '—'}</b>
@@ -402,9 +402,9 @@ export function PlanSheet(props: PlanSheetProps) {
   }
 
   function stockTitle(block: SkuBlock, p: Period): string | undefined {
-    const inv = block.inventory.find((i) => i.period === p);
-    if (!inv || inv.basis.closing_reason === 'not_applicable') return undefined;
-    return `期初 ${inv.onhand ?? '—'} · 数据截至 ${inv.basis.as_of} · 不含本计划采购`;
+    const inv = block.stock.find((s) => s.period === p);
+    if (!inv || inv.state === 'not_applicable') return undefined;
+    return `期初 ${inv.opening ?? '—'} · 数据截至 ${model.params.as_of}`;
   }
 
   const cols = `var(--row-head-w) repeat(${periods.length}, minmax(var(--col-w), 1fr)) 112px`;
@@ -496,7 +496,7 @@ export function PlanSheet(props: PlanSheetProps) {
           >移出</button>
         </div>
         {periods.map((p, ci) => {
-          const inv = inventoryAt(block, p);
+          const inv = stockAt(block, p);
           const stock = stockState(inv, low);
           if (single && row.nav !== undefined) {
             const c = cellOf(single, p);

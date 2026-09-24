@@ -29,7 +29,7 @@ describe('mock 数据源', () => {
      + ' 改判成「需求未知」——两者成因不同，且这个 (sku,sid) 从一开始就没有在仓数字，'
      + '与需求编辑无关', async () => {
     const g0 = await api.getGrid(1);
-    const cell0 = g0.inventory.find((i) => i.sku === 'A4P-TOY-003' && i.sid === '11072'
+    const cell0 = g0.inventory!.find((i) => i.sku === 'A4P-TOY-003' && i.sid === '11072'
       && i.period === '2026-10')!;
     // ★ 先确认 fixture 本身是这一形态：有 FBA 但在仓未知，不是不适用
     expect(cell0.onhand).toBeNull();
@@ -40,7 +40,7 @@ describe('mock 数据源', () => {
     //   'unknown_demand'（那是另一种成因：需求本身未知，这一格的需求其实是已知的）
     await api.putDemand(1, msku.seller_sku, msku.sid, msku.period, 42);
     const g1 = await api.getGrid(1);
-    const cell1 = g1.inventory.find((i) => i.sku === 'A4P-TOY-003' && i.sid === '11072'
+    const cell1 = g1.inventory!.find((i) => i.sku === 'A4P-TOY-003' && i.sid === '11072'
       && i.period === '2026-10')!;
     expect(cell1.onhand).toBeNull();
     expect(cell1.closing).toBeNull();
@@ -50,9 +50,9 @@ describe('mock 数据源', () => {
 
   it('★ 库存的身份是「店铺 × 货号」—— 一格对应多个 msku，不是每个 msku 一格', async () => {
     const g = await api.getGrid(1);
-    expect(g.inventory.every((i) => 'sku' in i && 'sid' in i && !('seller_sku' in i))).toBe(true);
-    const keys = new Set(g.inventory.map((i) => `${i.sku}/${i.sid}/${i.period}`));
-    expect(keys.size).toBe(g.inventory.length);           // ★ 每个 (货号,店铺,月) 只有一行
+    expect(g.inventory!.every((i) => 'sku' in i && 'sid' in i && !('seller_sku' in i))).toBe(true);
+    const keys = new Set(g.inventory!.map((i) => `${i.sku}/${i.sid}/${i.period}`));
+    expect(keys.size).toBe(g.inventory!.length);           // ★ 每个 (货号,店铺,月) 只有一行
   });
 
   it('★ 任何一个 msku 未知 → 整格未知（不是把它当 0 再把别的 msku 加进来）', async () => {
@@ -69,7 +69,7 @@ describe('mock 数据源', () => {
     expect(known.seller_sku).toBe('MSKU-A');
     await api.putDemand(1, known.seller_sku, known.sid, known.period, null);
     const g = await api.getGrid(1);
-    const cell = g.inventory.find((i) => i.sku === 'DCC1800264G1' && i.sid === '11072' && i.period === '2026-10')!;
+    const cell = g.inventory!.find((i) => i.sku === 'DCC1800264G1' && i.sid === '11072' && i.period === '2026-10')!;
     expect(cell.closing).toBeNull();
     expect(cell.basis.closing_reason).toBe('unknown_demand');
     // ★ reason 是另一件事，不许被顺手改掉 —— 改了就把「在途没归属」这条信息抹掉了
@@ -78,11 +78,11 @@ describe('mock 数据源', () => {
 
   it('★ inbound 恒 null（不是 0）；在途总量只在 basis 与 sku_pipeline 里出现', async () => {
     const g = await api.getGrid(1);
-    expect(g.inventory.every((i) => i.inbound === null)).toBe(true);
-    expect(g.inventory.every((i) => i.basis.includes_plan_purchase === false)).toBe(true);
-    expect(g.sku_pipeline.every((r) => r.no_seller_attribution === true)).toBe(true);
+    expect(g.inventory!.every((i) => i.inbound === null)).toBe(true);
+    expect(g.inventory!.every((i) => i.basis.includes_plan_purchase === false)).toBe(true);
+    expect(g.sku_pipeline!.every((r) => r.no_seller_attribution === true)).toBe(true);
     // ★ 在途一件都没有并进任何一格库存
-    for (const i of g.inventory) {
+    for (const i of g.inventory!) {
       const t = i.basis.sku_level_in_transit;
       if (t !== null && i.onhand !== null && i.closing !== null) expect(i.closing).not.toBe(i.onhand + t);
     }
@@ -90,8 +90,8 @@ describe('mock 数据源', () => {
 
   it('★ 跨月是一条链：本月期初 = 上月期末（不是同一个在仓快照抄三遍）', async () => {
     const g0 = await api.getGrid(1);
-    const groups = new Map<string, typeof g0.inventory>();
-    for (const i of g0.inventory) {
+    const groups = new Map<string, NonNullable<typeof g0.inventory>>();
+    for (const i of g0.inventory!) {
       const k = `${i.sku}/${i.sid}`;
       groups.set(k, [...(groups.get(k) ?? []), i]);
     }
@@ -106,12 +106,62 @@ describe('mock 数据源', () => {
 
   it('★ basis.demand 与前端自己算的 Σ 是两个证人，必须一致', async () => {
     const g = await api.getGrid(1);
-    for (const i of g.inventory) {
+    for (const i of g.inventory!) {
       if (i.basis.closing_reason === 'not_applicable') continue;
       const mine = g.demand.filter((d) => d.sku === i.sku && d.sid === i.sid && d.period === i.period);
       const sum = mine.length === 0 || mine.some((d) => d.effective_units === null)
         ? null : mine.reduce((a, d) => a + (d.effective_units as number), 0);
       expect(i.basis.demand).toBe(sum);
+    }
+  });
+
+  it('★ OP-17：mock 不重跑台账 —— 改了期望销量，该货号的预测库存变「未知」，不留旧数', async () => {
+    const api = createMockApi();
+    await api.putDemand(1, 'MSKU-A', '11072', '2026-10', 999);
+    const g = await api.getGrid(1);
+    const sku = g.demand.find((d) => d.seller_sku === 'MSKU-A')!.sku;
+    for (const key of ['forecast', 'forecast_store', 'forecast_sku'] as const) {
+      const rows = (g[key] as { sku: string; state: string; reason: string | null; closing: number | null }[])
+        .filter((r) => r.sku === sku);
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.every((r) => r.state === 'unknown' && r.reason === 'not_recomputed_in_mock' && r.closing === null)).toBe(true);
+    }
+    const other = g.forecast_store.filter((r) => r.sku !== sku);
+    expect(other.some((r) => r.reason !== 'not_recomputed_in_mock')).toBe(true);
+  });
+
+  it('★ OP-17：改计划采购同样让该货号的预测库存变「未知」；期初也不留旧数', async () => {
+    const g0 = await api.getGrid(1);
+    const pc = g0.purchase[0]!;
+    await api.putPurchase(1, pc.sku, pc.period, 123);
+    const g = await api.getGrid(1);
+    const rows = g.forecast_store.filter((r) => r.sku === pc.sku && r.state !== 'not_applicable');
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((r) => r.reason === 'not_recomputed_in_mock' && r.opening === null)).toBe(true);
+    const sku = g.forecast_sku.filter((r) => r.sku === pc.sku);
+    expect(sku.length).toBeGreaterThan(0);
+    expect(sku.every((r) => r.reason === 'not_recomputed_in_mock' && r.closing === null)).toBe(true);
+  });
+
+  it('★ OP-17：「不适用」不随编辑变「未知」—— 它与输入无关，不适用 ≠ 未知', async () => {
+    const g0 = await api.getGrid(1);
+    const na = g0.forecast_store.find((r) => r.state === 'not_applicable')!;
+    const edited = g0.demand.find((d) => d.sku === na.sku && d.sid !== na.sid)!;
+    await api.putDemand(1, edited.seller_sku, edited.sid, edited.period, 5);
+    const g = await api.getGrid(1);
+    const rows = g.forecast_store.filter((r) => r.sku === na.sku);
+    expect(rows.filter((r) => r.sid === na.sid).every((r) => r.state === 'not_applicable')).toBe(true);
+    expect(rows.filter((r) => r.sid !== na.sid).every((r) => r.reason === 'not_recomputed_in_mock')).toBe(true);
+    expect(g.forecast.filter((r) => r.sid === na.sid && r.sku === na.sku)
+      .every((r) => r.state === 'not_applicable')).toBe(true);
+  });
+
+  it('新建计划的空网格也带预测块（params + 空数组），不缺键', async () => {
+    const { plan_id } = await api.createPlan({ title: 't', period_start: '2026-10-01', months: 3 });
+    const g = await api.getGrid(plan_id);
+    expect(g.params.as_of).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    for (const k of ['forecast', 'forecast_msku', 'forecast_store', 'forecast_sku', 'beyond_horizon', 'unallocated'] as const) {
+      expect(g[k]).toEqual([]);
     }
   });
 

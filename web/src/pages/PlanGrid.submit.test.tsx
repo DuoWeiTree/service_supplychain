@@ -19,15 +19,20 @@ const GRID: GridResponse = {
   purchase: [{ sku: 'SKU-1', period: '2026-10', planned_units: 500 },
              { sku: 'SKU-1', period: '2026-11', planned_units: null },
              { sku: 'SKU-1', period: '2026-12', planned_units: null }],
-  inventory: ['2026-10', '2026-11', '2026-12'].map((period, n) => ({
+  params: { as_of: '2026-09-21', route: 'oversea_sea', make_days: 30, ship_days: 60,
+            anchor_day: 15, embargo_days: 7 },
+  forecast: [],
+  forecast_msku: [],
+  forecast_store: ['2026-10', '2026-11', '2026-12'].map((period, n) => ({
     sku: 'SKU-1', sid: '11072', period,
-    onhand: n === 0 ? 300 : 200, inbound: null as null, closing: n === 0 ? 200 : null,
-    basis: { source: 'ch' as const, as_of: '2026-09-21', includes_plan_purchase: false as const,
-             demand: n === 0 ? 100 : null, reason: 'no_seller_attribution' as const,
-             closing_reason: n === 0 ? null : ('unknown_demand' as const),
-             sku_level_in_transit: null, sources: [] },
+    state: n === 0 ? 'ok' as const : 'unknown' as const,
+    reason: n === 0 ? null : 'unknown_demand' as const,
+    demand: n === 0 ? 100 : null, system: null,
+    opening: n === 0 ? 300 : 200, inbound_planned: 0, closing: n === 0 ? 200 : null,
   })),
-  sku_pipeline: [],
+  forecast_sku: [],
+  beyond_horizon: [],
+  unallocated: [],
 };
 
 beforeEach(() => { vi.resetModules(); });

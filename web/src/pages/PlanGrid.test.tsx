@@ -3,7 +3,10 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { ApiError } from '../api/client';
-import type { ClosingReason, DemandCell, GridResponse, PlanSummary, PurchaseCell, ReleaseResult, Seller } from '../api/types';
+import type {
+  DemandCell, ForecastState, GridResponse, PlanSummary, PurchaseCell, ReleaseResult, Seller, SkuForecast,
+  StoreForecast,
+} from '../api/types';
 
 const P = ['2026-10', '2026-11', '2026-12'];
 const PLAN: PlanSummary = {
@@ -22,13 +25,12 @@ function makeGrid(): GridResponse {
     basis: (eff === null ? 'unknown' : 'human') as 'unknown' | 'human',
     system_basis: null,
   });
-  const i = (sid: string, p: string, onhand: number | null, closing: number | null,
-             closing_reason: ClosingReason = null, transit: number | null = 80) => ({
-    sku: 'SKU-1', sid, period: p, onhand, inbound: null as null, closing,
-    basis: { source: 'ch' as const, as_of: '2026-09-21', includes_plan_purchase: false as const,
-             demand: onhand !== null && closing !== null ? onhand - closing : null,
-             reason: 'no_seller_attribution' as const, closing_reason,
-             sku_level_in_transit: transit, sources: [] },
+  const st = (sid: string, p: string, opening: number | null, closing: number | null,
+              state: ForecastState = closing === null ? 'unknown' : 'ok'): StoreForecast => ({
+    sku: 'SKU-1', sid, period: p, state,
+    reason: state === 'ok' ? null : state === 'not_applicable' ? 'not_applicable' : 'unknown_demand',
+    demand: opening !== null && closing !== null ? opening - closing : null,
+    system: null, opening, inbound_planned: 0, closing,
   });
   return {
     plan_id: 1, periods: [...P],
@@ -42,17 +44,28 @@ function makeGrid(): GridResponse {
              d('MSKU-B', '11072', P[2]!, null),
              d('MSKU-W', '90001', P[0]!, 60), d('MSKU-W', '90001', P[1]!, 65), d('MSKU-W', '90001', P[2]!, 70)],
     purchase: P.map((p, n) => ({ sku: 'SKU-1', period: p, planned_units: n === 0 ? 500 : null })),
-    // ★ sku_pipeline 只在 10 月有在途（80），11/12 月为 null —— 11072 每格的
-    //   basis.sku_level_in_transit 必须跟它一致，否则 in_transit_disagrees 会（正确地）报出来
-    inventory: [i('11072', P[0]!, 420, 200), i('11072', P[1]!, 200, -30, null, null),
-                i('11072', P[2]!, -30, null, 'unknown_demand', null),
-                i('90001', P[0]!, null, null, 'not_applicable', null),
-                i('90001', P[1]!, null, null, 'not_applicable', null),
-                i('90001', P[2]!, null, null, 'not_applicable', null)],
-    sku_pipeline: P.map((p, n) => ({
-      sku: 'SKU-1', period: p, units: n === 0 ? 80 : null,
-      sources: [], no_seller_attribution: true as const,
-    })),
+    params: { as_of: '2026-09-21', route: 'oversea_sea', make_days: 30, ship_days: 60,
+              anchor_day: 15, embargo_days: 7 },
+    forecast: [],
+    forecast_msku: [],
+    forecast_store: [st('11072', P[0]!, 420, 200), st('11072', P[1]!, 200, -30),
+                     st('11072', P[2]!, -30, null),
+                     ...P.map((p) => st('90001', p, null, null, 'not_applicable'))],
+    // ★ 只给 10 月的货号行（在途 80）：11/12 月缺行 ⇒ 在途未知，用来钉「未知不是 0」
+    forecast_sku: [transitRow('SKU-1', P[0]!, 80)],
+    beyond_horizon: [],
+    unallocated: [],
+  };
+}
+
+/** 货号级一行：在途全记在 ordered_open 上，组成与总数一致 */
+function transitRow(sku: string, period: string, units: number): SkuForecast {
+  return {
+    sku, period, state: 'ok', reason: null, reason_from: null, demand: null, system: null,
+    opening: null, stock_demand: null, inbound_planned: 0, closing: null, excluded_not_applicable: 0,
+    pipeline: { making: 0, shipping: 0, ordered_open: units, ordered_open_sources: [],
+                fba_inbound: null, fba_inbound_reason: 'not_fetched' },
+    in_transit: units, in_transit_excludes: ['fba_inbound'], unfilled_purchase: [],
   };
 }
 
@@ -80,13 +93,15 @@ function buildMockApi(grid: GridResponse) {
       cell.expected_units = units;
       cell.effective_units = units ?? cell.system_units;
       cell.basis = units === null ? 'system' : 'human';
-      const iv = state.grid.inventory.find((x) => x.sku === cell.sku && x.sid === sid && x.period === period)!;
+      // 测试替身自己按「期初 − Σ 该店该货号生效值」重算这一格，只为验证界面会当场刷新
+      const sf = state.grid.forecast_store.find((x) => x.sku === cell.sku && x.sid === sid && x.period === period)!;
       const mine = state.grid.demand.filter((x) => x.sku === cell.sku && x.sid === sid && x.period === period);
       const sum = mine.some((x) => x.effective_units === null)
         ? null : mine.reduce((a, x) => a + (x.effective_units as number), 0);
-      iv.basis.demand = sum;
-      iv.closing = iv.onhand === null || sum === null ? null : iv.onhand - sum;
-      iv.basis.closing_reason = iv.closing === null ? 'unknown_demand' : null;
+      sf.demand = sum;
+      sf.closing = sf.opening === null || sum === null ? null : sf.opening - sum;
+      sf.state = sf.closing === null ? 'unknown' : 'ok';
+      sf.reason = sf.closing === null ? 'unknown_demand' : null;
       return cell;
     }),
     putPurchase: vi.fn(async (...args: unknown[]) => {
@@ -154,14 +169,15 @@ describe('计划整表', () => {
     expect(meta).toHaveTextContent('ops.zhang');
   });
 
-  it('★ 库存画在店铺行上，依据（期初 / as_of / 未计本计划采购）回显在格子上', async () => {
+  it('★ 库存画在店铺行上，依据（期初 / as_of）回显在格子上', async () => {
     await renderGrid();
     const block = await screen.findByTestId('block-11072-SKU-1');
     const cell = within(block).getByTestId('sku-cell-2026-10');
     expect(within(cell).getByTestId('closing-sku')).toHaveTextContent('200');
     expect(cell.getAttribute('title')).toContain('期初 420');
     expect(cell.getAttribute('title')).toContain('2026-09-21');
-    expect(cell.getAttribute('title')).toContain('不含本计划采购');
+    // ★ 预测库存已计入本计划采购 —— 格子上不许再说「不含」
+    expect(cell.getAttribute('title')).not.toContain('不含本计划采购');
     expect(within(cell).getByTestId('sum-expected-2026-10')).toHaveTextContent('220');
     expect(screen.getByText('未计本计划采购')).toBeInTheDocument();
   });
@@ -252,7 +268,7 @@ describe('计划整表', () => {
   it('★ 几十个货号时只渲染看得见的行；折叠全部后一行一个货号', async () => {
     const grid = makeGrid();
     for (let n = 2; n <= 80; n++) {
-      grid.sku_pipeline.push({ sku: `SKU-${n}`, period: P[0]!, units: 1, sources: [], no_seller_attribution: true });
+      grid.forecast_sku.push(transitRow(`SKU-${n}`, P[0]!, 1));
     }
     await renderGrid(grid);
     await screen.findByTestId('card-SKU-1');
@@ -389,7 +405,7 @@ describe('计划整表', () => {
 
   it('筛选「有断货」只留有断货的货号；搜索按店铺名命中', async () => {
     const grid = makeGrid();
-    grid.sku_pipeline.push({ sku: 'SKU-2', period: P[0]!, units: 15, sources: [], no_seller_attribution: true });
+    grid.forecast_sku.push(transitRow('SKU-2', P[0]!, 15));
     await renderGrid(grid);
     await screen.findByTestId('card-SKU-1');
     expect(screen.getByTestId('card-SKU-2')).toBeInTheDocument();
@@ -483,12 +499,12 @@ describe('计划整表', () => {
 
   it('★ 只有在途、不在 purchase 里的货号也有卡（F7/F8），采购格只读', async () => {
     const grid = makeGrid();
-    grid.sku_pipeline.push({ sku: 'SKU-2', period: P[0]!, units: 15, sources: [], no_seller_attribution: true });
+    grid.forecast_sku.push(transitRow('SKU-2', P[0]!, 15));
     await renderGrid(grid);
     const row = await screen.findByTestId('purchase-row-SKU-2');
-    // ★ 在途的权威读数是 inventory[].basis（F6）；只在 pipeline 里出现的数不上屏，而是进 orphans 点名
-    expect(within(row).getByTestId('transit-SKU-2-2026-10')).toHaveTextContent('—');
-    expect(screen.getByTestId('orphans')).toHaveTextContent('SKU-2');
+    // ★ 在途只有 forecast_sku 一个来源（F6 的两源核对已随旧块退役）：上屏的就是它
+    expect(within(row).getByTestId('transit-SKU-2-2026-10')).toHaveTextContent('15');
+    expect(within(row).getByTestId('transit-SKU-2-2026-11')).toHaveTextContent('—');
     expect(within(row).queryAllByRole('gridcell')).toHaveLength(0);
   });
 
@@ -539,7 +555,7 @@ describe('计划整表', () => {
     expect(screen.queryByTestId('orphans')).toBeNull();
 
     const dirty = makeGrid();
-    dirty.sku_pipeline[0] = { sku: 'SKU-1', period: P[0]!, units: 999, sources: [], no_seller_attribution: true };
+    dirty.forecast_sku[0] = { ...dirty.forecast_sku[0]!, in_transit: 999 };   // 总数 ≠ 组成
     vi.resetModules();
     await renderGrid(dirty);
     expect(await screen.findByTestId('orphans')).toHaveTextContent('in_transit_disagrees');

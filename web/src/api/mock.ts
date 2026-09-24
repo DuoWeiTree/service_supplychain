@@ -1,6 +1,6 @@
 import { ApiError, type SupplyChainApi } from './client';
 import type {
-  CatalogResult, CountKey, GridResponse, PlanSummary, RevList, Seller, SkippedCell,
+  CatalogResult, CountKey, ForecastState, GridResponse, PlanSummary, RevList, Seller, SkippedCell,
 } from './types';
 import plansFixture from './fixtures/plans.json';
 import gridFixture from './fixtures/grid-1.json';
@@ -54,7 +54,7 @@ export function createMockApi(): SupplyChainApi {
    *  任何一个 msku 未知 ⇒ 整格未知（M-8 向后传染）。落回 0 就是把「算不出来」说成「没货」。
    *  ★ 跨月是一条链：本月期初 = 上月期末（后端接口形状块 `onhand` 那一行写死了这一点）。 */
   function recompute(g: GridResponse, sku: string, sid: string): void {
-    const rows = g.inventory
+    const rows = (g.inventory ?? [])
       .filter((i) => i.sku === sku && i.sid === sid)
       .sort((a, b) => a.period.localeCompare(b.period));
     let carried: number | null = rows[0]?.onhand ?? null;
@@ -86,6 +86,22 @@ export function createMockApi(): SupplyChainApi {
     }
   }
 
+  /** ★ OP-17：mock 不重跑逐日台账（那是后端 forecast/ 的活，照抄一份迟早分叉；docs/05 前端不承载判据）。
+   *  改了之后该货号依赖输入的数如实变「未知」，不留一个已经过时的数。
+   *  ★ 不适用 / 已过去的行与输入无关，原样保留 —— 把它们也改成「未知」就是把不适用说成未知。 */
+  function staleForecast(g: GridResponse, sku: string): void {
+    const hit = (r: { sku: string; state: ForecastState }) =>
+      r.sku === sku && r.state !== 'not_applicable' && r.state !== 'elapsed';
+    const stale = { state: 'unknown' as const, reason: 'not_recomputed_in_mock' as const,
+                    opening: null, demand: null, inbound_planned: null, closing: null };
+    for (const r of g.forecast) if (hit(r)) Object.assign(r, stale, { stockout_date: null });
+    for (const r of g.forecast_msku) if (r.sku === sku) r.first_stockout_date = null;
+    for (const r of g.forecast_store) if (hit(r)) Object.assign(r, stale);
+    for (const r of g.forecast_sku) {
+      if (hit(r)) Object.assign(r, stale, { reason_from: null, stock_demand: null });
+    }
+  }
+
   return {
     async listPlans(q) {
       // ★ `archived` 不给时后端**排除**已归档（`api/ui/plans.py:69` 的默认值 false），
@@ -104,7 +120,12 @@ export function createMockApi(): SupplyChainApi {
         owner_actor: 'ops.zhang', archived_at: null, state: null, state_rev: null,
       });
       inFlight.set(plan_id, null);
-      grids.set(plan_id, { plan_id, periods: [], demand: [], purchase: [], inventory: [], sku_pipeline: [] });
+      grids.set(plan_id, {
+        plan_id, periods: [], demand: [], purchase: [], inventory: [], sku_pipeline: [],
+        params: clone((gridFixture as GridResponse).params),
+        forecast: [], forecast_msku: [], forecast_store: [], forecast_sku: [],
+        beyond_horizon: [], unallocated: [],
+      });
       return { plan_id };
     },
     async dashboardPlans() {
@@ -158,6 +179,7 @@ export function createMockApi(): SupplyChainApi {
       cell.effective_units = units ?? cell.system_units;
       cell.basis = units !== null ? 'human' : cell.system_units !== null ? 'system' : 'unknown';
       recompute(g, cell.sku, sid);
+      staleForecast(g, cell.sku);
       return clone(cell);
     },
 
@@ -174,6 +196,7 @@ export function createMockApi(): SupplyChainApi {
           { field: 'planned_units', got: units });
       }
       cell.planned_units = units;
+      staleForecast(g, sku);
       return clone(cell);
     },
 

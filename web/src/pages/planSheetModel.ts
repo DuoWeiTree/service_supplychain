@@ -1,7 +1,7 @@
 import type { QtyValue } from '../components/Qty';
 import type { Period } from '../api/types';
 import type { GridModel, MskuRow, PurchaseRow, SkuBlock, TransitRow } from './planGridModel';
-import { inventoryAt } from './planGridModel';
+import { stockAt } from './planGridModel';
 
 /** 计划整表的一组：一个货号。店铺块、货号级采购、货号级在途放在同一处。
  *  ★ 只是把 GridModel 按货号重新分组，不产生任何新数 —— 数的口径全在 planGridModel.ts。 */
@@ -62,7 +62,7 @@ export function summarize(card: SkuCard, periods: Period[], low: number): CardSu
   for (const b of card.stores) {
     let o = 0; let l = 0;
     for (const p of periods) {
-      const s = stockState(inventoryAt(b, p), low);
+      const s = stockState(stockAt(b, p), low);
       if (s === 'out') o++; else if (s === 'low') l++;
     }
     if (o > 0) outs.push({ block: b, months: o });

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, render, screen, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import gridFixture from '../api/fixtures/grid-1.json';
@@ -7,11 +7,9 @@ import type { GridResponse } from '../api/types';
 
 const G = gridFixture as GridResponse;
 /** ★ 不写死后端 seed 出来的名字与数字，只从 fixture 里认形态 */
-const FIRST_INV = G.inventory.find((i) => i.basis.closing_reason !== 'not_applicable' && i.onhand !== null)!;
-const SIBLINGS = G.demand.filter((d) =>
-  d.sku === FIRST_INV.sku && d.sid === FIRST_INV.sid && d.period === FIRST_INV.period);
-const EDITED = SIBLINGS[0]!;
-const OTHERS = SIBLINGS.slice(1);
+const FIRST_INV = G.forecast_store.find((s) => s.state === 'ok' && s.closing !== null)!;
+const EDITED = G.demand.find((d) =>
+  d.sku === FIRST_INV.sku && d.sid === FIRST_INV.sid && d.period === FIRST_INV.period)!;
 const FIRST_SKU = G.purchase[0]!.sku;
 const LAST_PERIOD = G.periods[G.periods.length - 1]!;
 
@@ -80,20 +78,18 @@ describe('判据① · 建 → 加货品 → 填两种量 → 提交 → 铸出 
 
     // 期望销量（msku 级输入）。★ testid 带 sid（`cell-${seller_sku}-${sid}-${period}`），
     //   brief 一稿漏了 sid —— 同一 seller_sku 在不同 sid 下是不同 listing（CLAUDE.md 铁律）
+    // ★ M5（终审）：断言钉在 closing-sku 这个点上，不打在整个 sku-cell 上 ——
+    //   同一格里还有期初、as_of、预估、Σ 期望，旁边那串字会把错的期望值托住
+    const skuCell = within(block).getByTestId(`sku-cell-${FIRST_INV.period}`);
+    expect(within(skuCell).getByTestId('closing-sku')).toHaveTextContent(String(FIRST_INV.closing));
+
     const cell = within(block).getByTestId(`cell-${EDITED.seller_sku}-${EDITED.sid}-${FIRST_INV.period}`);
     await userEvent.click(cell);
     await userEvent.keyboard('10{Enter}');
 
-    // ★ 库存画在店铺·货号行上；期望值从 fixture 现算，不写死
-    const othersUnknown = OTHERS.some((d) => d.effective_units === null);
-    const expected = othersUnknown
-      ? '—'
-      : String(FIRST_INV.onhand! - (10 + OTHERS.reduce((a, d) => a + (d.effective_units as number), 0)));
-    // ★ M5（终审）：断言钉在 closing-sku 这个点上，不打在整个 sku-cell 上 ——
-    //   同一格里还有「期初 40」「as_of 2026-09-21」「预估 7」「Σ 期望 10」，
-    //   期望值一旦落到 26/21/20/40 就会被旁边那串字托住而看不出错
-    const skuCell = await within(block).findByTestId(`sku-cell-${FIRST_INV.period}`);
-    expect(within(skuCell).getByTestId('closing-sku')).toHaveTextContent(expected);
+    // ★ OP-17：mock 不重跑台账 —— 改完这一格，库存如实变「—」，不留改之前的旧数
+    await waitFor(() => expect(within(within(block).getByTestId(`sku-cell-${FIRST_INV.period}`))
+      .getByTestId('closing-sku')).toHaveTextContent('—'));
 
     // 计划采购量（货号 × 月，不带店铺）
     const purchase = within(screen.getByTestId(`purchase-row-${FIRST_SKU}`))

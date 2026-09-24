@@ -81,9 +81,22 @@ export interface DemandCell {
   effective_units: number | null;
   basis: DemandBasis;
   /** ★ F16：预测依据快照（spec §3.3，`api/ui/plans.py::_system_basis`）；
-   *  null = 旧认领没种过（OP-8，桥接段读到时按未知处置，不当 0）。
-   *  形状由后端定，Phase 3 渲染前先原样透传，不在前端重复声明字段。 */
-  system_basis: Record<string, unknown> | null;
+   *  null = 旧认领没种过（OP-8，桥接段读到时按未知处置，不当 0） */
+  system_basis: SystemBasis | null;
+}
+
+/** `api/ui/plans.py::_system_basis` + 认领时逐月补的 `days_in_month` / `units_raw`。
+ *  ★ `base_rate` 为 null 时 `reason` 说明为什么（窗口内没有销量），不是 0 */
+export interface SystemBasis {
+  method: 'baseline_rate_v1'; as_of: string; estimation_anchor: string; embargo_days: number;
+  base_rate: number | null; days_in_month: number; units_raw: number | null;
+  window: { from: string; until: string }; target_window: { from: string; until: string };
+  censored_days: number; stock_days_rejected: number; stock_days_uncaptured: number;
+  reason: null | 'no_sales_in_window';
+  raw_rate: number | null; n_eff: number | null; target_rate: number | null;
+  winsor_cap: number | null; first_seen: string | null;
+  constants: { halflife_days: number; window_days: number; target_window_days: number;
+               shrink_prior: number; winsor_q: number };
 }
 
 /** `PUT .../demand/...` 的信封。★ team-lead 09-22 裁定：回的是 grid() 里 demand[] 同一格
@@ -161,10 +174,99 @@ export interface GridResponse {
   periods: Period[];
   demand: DemandCell[];
   purchase: PurchaseCell[];
-  /** ★ 店铺 × 货号 × 月 */
-  inventory: InventoryCell[];
-  /** ★ 货号 × 月；画成一行只读，**不并进任何一个店铺的库存** */
-  sku_pipeline: SkuPipelineRow[];
+  /** 旧库存块（阶段 A）。★ 界面已不读，Task 21 删 */
+  inventory?: InventoryCell[];
+  /** 旧在途块（阶段 A）。★ 界面已不读，Task 21 删 */
+  sku_pipeline?: SkuPipelineRow[];
+  params: ForecastParams;
+  /** msku × 月 */
+  forecast: MskuForecast[];
+  forecast_msku: MskuFirstStockout[];
+  /** ★ 店铺 × 货号 × 月 = Σ 该店该货号的 msku 行（spec §4.6） */
+  forecast_store: StoreForecast[];
+  /** 货号 × 月：库存合计 + 在途（在途不分摊到店铺） */
+  forecast_sku: SkuForecast[];
+  beyond_horizon: BeyondHorizon[];
+  unallocated: Unallocated[];
+}
+
+// ─── 预测块（spec §6 · `api/ui/grid_forecast.py::_serialize`） ───
+
+export type ForecastState = 'ok' | 'partial' | 'unknown' | 'not_applicable' | 'elapsed' | 'no_msku';
+/** ★ null 只在 ok 时出现。`not_recomputed_in_mock`：mock 不重跑台账（OP-17），改过的货号如实变未知 */
+export type ForecastReason = null | 'as_of_inside_month' | 'unknown_onhand' | 'unknown_demand'
+  | 'bridge_rate_unknown' | 'inbound_unknown' | 'not_applicable' | 'elapsed' | 'no_msku'
+  | 'not_recomputed_in_mock';
+
+/** 一次到货。★ `units` 为 null = 这批分不出去（OP-12），不是 0 */
+export interface ForecastArrival {
+  date: string; units: number | null; order_period: Period; pool: number;
+  rule?: string; gap_part?: number; weight_part?: number; reason?: 'gap_unknown';
+}
+/** W-6 桥接段（as_of 次日 → 首个计划月前一天，按预测扣）。★ `rate` 为 null 时 `units` 也是 null */
+export interface ForecastBridge {
+  from: string; to: string; units: number | null; by: 'forecast'; rate: number | null;
+  month_totals: Record<Period, number>; onhand_as_of: number;
+  arrivals: ForecastArrival[]; arrival_units: number | null; stockout_date: string | null;
+}
+export interface MskuForecast {
+  seller_sku: string; sid: Sid; sku: string; period: Period;
+  state: ForecastState; reason: ForecastReason; unknown_since: Period | null;
+  opening: number | null; demand: number | null; inbound_planned: number | null;
+  closing: number | null;
+  /** 该月内第一个断货日（OP-18）；整本台账第一个在 `forecast_msku` */
+  stockout_date: string | null;
+  basis: { bridge: ForecastBridge | null; arrivals: ForecastArrival[] };
+}
+export interface MskuFirstStockout {
+  seller_sku: string; sid: Sid; sku: string; first_stockout_date: string | null;
+}
+export interface StoreForecast {
+  sku: string; sid: Sid; period: Period; state: ForecastState; reason: ForecastReason;
+  demand: number | null; system: number | null;
+  opening: number | null; inbound_planned: number | null; closing: number | null;
+}
+export interface SkuPipeline {
+  making: number; shipping: number; ordered_open: number;
+  ordered_open_sources: { period: Period; units: number; ref: string }[];
+  /** ★ 没取，不是 0 */
+  fba_inbound: null; fba_inbound_reason: 'not_fetched';
+}
+export interface SkuForecast {
+  sku: string; period: Period; state: ForecastState; reason: ForecastReason;
+  /** 未知时：让它未知的那个 msku */
+  reason_from: { seller_sku: string; sid: Sid } | null;
+  demand: number | null; system: number | null;
+  opening: number | null;
+  /** ★ 只含进库存求和的 msku —— 恒等式用这个，不是 demand */
+  stock_demand: number | null; inbound_planned: number | null;
+  closing: number | null; excluded_not_applicable: number;
+  pipeline: SkuPipeline; in_transit: number; in_transit_excludes: 'fba_inbound'[];
+  unfilled_purchase: Period[];
+}
+export interface BeyondHorizon {
+  sku: string; order_period: Period; units: number; placed: string; made: string; arrive: string;
+  reason: 'arrives_after_horizon' | 'arrives_before_as_of';
+}
+/** 整批分不出去（`forecast/allocate.py`） */
+export interface UnallocatedBatch {
+  scope: 'batch';
+  sku: string; order_period: Period; arrive: string; units: number;
+  reason: 'gap_unknown' | 'no_fba_msku';
+  unknown: [string, Sid][];
+}
+/** 分到了、但这个 msku 推演不了（不适用 / 在仓未知） */
+export interface UnallocatedMsku {
+  scope: 'msku';
+  sku: string; order_period: Period; arrive: string; units: number;
+  reason: 'not_applicable' | 'unknown_onhand';
+  seller_sku: string; sid: Sid; date: string; pool: number;
+  rule?: string; gap_part?: number; weight_part?: number;
+}
+export type Unallocated = UnallocatedBatch | UnallocatedMsku;
+export interface ForecastParams {
+  as_of: string; route: 'oversea_sea'; make_days: number; ship_days: number;
+  anchor_day: number; embargo_days: number | null;
 }
 
 export interface ClaimHolder { plan_id: PlanId; title: string; actor: string }
