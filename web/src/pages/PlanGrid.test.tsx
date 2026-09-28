@@ -4,8 +4,8 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import type {
-  DemandCell, ForecastState, GridResponse, PlanSummary, PurchaseCell, ReleaseResult, Seller, SkuForecast,
-  StoreForecast,
+  DemandCell, ForecastState, GridResponse, PlanSummary, PurchaseCell, ReleaseResult, RemoveSkuResult, Seller,
+  SkuForecast, StoreForecast,
 } from '../api/types';
 
 const P = ['2026-10', '2026-11', '2026-12'];
@@ -78,6 +78,7 @@ interface MockApi {
   putDemand: (...args: unknown[]) => Promise<DemandCell>;
   putPurchase: (...args: unknown[]) => Promise<PurchaseCell>;
   releaseClaim: (...args: unknown[]) => Promise<ReleaseResult>;
+  removeSku: (...args: unknown[]) => Promise<RemoveSkuResult>;
   submit: (...args: unknown[]) => Promise<unknown>;
   // ★ Task 20：PlanGrid 现在挂 LeadTimeBar，挂载即调 getLeadTime —— 这个测试替身
   //   不覆盖它就会在每个用例里抛 TypeError（不是本测试关心的路径，给固定值即可）
@@ -90,6 +91,14 @@ interface MockApi {
 
 function buildMockApi(grid: GridResponse) {
   const state = { grid };
+  const dropSku = (sku: string) => {
+    const g = state.grid;
+    const gone = g.purchase.filter((x) => x.sku === sku);
+    g.purchase = g.purchase.filter((x) => x.sku !== sku);
+    g.forecast_store = g.forecast_store.filter((x) => x.sku !== sku);
+    g.forecast_sku = g.forecast_sku.filter((x) => x.sku !== sku);
+    return gone.map((x) => ({ ...x }));
+  };
   const api: MockApi = {
     getPlan: async () => PLAN,
     listSellers: async () => SELLERS,
@@ -117,14 +126,31 @@ function buildMockApi(grid: GridResponse) {
       c.planned_units = units;
       return c;
     }),
+    // ★ Task 22：替身照后端的口径删 —— 店里没 msku 了店铺行走，货号没 msku 了采购格与货号行一起走
     releaseClaim: vi.fn(async (...args: unknown[]) => {
       const [, sellerSku, sid] = args as [number, string, string];
-      const before = state.grid.demand.filter((x) => x.seller_sku === sellerSku && x.sid === sid);
-      state.grid.demand = state.grid.demand.filter((x) => !(x.seller_sku === sellerSku && x.sid === sid));
+      const g = state.grid;
+      const before = g.demand.filter((x) => x.seller_sku === sellerSku && x.sid === sid);
+      const sku = before[0]?.sku;
+      g.demand = g.demand.filter((x) => !(x.seller_sku === sellerSku && x.sid === sid));
       const dropped_cells = before
         .filter((x) => x.expected_units !== null)
         .map((x) => ({ period: x.period, expected_units: x.expected_units }));
-      return { released: { seller_sku: sellerSku, sid }, dropped_cells, stranded_purchase_cells: [] };
+      if (!g.demand.some((x) => x.sku === sku && x.sid === sid)) {
+        g.forecast_store = g.forecast_store.filter((x) => !(x.sku === sku && x.sid === sid));
+      }
+      return { released: { seller_sku: sellerSku, sid }, dropped_cells,
+               dropped_purchase_cells: sku !== undefined && !g.demand.some((x) => x.sku === sku) ? dropSku(sku) : [] };
+    }),
+    removeSku: vi.fn(async (...args: unknown[]) => {
+      const [, sku] = args as [number, string];
+      const g = state.grid;
+      const mine = g.demand.filter((x) => x.sku === sku);
+      const released = [...new Map(mine.map((x) => [`${x.seller_sku}/${x.sid}`, { seller_sku: x.seller_sku, sid: x.sid }])).values()];
+      g.demand = g.demand.filter((x) => x.sku !== sku);
+      return { sku, released,
+               dropped_cells: mine.map((x) => ({ seller_sku: x.seller_sku, sid: x.sid, period: x.period, expected_units: x.expected_units })),
+               dropped_purchase_cells: dropSku(sku) };
     }),
     submit: vi.fn(async () => ({ rev: 1, lines: 1, in_flight: true, content_digest: 'x', skipped: [] })),
     getLeadTime: vi.fn(async () => ({ route: 'oversea_sea' as const, make_days: 30, ship_days: 60, anchor_day: 15,
@@ -437,15 +463,15 @@ describe('计划整表', () => {
     expect(screen.queryByTestId('card-SKU-2')).toBeNull();
   });
 
-  it('★ 移出货号遇错即停，toast 点名已释放的与失败的那个（F4）', async () => {
+  it('★ 移出该店遇错即停，toast 点名已释放的与失败的那个（F4）', async () => {
     const releaseClaim = vi.fn(async (...args: unknown[]) => {
       const [, sellerSku] = args as [number, string];
       if (sellerSku === 'MSKU-B') throw new ApiError(500, 'release_failed', '释放失败：服务器炸了');
-      return { released: { seller_sku: sellerSku, sid: '11072' }, dropped_cells: [], stranded_purchase_cells: [] };
+      return { released: { seller_sku: sellerSku, sid: '11072' }, dropped_cells: [], dropped_purchase_cells: [] };
     });
     await renderGrid(makeGrid(), (m) => { m.api.releaseClaim = releaseClaim; });
     const block = await screen.findByTestId('block-11072-SKU-1');
-    await userEvent.click(within(block).getByRole('button', { name: '移出货号' }));
+    await userEvent.click(within(block).getByRole('button', { name: '移出该店' }));
     const status = await screen.findByRole('status');
     expect(status).toHaveTextContent('已释放 MSKU-A');
     expect(status).toHaveTextContent('MSKU-B 释放失败');
@@ -453,11 +479,11 @@ describe('计划整表', () => {
     expect(await screen.findByText('释放失败：服务器炸了', { selector: '.flash--bad *' })).toBeInTheDocument();
   });
 
-  it('★ 移出货号在第一个 msku 就失败 —— 调用次数本身能区分「停了」还是「继续了」（F4）', async () => {
+  it('★ 移出该店在第一个 msku 就失败 —— 调用次数本身能区分「停了」还是「继续了」（F4）', async () => {
     const releaseClaim = vi.fn(async () => { throw new ApiError(500, 'release_failed', '第一个就炸了'); });
     await renderGrid(makeGrid(), (m) => { m.api.releaseClaim = releaseClaim; });
     const block = await screen.findByTestId('block-11072-SKU-1');
-    await userEvent.click(within(block).getByRole('button', { name: '移出货号' }));
+    await userEvent.click(within(block).getByRole('button', { name: '移出该店' }));
     await screen.findByText('500 release_failed');
     expect(releaseClaim).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('status')).toHaveTextContent('已释放 无');
@@ -472,10 +498,12 @@ describe('计划整表', () => {
     expect(await screen.findByText('500 release_failed')).toBeInTheDocument();
   });
 
-  it('★ 双击「移出货号」只跑一轮释放循环（I3）', async () => {
+  // ★ Task 22：店铺行的按钮原叫「移出货号」，其实只移这一家店的 msku —— 按钮名与动作对不上，
+  //   改名「移出该店」；「移出货号」让给货号行（真的移出整个货号）。断言跟着改名，行为不变。
+  it('★ 双击「移出该店」只跑一轮释放循环（I3）', async () => {
     const { mock } = await renderGrid();
     const block = await screen.findByTestId('block-11072-SKU-1');
-    const btn = within(block).getByRole('button', { name: '移出货号' });
+    const btn = within(block).getByRole('button', { name: '移出该店' });
     fireEvent.click(btn);
     fireEvent.click(btn);
     await screen.findByRole('status');
@@ -492,18 +520,84 @@ describe('计划整表', () => {
     expect(mock.api.releaseClaim).toHaveBeenCalledTimes(1);
   });
 
-  it('★ 搁浅的货号级采购格要点名，不许吞掉（F5）', async () => {
+  // ★ Task 22：业主裁定 2026-09-27 推翻 F5 —— 原来这里钉「搁浅的采购格未删、待处理」。
+  //   现在最后一个 msku 走了，采购格随之删掉；守的仍是同一件事：丢掉的东西必须点名，带值。
+  it('★ 移出 msku 带走了货号：toast 点名丢弃的期望与计划采购（带值），不许吞掉', async () => {
     const releaseClaim = vi.fn(async () => ({
       released: { seller_sku: 'MSKU-A', sid: '11072' },
-      dropped_cells: [{ period: '2026-10', expected_units: 180 }],
-      stranded_purchase_cells: [{ sku: 'SKU-1', period: '2026-10' }],
+      dropped_cells: [{ period: '2026-10', expected_units: 180 }, { period: '2026-11', expected_units: null }],
+      dropped_purchase_cells: [{ sku: 'SKU-1', period: '2026-10', planned_units: 24 },
+                               { sku: 'SKU-1', period: '2026-11', planned_units: 22 },
+                               { sku: 'SKU-1', period: '2026-12', planned_units: null }],
     }));
     await renderGrid(makeGrid(), (m) => { m.api.releaseClaim = releaseClaim; });
     const block = await screen.findByTestId('block-11072-SKU-1');
     await userEvent.click(within(block).getAllByRole('button', { name: '移出 msku' })[0]!);
     const status = await screen.findByRole('status');
-    expect(status).toHaveTextContent('MSKU-A 已移出，丢弃 1 格');
-    expect(status).toHaveTextContent('货号级采购格 1 个未删、待处理');
+    expect(status).toHaveTextContent('已移出 msku MSKU-A：丢弃期望 2 格（2026-10 180 件）');
+    expect(status).toHaveTextContent('货号 SKU-1 已无 msku，一并移出');
+    expect(status).toHaveTextContent('丢弃计划采购 3 格（2026-10 24 件、2026-11 22 件）');
+    expect(status.textContent).not.toContain('待处理');
+  });
+
+  it('★ 移出 msku 没带走货号：toast 不提采购', async () => {
+    await renderGrid();
+    const block = await screen.findByTestId('block-11072-SKU-1');
+    await userEvent.click(within(block).getAllByRole('button', { name: '移出 msku' })[0]!);
+    const status = await screen.findByRole('status');
+    expect(status).toHaveTextContent('已移出 msku MSKU-A：丢弃期望 2 格（2026-10 180 件、2026-11 200 件）');
+    expect(status.textContent).not.toContain('计划采购');
+    expect(screen.getByTestId('card-SKU-1')).toBeInTheDocument();
+  });
+
+  it('★ 移出该店：toast 用同一个动词，点名店与货号', async () => {
+    await renderGrid();
+    const block = await screen.findByTestId('block-90001-SKU-1');
+    await userEvent.click(within(block).getByRole('button', { name: '移出该店' }));
+    const status = await screen.findByRole('status');
+    expect(status).toHaveTextContent('已移出该店 A4Pet-WM 的 SKU-1：msku 1 个，丢弃期望 3 格（MSKU-W 2026-10 60 件、');
+    expect(status.textContent).not.toContain('计划采购');
+    await waitFor(() => expect(screen.queryByTestId('block-90001-SKU-1')).toBeNull());
+    expect(screen.getByTestId('card-SKU-1')).toBeInTheDocument();
+  });
+
+  it('★ 移出该店移走了货号的最后一家店：货号从表里消失，丢弃的计划采购点名', async () => {
+    const grid = makeGrid();
+    grid.demand = grid.demand.filter((d) => d.sid !== '90001');
+    grid.forecast_store = grid.forecast_store.filter((s) => s.sid !== '90001');
+    await renderGrid(grid);
+    const block = await screen.findByTestId('block-11072-SKU-1');
+    await userEvent.click(within(block).getByRole('button', { name: '移出该店' }));
+    const status = await screen.findByRole('status');
+    expect(status).toHaveTextContent('已移出该店 A4Pet-US 的 SKU-1：msku 2 个');
+    expect(status).toHaveTextContent('货号 SKU-1 已无 msku，一并移出：丢弃计划采购 3 格（2026-10 500 件）');
+    await waitFor(() => expect(screen.queryByTestId('card-SKU-1')).toBeNull());
+  });
+
+  it('★ 货号行「移出货号」：一个调用移出全部店的 msku，双击只发一次（I3）；toast 点名丢弃的数，货号消失', async () => {
+    const { mock } = await renderGrid();
+    const row = await screen.findByTestId('purchase-row-SKU-1');
+    const btn = within(row).getByRole('button', { name: '移出货号' });
+    fireEvent.click(btn);
+    fireEvent.click(btn);
+    const status = await screen.findByRole('status');
+    expect(mock.api.removeSku).toHaveBeenCalledTimes(1);
+    expect(mock.api.removeSku).toHaveBeenCalledWith(1, 'SKU-1');
+    expect(mock.api.releaseClaim).not.toHaveBeenCalled();
+    expect(status).toHaveTextContent('已移出货号 SKU-1：msku 3 个，丢弃期望 9 格（MSKU-A 2026-10 180 件、');
+    expect(status).toHaveTextContent('，丢弃计划采购 3 格（2026-10 500 件）');
+    expect(status.textContent).not.toContain(' · ');
+    await waitFor(() => expect(screen.queryByTestId('card-SKU-1')).toBeNull());
+  });
+
+  it('★ 移出货号失败走 ErrorDetail 并重载，货号还在', async () => {
+    const removeSku = vi.fn(async () => { throw new ApiError(500, 'remove_failed', '移出失败：服务器炸了'); });
+    await renderGrid(makeGrid(), (m) => { m.api.removeSku = removeSku; });
+    const row = await screen.findByTestId('purchase-row-SKU-1');
+    await userEvent.click(within(row).getByRole('button', { name: '移出货号' }));
+    expect(await screen.findByText('500 remove_failed')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('SKU-1 移出失败');
+    expect(screen.getByTestId('card-SKU-1')).toBeInTheDocument();
   });
 
   it('计划采购是货号级：行里不带店铺；在途只读、未知不是 0', async () => {

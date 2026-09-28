@@ -16,6 +16,7 @@ def cases(seed, pid):
         "claim": ("post", f"/v1/plans/{pid}/claims",
                   {"seller_sku": ms[0], "sid": ms[1]}),
         "release": ("delete", f"/v1/plans/{pid}/claims/{ms[0]}/{ms[1]}", None),
+        "remove_sku": ("delete", f"/v1/plans/{pid}/skus/{sku}", None),
         "put_demand": ("put", f"/v1/plans/{pid}/demand/{ms[0]}/{ms[1]}/2026-10",
                        {"expected_units": 7}),
         "put_purchase": ("put", f"/v1/plans/{pid}/purchase/{sku}/2026-10",

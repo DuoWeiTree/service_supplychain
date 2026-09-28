@@ -261,14 +261,30 @@ def test_release_keeps_the_row_and_names_the_cells_it_drops(client, seed):
         assert cur.fetchone()[0] is True
 
 
-def test_release_names_the_purchase_cells_it_leaves_behind(client, seed):
-    """★ 释放删掉的是 msku 级的期望销量格子；货号级的采购格子**留在原地**
-    （PK 不含 msku，兄弟 msku 还要用）—— 但只报一种格子，另一种就无声地留着。
+def purchase_cells(p, sku):
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT to_char(period_start, 'YYYY-MM'), planned_units FROM plan_purchase_cell"
+                    " WHERE plan_id = %s AND sku = %s ORDER BY period_start", (p, sku))
+        return [tuple(r) for r in cur.fetchall()]
 
-    实测后果：释放了该货号唯一的 msku 之后，`GET /grid` 里那条 purchase 仍在，
-    `PUT …/purchase/…` 仍返回 200，而提交时它以 no_claimed_msku 被跳过 ——
-    人要到那时才知道刚才的释放还留下了东西。
-    """
+
+def active_claims(p):
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT seller_sku, sid FROM msku_claim WHERE plan_id = %s"
+                    " AND released_at IS NULL ORDER BY seller_sku", (p,))
+        return [tuple(r) for r in cur.fetchall()]
+
+
+def log_line(scm_log, op):
+    return next(r.getMessage() for r in scm_log.records
+                if f"op={op} " in r.getMessage() and "dropped_purchase=" in r.getMessage())
+
+
+def test_releasing_the_last_msku_drops_the_purchase_cells_and_names_them(client, seed):
+    """★ 业主裁定 2026-09-27（推翻 F5「搁浅采购格未删、待处理」）：货号的最后一个 msku
+    移出后，货号本身也要移出 —— 采购格同一事务删掉，**逐格回报**，人填过的数带值。
+
+    修复前：格子留在原地，网格靠采购格把货号行长回来（DBCD028014AL 就是这么留下的）。"""
     p = mk(client, seed)
     body = {"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]}
     client.post(f"/v1/plans/{p}/claims", json=body, headers=H(seed.actor))
@@ -276,32 +292,136 @@ def test_release_names_the_purchase_cells_it_leaves_behind(client, seed):
                json={"planned_units": 500}, headers=H(seed.actor))
     r = client.delete(f"/v1/plans/{p}/claims/{seed.msku_a[0]}/{seed.msku_a[1]}",
                       headers=H(seed.actor)).json()
-    assert r["stranded_purchase_cells"] == [
-        {"sku": seed.sku_a, "period": "2026-10"},
-        {"sku": seed.sku_a, "period": "2026-11"},
-        {"sku": seed.sku_a, "period": "2026-12"}]
-    # ★ 报了不等于删了：兄弟 msku 再认领回来时要用的就是这几行
-    with pg_conn() as c, c.cursor() as cur:
-        cur.execute("SELECT count(*) FROM plan_purchase_cell WHERE plan_id = %s AND sku = %s",
-                    (p, seed.sku_a))
-        assert cur.fetchone()[0] == 3
+    # ★ 空格也点名（null ≠ 0）：删掉的是三行，其中一行是人填的 500
+    assert r["dropped_purchase_cells"] == [
+        {"sku": seed.sku_a, "period": "2026-10", "planned_units": 500},
+        {"sku": seed.sku_a, "period": "2026-11", "planned_units": None},
+        {"sku": seed.sku_a, "period": "2026-12", "planned_units": None}]
+    assert "stranded_purchase_cells" not in r, "★ 旧说法退役：不再有「留着待处理」这回事"
+    assert purchase_cells(p, seed.sku_a) == []
+    g = client.get(f"/v1/plans/{p}/grid", headers=H(seed.actor)).json()
+    assert seed.sku_a not in {x["sku"] for x in g["purchase"]}
+    assert seed.sku_a not in {x["sku"] for x in g["forecast_sku"]}, "★ 货号必须从网格里消失"
 
 
-def test_a_sibling_msku_keeps_the_purchase_cells_from_being_stranded(client, seed):
-    """★ 「搁浅」与「还有人用」必须分得开：同货号还有 msku 在认领中时，
-    那批格子一个都没搁浅 —— 恒报「搁浅」等于每次释放都喊一次狼来了。"""
+def test_releasing_a_non_last_msku_keeps_the_purchase_cells(client, seed):
+    """★ 靶子的另一半：同货号还有 msku 在认领中（哪怕在另一家店），采购格一格都不许动 ——
+    PK 不含 msku，那批格子正是兄弟 msku 的。"""
     p = mk(client, seed)
-    for ms in (seed.msku_a, seed.msku_b):      # 两个 msku 同属 sku_a
+    for ms in (seed.msku_a, seed.msku_c):      # 同属 sku_a，不同店
         client.post(f"/v1/plans/{p}/claims", json={"seller_sku": ms[0], "sid": ms[1]},
                     headers=H(seed.actor))
+    client.put(f"/v1/plans/{p}/purchase/{seed.sku_a}/2026-10",
+               json={"planned_units": 500}, headers=H(seed.actor))
     client.put(f"/v1/plans/{p}/demand/{seed.msku_a[0]}/{seed.msku_a[1]}/2026-10",
                json={"expected_units": 130}, headers=H(seed.actor))
     r = client.delete(f"/v1/plans/{p}/claims/{seed.msku_a[0]}/{seed.msku_a[1]}",
                       headers=H(seed.actor)).json()
-    assert r["stranded_purchase_cells"] == []
+    assert r["dropped_purchase_cells"] == []
+    assert purchase_cells(p, seed.sku_a) == [("2026-10", 500), ("2026-11", None), ("2026-12", None)]
     # ★ 两个列表各说各的事：这一次确实删掉了三个期望销量格子
     assert [x["period"] for x in r["dropped_cells"]] == ["2026-10", "2026-11", "2026-12"]
     assert {"period": "2026-10", "expected_units": 130} in r["dropped_cells"]
+
+
+def test_release_last_msku_logs_the_dropped_purchase_cells(client, seed, scm_log):
+    p = mk(client, seed)
+    client.post(f"/v1/plans/{p}/claims", json={"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]},
+                headers=H(seed.actor))
+    client.put(f"/v1/plans/{p}/purchase/{seed.sku_a}/2026-11",
+               json={"planned_units": 22}, headers=H(seed.actor))
+    client.delete(f"/v1/plans/{p}/claims/{seed.msku_a[0]}/{seed.msku_a[1]}", headers=H(seed.actor))
+    line = log_line(scm_log, "release_claim")
+    assert f"plan_id={p}" in line and f"actor={seed.actor}" in line and f"sku={seed.sku_a}" in line
+    assert "2026-11:22" in line and "2026-10:None" in line
+
+
+def remove(client, seed, p, sku):
+    return client.delete(f"/v1/plans/{p}/skus/{sku}", headers=H(seed.actor))
+
+
+def test_remove_sku_releases_every_msku_across_stores_and_drops_everything_named(client, seed):
+    """★ 业主裁定 2026-09-27：「直接删除货号与货号内对应的 msku」—— 一个调用、一个事务，
+    跨店把该货号的 msku 全部释放，期望销量格与采购格一并删掉，逐格带值回报。"""
+    p = mk(client, seed)
+    for ms in (seed.msku_a, seed.msku_b, seed.msku_c, seed.msku_d):   # a/b/c = sku_a，d = sku_b
+        client.post(f"/v1/plans/{p}/claims", json={"seller_sku": ms[0], "sid": ms[1]},
+                    headers=H(seed.actor))
+    client.put(f"/v1/plans/{p}/demand/{seed.msku_c[0]}/{seed.msku_c[1]}/2026-11",
+               json={"expected_units": 44}, headers=H(seed.actor))
+    client.put(f"/v1/plans/{p}/purchase/{seed.sku_a}/2026-10",
+               json={"planned_units": 24}, headers=H(seed.actor))
+    r = remove(client, seed, p, seed.sku_a)
+    assert r.status_code == 200, r.text
+    b = r.json()
+    assert b["sku"] == seed.sku_a
+    assert b["released"] == [{"seller_sku": "MSKU-A", "sid": "11072"},
+                             {"seller_sku": "MSKU-B", "sid": "11072"},
+                             {"seller_sku": "MSKU-C", "sid": "11094"}]
+    assert len(b["dropped_cells"]) == 9
+    assert {"seller_sku": "MSKU-C", "sid": "11094", "period": "2026-11",
+            "expected_units": 44} in b["dropped_cells"]
+    assert b["dropped_purchase_cells"] == [
+        {"sku": seed.sku_a, "period": "2026-10", "planned_units": 24},
+        {"sku": seed.sku_a, "period": "2026-11", "planned_units": None},
+        {"sku": seed.sku_a, "period": "2026-12", "planned_units": None}]
+    # ★ 被丢掉的那一侧之外，留下的那一侧也要数：sku_b 一格没动
+    assert active_claims(p) == [seed.msku_d]
+    assert len(purchase_cells(p, seed.sku_b)) == 3 and purchase_cells(p, seed.sku_a) == []
+    g = client.get(f"/v1/plans/{p}/grid", headers=H(seed.actor)).json()
+    assert {x["sku"] for x in g["demand"]} == {seed.sku_b}
+    assert {x["sku"] for x in g["forecast_sku"]} == {seed.sku_b}
+
+
+def test_remove_sku_is_atomic(client, seed, monkeypatch):
+    """★ 一个事务：中途炸了就一样都不许少 —— 半截移出会留下「msku 没了、采购格还在」的货号。"""
+    from api.ui import plans
+    p = mk(client, seed)
+    for ms in (seed.msku_a, seed.msku_c):
+        client.post(f"/v1/plans/{p}/claims", json={"seller_sku": ms[0], "sid": ms[1]},
+                    headers=H(seed.actor))
+
+    def boom(*a, **k):
+        raise RuntimeError("注入：删采购格时炸了")
+    monkeypatch.setattr(plans, "_drop_purchase_cells", boom)
+    r = remove(client, seed, p, seed.sku_a)
+    assert r.status_code == 500
+    assert active_claims(p) == [seed.msku_a, seed.msku_c]
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT count(*) FROM plan_demand_cell WHERE plan_id = %s", (p,))
+        assert cur.fetchone()[0] == 6
+    assert len(purchase_cells(p, seed.sku_a)) == 3
+
+
+def test_remove_sku_clears_legacy_stranded_purchase_cells(client, seed):
+    """★ F5 时代留下的货号（没有 msku、只剩采购格，DBCD028014AL 就是）也得移得掉 ——
+    否则裁定之前搁浅的那些永远删不掉。"""
+    p = mk(client, seed)
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("INSERT INTO plan_purchase_cell (plan_id, sku, period_start, planned_units,"
+                    " updated_by) VALUES (%s, %s, '2026-10-01', 7, %s)", (p, seed.sku_b, seed.actor))
+    b = remove(client, seed, p, seed.sku_b).json()
+    assert b["released"] == [] and b["dropped_cells"] == []
+    assert b["dropped_purchase_cells"] == [{"sku": seed.sku_b, "period": "2026-10",
+                                            "planned_units": 7}]
+
+
+def test_remove_sku_not_in_the_plan_is_404(client, seed):
+    p = mk(client, seed)
+    r = remove(client, seed, p, seed.sku_a)
+    assert r.status_code == 404 and r.json()["error"] == "sku_not_in_plan"
+
+
+def test_remove_sku_logs_what_it_dropped(client, seed, scm_log):
+    p = mk(client, seed)
+    client.post(f"/v1/plans/{p}/claims", json={"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]},
+                headers=H(seed.actor))
+    client.put(f"/v1/plans/{p}/purchase/{seed.sku_a}/2026-10",
+               json={"planned_units": 24}, headers=H(seed.actor))
+    remove(client, seed, p, seed.sku_a)
+    line = log_line(scm_log, "remove_sku")
+    assert f"plan_id={p}" in line and f"actor={seed.actor}" in line and f"sku={seed.sku_a}" in line
+    assert "2026-10:24" in line and "MSKU-A/11072" in line
 
 
 def test_reclaiming_in_the_same_plan_revives_the_row(client, seed):

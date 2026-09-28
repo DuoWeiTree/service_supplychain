@@ -2,20 +2,36 @@ import { useState } from 'react';
 import { pushToast } from '../shell/toastStore';
 import { useInFlight } from '../shell/useInFlight';
 import { api, ApiError } from '../api';
-import type { PlanId, Period, Sid } from '../api/types';
+import type { DroppedPurchaseCell, PlanId, Period, Sid } from '../api/types';
 import { parseUnits, type SkuBlock } from './planGridModel';
 
-/** ★ 网格页的保存类动作（期望销量 / 计划采购量 / 移出货号 / 移出 msku）从 PlanGrid.tsx
+/** ★ 网格页的保存类动作（期望销量 / 计划采购量 / 移出货号 / 移出该店 / 移出 msku）从 PlanGrid.tsx
  *  抽到这里——行为与测试断言不变（Ruling B），只是搬家。
  *  `load` 由调用方传入并在每次保存后触发重载；`fail`/`succeed` 把失败挂到页面底部的
  *  ErrorDetail 上，并在**同一个动作**下次成功时把它收掉（不是任何一次 load 都清）。 */
 
-/** ★ 在飞 key 的拼法集中在这四个函数里 —— 按钮的 `disabled` 与早退判据必须读同一个 key，
+/** ★ 在飞 key 的拼法集中在这几个函数里 —— 按钮的 `disabled` 与早退判据必须读同一个 key，
  *  各自拼一遍就会出现「置灰了但没挡住」或者反过来。 */
 export const demandKey = (sellerSku: string, sid: Sid, period: Period) => `d:${sellerSku}:${sid}:${period}`;
 export const purchaseKey = (sku: string, period: Period) => `p:${sku}:${period}`;
-export const skuKey = (block: SkuBlock) => `sku:${block.sid}:${block.sku}`;
+export const storeKey = (block: SkuBlock) => `store:${block.sid}:${block.sku}`;
+export const skuKey = (sku: string) => `sku:${sku}`;
 export const mskuKey = (sellerSku: string, sid: Sid) => `msku:${sellerSku}:${sid}`;
+
+/** ★ 丢东西必须有声：格数全报（空格也是删掉的一行），人填过的逐格带值点名 */
+function droppedDemand(cells: { period: Period; expected_units: number | null; seller_sku?: string }[]): string {
+  const named = cells.filter((c) => c.expected_units !== null)
+    .map((c) => `${c.seller_sku ? `${c.seller_sku} ` : ''}${c.period} ${c.expected_units} 件`);
+  return `丢弃期望 ${cells.length} 格${named.length > 0 ? `（${named.join('、')}）` : ''}`;
+}
+function droppedPurchase(cells: DroppedPurchaseCell[]): string {
+  const named = cells.filter((c) => c.planned_units !== null).map((c) => `${c.period} ${c.planned_units} 件`);
+  return `丢弃计划采购 ${cells.length} 格${named.length > 0 ? `（${named.join('、')}）` : ''}`;
+}
+/** 业主裁定 2026-09-27：货号的最后一个 msku 走了，货号连同采购格一起走 —— 这件事单独说一句 */
+function skuGone(cells: DroppedPurchaseCell[]): string {
+  return cells.length === 0 ? '' : `。货号 ${cells[0]!.sku} 已无 msku，一并移出：${droppedPurchase(cells)}`;
+}
 
 export function usePlanGridSaves(
   planId: PlanId,
@@ -60,33 +76,51 @@ export function usePlanGridSaves(
     });
   }
 
-  // ★ F4/F5 裁定：try/catch → ErrorDetail + reload；逐个释放、遇错即停，
-  //   toast 点名已释放的与失败的那一个；搁浅的货号级采购格单独报一句，不许吞掉
-  async function removeSku(block: SkuBlock) {
-    const key = skuKey(block);
+  // ★ F4 裁定：try/catch → ErrorDetail + reload；逐个释放、遇错即停，toast 点名已释放的与失败的那一个。
+  //   ★ F5（搁浅采购格未删、待处理）已被业主裁定 2026-09-27 推翻：最后一个 msku 走了，采购格随之删掉并点名
+  async function removeStore(block: SkuBlock) {
+    const key = storeKey(block);
     await run(key, async () => {
       const released: string[] = [];
-      let dropped = 0;
-      let stranded = 0;
+      const dropped: { seller_sku: string; period: Period; expected_units: number | null }[] = [];
+      const droppedBuy: DroppedPurchaseCell[] = [];
       for (const row of block.mskus) {
         try {
           const r = await api.releaseClaim(planId, row.seller_sku, row.sid);
           released.push(row.seller_sku);
-          dropped += r.dropped_cells.length;
-          stranded += r.stranded_purchase_cells.length;
+          dropped.push(...r.dropped_cells.map((c) => ({ ...c, seller_sku: row.seller_sku })));
+          droppedBuy.push(...r.dropped_purchase_cells);
         } catch (e) {
           await load();
           fail(key, e as ApiError);
           const releasedText = released.length > 0 ? released.join('、') : '无';
-          pushToast({ kind: 'fail', text: `${block.sku} 移出中断：已释放 ${releasedText}，${row.seller_sku} 释放失败` });
+          pushToast({ kind: 'fail', text: `${block.seller_name} 的 ${block.sku} 移出该店中断：已释放 ${releasedText}，${row.seller_sku} 释放失败` });
           return;
         }
       }
       await load();
       succeed(key);
-      let text = `已移出 ${released.length} 个 msku，丢弃 ${dropped} 格`;
-      if (stranded > 0) text += `。货号级采购格 ${stranded} 个未删、待处理`;
-      pushToast({ kind: 'ok', text });
+      pushToast({ kind: 'ok',
+        text: `已移出该店 ${block.seller_name} 的 ${block.sku}：msku ${released.length} 个，${droppedDemand(dropped)}${skuGone(droppedBuy)}` });
+    });
+  }
+
+  // ★ 业主裁定 2026-09-27：「直接删除货号与货号内对应的 msku」—— 一个调用一个事务（后端 remove_sku），
+  //   不在前端逐个释放：中途失败会留下半个货号
+  async function removeSku(sku: string) {
+    const key = skuKey(sku);
+    await run(key, async () => {
+      try {
+        const r = await api.removeSku(planId, sku);
+        await load();
+        succeed(key);
+        pushToast({ kind: 'ok',
+          text: `已移出货号 ${sku}：msku ${r.released.length} 个，${droppedDemand(r.dropped_cells)}，${droppedPurchase(r.dropped_purchase_cells)}` });
+      } catch (e) {
+        await load();
+        fail(key, e as ApiError);
+        pushToast({ kind: 'fail', text: `${sku} 移出失败` });
+      }
     });
   }
 
@@ -94,12 +128,11 @@ export function usePlanGridSaves(
     const key = mskuKey(sellerSku, sid);
     await run(key, async () => {
       try {
-        const { dropped_cells, stranded_purchase_cells } = await api.releaseClaim(planId, sellerSku, sid);
+        const { dropped_cells, dropped_purchase_cells } = await api.releaseClaim(planId, sellerSku, sid);
         await load();
         succeed(key);
-        let text = `${sellerSku} 已移出，丢弃 ${dropped_cells.length} 格`;
-        if (stranded_purchase_cells.length > 0) text += `。货号级采购格 ${stranded_purchase_cells.length} 个未删、待处理`;
-        pushToast({ kind: 'ok', text });
+        pushToast({ kind: 'ok',
+          text: `已移出 msku ${sellerSku}：${droppedDemand(dropped_cells)}${skuGone(dropped_purchase_cells)}` });
       } catch (e) {
         await load();
         fail(key, e as ApiError);
@@ -108,5 +141,5 @@ export function usePlanGridSaves(
     });
   }
 
-  return { pending, inputErr, saveDemand, savePurchase, removeSku, removeMsku };
+  return { pending, inputErr, saveDemand, savePurchase, removeSku, removeStore, removeMsku };
 }

@@ -11,7 +11,7 @@ function renderSheet(grid: GridResponse = LABEL_GRID, orphansOk = false) {
   const model = buildGridModel(grid, LABEL_SELLERS);
   if (!orphansOk) expect(model.orphans).toEqual([]);
   render(<PlanSheet model={model} pending={new Set()} inputErr={{}} onDemand={vi.fn()}
-                    onPurchase={vi.fn()} onRemoveStore={vi.fn()} onRemoveMsku={vi.fn()} />);
+                    onPurchase={vi.fn()} onRemoveSku={vi.fn()} onRemoveStore={vi.fn()} onRemoveMsku={vi.fn()} />);
 }
 
 async function open(name: string) {
@@ -151,7 +151,7 @@ describe('spec §5：点开一格看依据', () => {
 
   it('★ 面板开着时整表重载：显示新 model 的数，不是打开那一刻的旧对象', async () => {
     const props = { pending: new Set<string>(), inputErr: {}, onDemand: vi.fn(), onPurchase: vi.fn(),
-                    onRemoveStore: vi.fn(), onRemoveMsku: vi.fn() };
+                    onRemoveSku: vi.fn(), onRemoveStore: vi.fn(), onRemoveMsku: vi.fn() };
     const { rerender } = render(<PlanSheet model={buildGridModel(LABEL_GRID, LABEL_SELLERS)} {...props} />);
     await open('依据 MSKU-A 2026-11');
     const g = structuredClone(LABEL_GRID);

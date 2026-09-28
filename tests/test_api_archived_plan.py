@@ -12,7 +12,7 @@ from shared.pg_client import pg_conn
 
 
 def archived_plan(client, seed):
-    """一张提交过、随后归档的计划 —— 八条写路径都能打到它。"""
+    """一张提交过、随后归档的计划 —— 九条写路径都能打到它。"""
     pid = prepared(client, seed)
     assert client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor)).status_code == 200
     r = client.post(f"/v1/plans/{pid}/archive", headers=H(seed.actor))
@@ -22,7 +22,7 @@ def archived_plan(client, seed):
 
 #: ★ 两个路由各自都要打到 —— plans.py 与 submit.py 是两份代码，
 #: 只测一边就只有一边挡得住，而两边看起来都「有测试」。
-WRITES = ["claim", "release", "put_demand", "put_purchase",      # plans.py
+WRITES = ["claim", "release", "remove_sku", "put_demand", "put_purchase",      # plans.py
           "submit", "cancel_rev", "mark_current", "archive_again"]  # submit.py / plans.py
 
 
@@ -31,6 +31,7 @@ def a_write(seed, name) -> tuple[str, str, dict | None]:
     return {
         "claim": ("post", "/claims", {"seller_sku": ms[0], "sid": ms[1]}),
         "release": ("delete", f"/claims/{ms[0]}/{ms[1]}", None),
+        "remove_sku": ("delete", f"/skus/{sku}", None),
         "put_demand": ("put", f"/demand/{ms[0]}/{ms[1]}/2026-10", {"expected_units": 7}),
         "put_purchase": ("put", f"/purchase/{sku}/2026-10", {"planned_units": 7}),
         "submit": ("post", "/submit", None),

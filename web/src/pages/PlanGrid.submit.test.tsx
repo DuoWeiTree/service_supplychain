@@ -47,7 +47,7 @@ async function renderGrid(submit: (...args: unknown[]) => Promise<SubmitResult>)
       getGrid: async () => JSON.parse(JSON.stringify(GRID)) as GridResponse,
       putDemand: async () => GRID.demand[0]!,
       putPurchase: async () => GRID.purchase[0]!,
-      releaseClaim: async () => ({ released: { seller_sku: '', sid: '' }, dropped_cells: [], stranded_purchase_cells: [] }),
+      releaseClaim: async () => ({ released: { seller_sku: '', sid: '' }, dropped_cells: [], dropped_purchase_cells: [] }),
       submit,
       // ★ Task 20：PlanGrid 挂载即调 getLeadTime（LeadTimeBar）—— 与本测试无关，给固定值
       getLeadTime: async () => ({ route: 'oversea_sea', make_days: 30, ship_days: 60, anchor_day: 15,

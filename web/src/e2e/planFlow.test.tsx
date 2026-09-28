@@ -121,3 +121,17 @@ describe('判据① · 建 → 加货品 → 填两种量 → 提交 → 铸出 
     expect(within(row).getByText('流转中')).toBeInTheDocument();
   });
 });
+
+describe('★ Task 22（业主裁定 2026-09-27）：mock 数据源下移走货号的最后一个 msku，货号也消失', () => {
+  it('单店单 msku 的货号「移出该店」→ 卡片消失，丢弃的计划采购点名', async () => {
+    const lone = G.demand.map((d) => d.sku)
+      .find((sku) => new Set(G.demand.filter((d) => d.sku === sku).map((d) => `${d.seller_sku}/${d.sid}`)).size === 1)!;
+    const sid = G.demand.find((d) => d.sku === lone)!.sid;
+    await app('/plans/1');
+    const block = await screen.findByTestId(`block-${sid}-${lone}`);
+    await userEvent.click(within(block).getByRole('button', { name: '移出该店' }));
+    const toast = await screen.findByRole('status');
+    expect(toast).toHaveTextContent(`货号 ${lone} 已无 msku，一并移出：丢弃计划采购 3 格`);
+    await waitFor(() => expect(screen.queryByTestId(`card-${lone}`)).toBeNull());
+  });
+});

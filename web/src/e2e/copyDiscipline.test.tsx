@@ -60,15 +60,24 @@ describe('文案纪律', () => {
 
   // ★ 一个动作一个名：按钮上的动词与 toast 里的动词必须同源。
   //   「删除货号」→「已移出 N 个 msku」是两个词，人会以为是两件事。
-  it('★ 移出货号：按钮说「移出」，toast 也说「已移出」', async () => {
-    await app('/plans/1');
-    const block = await screen.findAllByTestId(/^block-/);
-    const btn = within(block[0]!).getByRole('button', { name: '移出货号' });
-    await userEvent.click(btn);
-    const toast = await screen.findByRole('status');
-    expect(toast).toHaveTextContent('已移出');
-    expect(toast.textContent).not.toContain('删除');
-  });
+  // ★ Task 22：店铺行按钮原叫「移出货号」却只移这一家店 —— 按钮名本身就说错了事。
+  //   现在三个按钮三个名，各自的 toast 用各自的名：移出货号 / 移出该店 / 移出 msku。
+  const removals: [string, string, string][] = [
+    ['移出货号', 'purchase-row-DCC1800264G1', '已移出货号 DCC1800264G1'],
+    ['移出该店', 'block-11094-DCC1800264G1', '已移出该店'],
+    ['移出 msku', 'block-11072-DCC1800264G1', '已移出 msku'],
+  ];
+  for (const [verb, testId, said] of removals) {
+    it(`★ ${verb}：按钮说「${verb}」，toast 也说「${said}」`, async () => {
+      await app('/plans/1');
+      const scope = await screen.findByTestId(testId);
+      await userEvent.click(within(scope).getAllByRole('button', { name: verb })[0]!);
+      const toast = await screen.findByRole('status');
+      expect(toast).toHaveTextContent(said);
+      expect(toast.textContent).not.toContain('删除');
+      expect(toast.textContent).not.toContain(' · ');
+    });
+  }
 
   it('★ 添加货品：按钮说「添加」，报告也说「已添加」', async () => {
     await app('/plans/1/add');

@@ -326,13 +326,23 @@ export interface ClaimResult {
   seeded: { demand_cells: number; purchase_cells: number };
   no_history: NoHistoryEntry[];
 }
-// ★ 后端把丢掉的格逐条回给界面（含人填过的数），不是一个数；货号级采购格不删、只点名「搁浅」
+// ★ 后端把丢掉的格逐条回给界面（含人填过的数），不是一个数
 export interface DroppedCell { period: string; expected_units: number | null }
-export interface StrandedPurchaseCell { sku: string; period: string }
+/** ★ 业主裁定 2026-09-27（推翻 F5「搁浅采购格未删、待处理」）：货号没有 msku 了，采购格随之删掉，
+ *  逐格带值回报（null = 没填，照报） */
+export interface DroppedPurchaseCell { sku: string; period: string; planned_units: number | null }
 export interface ReleaseResult {
   released: { seller_sku: string; sid: Sid };
   dropped_cells: DroppedCell[];
-  stranded_purchase_cells: StrandedPurchaseCell[];
+  /** 释放的是该货号在本计划的最后一个 msku 时非空；否则 [] */
+  dropped_purchase_cells: DroppedPurchaseCell[];
+}
+/** `DELETE /plans/{id}/skus/{sku}`：跨店释放全部 msku + 删期望与采购格，一个事务 */
+export interface RemoveSkuResult {
+  sku: string;
+  released: { seller_sku: string; sid: Sid }[];
+  dropped_cells: (DroppedCell & { seller_sku: string; sid: Sid })[];
+  dropped_purchase_cells: DroppedPurchaseCell[];
 }
 
 /** S-14：值域已裁定，只有这两个 */

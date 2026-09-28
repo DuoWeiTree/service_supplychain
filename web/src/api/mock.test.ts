@@ -2,8 +2,10 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { createMockApi, markForecastStale } from './mock';
 import { ApiError } from './client';
-import type { CountKey, GridResponse } from './types';
+import type { CountKey, GridResponse, Seller } from './types';
 import gridFixture from './fixtures/grid-1.json';
+import sellersFixture from './fixtures/sellers.json';
+import { buildGridModel } from '../pages/planGridModel';
 
 let api = createMockApi();
 beforeEach(() => { api = createMockApi(); });
@@ -250,6 +252,7 @@ describe('mock 数据源', () => {
       const writes: [string, Promise<unknown>][] = [
         ['claim', api.claim(ARCHIVED, { seller_sku: 'MSKU-A', sid: '11072' })],
         ['releaseClaim', api.releaseClaim(ARCHIVED, 'MSKU-A', '11072')],
+        ['removeSku', api.removeSku(ARCHIVED, 'DCC1800264G1')],
         ['putDemand', api.putDemand(ARCHIVED, 'MSKU-A', '11072', '2026-10', 1)],
         ['putPurchase', api.putPurchase(ARCHIVED, 'DCC1800264G1', '2026-10', 1)],
         ['submit', api.submit(ARCHIVED)],
@@ -375,5 +378,66 @@ describe('★ OP-17 复核 R1：依赖计划采购 / 期望销量的每一项都
     const g = await api.getGrid(1);
     expect(g.params.make_days).toBe(10);
     expect(g.forecast_store.every((x) => x.reason === 'not_recomputed_in_mock' || x.state === 'not_applicable')).toBe(true);
+  });
+});
+
+describe('★ Task 22（业主裁定 2026-09-27）：货号没有 msku 了，货号也移出 —— 与 api/ui/plans.py 同口径', () => {
+  /** 该货号在网格的每一个块里还剩几行 —— 「消失」要每个块都数，漏一个就是半个货号 */
+  const leftOf = (g: GridResponse, sku: string) => ({
+    demand: g.demand.filter((r) => r.sku === sku).length,
+    purchase: g.purchase.filter((r) => r.sku === sku).length,
+    forecast: g.forecast.filter((r) => r.sku === sku).length,
+    forecast_msku: g.forecast_msku.filter((r) => r.sku === sku).length,
+    forecast_store: g.forecast_store.filter((r) => r.sku === sku).length,
+    forecast_sku: g.forecast_sku.filter((r) => r.sku === sku).length,
+    beyond_horizon: g.beyond_horizon.filter((r) => r.sku === sku).length,
+    unallocated: g.unallocated.filter((r) => r.sku === sku).length,
+  });
+  const GONE = { demand: 0, purchase: 0, forecast: 0, forecast_msku: 0, forecast_store: 0,
+                 forecast_sku: 0, beyond_horizon: 0, unallocated: 0 };
+  const sellers = sellersFixture.sellers as Seller[];
+
+  it('移出货号的最后一个 msku：采购格随之删掉并逐格回报，货号从网格里消失', async () => {
+    const r = await api.releaseClaim(1, 'MSKU-E', '11072');
+    expect(r.dropped_purchase_cells).toEqual(['2026-10', '2026-11', '2026-12'].map((period) => (
+      { sku: 'A4P-TOY-003', period, planned_units: null })));
+    const g = await api.getGrid(1);
+    expect(leftOf(g, 'A4P-TOY-003')).toEqual(GONE);
+    // ★ 删干净了才不会冒出「有库存没销量」之类的孤儿 —— 两个真相
+    expect(buildGridModel(g, sellers).orphans).toEqual([]);
+  });
+
+  it('不是最后一个：采购格一格不动，只走这个 msku；这家店没 msku 了，店铺行也走', async () => {
+    const r = await api.releaseClaim(1, 'MSKU-D', '11072');
+    expect(r.dropped_purchase_cells).toEqual([]);
+    expect(r.dropped_cells.map((c) => c.period)).toEqual(['2026-10', '2026-11', '2026-12']);
+    const g = await api.getGrid(1);
+    expect(g.purchase.filter((p) => p.sku === 'A4P-TOY-002')).toHaveLength(3);
+    expect(g.demand.filter((d) => d.seller_sku === 'MSKU-D')).toEqual([]);
+    expect(g.forecast_store.filter((s) => s.sku === 'A4P-TOY-002' && s.sid === '11072')).toEqual([]);
+    expect(buildGridModel(g, sellers).orphans).toEqual([]);
+  });
+
+  it('removeSku：跨店释放全部 msku、期望与采购格一并删掉，人填过的数带值回报', async () => {
+    const r = await api.removeSku(1, 'DCC1800264G1');
+    expect(r.sku).toBe('DCC1800264G1');
+    expect(r.released).toEqual([
+      { seller_sku: 'MSKU-A', sid: '11072' }, { seller_sku: 'MSKU-B', sid: '11072' },
+      { seller_sku: 'MSKU-C', sid: '11094' }]);
+    expect(r.dropped_cells).toHaveLength(9);
+    expect(r.dropped_cells).toContainEqual({ seller_sku: 'MSKU-A', sid: '11072', period: '2026-10', expected_units: 130 });
+    expect(r.dropped_purchase_cells).toContainEqual({ sku: 'DCC1800264G1', period: '2026-10', planned_units: 500 });
+    expect(r.dropped_purchase_cells).toHaveLength(3);
+    const g = await api.getGrid(1);
+    expect(leftOf(g, 'DCC1800264G1')).toEqual(GONE);
+    expect(g.purchase.filter((p) => p.sku === 'A4P-TOY-002')).toHaveLength(3);   // 别的货号不动
+    expect(buildGridModel(g, sellers).orphans).toEqual([]);
+  });
+
+  it('removeSku：计划里没有这个货号 → 404 sku_not_in_plan', async () => {
+    const err = await api.removeSku(1, 'NOPE').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).status).toBe(404);
+    expect((err as ApiError).error).toBe('sku_not_in_plan');
   });
 });

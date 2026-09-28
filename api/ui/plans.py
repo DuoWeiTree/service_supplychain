@@ -432,32 +432,43 @@ def claim(plan_id: int, body: dict, request: Request,
             "no_history": no_history, "history_window": history_window}
 
 
-def _stranded_purchase_cells(cur, plan_id: int, seller_sku: str, sid: str) -> list[dict]:
-    """释放一个 msku 之后，**留在原地**的货号级采购格子。
+def _drop_purchase_cells(cur, plan_id: int, sku: str) -> list[dict]:
+    """删掉一个货号在本计划里的全部采购格子，逐格带值回报（null 照报：空 ≠ 0）。
 
-    ★ 不删：同货号的兄弟 msku 还在认领中时，那批格子正是它的（PK 不含 msku）。
-    ★ 但必须报：`dropped_cells` 只点名了两种格子里的一种，于是货号级那一批
-      在界面上无声地留着 —— 提交时它们会以 `no_claimed_msku` 被跳过，
-      而人到那时才知道刚才的释放还留下了东西。
-    ★ 还有兄弟在认领 ⇒ 一个都不算搁浅；认不出货号（桥表缺行）也不许静默当成空。
-    """
+    ★ 业主裁定 2026-09-27（推翻 F5「搁浅采购格未删、待处理」）：货号没有 msku 了，
+      货号本身也要移出 —— 留着的采购格会让网格把货号行长回来。删可以，但必须有声。"""
+    cur.execute("DELETE FROM plan_purchase_cell WHERE plan_id = %s AND sku = %s"
+                " RETURNING period_start, planned_units", (plan_id, sku))
+    return [{"sku": sku, "period": p.strftime("%Y-%m"), "planned_units": u}
+            for p, u in sorted(cur.fetchall())]
+
+
+def _cells_log(cells: list[dict]) -> str:
+    return ",".join(f"{c['period']}:{c['planned_units']}" for c in cells) or "-"
+
+
+def _orphaned_sku(cur, plan_id: int, seller_sku: str, sid: str) -> str | None:
+    """释放一个 msku 之后，它的货号若在本计划里已无 msku 在认领中，返回货号。
+
+    ★ 先锁该货号的采购格再数兄弟：同货号两个 msku 并发释放时，不锁的话两边都看见
+      对方「还在」（对方未提交），于是谁都不删，格子照样搁浅。锁住后，后到的那一个
+      等先到的提交，再数时看得见对方已释放。
+    ★ 认不出货号（桥表缺行）不许静默当成「没兄弟」去删 —— 报出来，采购格不动。"""
     cur.execute("SELECT sku FROM msku_bridge WHERE seller_sku = %s AND sid = %s",
                 (seller_sku, sid))
     row = cur.fetchone()
     if row is None:
         log.warning("op=release_claim plan_id=%s seller_sku=%s sid=%s 桥表无此 msku —— "
-                    "无法判定货号级采购格子是否搁浅", plan_id, seller_sku, sid)
-        return []
+                    "无法判定货号是否随之移出，采购格未动", plan_id, seller_sku, sid)
+        return None
     sku = row[0]
+    cur.execute("SELECT 1 FROM plan_purchase_cell WHERE plan_id = %s AND sku = %s FOR UPDATE",
+                (plan_id, sku))
     cur.execute("SELECT count(*) FROM msku_claim cl"
                 " JOIN msku_bridge b ON b.seller_sku = cl.seller_sku AND b.sid = cl.sid"
                 " WHERE cl.plan_id = %s AND cl.released_at IS NULL AND b.sku = %s",
                 (plan_id, sku))
-    if cur.fetchone()[0]:
-        return []
-    cur.execute("SELECT period_start FROM plan_purchase_cell"
-                " WHERE plan_id = %s AND sku = %s ORDER BY period_start", (plan_id, sku))
-    return [{"sku": sku, "period": p.strftime("%Y-%m")} for (p,) in cur.fetchall()]
+    return None if cur.fetchone()[0] else sku
 
 
 @router.delete("/plans/{plan_id}/claims/{seller_sku}/{sid}")
@@ -480,12 +491,51 @@ def release(plan_id: int, seller_sku: str, sid: str, request: Request,
             raise ApiError(404, "claim_not_found", "没有这条在占用中的认领",
                            {"plan_id": plan_id, "seller_sku": seller_sku, "sid": sid})
         # ★ 必须在释放之后算：之前算的话，刚释放的这一个自己还算在「兄弟」里
-        stranded = _stranded_purchase_cells(cur, plan_id, seller_sku, sid)
-    log.info("op=release_claim plan_id=%s seller_sku=%s sid=%s dropped=%d stranded=%d",
-             plan_id, seller_sku, sid, len(dropped), len(stranded))
+        sku = _orphaned_sku(cur, plan_id, seller_sku, sid)
+        dropped_purchase = _drop_purchase_cells(cur, plan_id, sku) if sku else []
+    log.info("op=release_claim plan_id=%s actor=%s seller_sku=%s sid=%s sku=%s dropped=%d"
+             " sku_removed=%s dropped_purchase=%s",
+             plan_id, who, seller_sku, sid, sku, len(dropped), sku is not None,
+             _cells_log(dropped_purchase))
     # ★ 丢东西必须有声：删掉的格子逐条回给界面，包括人填过的数
     return {"released": {"seller_sku": seller_sku, "sid": sid}, "dropped_cells": dropped,
-            "stranded_purchase_cells": stranded}
+            "dropped_purchase_cells": dropped_purchase}
+
+
+@router.delete("/plans/{plan_id}/skus/{sku}")
+def remove_sku(plan_id: int, sku: str, request: Request, who: str = Depends(actor)):
+    """移出货号：跨店释放它的全部 msku + 删期望销量格 + 删采购格，一个事务。
+
+    ★ 一个调用而不是前端逐个 release：逐个做中途失败会留下半个货号（msku 少了一部分、
+      采购格还在），而那正是业主要消灭的形状。"""
+    declared(request)
+    with timed("remove_sku", actor=who, plan_id=plan_id, sku=sku), pg_conn() as c, \
+            c.cursor() as cur:
+        ensure_writable(cur, plan_id)
+        cur.execute("UPDATE msku_claim cl SET released_at = now(), released_by = %s"
+                    "  FROM msku_bridge b"
+                    " WHERE b.seller_sku = cl.seller_sku AND b.sid = cl.sid AND b.sku = %s"
+                    "   AND cl.plan_id = %s AND cl.released_at IS NULL"
+                    " RETURNING cl.seller_sku, cl.sid", (who, sku, plan_id))
+        released = [{"seller_sku": s, "sid": i} for s, i in sorted(cur.fetchall())]
+        cur.execute("DELETE FROM plan_demand_cell d USING msku_bridge b"
+                    " WHERE b.seller_sku = d.seller_sku AND b.sid = d.sid AND b.sku = %s"
+                    "   AND d.plan_id = %s"
+                    " RETURNING d.seller_sku, d.sid, d.period_start, d.expected_units",
+                    (sku, plan_id))
+        dropped = [{"seller_sku": s, "sid": i, "period": p.strftime("%Y-%m"), "expected_units": u}
+                   for s, i, p, u in sorted(cur.fetchall())]
+        dropped_purchase = _drop_purchase_cells(cur, plan_id, sku)
+        if not (released or dropped or dropped_purchase):
+            raise ApiError(404, "sku_not_in_plan", "这张计划里没有这个货号",
+                           {"plan_id": plan_id, "sku": sku})
+    log.info("op=remove_sku plan_id=%s actor=%s sku=%s released=%s dropped=%d"
+             " dropped_human=%d dropped_purchase=%s",
+             plan_id, who, sku, ",".join(f"{m['seller_sku']}/{m['sid']}" for m in released) or "-",
+             len(dropped), sum(d["expected_units"] is not None for d in dropped),
+             _cells_log(dropped_purchase))
+    return {"sku": sku, "released": released, "dropped_cells": dropped,
+            "dropped_purchase_cells": dropped_purchase}
 
 
 def _ym(d: dt.date) -> str:

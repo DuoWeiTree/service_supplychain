@@ -197,11 +197,27 @@ def test_msku_level_first_stockout_is_emitted(client, seed, lead_time_reset):
     assert by[seed.msku_c]["sku"] == seed.sku_a
 
 
-def test_sku_whose_last_msku_was_released_keeps_its_pipeline(client, seed, lead_time_reset):
-    """释放后搁浅的采购格子 → 货号没有 msku，但它的在途不许在推演里消失。"""
+def test_sku_whose_last_msku_was_released_leaves_the_grid(client, seed, lead_time_reset):
+    """★ 业主裁定 2026-09-27 推翻 F5：最后一个 msku 释放 → 采购格随之删掉 → 货号从网格消失。
+    （原来这里钉的是「搁浅的货号在推演里保留在途」—— 那条路径现在只剩旧数据，见下一条。）"""
     pid = s1(client, seed)
     r = client.delete(f"/v1/plans/{pid}/claims/MSKU-D/11072", headers=H(seed.actor))
     assert r.status_code == 200, r.text
+    g = grid(client, seed, pid)
+    assert rows(g, "forecast_sku", sku=seed.sku_b) == []
+    assert rows(g, "purchase", sku=seed.sku_b) == []
+
+
+def test_legacy_stranded_purchase_cells_keep_their_pipeline(client, seed, lead_time_reset):
+    """F5 时代留下的搁浅采购格（有采购格、没有 msku）：裁定前的计划里还有，
+    在它被「移出货号」之前，它的在途不许在推演里消失。"""
+    pid = s1(client, seed)
+    with pg_conn() as c, c.cursor() as cur:
+        # 绕过 release 的连带删除，造出裁定前的形状
+        cur.execute("UPDATE msku_claim SET released_at = now(), released_by = %s"
+                    " WHERE plan_id = %s AND seller_sku = 'MSKU-D'", (seed.actor, pid))
+        cur.execute("DELETE FROM plan_demand_cell WHERE plan_id = %s AND seller_sku = 'MSKU-D'",
+                    (pid,))
     g = grid(client, seed, pid)
     b = rows(g, "forecast_sku", sku=seed.sku_b)
     assert [(r["state"], r["reason"], r["pipeline"]["ordered_open"]) for r in b] == [

@@ -1,7 +1,7 @@
 import { ApiError, type SupplyChainApi } from './client';
 import type {
-  CatalogResult, CountKey, ForecastArrival, ForecastState, GridResponse, LeadTime, LeadTimeResult,
-  NoHistoryEntry, PlanSummary, RevList, Seller, SkippedCell, SystemBasisNoSource,
+  CatalogResult, CountKey, DroppedPurchaseCell, ForecastArrival, ForecastState, GridResponse, LeadTime,
+  LeadTimeResult, NoHistoryEntry, PlanSummary, RevList, Seller, Sid, SkippedCell, SystemBasisNoSource,
 } from './types';
 import plansFixture from './fixtures/plans.json';
 import gridFixture from './fixtures/grid-1.json';
@@ -99,6 +99,41 @@ export function createMockApi(): SupplyChainApi {
     const g = grids.get(id);
     if (!g) throw new ApiError(404, 'plan_not_found', '这张计划还没有网格', { plan_id: id });
     return g;
+  };
+  /** 一个 msku 的格子与它自己的预测行一起走；目录里还它自由（★ 释放不删目录行） */
+  const dropMsku = (g: GridResponse, sellerSku: string, sid: Sid) => {
+    const mine = (r: { seller_sku: string; sid: Sid }) => r.seller_sku === sellerSku && r.sid === sid;
+    const cells = g.demand.filter(mine);
+    g.demand = g.demand.filter((r) => !mine(r));
+    g.forecast = g.forecast.filter((r) => !mine(r));
+    g.forecast_msku = g.forecast_msku.filter((r) => !mine(r));
+    g.unallocated = g.unallocated.filter((u) => !(u.scope === 'msku' && mine(u)));
+    const m = catalog.items.flatMap((x) => x.mskus).find((x) => x.seller_sku === sellerSku && x.sid === sid);
+    if (m) { m.selectable = true; m.claimed_by = null; }
+    return cells;
+  };
+  /** ★ Task 22（业主裁定 2026-09-27）：与 api/ui/plans.py 同口径 —— 店里没 msku 了店铺行走；
+   *  货号没 msku 了，采购格与该货号的每一个预测块一起走（OP-17：走掉的货号不标「未重算」，是没了），
+   *  删掉的采购格逐格回报。货号还有 msku → 照 OP-17 标「未重算」。 */
+  const settleSku = (g: GridResponse, sku: string, sids: Iterable<Sid>): DroppedPurchaseCell[] => {
+    for (const sid of sids) {
+      if (!g.demand.some((d) => d.sku === sku && d.sid === sid)) {
+        g.forecast_store = g.forecast_store.filter((r) => !(r.sku === sku && r.sid === sid));
+      }
+    }
+    if (g.demand.some((d) => d.sku === sku)) { markForecastStale(g, sku, 'demand'); return []; }
+    const gone = g.purchase.filter((p) => p.sku === sku)
+      .map((p) => ({ sku, period: p.period, planned_units: p.planned_units }))
+      .sort((a, b) => a.period.localeCompare(b.period));
+    const other = (r: { sku: string }) => r.sku !== sku;
+    g.purchase = g.purchase.filter(other);
+    g.forecast = g.forecast.filter(other);
+    g.forecast_msku = g.forecast_msku.filter(other);
+    g.forecast_store = g.forecast_store.filter(other);
+    g.forecast_sku = g.forecast_sku.filter(other);
+    g.beyond_horizon = g.beyond_horizon.filter(other);
+    g.unallocated = g.unallocated.filter(other);
+    return gone;
   };
 
   return {
@@ -271,9 +306,29 @@ export function createMockApi(): SupplyChainApi {
 
     async releaseClaim(planId, sellerSku, sid) {
       writable(planId);
-      const msku = catalog.items.flatMap((s) => s.mskus).find((m) => m.seller_sku === sellerSku && m.sid === sid);
-      if (msku) { msku.selectable = true; msku.claimed_by = null; }   // ★ 释放不删行
-      return { released: { seller_sku: sellerSku, sid }, dropped_cells: [], stranded_purchase_cells: [] };
+      const g = grid(planId);
+      const cells = dropMsku(g, sellerSku, sid);
+      const sku = cells[0]?.sku;
+      return {
+        released: { seller_sku: sellerSku, sid },
+        dropped_cells: cells.map((d) => ({ period: d.period, expected_units: d.expected_units })),
+        dropped_purchase_cells: sku === undefined ? [] : settleSku(g, sku, [sid]),
+      };
+    },
+
+    async removeSku(planId, sku) {
+      writable(planId);
+      const g = grid(planId);
+      const keys = new Map(g.demand.filter((d) => d.sku === sku)
+        .map((d) => [`${d.seller_sku}\u0000${d.sid}`, { seller_sku: d.seller_sku, sid: d.sid }]));
+      const released = [...keys.values()].sort((a, b) =>
+        a.seller_sku.localeCompare(b.seller_sku) || a.sid.localeCompare(b.sid));
+      if (released.length === 0 && !g.purchase.some((p) => p.sku === sku)) {
+        throw new ApiError(404, 'sku_not_in_plan', '这张计划里没有这个货号', { plan_id: planId, sku });
+      }
+      const dropped_cells = released.flatMap((m) => dropMsku(g, m.seller_sku, m.sid)
+        .map((d) => ({ seller_sku: d.seller_sku, sid: d.sid, period: d.period, expected_units: d.expected_units })));
+      return { sku, released, dropped_cells, dropped_purchase_cells: settleSku(g, sku, released.map((m) => m.sid)) };
     },
 
     async submit(planId) {

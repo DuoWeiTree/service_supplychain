@@ -75,8 +75,11 @@ describe('http 数据源', () => {
     const api = mk();
     await api.putDemand(1, 'MSKU/A', '110 72', '2026-10', null);
     await api.releaseClaim(1, 'MSKU/A', '110 72');
+    await api.removeSku(1, 'SKU/1 X');
     expect(String(spy.mock.calls[0]![0])).toBe('/v1/plans/1/demand/MSKU%2FA/110%2072/2026-10');
     expect(String(spy.mock.calls[1]![0])).toBe('/v1/plans/1/claims/MSKU%2FA/110%2072');
+    expect(String(spy.mock.calls[2]![0])).toBe('/v1/plans/1/skus/SKU%2F1%20X');
+    expect((spy.mock.calls[2]![1] as RequestInit).method).toBe('DELETE');
   });
 
   it('409 抛 ApiError，点名字段从顶层收进 fields', async () => {

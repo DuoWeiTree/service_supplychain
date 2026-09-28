@@ -115,6 +115,7 @@ export function createHttpApi(opt: HttpOptions): SupplyChainApi {
     //   而「下一个人照抄旁边那段」正是这种漏活下去的方式
     releaseClaim: (planId, sellerSku, sid) =>
       call('DELETE', `/plans/${planId}/claims/${encodeURIComponent(sellerSku)}/${encodeURIComponent(sid)}`),
+    removeSku: (planId, sku) => call('DELETE', `/plans/${planId}/skus/${encodeURIComponent(sku)}`),
 
     submit: (planId) => call('POST', `/plans/${planId}/submit`),
     listRevs: (planId) => call('GET', `/plans/${planId}/revs`),
