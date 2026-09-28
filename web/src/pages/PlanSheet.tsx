@@ -477,21 +477,23 @@ export function PlanSheet(props: PlanSheetProps) {
         <div className="ps-rh" role="rowheader">
           <button type="button" className="pm-tw" aria-expanded={!folded}
             aria-label={`${folded ? '展开' : '折叠'} ${card.sku}`} onClick={() => toggleSku(card.sku)}>›</button>
-          <div className="ps-rh__txt">
+          <div className="ps-rh__txt ps-rh__txt--act">
             <div className="ps-sku">
-              {card.sku}
+              <span className="ps-name" title={card.sku}>{card.sku}</span>
+            </div>
+            <div className="ps-subline">
               {s.outs.length > 0 && (
                 <span className="ps-flag ps-flag--danger" data-testid={`outage-${card.sku}`}
                   title={s.outs.map((o) => `${o.block.seller_name} 断货 ${o.months} 个月`).join('\n')}>断 {s.outs.length}</span>
               )}
               {s.todo > 0 && <span className="ps-flag ps-flag--warn" title={`${s.todo} 格销量待填`}>待 {s.todo}</span>}
+              <span className="ps-sub">采购／预测·库存·在途</span>
+              <button
+                type="button" className="pm-rm" title={`把 ${card.sku} 连同各店的 msku 移出这张计划`}
+                disabled={pending.has(removeKey(card.sku))} onClick={() => props.onRemoveSku(card.sku)}
+              >移出货号</button>
             </div>
-            <div className="ps-sub">采购／预测·库存·在途</div>
           </div>
-          <button
-            type="button" className="pm-rm" title={`把 ${card.sku} 连同各店的 msku 移出这张计划`}
-            disabled={pending.has(removeKey(card.sku))} onClick={() => props.onRemoveSku(card.sku)}
-          >移出货号</button>
         </div>
         {periods.map((p, ci) => {
           if (!buy || row.nav === undefined) {
@@ -532,17 +534,19 @@ export function PlanSheet(props: PlanSheetProps) {
               onClick={() => setCollapsed((s) => { const n = new Set(s); if (n.has(bKey)) n.delete(bKey); else n.add(bKey); return n; })}
             >›</button>
           ) : <span className="pm-tw pm-tw--none" />}
-          <div className="ps-rh__txt">
+          <div className="ps-rh__txt ps-rh__txt--act">
             <div className="ps-store">
-              {block.seller_name}
+              <span className="ps-name" title={block.seller_name}>{block.seller_name}</span>
               {block.market && <span className="pm-mkt">{block.market}</span>}
             </div>
-            <div className={`ps-sub${multi ? '' : ' ps-sub--mono'}`}>{multi ? `${block.mskus.length} 个 msku 合计` : single!.seller_sku}</div>
+            <div className="ps-subline">
+              <span className={`ps-sub${multi ? '' : ' ps-sub--mono'}`}>{multi ? `${block.mskus.length} 个 msku 合计` : single!.seller_sku}</span>
+              <button
+                type="button" className="pm-rm" title={`只移出 ${block.seller_name} 这一家店的 ${block.sku}，其它店不动（移出该店）`}
+                disabled={pending.has(removeKey(block.sku))} onClick={() => props.onRemoveStore(block)}
+              >移出该店</button>
+            </div>
           </div>
-          <button
-            type="button" className="pm-rm" title={`只移出 ${block.seller_name} 这一家店的 ${block.sku}，其它店不动（移出该店）`}
-            disabled={pending.has(removeKey(block.sku))} onClick={() => props.onRemoveStore(block)}
-          >移出该店</button>
         </div>
         {periods.map((p, ci) => {
           const inv = stockAt(block, p);

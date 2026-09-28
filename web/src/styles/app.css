@@ -95,6 +95,11 @@
   padding: 0 var(--space-3); background: var(--surface); box-shadow: inset -1px 0 0 var(--border); min-width: 0;
 }
 .ps-rh__txt { min-width: 0; }
+.ps-rh__txt--act { flex: 1 1 0; }
+.ps-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ps-flag, .pm-mkt { flex: none; }
+.ps-subline { display: flex; align-items: center; gap: var(--space-1_5); min-width: 0; }
+.ps-subline > .ps-sub { flex: 1 1 auto; min-width: 0; }
 .ps-sku { display: flex; align-items: center; gap: var(--space-1_5); font-size: 14px; font-weight: 700; color: var(--text); white-space: nowrap; }
 .ps-store { display: flex; align-items: center; gap: var(--space-1_5); font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; }
 .ps-sub { font-size: 11px; line-height: 14px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -154,6 +159,15 @@
 /* 紧凑：一格一行，库存挪到数字左边 */
 .ps--compact .ps-c, .ps--compact .ps-sum { flex-direction: row-reverse; align-items: center; justify-content: flex-start; gap: var(--space-2); }
 .ps--compact .ps-sub { display: none; }
+/* 行头带移出按钮的两行：名字独占第一行，旗标 + 副标 + 按钮在第二行（副标省略、按钮靠右）——
+   悬停显形时不叠在旗标上。紧凑密度只剩一行：名字省略（全名在 title），旗标与按钮不缩 */
+.ps--compact .ps-rh__txt--act { display: flex; align-items: center; gap: var(--space-1_5); }
+.ps--compact .ps-rh__txt--act > .ps-sku, .ps--compact .ps-rh__txt--act > .ps-store { flex: 1 1 auto; min-width: 0; }
+.ps--compact .ps-subline { flex: none; }
+/* 紧凑下按钮不悬停就不占宽（仍可 Tab 聚焦）：否则 220px 行头里货号只剩两三个字 */
+.ps--compact .pm-rm { max-width: 0; padding: 0; overflow: hidden; }
+.ps--compact .ps-row:hover .pm-rm, .ps--compact .pm-rm:focus-visible { max-width: none; padding: 0 var(--space-1_5); }
+@media (hover: none) { .ps--compact .pm-rm { max-width: none; padding: 0 var(--space-1_5); } }
 
 /* 格子里的库存数字 = 点开看依据的按钮：外观仍是那个数，只加一条虚下划线提示可点 */
 .ps-basis { all: unset; cursor: pointer; border-bottom: 1px dotted currentColor; }

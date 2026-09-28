@@ -272,6 +272,11 @@ export function createMockApi(): SupplyChainApi {
       const msku = item?.mskus.find((m) => m.seller_sku === target.seller_sku && m.sid === target.sid);
       // ★ 与后端同码：api/ui/plans.py:131 用 unknown_msku，不是 msku_not_found
       if (!item || !msku) throw new ApiError(404, 'unknown_msku', '没有这个 msku', { ...target });
+      // ★ 与后端同：本计划里已在认领中 → 幂等空操作（fix round 2 裁定）
+      if (msku.claimed_by?.plan_id === planId) {
+        return { claimed: { ...target, sku: item.sku }, already_claimed: true,
+                 seeded: { demand_cells: 0, purchase_cells: 0 }, no_history: [] };
+      }
       if (!msku.selectable && msku.claimed_by) {
         // ★ team-lead 09-22 裁定：认领 409 与目录端点的占用方不是同一个形状 ——
         //   这里嵌套在 claimed_by 里（api/ui/plans.py:153-156，backend 现已带 title），
@@ -301,6 +306,7 @@ export function createMockApi(): SupplyChainApi {
         claimed: { ...target, sku: item.sku },
         seeded: { demand_cells: months, purchase_cells: months },
         no_history: noHistory,
+        already_claimed: false,
       };
     },
 

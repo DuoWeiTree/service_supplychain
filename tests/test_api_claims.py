@@ -171,11 +171,15 @@ def test_both_profiles_answer_the_same_for_a_store_with_no_amazon_sales_source(c
 
     # ★ 同一张计划里认领两次（ON CONFLICT DO UPDATE）—— 换成两张计划会撞
     #   409 msku_already_claimed，那是另一条规则，与本条要比的东西无关。
+    # ★ fix round 2：在认领中的 msku 再认领是空操作、不取数 —— 中间释放一次，第二次走的是
+    #   「复活已释放的行」那条完整路径，闸照样要被走到。
     p = mk(client, seed)
     body = {"seller_sku": seed.msku_nofba[0], "sid": seed.msku_nofba[1]}
     r0 = client.post(f"/v1/plans/{p}/claims", json=body, headers=H(seed.actor))
     assert r0.status_code == 200, r0.text
     fixture_body = r0.json()
+    assert client.delete(f"/v1/plans/{p}/claims/{body['seller_sku']}/{body['sid']}",
+                         headers=H(seed.actor)).status_code == 200
 
     use_source(lambda: cs.ChSource(must_not_be_called))
     r = client.post(f"/v1/plans/{p}/claims", json=body, headers=H(seed.actor))
@@ -185,6 +189,7 @@ def test_both_profiles_answer_the_same_for_a_store_with_no_amazon_sales_source(c
         f"两档对同一个 msku 给出不同答案：ch={ch_body['no_history']} "
         f"fixture={fixture_body['no_history']}")
     assert ch_body["history_window"] == fixture_body["history_window"] is None
+    assert ch_body["already_claimed"] is False
 
 
 def test_two_mskus_of_the_same_sku_do_not_double_the_purchase_cells(client, seed):
@@ -827,3 +832,76 @@ def test_two_sibling_releases_racing_still_drop_the_purchase_cells(client, seed)
            " WHERE plan_id = %s AND seller_sku = %s AND sid = %s"), (seed.actor, p, *seed.msku_a))])
     assert r.status_code == 200 and len(r.json()["dropped_purchase_cells"]) == 3
     assert purchase_cells(p, seed.sku_a) == [] and active_claims(p) == []
+
+
+def test_reclaiming_an_active_msku_is_a_no_op_without_touching_the_source(client, seed, use_source):
+    """★ 控制器裁定（fix round 2）：同一计划里重复认领一个在认领中的 msku（双击 / 两个标签页 /
+    重试）= 幂等空操作：不取数、不重种格子、人填的数不动，响应点明 already_claimed。"""
+    from api.ui import plans
+    from dim.fixture_source import FixtureSource
+    p = mk(client, seed)
+    body = {"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]}
+    first = client.post(f"/v1/plans/{p}/claims", json=body, headers=H(seed.actor)).json()
+    assert first["already_claimed"] is False
+    client.put(f"/v1/plans/{p}/demand/{seed.msku_a[0]}/{seed.msku_a[1]}/2026-10",
+               json={"expected_units": 7}, headers=H(seed.actor))
+    calls = []
+
+    class Counting(FixtureSource):
+        def daily_sales(self, *a):
+            calls.append(a)
+            return super().daily_sales(*a)
+
+    use_source(lambda: Counting(plans.FIXTURES))
+    r = client.post(f"/v1/plans/{p}/claims", json=body, headers=H(seed.actor))
+    assert r.status_code == 200, r.text
+    b = r.json()
+    assert b["already_claimed"] is True and b["claimed"]["sku"] == seed.sku_a
+    assert b["seeded"] == {"demand_cells": 0, "purchase_cells": 0}
+    assert calls == [], "★ 空操作不许去打取数源"
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT expected_units FROM plan_demand_cell WHERE plan_id = %s"
+                    " AND seller_sku = %s AND period_start = '2026-10-01'", (p, seed.msku_a[0]))
+        assert cur.fetchone()[0] == 7
+
+
+def test_active_reclaim_racing_release_does_not_deadlock(client, seed, use_source):
+    """★ 修复前：重复认领走 ON CONFLICT DO UPDATE → 攥着认领行锁去取数 → 再等 (计划, 货号) 锁；
+    同时释放拿着 (计划, 货号) 锁在等那一行 → 40P01，其中一个请求 500。
+    两条连接真的交错：认领卡在取数里时释放进场。"""
+    from api.ui import plans
+    from dim.fixture_source import FixtureSource
+    p = mk(client, seed)
+    body = {"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]}
+    client.post(f"/v1/plans/{p}/claims", json=body, headers=H(seed.actor))
+    entered, go = threading.Event(), threading.Event()
+
+    class Gated(FixtureSource):
+        def daily_sales(self, *a):
+            entered.set()
+            go.wait(5)
+            return super().daily_sales(*a)
+
+    use_source(lambda: Gated(plans.FIXTURES))
+    out = {}
+    t1 = threading.Thread(target=lambda: out.__setitem__(
+        "claim", client.post(f"/v1/plans/{p}/claims", json=body, headers=H(seed.actor))))
+    t1.start()
+    entered.wait(1)                          # 修复后不会进取数 —— 等不到就直接往下走
+    t2 = threading.Thread(target=lambda: out.__setitem__(
+        "release", client.delete(f"/v1/plans/{p}/claims/{seed.msku_a[0]}/{seed.msku_a[1]}",
+                                 headers=H(seed.actor))))
+    t2.start()
+    t2.join(timeout=0.5)
+    go.set()
+    t1.join(timeout=15)
+    t2.join(timeout=15)
+    assert not t1.is_alive() and not t2.is_alive()
+    assert out["claim"].status_code == 200, out["claim"].text
+    assert out["release"].status_code == 200, out["release"].text
+    # 终态自洽：释放赢了 → 没有在认领的 msku，也就没有格子
+    assert active_claims(p) == []
+    assert purchase_cells(p, seed.sku_a) == []
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT count(*) FROM plan_demand_cell WHERE plan_id = %s", (p,))
+        assert cur.fetchone()[0] == 0

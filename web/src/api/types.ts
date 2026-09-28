@@ -325,6 +325,8 @@ export interface ClaimResult {
    *  认领这一下真种出了几个月的格子，brief 原文的 `ClaimResult` 漏了这两个 */
   seeded: { demand_cells: number; purchase_cells: number };
   no_history: NoHistoryEntry[];
+  /** ★ 同一计划里已在认领中 → 幂等空操作：没取数、没重种格子（seeded 为 0） */
+  already_claimed: boolean;
 }
 // ★ 后端把丢掉的格逐条回给界面（含人填过的数），不是一个数
 export interface DroppedCell { period: string; expected_units: number | null }

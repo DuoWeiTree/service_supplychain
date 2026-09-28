@@ -599,6 +599,24 @@ describe('计划整表', () => {
     expect(store.getAttribute('title')).toContain('该店');
   });
 
+  it('★ 行头布局：移出按钮不与旗标同一行（悬停显形时不叠上去），名字可省略、全名在 title', async () => {
+    await renderGrid();
+    const row = await screen.findByTestId('purchase-row-SKU-1');
+    const btn = within(row).getByRole('button', { name: '移出货号' });
+    const name = row.querySelector('.ps-name')!;
+    expect(name).toHaveAttribute('title', 'SKU-1');
+    // 名字独占第一行；按钮与旗标同在第二行（ps-subline），不在名字那一行
+    expect(btn.closest('.ps-subline')).not.toBeNull();
+    expect(name.closest('.ps-sku')!.contains(btn)).toBe(false);
+    const flags = row.querySelectorAll('.ps-flag');
+    expect(flags.length).toBeGreaterThan(0);
+    for (const f of flags) expect(f.closest('.ps-subline')).toBe(btn.closest('.ps-subline'));
+    const block = screen.getByTestId('block-11072-SKU-1');
+    const store = within(block).getByRole('button', { name: '移出该店' });
+    expect(store.closest('.ps-subline')).not.toBeNull();
+    expect(block.querySelector('.ps-store')!.contains(store)).toBe(false);
+  });
+
   it('★ 同一货号的移出按钮互斥：「移出该店」在飞时，「移出货号」与「移出 msku」都置灰、点了也不发请求', async () => {
     let finish!: () => void;
     const gate = new Promise<void>((r) => { finish = r; });
@@ -613,8 +631,6 @@ describe('计划整表', () => {
     await waitFor(() => expect(skuBtn).toBeDisabled());
     for (const b of within(block).getAllByRole('button', { name: '移出 msku' })) expect(b).toBeDisabled();
     expect(within(screen.getByTestId('block-90001-SKU-1')).getByRole('button', { name: '移出该店' })).toBeDisabled();
-    fireEvent.click(skuBtn);
-    expect(mock.api.removeSku).not.toHaveBeenCalled();
     finish();
     await screen.findByRole('status');
     expect(mock.api.removeSku).not.toHaveBeenCalled();

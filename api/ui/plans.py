@@ -281,6 +281,13 @@ def _system_basis(est, stock, win) -> dict:
     }
 
 
+def _claimed_elsewhere(seller_sku: str, sid: str, holder) -> ApiError:
+    return ApiError(409, "msku_already_claimed", "该 msku 已被另一张尚未下单的计划占用",
+                    {"seller_sku": seller_sku, "sid": sid,
+                     "claimed_by": {"plan_id": holder[0], "actor": holder[1], "title": holder[2]}
+                     if holder else None})
+
+
 @router.post("/plans/{plan_id}/claims")
 def claim(plan_id: int, body: dict, request: Request,
           source: Annotated[Source, Depends(source_dep)],
@@ -305,32 +312,27 @@ def claim(plan_id: int, body: dict, request: Request,
                            {"seller_sku": seller_sku, "sid": sid})
         sku, platform = row
 
-        # ★ 先查后写挡不住并发，所以这里不查 —— 直接插，让部分唯一索引裁决；
-        #   撞上了再回头查是谁占的，只为把 409 的 detail 点到名。
-        try:
-            cur.execute(
-                "INSERT INTO msku_claim (plan_id, seller_sku, sid, claimed_by)"
-                " VALUES (%s, %s, %s, %s)"
-                " ON CONFLICT (plan_id, seller_sku, sid) DO UPDATE"
-                "    SET released_at = NULL, released_by = NULL,"
-                "        claimed_by = EXCLUDED.claimed_by, claimed_at = now()",
-                (plan_id, seller_sku, sid, who))
-        except psycopg2.errors.UniqueViolation:
-            c.rollback()
-            with pg_conn() as c2, c2.cursor() as cur2:
-                # ★ team-lead 裁定：claimed_by 里加 title（join plan.title）——
-                #   occupier 查询本来就在一条新连接上跑，join 不多花一次往返。
-                cur2.execute("SELECT m.plan_id, m.claimed_by, p.title FROM msku_claim m"
-                             " JOIN plan p ON p.plan_id = m.plan_id"
-                             " WHERE m.seller_sku = %s AND m.sid = %s"
-                             "   AND m.released_at IS NULL AND NOT m.plan_ordered",
-                             (seller_sku, sid))
-                holder = cur2.fetchone()
-            raise ApiError(409, "msku_already_claimed", "该 msku 已被另一张尚未下单的计划占用",
-                           {"seller_sku": seller_sku, "sid": sid,
-                            "claimed_by": {"plan_id": holder[0], "actor": holder[1],
-                                          "title": holder[2]}
-                            if holder else None}) from None
+        # ★ 控制器裁定（fix round 2）：同一计划里重复认领一个**在认领中**的 msku（双击 / 两个
+        #   标签页 / 重试）是幂等空操作 —— 不取数、不重种格子、不碰任何行锁，直接回当前认领。
+        #   复活已释放的行、全新认领照走下面的路。被别的计划占着 → 同样在取数之前就 409
+        #   （认领行挪到取数之后了，不在这里挡，占用中的 msku 也要白打一次取数源、CH 挂了还会
+        #   把 409 变成 503）。这只是一次读：并发下看错了也无妨，裁决仍在下面的 INSERT。
+        cur.execute("SELECT m.plan_id, m.claimed_by, p.title FROM msku_claim m"
+                    " JOIN plan p ON p.plan_id = m.plan_id"
+                    " WHERE m.seller_sku = %s AND m.sid = %s AND m.released_at IS NULL"
+                    "   AND (m.plan_id = %s OR NOT m.plan_ordered)"
+                    " ORDER BY (m.plan_id = %s) DESC LIMIT 1",
+                    (seller_sku, sid, plan_id, plan_id))
+        holder = cur.fetchone()
+        if holder is not None and holder[0] != plan_id:
+            raise _claimed_elsewhere(seller_sku, sid, holder)
+        if holder is not None:
+            log.info("op=claim plan_id=%s actor=%s seller_sku=%s sid=%s sku=%s already_claimed=true",
+                     plan_id, who, seller_sku, sid, sku)
+            return {"claimed": {"seller_sku": seller_sku, "sid": sid, "sku": sku},
+                    "already_claimed": True,
+                    "seeded": {"demand_cells": 0, "purchase_cells": 0},
+                    "no_history": [], "history_window": None}
 
         no_history = []
         history_window = None
@@ -405,14 +407,37 @@ def claim(plan_id: int, body: dict, request: Request,
                     # ★ 没有历史 ≠ 预估 0：格子照建，system_units 留 NULL 并点名（spec §3.3）
                     no_history.append({"seller_sku": seller_sku, "sid": sid,
                                        "reason": "no_sales_history"})
-        # ★ 与 release / remove_sku 同一把 (plan, sku) 锁，拿在种格子之前：兄弟 msku 的认领与
-        #   最后一个 msku 的释放并发时，要么释放看见这个兄弟、留下采购格，要么认领在释放删完
-        #   之后重新种出采购格 —— 不许出现「有 msku 在认领、却没有采购格」的货号
-        #   （INSERT … ON CONFLICT DO NOTHING 不等行锁，挡不住）。
-        # ★ 不拿在上面认领行那里：那样锁要攥着跨过取数源（CH 可以慢到 20s），同货号的兄弟认领
-        #   全被串行。上面插的认领行不会与释放互等：释放 / 移出货号的 UPDATE 按 released_at IS NULL
-        #   筛，未提交的新行与刚复活的行在它们的快照里都不匹配，跳过而不等锁。
+        # ★ 与 release / remove_sku 同一把 (plan, sku) 锁，拿在**写任何行之前**（认领行也挪到了
+        #   锁之后）：兄弟 msku 的认领与最后一个 msku 的释放并发时，要么释放看见这个兄弟、留下
+        #   采购格，要么认领在释放删完之后重新种出采购格 —— 不许出现「有 msku 在认领、却没有
+        #   采购格」的货号（INSERT … ON CONFLICT DO NOTHING 不等行锁，挡不住）。
+        # ★ 取数在锁之前：锁攥着跨过取数源（CH 可以慢到 20s）会把同货号的兄弟认领全串行。
+        #   取数期间本事务一行都没写，所以不会攥着行锁去等这把锁（fix round 2 的 40P01 就是
+        #   认领行先被 ON CONFLICT DO UPDATE 锁住、再等这把锁）。
         _lock_sku(cur, plan_id, sku)
+        # ★ 上面那次读只为快路径；并发下以这里为准 —— 直接插，让部分唯一索引裁决；
+        #   撞上了再回头查是谁占的，只为把 409 的 detail 点到名。
+        try:
+            cur.execute(
+                "INSERT INTO msku_claim (plan_id, seller_sku, sid, claimed_by)"
+                " VALUES (%s, %s, %s, %s)"
+                " ON CONFLICT (plan_id, seller_sku, sid) DO UPDATE"
+                "    SET released_at = NULL, released_by = NULL,"
+                "        claimed_by = EXCLUDED.claimed_by, claimed_at = now()",
+                (plan_id, seller_sku, sid, who))
+        except psycopg2.errors.UniqueViolation:
+            c.rollback()
+            with pg_conn() as c2, c2.cursor() as cur2:
+                # ★ team-lead 裁定：claimed_by 里加 title（join plan.title）——
+                #   occupier 查询本来就在一条新连接上跑，join 不多花一次往返。
+                cur2.execute("SELECT m.plan_id, m.claimed_by, p.title FROM msku_claim m"
+                             " JOIN plan p ON p.plan_id = m.plan_id"
+                             " WHERE m.seller_sku = %s AND m.sid = %s"
+                             "   AND m.released_at IS NULL AND NOT m.plan_ordered",
+                             (seller_sku, sid))
+                holder = cur2.fetchone()
+            raise _claimed_elsewhere(seller_sku, sid, holder) from None
+
         for period in periods:
             n = days_in_month(period)
             units = units_for_month(rate, n) if rate is not None else None
@@ -436,6 +461,7 @@ def claim(plan_id: int, body: dict, request: Request,
                         " VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
                         (plan_id, sku, period, who))
     return {"claimed": {"seller_sku": seller_sku, "sid": sid, "sku": sku},
+            "already_claimed": False,
             "seeded": {"demand_cells": len(periods), "purchase_cells": len(periods)},
             "no_history": no_history, "history_window": history_window}
 
@@ -461,9 +487,10 @@ def _lock_sku(cur, plan_id: int, sku: str) -> None:
     ★ 为什么是 advisory 锁而不是锁行：要护住的是一个**跨三张表的判断**（这个货号还有没有
       msku 在认领 ⇒ 它的采购格该不该在），而那一刻相关的行可能一行都还不存在（认领前没有
       claim 行，释放后没有采购格），行锁锁不住不存在的行。
-    ★ 三条路径都在**动任何行之前**先拿这一把：同一货号上的写一律排队，不会因为各自先锁
-      不同的行而互等成死锁（40P01 → 500）。READ COMMITTED 下拿到锁之后的每条语句都是新快照，
-      看得见前一个事务提交的结果。
+    ★ 不变式：三条路径都在**写任何行之前**先拿这一把（之前只读、不加行锁）：同一货号上的写
+      一律排队，不会有「攥着行锁再等这把锁」的事务，也就不会互等成死锁（40P01 → 500）。
+      claim() 的取数在拿锁之前、也在写任何行之前；重复认领在读到「已在认领中」时直接返回，
+      一把锁都不拿。READ COMMITTED 下拿到锁之后的每条语句都是新快照，看得见前一个事务提交的结果。
     ★ 哈希撞车只会让两个无关货号多排一次队，不会错。"""
     cur.execute("SELECT pg_advisory_xact_lock(%s, hashtext(%s))", (plan_id, sku))
 

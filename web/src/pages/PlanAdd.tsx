@@ -65,7 +65,8 @@ export function PlanAdd() {
         try {
           const r = await api.claim(planId, { seller_sku: m.seller_sku, sid: m.sid });
           // ★ 动作一名到底：按钮「添加」→ toast「已添加」→ 这里的「已添加」，不再混用「已认领/加入/成功」
-          out.push({ seller_sku: m.seller_sku, sid: m.sid, ok: true, hint: '已添加', holder: null });
+          out.push({ seller_sku: m.seller_sku, sid: m.sid, ok: true,
+                     hint: r.already_claimed ? '已在本计划里' : '已添加', holder: null });
           for (const h of r.no_history ?? []) freshNoHistory.push(`${h.seller_sku}/${h.sid}`);
         } catch (e) {
           const ae = e as ApiError;
