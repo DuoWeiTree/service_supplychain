@@ -719,3 +719,111 @@ def test_no_sales_history_is_not_marked_not_applicable(client, seed, use_source)
     for units, basis in _bases(p, seed.msku_a):
         assert units is None
         assert basis["reason"] != "not_applicable_no_sales_source", basis
+
+
+def test_reclaiming_after_releasing_the_last_msku_reseeds_the_purchase_cells(client, seed):
+    """★ 不变式：货号下有在认领的 msku ⇒ 它的采购格在（没有行和填了 0 不能长得一样）。
+    最后一个 msku 走了、采购格删了，再认领回来必须重新长出来。"""
+    p = mk(client, seed)
+    body = {"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]}
+    client.post(f"/v1/plans/{p}/claims", json=body, headers=H(seed.actor))
+    client.delete(f"/v1/plans/{p}/claims/{seed.msku_a[0]}/{seed.msku_a[1]}", headers=H(seed.actor))
+    assert purchase_cells(p, seed.sku_a) == []
+    assert client.post(f"/v1/plans/{p}/claims", json=body, headers=H(seed.actor)).status_code == 200
+    assert purchase_cells(p, seed.sku_a) == [("2026-10", None), ("2026-11", None), ("2026-12", None)]
+
+
+def test_reclaiming_after_remove_sku_revives_the_row_and_the_sku(client, seed):
+    p = mk(client, seed)
+    for ms in (seed.msku_a, seed.msku_c):
+        client.post(f"/v1/plans/{p}/claims", json={"seller_sku": ms[0], "sid": ms[1]},
+                    headers=H(seed.actor))
+    assert remove(client, seed, p, seed.sku_a).status_code == 200
+    body = {"seller_sku": seed.msku_c[0], "sid": seed.msku_c[1]}
+    assert client.post(f"/v1/plans/{p}/claims", json=body, headers=H(seed.actor)).status_code == 200
+    with pg_conn() as c, c.cursor() as cur:
+        # ★ 同一行复活（软释放，不是新插一行）
+        cur.execute("SELECT count(*), count(*) FILTER (WHERE released_at IS NULL) FROM msku_claim"
+                    " WHERE plan_id = %s AND seller_sku = %s AND sid = %s", (p, *seed.msku_c))
+        assert cur.fetchone() == (1, 1)
+    assert len(purchase_cells(p, seed.sku_a)) == 3
+    g = client.get(f"/v1/plans/{p}/grid", headers=H(seed.actor)).json()
+    assert {x["seller_sku"] for x in g["demand"]} == {seed.msku_c[0]}
+    assert seed.sku_a in {x["sku"] for x in g["forecast_sku"]}
+    assert {x["sku"] for x in g["purchase"]} == {seed.sku_a}
+
+
+def _blocked(target, hold_sql):
+    """★ 在一个未提交事务里先拿 (plan, sku) 锁（并可做点写），另一线程跑 `target`：
+    它必须被挡住；提交后它才走完。只测「A 提交完 B 再跑」证明不了串行。"""
+    out, started = {}, threading.Event()
+
+    def run():
+        started.set()
+        out["r"] = target()
+
+    with pg_conn() as a, a.cursor() as cur:
+        for sql, args in hold_sql:
+            cur.execute(sql, args)
+        t = threading.Thread(target=run)
+        t.start()
+        started.wait(1)
+        t.join(timeout=0.7)
+        assert t.is_alive(), "★ 没有被 (plan, sku) 锁挡住 —— 两条路径没拿同一把锁"
+    t.join(timeout=10)
+    assert not t.is_alive()
+    return out["r"]
+
+
+LOCK = "SELECT pg_advisory_xact_lock(%s, hashtext(%s))"
+
+
+def test_claim_and_release_and_remove_sku_all_wait_on_the_same_sku_lock(client, seed):
+    p = mk(client, seed)
+    for ms in (seed.msku_a, seed.msku_b):
+        client.post(f"/v1/plans/{p}/claims", json={"seller_sku": ms[0], "sid": ms[1]},
+                    headers=H(seed.actor))
+    r = _blocked(lambda: client.delete(f"/v1/plans/{p}/claims/{seed.msku_a[0]}/{seed.msku_a[1]}",
+                                       headers=H(seed.actor)), [(LOCK, (p, seed.sku_a))])
+    assert r.status_code == 200, r.text
+    r = _blocked(lambda: client.post(f"/v1/plans/{p}/claims",
+                                     json={"seller_sku": seed.msku_c[0], "sid": seed.msku_c[1]},
+                                     headers=H(seed.actor)), [(LOCK, (p, seed.sku_a))])
+    assert r.status_code == 200, r.text
+    r = _blocked(lambda: remove(client, seed, p, seed.sku_a), [(LOCK, (p, seed.sku_a))])
+    assert r.status_code == 200, r.text
+
+
+def test_release_of_the_last_msku_racing_a_sibling_claim_keeps_the_purchase_cells(client, seed):
+    """★ 并发：兄弟 msku 的认领还没提交时，最后一个 msku 被释放 —— 释放必须等认领落地、
+    看见这个兄弟、留下采购格。否则会出现「有在认领的 msku、却没有采购格」的货号。
+    （认领那一侧用同一把锁 + 同样的写模拟；claim() 确实拿这把锁由上一条钉住。）"""
+    p = mk(client, seed)
+    client.post(f"/v1/plans/{p}/claims", json={"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]},
+                headers=H(seed.actor))
+    r = _blocked(
+        lambda: client.delete(f"/v1/plans/{p}/claims/{seed.msku_a[0]}/{seed.msku_a[1]}",
+                              headers=H(seed.actor)),
+        [(LOCK, (p, seed.sku_a)),
+         ("INSERT INTO msku_claim (plan_id, seller_sku, sid, claimed_by) VALUES (%s, %s, %s, %s)",
+          (p, *seed.msku_b, seed.actor))])
+    assert r.status_code == 200 and r.json()["dropped_purchase_cells"] == []
+    assert len(purchase_cells(p, seed.sku_a)) == 3
+    assert active_claims(p) == [seed.msku_b]
+
+
+def test_two_sibling_releases_racing_still_drop_the_purchase_cells(client, seed):
+    """★ 并发：两个兄弟同时释放 —— 各自看见对方「还在」就谁都不删，格子照样搁浅。
+    后到的那一个必须等先到的提交，再数时看见对方已释放。"""
+    p = mk(client, seed)
+    for ms in (seed.msku_a, seed.msku_b):
+        client.post(f"/v1/plans/{p}/claims", json={"seller_sku": ms[0], "sid": ms[1]},
+                    headers=H(seed.actor))
+    r = _blocked(
+        lambda: client.delete(f"/v1/plans/{p}/claims/{seed.msku_b[0]}/{seed.msku_b[1]}",
+                              headers=H(seed.actor)),
+        [(LOCK, (p, seed.sku_a)),
+         (("UPDATE msku_claim SET released_at = now(), released_by = %s"
+           " WHERE plan_id = %s AND seller_sku = %s AND sid = %s"), (seed.actor, p, *seed.msku_a))])
+    assert r.status_code == 200 and len(r.json()["dropped_purchase_cells"]) == 3
+    assert purchase_cells(p, seed.sku_a) == [] and active_claims(p) == []

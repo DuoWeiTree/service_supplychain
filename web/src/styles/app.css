@@ -42,7 +42,7 @@
 
 /* 行头里的「移出」：平时淡，悬停整行才显形 —— 它不是这一行的主要动作 */
 .pm-rm {
-  appearance: none; border: 0; background: none; cursor: pointer; margin-left: auto; flex: none;
+  appearance: none; border: 0; background: none; cursor: pointer; margin-left: auto; flex: none; white-space: nowrap;
   padding: 0 var(--space-1_5); height: 20px; border-radius: var(--radius-sm);
   font: 500 12px/20px var(--font-sans); color: var(--text-3); opacity: 0; transition: opacity .12s;
 }

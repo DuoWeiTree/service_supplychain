@@ -8,7 +8,7 @@ import {
 import { basisTitle, FORECAST_WHY, ForecastBasis, type BasisTarget } from './ForecastBasis';
 import { Modal } from '../components/Modal';
 import { buildCards, cardMatches, monthLabel, riskOrder, stockState, summarize, type CardSummary, type SkuCard } from './planSheetModel';
-import { demandKey, mskuKey, purchaseKey, skuKey, storeKey } from './usePlanGridSaves';
+import { demandKey, purchaseKey, removeKey } from './usePlanGridSaves';
 
 /** ★ 设计取值 · 未实测：期末低于这个件数就铺「偏低」底色。
  *  没有任何一条口径指到这个 50 —— 它只改底色和「偏低」筛选，不参与任何一个数。 */
@@ -33,7 +33,7 @@ export interface PlanSheetProps {
   onRemoveSku: (sku: string) => void;
   /** 这一家店的该货号 msku */
   onRemoveStore: (block: SkuBlock) => void;
-  onRemoveMsku: (sellerSku: string, sid: Sid) => void;
+  onRemoveMsku: (sellerSku: string, sid: Sid, sku: string) => void;
   lowStock?: number;
 }
 
@@ -489,9 +489,9 @@ export function PlanSheet(props: PlanSheetProps) {
             <div className="ps-sub">采购／预测·库存·在途</div>
           </div>
           <button
-            type="button" className="pm-rm" aria-label="移出货号" title={`把 ${card.sku} 连同各店的 msku 移出这张计划`}
-            disabled={pending.has(skuKey(card.sku))} onClick={() => props.onRemoveSku(card.sku)}
-          >移出</button>
+            type="button" className="pm-rm" title={`把 ${card.sku} 连同各店的 msku 移出这张计划`}
+            disabled={pending.has(removeKey(card.sku))} onClick={() => props.onRemoveSku(card.sku)}
+          >移出货号</button>
         </div>
         {periods.map((p, ci) => {
           if (!buy || row.nav === undefined) {
@@ -540,9 +540,9 @@ export function PlanSheet(props: PlanSheetProps) {
             <div className={`ps-sub${multi ? '' : ' ps-sub--mono'}`}>{multi ? `${block.mskus.length} 个 msku 合计` : single!.seller_sku}</div>
           </div>
           <button
-            type="button" className="pm-rm" aria-label="移出该店" title={`把 ${block.seller_name} 的 ${block.sku} 移出这张计划`}
-            disabled={pending.has(storeKey(block))} onClick={() => props.onRemoveStore(block)}
-          >移出</button>
+            type="button" className="pm-rm" title={`只移出 ${block.seller_name} 这一家店的 ${block.sku}，其它店不动（移出该店）`}
+            disabled={pending.has(removeKey(block.sku))} onClick={() => props.onRemoveStore(block)}
+          >移出该店</button>
         </div>
         {periods.map((p, ci) => {
           const inv = stockAt(block, p);
@@ -604,7 +604,7 @@ export function PlanSheet(props: PlanSheetProps) {
         <div className="ps-rh ps-rh--msku" role="rowheader">
           <span className="ps-sub--mono">{r.seller_sku}</span>
           <button type="button" className="pm-rm" aria-label="移出 msku" title={`把 ${r.seller_sku} 移出这张计划`}
-            disabled={pending.has(mskuKey(r.seller_sku, r.sid))} onClick={() => props.onRemoveMsku(r.seller_sku, r.sid)}>移出</button>
+            disabled={pending.has(removeKey(row.block.sku))} onClick={() => props.onRemoveMsku(r.seller_sku, r.sid, row.block.sku)}>移出</button>
         </div>
         {periods.map((p, ci) => {
           const c = cellOf(r, p);

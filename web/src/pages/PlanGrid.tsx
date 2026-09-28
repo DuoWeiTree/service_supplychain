@@ -149,7 +149,7 @@ export function PlanGrid() {
           onPurchase={(sku, p, raw) => void savePurchase(sku, p, raw)}
           onRemoveSku={(sku) => void removeSku(sku)}
           onRemoveStore={(b) => void removeStore(b)}
-          onRemoveMsku={(ss, sid) => void removeMsku(ss, sid)}
+          onRemoveMsku={(ss, sid, sku) => void removeMsku(ss, sid, sku)}
         />
       )}
 

@@ -308,7 +308,9 @@ export function createMockApi(): SupplyChainApi {
       writable(planId);
       const g = grid(planId);
       const cells = dropMsku(g, sellerSku, sid);
-      const sku = cells[0]?.sku;
+      // ★ 与后端同：货号从桥表认（这里是目录），不从格子认 —— 没有格子的 msku 也要判货号是否随之移出
+      const sku = cells[0]?.sku ?? catalog.items.find((x) =>
+        x.mskus.some((m) => m.seller_sku === sellerSku && m.sid === sid))?.sku;
       return {
         released: { seller_sku: sellerSku, sid },
         dropped_cells: cells.map((d) => ({ period: d.period, expected_units: d.expected_units })),

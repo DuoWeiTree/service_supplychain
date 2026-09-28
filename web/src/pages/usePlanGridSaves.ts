@@ -17,6 +17,10 @@ export const purchaseKey = (sku: string, period: Period) => `p:${sku}:${period}`
 export const storeKey = (block: SkuBlock) => `store:${block.sid}:${block.sku}`;
 export const skuKey = (sku: string) => `sku:${sku}`;
 export const mskuKey = (sellerSku: string, sid: Sid) => `msku:${sellerSku}:${sid}`;
+/** ★ 同一货号的三种移出（货号 / 该店 / msku）共用这一把在飞 key：它们改的是同一批行，
+ *  界面上同时发两个，后端虽然按 (计划, 货号) 排队不会坏，但第二个拿到的是第一个删剩的，
+ *  toast 会说一件已经不成立的事。上面三个 key 仍各管各的失败提示（fail/succeed）。 */
+export const removeKey = (sku: string) => `rm:${sku}`;
 
 /** ★ 丢东西必须有声：格数全报（空格也是删掉的一行），人填过的逐格带值点名 */
 function droppedDemand(cells: { period: Period; expected_units: number | null; seller_sku?: string }[]): string {
@@ -80,7 +84,7 @@ export function usePlanGridSaves(
   //   ★ F5（搁浅采购格未删、待处理）已被业主裁定 2026-09-27 推翻：最后一个 msku 走了，采购格随之删掉并点名
   async function removeStore(block: SkuBlock) {
     const key = storeKey(block);
-    await run(key, async () => {
+    await run(removeKey(block.sku), async () => {
       const released: string[] = [];
       const dropped: { seller_sku: string; period: Period; expected_units: number | null }[] = [];
       const droppedBuy: DroppedPurchaseCell[] = [];
@@ -109,7 +113,7 @@ export function usePlanGridSaves(
   //   不在前端逐个释放：中途失败会留下半个货号
   async function removeSku(sku: string) {
     const key = skuKey(sku);
-    await run(key, async () => {
+    await run(removeKey(sku), async () => {
       try {
         const r = await api.removeSku(planId, sku);
         await load();
@@ -124,9 +128,9 @@ export function usePlanGridSaves(
     });
   }
 
-  async function removeMsku(sellerSku: string, sid: Sid) {
+  async function removeMsku(sellerSku: string, sid: Sid, sku: string) {
     const key = mskuKey(sellerSku, sid);
-    await run(key, async () => {
+    await run(removeKey(sku), async () => {
       try {
         const { dropped_cells, dropped_purchase_cells } = await api.releaseClaim(planId, sellerSku, sid);
         await load();

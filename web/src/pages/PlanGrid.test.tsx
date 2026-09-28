@@ -133,9 +133,8 @@ function buildMockApi(grid: GridResponse) {
       const before = g.demand.filter((x) => x.seller_sku === sellerSku && x.sid === sid);
       const sku = before[0]?.sku;
       g.demand = g.demand.filter((x) => !(x.seller_sku === sellerSku && x.sid === sid));
-      const dropped_cells = before
-        .filter((x) => x.expected_units !== null)
-        .map((x) => ({ period: x.period, expected_units: x.expected_units }));
+      // ★ 与后端同口径：空格照报（null ≠ 0），不在替身里先滤掉
+      const dropped_cells = before.map((x) => ({ period: x.period, expected_units: x.expected_units }));
       if (!g.demand.some((x) => x.sku === sku && x.sid === sid)) {
         g.forecast_store = g.forecast_store.filter((x) => !(x.sku === sku && x.sid === sid));
       }
@@ -545,7 +544,7 @@ describe('计划整表', () => {
     const block = await screen.findByTestId('block-11072-SKU-1');
     await userEvent.click(within(block).getAllByRole('button', { name: '移出 msku' })[0]!);
     const status = await screen.findByRole('status');
-    expect(status).toHaveTextContent('已移出 msku MSKU-A：丢弃期望 2 格（2026-10 180 件、2026-11 200 件）');
+    expect(status).toHaveTextContent('已移出 msku MSKU-A：丢弃期望 3 格（2026-10 180 件、2026-11 200 件）');
     expect(status.textContent).not.toContain('计划采购');
     expect(screen.getByTestId('card-SKU-1')).toBeInTheDocument();
   });
@@ -588,6 +587,37 @@ describe('计划整表', () => {
     expect(status).toHaveTextContent('，丢弃计划采购 3 格（2026-10 500 件）');
     expect(status.textContent).not.toContain(' · ');
     await waitFor(() => expect(screen.queryByTestId('card-SKU-1')).toBeNull());
+  });
+
+  it('★ 三个移出按钮的字面就是动作名：货号行「移出货号」、店铺行「移出该店」，不是两个一样的「移出」', async () => {
+    await renderGrid();
+    const row = await screen.findByTestId('purchase-row-SKU-1');
+    expect(within(row).getByRole('button', { name: '移出货号' })).toHaveTextContent(/^移出货号$/);
+    const block = screen.getByTestId('block-11072-SKU-1');
+    const store = within(block).getByRole('button', { name: '移出该店' });
+    expect(store).toHaveTextContent(/^移出该店$/);
+    expect(store.getAttribute('title')).toContain('该店');
+  });
+
+  it('★ 同一货号的移出按钮互斥：「移出该店」在飞时，「移出货号」与「移出 msku」都置灰、点了也不发请求', async () => {
+    let finish!: () => void;
+    const gate = new Promise<void>((r) => { finish = r; });
+    const { mock } = await renderGrid(makeGrid(), (m) => {
+      const orig = m.api.releaseClaim;
+      m.api.releaseClaim = vi.fn(async (...args: unknown[]) => { await gate; return orig(...args); });
+    });
+    const block = await screen.findByTestId('block-11072-SKU-1');
+    const row = screen.getByTestId('purchase-row-SKU-1');
+    fireEvent.click(within(block).getByRole('button', { name: '移出该店' }));
+    const skuBtn = within(row).getByRole('button', { name: '移出货号' });
+    await waitFor(() => expect(skuBtn).toBeDisabled());
+    for (const b of within(block).getAllByRole('button', { name: '移出 msku' })) expect(b).toBeDisabled();
+    expect(within(screen.getByTestId('block-90001-SKU-1')).getByRole('button', { name: '移出该店' })).toBeDisabled();
+    fireEvent.click(skuBtn);
+    expect(mock.api.removeSku).not.toHaveBeenCalled();
+    finish();
+    await screen.findByRole('status');
+    expect(mock.api.removeSku).not.toHaveBeenCalled();
   });
 
   it('★ 移出货号失败走 ErrorDetail 并重载，货号还在', async () => {
