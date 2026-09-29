@@ -84,3 +84,31 @@ _FORECAST_DEFAULTS = {
 
 def forecast() -> dict:
     return {**_FORECAST_DEFAULTS, **_cfg().get("forecast", {})}
+
+
+#: `pm_zestrade()` 要求 `[pm_zestrade]` 段齐全的四个字段。
+_PM_ZESTRADE_FIELDS = ("token_url", "client_id", "client_secret", "pm_base")
+
+
+def pm_zestrade() -> dict:
+    """总公司 PM 产品系统（Keycloak client_credentials）接入参数。
+
+    → ``{token_url, client_id, client_secret, pm_base}``。
+
+    ★ 配置类错误往启动钩子放，别等第一个请求才炸（CLAUDE.md 铁律）——
+    这里就是那个"启动钩子"：整段缺失、或四个字段缺任意一个，立即硬失败并
+    点名段名/缺的字段，不许带着半份配置跑到第一次真正打 PM 才在 KeyError
+    深处炸出来。★ **client_secret 绝不回显**——异常信息只点名"缺哪个字段"，
+    不打印任何字段的值。"""
+    section = _cfg().get("pm_zestrade")
+    if section is None:
+        raise RuntimeError(
+            "config.toml 缺 [pm_zestrade] 段——PM/Keycloak 接入参数"
+            f"（{', '.join(_PM_ZESTRADE_FIELDS)}）必须配好才能取数。"
+            "真值找控制者，占位段见 config.example.toml")
+    missing = [k for k in _PM_ZESTRADE_FIELDS if not section.get(k)]
+    if missing:
+        raise RuntimeError(
+            f"config.toml [pm_zestrade] 缺字段 {missing}——"
+            f"需要 {list(_PM_ZESTRADE_FIELDS)} 四项都非空")
+    return {k: section[k] for k in _PM_ZESTRADE_FIELDS}

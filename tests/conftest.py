@@ -22,6 +22,10 @@ DATA_TABLES = (
     "dim_refresh_run",
     "plan_line_event", "plan_submit_skip", "plan_line", "plan_rev",
     "plan_demand_cell", "plan_purchase_cell", "msku_claim", "plan",
+    # ★ Task 1（sku-image 计划）新增：sku_category 引用 sku_catalog，必须排在它前面
+    #   清空（TRUNCATE ... CASCADE 已经处理依赖顺序，这里的列表顺序不影响执行，
+    #   只是保持「先叶子后根」的可读性）。category_refresh 无外键，随手带上。
+    "sku_category", "category_refresh",
     "msku_bridge", "sku_catalog", "warehouse", "seller", "actor",
 )
 

@@ -18,6 +18,7 @@ from psycopg2.extras import execute_values
 
 from dim import ch_source, registry
 from jobs.lock import RefreshInFlight, advisory_lock
+from shared import pm_client
 from shared.ch_client import ch_client, ch_query, describe_failure
 from shared.config import clickhouse, freshness
 from shared.pg_client import pg_conn, pg_error_fields, timed
@@ -268,6 +269,40 @@ def _ch_query_or_record(targets: list[registry.Mirror], trigger: str,
     return query
 
 
+def _fetch_pm_mirror(cur, m: registry.Mirror) -> ch_source.Fetched:
+    """PM 源镜像（`m.source == "PM"`）的取数：现查「匹配用的货号宇宙」+
+    换 token + 拼两个注入回调，交给 `m.fetch()`（`dim/pm_source.py::
+    fetch_sku_category` 的三参签名，与其余 CH 镜像的 `m.fetch(query)` 单参
+    签名不同——分流点只在这一处，其余 `refresh_one` 逻辑（SAVEPOINT/覆盖面/
+    留痕）两种源共用）。
+
+    ★ 「匹配用的货号宇宙」= `m.depends_on[0]` 指向的表（`sku_category` 声明
+    `depends_on=("sku_catalog",)`）——`dim/` 不许碰 DB 客户端，这个宇宙只能
+    由这一层现查现传，不能在 `dim/pm_source.py` 里猜。这也是 `depends_on`
+    在这里身兼两职的原因：既保证刷新顺序排在 sku_catalog 之后（FK 需要），
+    也是"去哪张表现查货号"的声明——两件事其实是同一件事的两面，不是巧合
+    才共用同一个字段。
+
+    ★ 与 `_ch_query_or_record` 不同：这里不在 `refresh_all()` 里预建一份
+    跨镜像共享的 token/连接——PM 目前只有这一张镜像，共享换来的复杂度
+    （token 过期/多镜像间传递）不值得。真出现第二张 PM 镜像时再抽公共层。
+    ★ 失败（mint_token 配置缺失/网络失败、`fetch_products`/`fetch_tree`
+    出站失败）原样往外抛——由调用方 `refresh_one` 已有的通用 except 分支
+    兜住、记完整一行、不打断其余镜像的遍历（07:486 同一条纪律，PM 与 CH
+    两种源共用这一层保护，不需要另写一遍）。
+    """
+    if not m.depends_on:
+        raise ValueError(
+            f"{m.name}: source='PM' 的镜像必须在 depends_on[0] 声明匹配用的"
+            "货号来源表（本仓当前唯一的 PM 镜像 sku_category 用 sku_catalog）")
+    universe_table = m.depends_on[0]
+    cur.execute(f"SELECT sku FROM {universe_table}")
+    skus = [r[0] for r in cur.fetchall()]
+    token = pm_client.mint_token()
+    return m.fetch(skus, lambda: pm_client.fetch_products(token),
+                   lambda: pm_client.fetch_categories(token))
+
+
 def refresh_one(cur, m: registry.Mirror, query, trigger: str, actor: str | None) -> RunRow:
     """★ `dim_refresh_run` 只追加（006 的 `BEFORE UPDATE OR DELETE` 触发器挡住了
     `UPDATE`）—— 整轮跑完只在收尾时写**一次完整的行**，不分「先 INSERT 占位、
@@ -295,7 +330,10 @@ def refresh_one(cur, m: registry.Mirror, query, trigger: str, actor: str | None)
     error: str | None = None
     cur.execute(f"SAVEPOINT {savepoint}")
     try:
-        fetched = m.fetch(query)
+        # ★ 分流点：source='PM' 走三参签名（现查货号宇宙 + PM I/O），
+        #   其余镜像走既有的单参 CH query。两条路径共用下面全部的
+        #   覆盖面校验/落库/留痕逻辑。
+        fetched = _fetch_pm_mirror(cur, m) if m.source == "PM" else m.fetch(query)
         rows_in, rows_dropped = len(fetched.rows), fetched.dropped
         reasons = dict(fetched.drop_reasons)
         # ★ 终审 I-6：排在 `_check_coverage` 之前 —— 掉档比较对 0 行本来就无话可说，
@@ -384,7 +422,20 @@ def refresh_all(trigger: str, actor: str | None = None, only: str | None = None,
         # ★ 终审 I-3：建连必须在锁内、在保护区内。放在外面时 CH 连不上就是
         #   「整轮在进锁之前炸掉、证据表一行不留」——而镜像陈旧多半**就是因为**
         #   CH 连不上，那一轮恰恰是最该留痕的一轮。
-        if own_query:
+        # ★ sku-image 计划 Task 1：只有这批目标里**还有至少一张 CH 源镜像**
+        #   时才建 CH 连接——纯 PM 批次（`--only sku_category`）完全不碰 CH，
+        #   PM 与 CH 是两个独立系统，不能让一个不相关的 CH 故障挡住 PM 镜像
+        #   的手动刷新（这也是 live 测试 Step 10 的前提：只写 scm_test、
+        #   不需要 CH 可达）。
+        # ★ 混批（`only=None`，日常调度那种"全部一起刷"）仍然把 `targets`
+        #   整批传给 `_ch_query_or_record`——CH 连不上时**批次里全部目标**
+        #   （含 PM 源的）都留一行 ch_unreachable，不单独把 PM 摘出来豁免。
+        #   这是刻意维持的旧契约（`test_unreachable_ch_still_leaves_one_ok_
+        #   false_row_per_mirror` 钉着）：日常整批调度把"CH 至少要连得上"
+        #   当成这一整轮的前提条件，只有显式 `--only` 单独刷 PM 镜像时才
+        #   把两个系统的可用性彻底解耦。
+        ch_targets = [m for m in targets if m.source != "PM"]
+        if own_query and ch_targets:
             query = _ch_query_or_record(targets, trigger, actor)
         for m in targets:
             # ★ 一个镜像一个短事务：一批失败不影响其它批（07:486）

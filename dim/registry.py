@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from dim import ch_source
+from dim import ch_source, pm_source
 
 
 @dataclass(frozen=True)
@@ -61,8 +61,19 @@ MIRRORS: tuple[Mirror, ...] = (
            fetch=ch_source.fetch_warehouse,
            coverage=("rows",)),
     Mirror(name="sku_category", stage="A", kind="refresh", staleness="label_only",
-           key_columns=("sku",), companions=("category_refresh",), pending=True,
-           note="A-1。migrations/pg/*.sql 里一张都没有（OQ-9），PM 接入方式未落文档"),
+           key_columns=("sku",), columns=pm_source.COLUMNS,
+           source="PM", fetch=pm_source.fetch_sku_category,
+           coverage=("rows",), depends_on=("sku_catalog",),
+           companions=("category_refresh",),
+           note="A-1（sku-image 计划 Task 1，2026-09-29 接线）。"
+                "★ source='PM' 是 jobs/refresh_dims.py 用来分流取数路径的判据——"
+                "非 'PM' 一律走 CH query，这个值一律走 shared/pm_client.py + "
+                "两个注入回调（见 dim/pm_source.py::fetch_sku_category）。"
+                "★ depends_on=('sku_catalog',) 双重作用：既保证刷新顺序在"
+                "sku_catalog 之后（FK 需要），也是 jobs/ 用来现查"
+                "'要匹配哪些货号'的表名（见 jobs/refresh_dims.py 的注释）。"
+                "staleness='label_only'：不进 v_mirror_freshness、不拒绝服务，"
+                "只影响品类分组展示（03 §7.1 E-4 的第二类处置）。"),
     Mirror(name="po_snapshot", stage="B", kind="append", staleness="none",
            key_columns=("po_no", "observed_on"), pending=True),
     Mirror(name="po_receipt", stage="B", kind="append", staleness="none",

@@ -50,7 +50,9 @@ def test_registry_matches_the_doc_exactly():
 
 def test_stage_a_entries_are_not_pending():
     a = {m.name for m in MIRRORS if m.stage == "A" and not m.pending}
-    assert a == {"seller", "sku_catalog", "msku_bridge", "warehouse"}
+    # ★ sku_category 接线于 sku-image 计划 Task 1（2026-09-29）：source='PM'，
+    #   不进 gate_503（staleness='label_only'），见下面那条门禁。
+    assert a == {"seller", "sku_catalog", "msku_bridge", "warehouse", "sku_category"}
 
 
 def test_gate_503_is_exactly_the_four_dim_mirrors():

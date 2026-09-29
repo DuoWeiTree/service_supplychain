@@ -57,6 +57,27 @@ def make_ch_unreachable(monkeypatch) -> str:
     return "127.0.0.1:9/jxd_raw"
 
 
+def stub_pm(monkeypatch, products=None, tree=None) -> None:
+    """★ `sku_category` 接线后，任何不带 `only=` 限制到别的镜像的
+    `refresh_all()` 调用都会把它一起刷——不 stub 就会在离线单测里真的去
+    `mint_token()`，打一次真网络（`auth.zestrade.com`）。同 `make_ch_
+    unreachable` 的理由：monkeypatch `shared.pm_client` 模块本身（`jobs/
+    refresh_dims.py` 用 `from shared import pm_client` 拿到的是同一个模块
+    对象），不是随便手搓一个假 Fetched——这样 `dim/pm_source.py` 的真实
+    变换逻辑仍然会跑到，只是 I/O 边界（token/products/tree）被换成假数据。
+
+    默认空品类树/空产品列表：这一轮里 `sku_category` 会合法地把当时
+    `sku_catalog` 里的全部货号判成 `no_pm_match`（`AllRowsDropped` → 这一
+    张镜像 ok=False），这对大多数只关心"别的镜像有没有跑到"的测试无害——
+    需要 `sku_category` 本身成功的测试应显式传 `products`/`tree`。
+    """
+    from shared import pm_client as pmmod
+
+    monkeypatch.setattr(pmmod, "mint_token", lambda: "test-token")
+    monkeypatch.setattr(pmmod, "fetch_products", lambda token: products or [])
+    monkeypatch.setattr(pmmod, "fetch_categories", lambda token: tree or [])
+
+
 def _ok(r):
     """★ 静默丢失已在本仓踩过六次：半路一次 409/404 不许被吞掉，
     否则 prepared() 造出的是一张半填的计划，后面的断言会因不相干的原因红或绿。"""

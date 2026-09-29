@@ -9,7 +9,7 @@ from jobs import refresh_dims as rd
 from jobs.lock import RefreshInFlight, advisory_lock
 from shared.pg_client import pg_conn
 from tests.fixtures import ch_rows as R
-from tests.helpers import make_ch_unreachable
+from tests.helpers import make_ch_unreachable, stub_pm
 
 
 def _rows(cur, sql, *a):
@@ -66,10 +66,11 @@ def test_msku_bridge_coverage_also_counts_distinct_sid(seed):
     assert "distinct:sid" in (got[0].error or "")
 
 
-def test_a_failed_mirror_does_not_stop_the_others(seed):
+def test_a_failed_mirror_does_not_stop_the_others(seed, monkeypatch):
     """`07:486` 的同一条：一批失败不影响其它批。
     ★ OQ-3 裁定后 seller 不再天然失败（has_fba 已可派生），改用「混进一行认不出
     的仓形态」来制造这一条要验证的失败——warehouse 挂，其余三张照常成功。"""
+    stub_pm(monkeypatch)  # ★ sku_category 现在也在这批里——离线单测不许真打 PM
     got = rd.refresh_all("cli", query=_mixed_query())
     names = {r.mirror: r.ok for r in got}
     assert names["warehouse"] is False
@@ -83,7 +84,8 @@ def test_unknown_mirror_name_is_refused(seed):
         rd.refresh_all("cli", only="no_such_mirror", query=R.replay([]))
 
 
-def test_a_db_level_failure_inside_upsert_still_writes_provenance_and_does_not_stop_others(seed):
+def test_a_db_level_failure_inside_upsert_still_writes_provenance_and_does_not_stop_others(
+        seed, monkeypatch):
     """review 09-22 finding 1：`_upsert()` 的 SQL 执行阶段才炸的原始 DB 异常
     （这里用主键重复触发——`sku_catalog` 的 `coverage=("rows",)` 没有
     `distinct:` 规则，拦不住"这一批内部有没有重复主键"这种形态）不能连累
@@ -91,6 +93,7 @@ def test_a_db_level_failure_inside_upsert_still_writes_provenance_and_does_not_s
     `test_a_failed_mirror_does_not_stop_the_others` 的区别是：那条测试的失败
     发生在 `m.fetch()` 内部（Python 级异常，事务还没被碰脏）；这条测试的失败
     发生在 `_upsert()` 内部（DB 级异常，事务会被 PG 标记为 aborted）。"""
+    stub_pm(monkeypatch)
     with pg_conn() as c, c.cursor() as cur:
         before = _rows(cur, "SELECT count(*) FROM sku_catalog WHERE sku = 'SKU-DUP'")[0]
 
@@ -143,6 +146,33 @@ def test_unknown_or_inactive_actor_is_refused_before_any_mirror_runs(seed):
     assert [r.ok for r in got] == [True]
 
 
+def test_pm_only_refresh_does_not_need_ch(seed, monkeypatch):
+    """★ sku-image 计划 Task 1：`source='PM'` 的镜像与 CH 是两个独立系统——
+    `--only sku_category` 手动刷新时，一个不相关的 CH 故障不该挡住它。
+
+    这与「整批调度（`only=None`）把 CH 可达当作前提」是刻意维持的两种不同
+    契约（`test_unreachable_ch_still_leaves_one_ok_false_row_per_mirror`
+    钉着后者），见 `jobs/refresh_dims.py::refresh_all` 里 `ch_targets` 那段
+    注释——这条测试钉的是前者：CH 连接压根不该被尝试建立。"""
+    make_ch_unreachable(monkeypatch)
+    stub_pm(monkeypatch, products=[{
+        "sku_code": seed.sku_a, "category": {"code": "C1", "name": "猫用品"},
+        "main_image_url": "https://x/real.jpg",
+    }], tree=[{
+        "category_code": "C1", "category_name": "猫用品",
+        "parent_category_code": None, "level": 1, "is_leaf": True,
+        "sort_order": 0, "children": [],
+    }])
+
+    got = rd.refresh_all("cli", only="sku_category")
+
+    assert got[0].ok, f"PM 独立刷新不该被无关的 CH 故障挡住：{got[0].error}"
+    assert got[0].rows_in == 1
+    with pg_conn() as c, c.cursor() as cur:
+        assert _rows(cur, "SELECT sku, image_is_placeholder FROM sku_category"
+                          ) == [(seed.sku_a, False)]
+
+
 def test_provenance_write_failure_is_contained_and_others_still_run(seed, monkeypatch):
     """review 09-22 二轮 finding：`SAVEPOINT mirror_<name>` 修好了 `_upsert()`
     那一步，但收尾的留痕 INSERT 本身还在保护范围之外——同样的失败形状只是
@@ -150,6 +180,7 @@ def test_provenance_write_failure_is_contained_and_others_still_run(seed, monkey
     仍可能撞上别的约束或连接问题）。这里直接 monkeypatch 留痕 INSERT 的 SQL
     文本（引用一个不存在的列），在不绕开入口校验的前提下单独制造"合法参数、
     DB 却拒绝"的场景。"""
+    stub_pm(monkeypatch)  # ★ sku_category 现在也在这批里——离线单测不许真打 PM
     monkeypatch.setattr(
         rd, "_PROVENANCE_SQL",
         "INSERT INTO dim_refresh_run (mirror, trigger, actor, started_at, finished_at,"
@@ -157,7 +188,7 @@ def test_provenance_write_failure_is_contained_and_others_still_run(seed, monkey
         " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING run_id")
 
     got = rd.refresh_all("cli", query=_mixed_query_all_good())
-    assert len(got) == 4, "四张镜像都要跑到——留痕写不出来不能打断循环"
+    assert len(got) == 5, "五张镜像都要跑到——留痕写不出来不能打断循环"
     assert all(r.ok is False for r in got), "留痕都没写成，这一轮不能算数"
     assert all(r.run_id == rd.NO_PROVENANCE_ROW for r in got)
     assert all("provenance_write_failed" in (r.error or "") for r in got)

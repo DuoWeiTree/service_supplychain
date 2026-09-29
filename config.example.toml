@@ -77,3 +77,11 @@ min_distinct_sid = 21
 # ★ 实测两表（purchase_order_list / _items）比 fba_detail 晚 1 天是常态；3 天留出
 #   「漏采一天仍可用、漏采两天就该报警」的余量（design §8 OQ-5）。
 purchase_staleness_days = 3
+
+[pm_zestrade]                # ★ 总公司产品系统（PM）。凭证只从这里读，不许硬编码。
+# ★ client_secret 绝不回显、绝不进提交——这里只放占位值，真值找控制者，
+#   写进 git-ignored 的 config.toml（同 [business_pg]/[clickhouse] 的规矩）。
+token_url    = "https://auth.zestrade.com/realms/sso/protocol/openid-connect/token"
+client_id    = "YOUR_PM_CLIENT_ID"
+client_secret = "YOUR_PM_CLIENT_SECRET"
+pm_base      = "https://pm.zestrade.com"
