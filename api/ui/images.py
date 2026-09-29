@@ -52,16 +52,24 @@ import time
 import urllib.error
 import urllib.parse
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Request, Response
 
-from api.ui.deps import declared, require_fresh_mirrors
+from api.ui.deps import declared
 from api.ui.errors import ApiError
 from shared import pm_client
 from shared.pg_client import pg_conn, timed
 
 log = logging.getLogger("scm.api")
 
-router = APIRouter(dependencies=[Depends(require_fresh_mirrors)])
+#: ★★ 本路由**不挂** `require_fresh_mirrors`（负责人 2026-09-29 复核，照
+#: `api/ui/ops.py` 的先例：那个端点也不挂，理由写在它模块 docstring 第一行）。
+#: 依据是登记表自己的声明——`dim/registry.py` 里 `sku_category` 的
+#: `staleness="label_only"`：「不进 v_mirror_freshness、不拒绝服务」（设计
+#: A-1：品类/图片只影响展示，不影响任何一个数的正确性）。挂上闸会变成
+#: `sku_catalog`（gate_503 的四张之一）一陈旧，看图就跟着 503——而一张看不到
+#: 的图和计划里的数字对不对毫无关系，运营看到的是一个与真问题无关的红。
+#: 门禁：`tests/test_api_sku_image.py` 里两条「镜像陈旧时这个端点仍然服务」。
+router = APIRouter()
 
 #: ★ 未经实测的占位（同兄弟仓 `IMAGE_CACHE_TTL_SECONDS`），先给一个数，
 #: 能测出真实回源频率后再调。

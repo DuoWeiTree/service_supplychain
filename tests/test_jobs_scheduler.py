@@ -10,22 +10,21 @@ from tests.helpers import make_ch_unreachable
 
 
 def _with_freshness(monkeypatch, **kw):
-    """★ 复核（sku-image 计划 Task 3~4 之间，负责人要求先弄红一次）：下面这行
-    裸赋值看起来像 `tests/test_pm_client.py::_point_config_at` 当初踩过的那颗
-    地雷（裸改全局配置缓存、不经过 monkeypatch），但**机制不同，不是同一类
-    bug**——`monkeypatch.setattr(config_module, "_CFG", …)` 已经在它之前把
-    这次改动记进了 monkeypatch 自己的撤销表；`.undo()`（测试结束时自动触发）
-    是按「setattr 那一刻记下的原值」无条件写回去，不管中途这个属性又被谁改
-    成了什么。下面这行裸赋值赋的是**同一个值**，纯属多余（可能是当初对着
-    "会不会不生效"的疑虑加的保险），但不会让原值回不去。
-    `test_freshness_pollution_does_not_survive_teardown` 用独立的
-    `MonkeyPatch()` 实例把这个机制单独重放了一遍——构造"前一个测试污染了
-    `_CFG`、后一个读到脏值"的顺序，结果是绿的，这是证据不是断言。"""
+    """★ 复核（sku-image 计划 Task 3~4 之间，负责人要求先弄红一次）：这行
+    `monkeypatch.setattr` 看起来像 `tests/test_pm_client.py::_point_config_at`
+    当初踩过的那颗地雷（改全局配置缓存、测试结束后不还原），但**机制不同，
+    不是同一类 bug**——判据不是"有没有裸赋值"，是"有没有先经过
+    `monkeypatch.setattr` 给 `_CFG` 建档"：建过档的，`.undo()`（测试结束时
+    自动触发）按"setattr 那一刻记下的原值"无条件写回去，不管中途这个属性
+    又被谁改成了什么；`_point_config_at` 那颗地雷是**从没建档**（只
+    `setenv`，然后裸调 `reset_cache()`），所以没有任何东西负责把它还原。
+    两者长得像，判据不一样——`test_freshness_pollution_does_not_survive_
+    teardown` 用独立的 `MonkeyPatch()` 实例把这个机制单独重放了一遍，下次
+    看见类似写法不必重跑一遍这次调查，直接查这条判据。"""
     base = {"max_age_hours": 24, "refresh_at": "06:30", "scheduler_enabled": True,
             "coverage_drop_threshold": 0.30, "startup_gate": True,   # OQ-6 裁定 09-22
             "refresh_timezone": "Asia/Shanghai"}
     monkeypatch.setattr(config_module, "_CFG", {"freshness": {**base, **kw}}, raising=False)
-    config_module._CFG = {"freshness": {**base, **kw}}
 
 
 def test_freshness_pollution_does_not_survive_teardown(business_db):
@@ -104,8 +103,7 @@ def test_bad_refresh_timezone_names_the_config_key(monkeypatch):
 
 
 def test_freshness_config_has_every_key_even_when_toml_omits_them(monkeypatch):
-    monkeypatch.setattr(config_module, "_CFG", {}, raising=False)
-    config_module._CFG = {}
+    monkeypatch.setattr(config_module, "_CFG", {}, raising=False)  # 同 _with_freshness：已建档，安全
     got = config_module.freshness()
     assert set(got) >= {"max_age_hours", "refresh_at", "scheduler_enabled",
                         "coverage_drop_threshold", "startup_gate", "refresh_timezone"}

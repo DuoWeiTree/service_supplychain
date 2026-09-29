@@ -166,3 +166,43 @@ def test_success_passes_through_bytes_and_content_type(client, seed, monkeypatch
     assert r.status_code == 200
     assert r.content == b"\x89PNGDATA"
     assert r.headers["content-type"] == "image/png"
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  镜像陈旧不拒绝服务（负责人复核 09-29：sku_category 是 label_only，
+#  挂 require_fresh_mirrors 会让"看不看得到一张图"跟着"计划里的数字准不准"
+#  一起 503——两者毫无关系。同 api/ui/ops.py 的既有先例：镜像陈旧不该拦住
+#  与陈旧无关的读接口。
+# ══════════════════════════════════════════════════════════════════════
+
+def _make_stale(seed) -> None:
+    """把四张 gate_503 镜像的 refreshed_at 拨到很久以前——require_fresh_mirrors
+    的判据就是 `now - refreshed_at > max_age_hours`（默认 24 小时）。"""
+    with pg_conn() as c, c.cursor() as cur:
+        for table in ("seller", "sku_catalog", "msku_bridge", "warehouse"):
+            cur.execute(f"UPDATE {table} SET refreshed_at = now() - interval '999 hours'")
+
+
+def test_image_endpoint_still_serves_when_dimension_mirrors_are_stale(client, seed, monkeypatch):
+    """★ 这是本条判据的证人：镜像陈旧时端点必须仍然服务，不是 503。"""
+    _seed_category(seed.sku_a, placeholder=False, url="https://pm.zestrade.com/i/real.png")
+    images._IMAGE_CACHE.clear()
+    _make_stale(seed)
+    monkeypatch.setattr(pm_client, "mint_token", lambda: "tok")
+    monkeypatch.setattr(pm_client, "fetch_image_bytes",
+                        lambda url, token, timeout=15: (b"\x89PNGDATA", "image/png"))
+
+    r = client.get(f"/v1/skus/{seed.sku_a}/image")
+    assert r.status_code != 503, (
+        f"镜像陈旧不该拦住这个端点——它读的 sku_category 是 label_only，"
+        f"不挂新鲜度闸：{r.status_code} {r.text}")
+    assert r.status_code == 200, r.text
+
+
+def test_sku_not_in_catalog_reason_survives_staleness(client, seed, monkeypatch):
+    """陈旧时"本仓没这个货号"这条判据也不该被 503 抢先。"""
+    _make_stale(seed)
+    monkeypatch.setattr(pm_client, "mint_token", _boom_if_called)
+    r = client.get("/v1/skus/NO-SUCH-SKU/image")
+    assert r.status_code == 404, r.text
+    assert r.json()["reason"] == "sku_not_in_catalog"
