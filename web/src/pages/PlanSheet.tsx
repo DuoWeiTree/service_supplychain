@@ -7,6 +7,7 @@ import {
 } from './planGridModel';
 import { basisTitle, FORECAST_WHY, ForecastBasis, type BasisTarget } from './ForecastBasis';
 import { Modal } from '../components/Modal';
+import { SkuImagePreview } from './SkuImagePreview';
 import { buildCards, cardMatches, monthLabel, riskOrder, stockState, summarize, type CardSummary, type SkuCard } from './planSheetModel';
 import { demandKey, purchaseKey, removeKey } from './usePlanGridSaves';
 
@@ -84,6 +85,8 @@ export function PlanSheet(props: PlanSheetProps) {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [scrollTop, setScrollTop] = useState(0);
   const [basis, setBasis] = useState<BasisTarget | null>(null);
+  /** sku-image 计划 Task 4：哪个货号正打开着主图预览；null = 没开。 */
+  const [imageSku, setImageSku] = useState<string | null>(null);
   const [viewH, setViewH] = useState(FALLBACK_VIEW_H);
   const editRef = useRef<typeof editing>(null);
   const scRef = useRef<HTMLDivElement>(null);
@@ -480,6 +483,10 @@ export function PlanSheet(props: PlanSheetProps) {
           <div className="ps-rh__txt ps-rh__txt--act">
             <div className="ps-sku">
               <span className="ps-name" title={card.sku}>{card.sku}</span>
+              {card.hasImage && (
+                <button type="button" className="pm-img" aria-label={`查看 ${card.sku} 的主图`}
+                  onClick={() => setImageSku(card.sku)}>🖼</button>
+              )}
             </div>
             <div className="ps-subline">
               {s.outs.length > 0 && (
@@ -726,6 +733,12 @@ export function PlanSheet(props: PlanSheetProps) {
       {basis && (
         <Modal title={basisTitle(basis)} onClose={() => { setBasis(null); focusGrid(); }}>
           <ForecastBasis model={model} target={basis} />
+        </Modal>
+      )}
+
+      {imageSku && (
+        <Modal title={`${imageSku} 主图`} onClose={() => { setImageSku(null); focusGrid(); }}>
+          <SkuImagePreview sku={imageSku} />
         </Modal>
       )}
 

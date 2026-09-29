@@ -10,6 +10,11 @@ export interface SkuCard {
   stores: SkuBlock[];
   purchase: PurchaseRow | null;
   transit: TransitRow | null;
+  /** ★ sku-image 计划 Task 4：三态已经在后端（Task 3）收敛成布尔，这里只是
+   *  从 `model.totals`（按货号分组的 `forecast_sku`）原样取出来，不重算、
+   *  不再引入第四种状态——`totals` 里没有这个货号的行时（sku_forecast_missing
+   *  orphan，极端形态）按 false 兜底，与「没有真图」同一种处置。 */
+  hasImage: boolean;
 }
 
 export function buildCards(model: GridModel): SkuCard[] {
@@ -24,6 +29,7 @@ export function buildCards(model: GridModel): SkuCard[] {
     stores: model.blocks.filter((b) => b.sku === sku),
     purchase: model.purchase.find((p) => p.sku === sku) ?? null,
     transit: model.transit.find((t) => t.sku === sku) ?? null,
+    hasImage: model.totals.find((t) => t.sku === sku)?.cells[0]?.has_image ?? false,
   }));
 }
 

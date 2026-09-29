@@ -51,6 +51,19 @@
 .pm-rm:disabled { cursor: progress; opacity: .5; }
 @media (hover: none) { .pm-rm { opacity: 1; } }
 
+/* sku-image 计划 Task 4：货号名旁的主图入口——只在 has_image 为真时出现，
+   平时就该看得见（不像 .pm-rm 那样靠悬停才显形，因为它不是危险动作）。 */
+.pm-img {
+  appearance: none; border: 0; background: none; cursor: pointer; flex: none;
+  padding: 0 2px; height: 20px; line-height: 20px; border-radius: var(--radius-sm);
+  font-size: 13px; color: var(--text-3);
+}
+.pm-img:hover, .pm-img:focus-visible { background: var(--surface-2); color: var(--text); }
+
+/* 主图预览弹窗：图片本体居中、限最大宽高，避免撑爆 Modal */
+.sku-image-preview { display: flex; align-items: center; justify-content: center; min-height: 120px; }
+.sku-image-preview img { max-width: 100%; max-height: 60vh; border-radius: var(--radius-sm); }
+
 /* 不 sticky：整表自己滚，状态栏贴在它下面；sticky 会压住整表最后几行 */
 .pm-status {
   display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-4);
