@@ -6,7 +6,7 @@ import { useActionError } from '../shell/useActionError';
 import { useInFlight } from '../shell/useInFlight';
 import { ErrorDetail } from '../components/ErrorDetail';
 import { api, ApiError } from '../api';
-import type { GridResponse, LeadTime, PlanSummary, Seller, SubmitResult } from '../api/types';
+import type { GridResponse, LeadTime, NoHistoryEntry, PlanSummary, Seller, SubmitResult } from '../api/types';
 import { buildGridModel } from './planGridModel';
 import { usePlanGridSaves } from './usePlanGridSaves';
 import { LeadTimeBar } from './LeadTimeBar';
@@ -14,6 +14,7 @@ import { PlanSheet } from './PlanSheet';
 import { SubmitPanel, type InFlightBlock } from './SubmitPanel';
 
 const SUBMIT_KEY = 'submit';
+const RECOMPUTE_KEY = 'recompute';
 
 export function PlanGrid() {
   const planId = Number(useParams().planId);
@@ -33,6 +34,9 @@ export function PlanGrid() {
   const { err: actionErr, fail, succeed, dismiss } = useActionError();
   const [report, setReport] = useState<SubmitResult | null>(null);
   const [inFlight, setInFlight] = useState<InFlightBlock | null>(null);
+  // task-23：重算预测点名了哪些 msku 算不出速率——留到下次重算/刷新前，不是闪一下 toast 就没了
+  // （与 PlanAdd.tsx 的 noHistory 同一个理由）
+  const [noRate, setNoRate] = useState<NoHistoryEntry[]>([]);
   // ★ Ruling C + I3：提交的在飞护栏与其余五处写动作共用 useInFlight
   const { pending: submitting, run } = useInFlight();
 
@@ -82,6 +86,26 @@ export function PlanGrid() {
     });
   }
 
+  async function recompute() {
+    // ★ 入口早退：与其余六处写动作同一护栏（useInFlight），防双击并发打两次重算
+    await run(RECOMPUTE_KEY, async () => {
+      try {
+        const r = await api.recomputeForecast(planId);
+        setNoRate(r.no_rate);
+        succeed(RECOMPUTE_KEY);
+        // ★ task-23 裁定：成功提示要点名「N 格更新 · M 格算不出速率」，不是「重算完成」——
+        //   「算不出速率」与「算出来了」是两件事，合成一句「重算完成」会把它们混成一个成功计数
+        pushToast({
+          kind: r.no_rate.length === 0 ? 'ok' : 'warn',
+          text: `${r.recomputed.length} 格更新 · ${r.no_rate.length} 格算不出速率`,
+        });
+        await load();
+      } catch (e) {
+        fail(RECOMPUTE_KEY, e as ApiError);
+      }
+    });
+  }
+
   return (
     <AppShell crumb="计划编辑">
       {plan && (
@@ -99,6 +123,14 @@ export function PlanGrid() {
             {/* ★ F17 裁定：本页内部导航改用 Router 的 Link，避免整页刷新 */}
             <Link className="btn" to={`/plans/${planId}/add`}>添加货品</Link>
             <button type="button" className="btn btn--ghost" onClick={() => void load()}>重置</button>
+            {/* task-23：换源之后旧认领的格子不会自己回头算，需要一个手动入口重新种一遍
+                system_units/system_basis——disabled 是双击护栏（同 Ruling C） */}
+            <button
+              type="button" className="btn btn--ghost"
+              disabled={submitting.has(RECOMPUTE_KEY)} onClick={() => void recompute()}
+            >
+              重算预测
+            </button>
             {/* ★「提交」排在「重置」之后，与原理图一致；disabled 是双击护栏（Ruling C） */}
             <button
               type="button" className="btn btn--primary"
@@ -127,6 +159,18 @@ export function PlanGrid() {
       {sellersErr && <ErrorDetail err={sellersErr} />}
       {!model && !gridErr && !sellersErr && (
         <div className="empty"><p className="empty__title">正在取网格…</p></div>
+      )}
+
+      {/* task-23：算不出速率的 msku 点名——复用依据面板之外的展开位（同 model.orphans
+          的 .sec/.dropline 样式），不是把「重算完成」当成唯一反馈 */}
+      {noRate.length > 0 && (
+        <div className="sec" data-testid="recompute-no-rate">
+          {noRate.map((n) => (
+            <div className="dropline" key={`${n.seller_sku}-${n.sid}`}>
+              <span className="k">{n.seller_sku}</span><span>{n.sid}</span><span>{n.reason}</span>
+            </div>
+          ))}
+        </div>
       )}
 
       {model && model.orphans.length > 0 && (

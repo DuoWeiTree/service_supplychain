@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+import time
 from typing import Annotated
 
 import psycopg2
@@ -245,7 +246,7 @@ def _check_stock_window(as_of: dt.date, until: dt.date, plan_id: int, seller_sku
                         sid: str) -> None:
     anchor = estimation_anchor(as_of)
     if until > anchor:
-        log.error("op=claim_forecast outcome=StockWindowPastAnchor plan_id=%s seller_sku=%s"
+        log.error("op=seed_forecast outcome=StockWindowPastAnchor plan_id=%s seller_sku=%s"
                   " sid=%s as_of=%s until=%s anchor=%s embargo_days=%s",
                   plan_id, seller_sku, sid, as_of, until, anchor, EMBARGO_DAYS)
         raise ApiError(500, STOCK_WINDOW_PAST_ANCHOR,
@@ -279,6 +280,99 @@ def _system_basis(est, stock, win) -> dict:
                       "target_window_days": TARGET_WINDOW_DAYS, "shrink_prior": SHRINK_PRIOR,
                       "winsor_q": WINSOR_Q, "winsor_min_nonzero": WINSOR_MIN_NONZERO},
     }
+
+
+def _seed_forecast(source, plan_id: int, seller_sku: str, sid: str, platform: str) -> dict:
+    """算一次预测销量与依据 —— `claim()` 认领时与 `recompute_forecast()` 重算时共用
+    的**唯一**一份。两份算法迟早分叉，本仓已经在 `_demand_row` 上踩过这个坑（见其
+    docstring），task-23 明确要求不许再开第二份。
+
+    返回 {"rate": float|None, "extrapolated": bool, "basis": dict|None,
+          "history_window": dict|None, "no_history": dict|None}——
+    "no_history" 是要点名进响应 no_history[]/no_rate[] 的那一条（不适用 / 算不出
+    历史），能算出速率时是 None。取数失败仍按 `_source_error` 的既有 503 形状抛出，
+    调用方（claim / recompute_forecast）都在同一个事务里，交给 `pg_conn()` 统一回滚。
+    """
+    if platform not in _SALES_PLATFORM:
+        # ★ 终审 I-2：「这个店压根没有 Amazon 销量源」是**不适用**，不是未知。
+        #   走到 daily_sales 的话，CH 档会在 store_for() 上抛
+        #   UnknownStore → 503，而 fixture 档同一个 msku 是 200 —— 两档对同一
+        #   件事给出两种答案，且 503 那一侧把「不适用」说成了「认不出这个店」。
+        #   闸放在调用方，与 grid() 里 `has_fba` 那一闸同一个位置、同一个理由：
+        #   ★ 不适用 ≠ 0，也 ≠ 未知（CLAUDE.md 判据一），三者必须分得开。
+        return {"rate": None, "extrapolated": False,
+                "basis": _no_sales_source_basis(CAUSE_NON_AMAZON_PLATFORM),
+                "history_window": None,
+                "no_history": {"seller_sku": seller_sku, "sid": sid,
+                               "reason": NOT_APPLICABLE,
+                               "cause": CAUSE_NON_AMAZON_PLATFORM, "platform": platform}}
+    try:
+        as_of = source.as_of()
+        win = data_windows(as_of)
+        _check_stock_window(as_of, win.until, plan_id, seller_sku, sid)
+        daily = source.daily_sales(seller_sku, sid, win.sales_from, win.until)
+        stock = source.fba_stock_days(seller_sku, sid, win.censor_from, win.until)
+    except UnknownStore as e:
+        # ★★ 残留轮次裁定（第二轮）：**按异常分派，不预检**。
+        #   `NO_ORDER_REPORT_SID` 上的 179 个 msku 的形状与上面那一支
+        #   一模一样 —— 这个 msku 没有销量取数源 —— 所以给同一个答案：
+        #   格子照建、system_units 留 NULL、标记点名。145 个 msku 认领
+        #   不了，比一格等人来填的 NULL 坏得多。
+        #   ★ 未知/0 的保证不变：绝不是 0，也绝不是编出来的预估。
+        #   ★ 为什么不在调用前查一次 `NO_ORDER_REPORT_SID`：那样
+        #   `_source_error` 里那支「已登记的缺口」永远走不到，而一个没有
+        #   路径的分支是没人能信的分支 —— 本仓已经被这种东西咬过两次
+        #   （`ChUnavailable` 定义了从没抛过；折叠计数器没有靶子）。
+        #   分派放在这里之后，`_source_error` 只会收到「没人声明过」
+        #   那一种，它那句「去补一行」也就只对着它该对的人说。
+        if not e.registered_gap:
+            raise _source_error(e) from e
+        return {"rate": None, "extrapolated": False,
+                "basis": _no_sales_source_basis(CAUSE_STORE_ABSENT_FROM_ORDER_REPORT),
+                # ★ 不设 history_window：这一支压根没查过，而口径标记的意思是
+                #   「查了，用的是这几个月」。给它一个标记就是说了一句没发生的事。
+                "history_window": None,
+                "no_history": {"seller_sku": seller_sku, "sid": sid,
+                               "reason": NOT_APPLICABLE,
+                               "cause": CAUSE_STORE_ABSENT_FROM_ORDER_REPORT,
+                               "detail": e.registered_gap}}
+    except (ChUnavailable, ChDataUnusable, UnknownShape) as e:
+        # ★ fix round 1：`UnknownStore` 曾经漏在这个元组外——
+        #   daily_sales() → order_store_map.store_for() 抛的这个
+        #   异常会裸着冒成无 S-29 形状的 500。现在它有了自己的 except
+        #   （上面那一支，按成因分派），所以不在这个元组里。
+        #   claim() 不碰采购表，所以这里不需要 PurchaseTableStale（同 grid()
+        #   不需要 UnknownStore 一个道理——见 _source_error() 上面的审计注释）。
+        raise _source_error(e) from e
+    est = estimate_rate(daily, stock.censored, as_of)
+    basis = _system_basis(est, stock, win)
+    rate = est.result.rate if est.result else None
+    extrapolated = est.extrapolated and rate is not None
+    # ★ 用了哪段日子、订单是滞后采集的（CLAUDE.md 铁律三）——
+    #   一个没有标记的数比没有数更坏。
+    history_window = _history_window(source, seller_sku, sid)
+    log.info("op=seed_forecast plan_id=%s seller_sku=%s sid=%s as_of=%s anchor=%s"
+             " sales_days=%d censored=%d rejected=%d uncaptured=%d base_rate=%s"
+             " extrapolated=%s",
+             plan_id, seller_sku, sid, as_of, est.estimation_anchor, len(daily),
+             basis["censored_days"], basis["stock_days_rejected"],
+             basis["stock_days_uncaptured"], rate, extrapolated)
+    no_history = (None if rate is not None else
+                  # ★ 没有历史 ≠ 预估 0：格子照建，system_units 留 NULL 并点名（spec §3.3）
+                  {"seller_sku": seller_sku, "sid": sid, "reason": "no_sales_history"})
+    return {"rate": rate, "extrapolated": extrapolated, "basis": basis,
+            "history_window": history_window, "no_history": no_history}
+
+
+def _cell_payload(rate: float | None, basis: dict | None, period: dt.date) -> tuple[int | None, str | None]:
+    """`system_units` + `system_basis`（JSON 串）这一对：`days_in_month`/`units_raw`
+    是逐月才补得出的两个字段，`claim()` 与 `recompute_forecast()` 共用这一份，不各自算一遍。"""
+    n = days_in_month(period)
+    units = units_for_month(rate, n) if rate is not None else None
+    cell_basis = (None if basis is None else
+                  json.dumps({**basis, "days_in_month": n,
+                              "units_raw": rate * n if rate is not None else None}))
+    return units, cell_basis
 
 
 def _claimed_elsewhere(seller_sku: str, sid: str, holder) -> ApiError:
@@ -334,79 +428,12 @@ def claim(plan_id: int, body: dict, request: Request,
                     "seeded": {"demand_cells": 0, "purchase_cells": 0},
                     "no_history": [], "history_window": None}
 
-        no_history = []
-        history_window = None
-        rate = None
-        basis = None
-        # 没有数就没有外推可言（CHECK：外推 ⇒ system_units 非空）
-        extrapolated = False
-        if platform not in _SALES_PLATFORM:
-            # ★ 终审 I-2：「这个店压根没有 Amazon 销量源」是**不适用**，不是未知。
-            #   走到 daily_sales 的话，CH 档会在 store_for() 上抛
-            #   UnknownStore → 503，而 fixture 档同一个 msku 是 200 —— 两档对同一
-            #   件事给出两种答案，且 503 那一侧把「不适用」说成了「认不出这个店」。
-            #   闸放在调用方，与 grid() 里 `has_fba` 那一闸同一个位置、同一个理由：
-            #   ★ 不适用 ≠ 0，也 ≠ 未知（CLAUDE.md 判据一），三者必须分得开。
-            no_history.append({"seller_sku": seller_sku, "sid": sid,
-                               "reason": NOT_APPLICABLE,
-                               "cause": CAUSE_NON_AMAZON_PLATFORM,
-                               "platform": platform})
-            basis = _no_sales_source_basis(CAUSE_NON_AMAZON_PLATFORM)
-        else:
-            try:
-                as_of = source.as_of()
-                win = data_windows(as_of)
-                _check_stock_window(as_of, win.until, plan_id, seller_sku, sid)
-                daily = source.daily_sales(seller_sku, sid, win.sales_from, win.until)
-                stock = source.fba_stock_days(seller_sku, sid, win.censor_from, win.until)
-            except UnknownStore as e:
-                # ★★ 残留轮次裁定（第二轮）：**按异常分派，不预检**。
-                #   `NO_ORDER_REPORT_SID` 上的 179 个 msku 的形状与上面那一支
-                #   一模一样 —— 这个 msku 没有销量取数源 —— 所以给同一个答案：
-                #   格子照建、system_units 留 NULL、标记点名。145 个 msku 认领
-                #   不了，比一格等人来填的 NULL 坏得多。
-                #   ★ 未知/0 的保证不变：绝不是 0，也绝不是编出来的预估。
-                #   ★ 为什么不在调用前查一次 `NO_ORDER_REPORT_SID`：那样
-                #   `_source_error` 里那支「已登记的缺口」永远走不到，而一个没有
-                #   路径的分支是没人能信的分支 —— 本仓已经被这种东西咬过两次
-                #   （`ChUnavailable` 定义了从没抛过；折叠计数器没有靶子）。
-                #   分派放在这里之后，`_source_error` 只会收到「没人声明过」
-                #   那一种，它那句「去补一行」也就只对着它该对的人说。
-                if not e.registered_gap:
-                    raise _source_error(e) from e
-                no_history.append({"seller_sku": seller_sku, "sid": sid,
-                                   "reason": NOT_APPLICABLE,
-                                   "cause": CAUSE_STORE_ABSENT_FROM_ORDER_REPORT,
-                                   "detail": e.registered_gap})
-                basis = _no_sales_source_basis(CAUSE_STORE_ABSENT_FROM_ORDER_REPORT)
-                # ★ 不设 history_window：这一支压根没查过，而口径标记的意思是
-                #   「查了，用的是这几个月」。给它一个标记就是说了一句没发生的事。
-            except (ChUnavailable, ChDataUnusable, UnknownShape) as e:
-                # ★ fix round 1：`UnknownStore` 曾经漏在这个元组外——
-                #   daily_sales() → order_store_map.store_for() 抛的这个
-                #   异常会裸着冒成无 S-29 形状的 500。现在它有了自己的 except
-                #   （上面那一支，按成因分派），所以不在这个元组里。
-                #   claim() 不碰采购表，所以这里不需要 PurchaseTableStale（同 grid()
-                #   不需要 UnknownStore 一个道理——见 _source_error() 上面的审计注释）。
-                raise _source_error(e) from e
-            else:
-                est = estimate_rate(daily, stock.censored, as_of)
-                basis = _system_basis(est, stock, win)
-                rate = est.result.rate if est.result else None
-                extrapolated = est.extrapolated and rate is not None
-                # ★ 用了哪段日子、订单是滞后采集的（CLAUDE.md 铁律三）——
-                #   一个没有标记的数比没有数更坏。
-                history_window = _history_window(source, seller_sku, sid)
-                log.info("op=claim_forecast plan_id=%s seller_sku=%s sid=%s as_of=%s anchor=%s"
-                         " sales_days=%d censored=%d rejected=%d uncaptured=%d base_rate=%s"
-                         " extrapolated=%s",
-                         plan_id, seller_sku, sid, as_of, est.estimation_anchor, len(daily),
-                         basis["censored_days"], basis["stock_days_rejected"],
-                         basis["stock_days_uncaptured"], rate, extrapolated)
-                if rate is None:
-                    # ★ 没有历史 ≠ 预估 0：格子照建，system_units 留 NULL 并点名（spec §3.3）
-                    no_history.append({"seller_sku": seller_sku, "sid": sid,
-                                       "reason": "no_sales_history"})
+        # ★ task-23：算法唯一入口是 _seed_forecast —— claim() 与 recompute_forecast()
+        #   两处都调它，不许各自另写一份（本仓已经在 _demand_row 上踩过这个坑）。
+        seeded = _seed_forecast(source, plan_id, seller_sku, sid, platform)
+        rate, extrapolated, basis = seeded["rate"], seeded["extrapolated"], seeded["basis"]
+        history_window = seeded["history_window"]
+        no_history = [seeded["no_history"]] if seeded["no_history"] is not None else []
         # ★ 与 release / remove_sku 同一把 (plan, sku) 锁，拿在**写任何行之前**（认领行也挪到了
         #   锁之后）：兄弟 msku 的认领与最后一个 msku 的释放并发时，要么释放看见这个兄弟、留下
         #   采购格，要么认领在释放删完之后重新种出采购格 —— 不许出现「有 msku 在认领、却没有
@@ -439,11 +466,7 @@ def claim(plan_id: int, body: dict, request: Request,
             raise _claimed_elsewhere(seller_sku, sid, holder) from None
 
         for period in periods:
-            n = days_in_month(period)
-            units = units_for_month(rate, n) if rate is not None else None
-            cell_basis = (None if basis is None else
-                          json.dumps({**basis, "days_in_month": n,
-                                      "units_raw": rate * n if rate is not None else None}))
+            units, cell_basis = _cell_payload(rate, basis, period)
             # ★ system_extrapolated 取估计器给的值（spec §3.3：如实给，不盖章）
             cur.execute(
                 "INSERT INTO plan_demand_cell (plan_id, seller_sku, sid, period_start,"
@@ -464,6 +487,74 @@ def claim(plan_id: int, body: dict, request: Request,
             "already_claimed": False,
             "seeded": {"demand_cells": len(periods), "purchase_cells": len(periods)},
             "no_history": no_history, "history_window": history_window}
+
+
+@router.post("/plans/{plan_id}/forecast/recompute")
+def recompute_forecast(plan_id: int, request: Request,
+                       source: Annotated[Source, Depends(source_dep)],
+                       who: str = Depends(actor)):
+    """已认领的格子重新算一次预测销量（task-23，W-7 的另一半）。
+
+    ★ 根因：`claim()` 只在认领那一刻 seed 一次 `system_units`/`system_basis`，换源之后
+    已经存在的认领不会自己回头再算 —— 换源前建的计划，取不到真实销量历史时
+    `system_units` 留了 NULL（这是对的：没有历史 ≠ 0），但换源后这些格子永远不会
+    自己变成已知，桥接段也就跟着永远未知（实测：计划 1 的 36 格里 18 格
+    `('unknown','bridge_rate_unknown')`）。
+    ★ 绝不改 `expected_units`（人填的）——本任务第一判据，下面的 UPDATE 语句
+      压根不带这一列。
+    ★ 与 `claim()` 同一份算法（`_seed_forecast` + `_cell_payload`），不许另写一份——
+      两份迟早分叉，本仓已经在 `_demand_row` 上踩过这个坑。
+    ★ 一个事务：`pg_conn()` 在块内异常时统一回滚，取数中途失败（CH 挂了 / 掉档 /
+      采购表陈旧）不会留下半批已经写完的格子——不必再手写一层事务边界。
+    ★ 只读态计划按 `ensure_writable` 既有的 404/409 形状拒绝，不新开错误码。
+    """
+    declared(request)
+    t0 = time.perf_counter()
+    with timed("recompute_forecast", actor=who, plan_id=plan_id), pg_conn() as c, c.cursor() as cur:
+        ensure_writable(cur, plan_id)
+        periods = _periods(cur, plan_id)
+        # ★ 与 claim() 同一个判据：只对「在占用中」的认领重算（released_at IS NULL）
+        cur.execute(
+            "SELECT m.seller_sku, m.sid, s.platform FROM msku_claim m"
+            " JOIN msku_bridge b ON b.seller_sku = m.seller_sku AND b.sid = m.sid"
+            " JOIN seller s ON s.seller_id = m.sid"
+            " WHERE m.plan_id = %s AND m.released_at IS NULL"
+            " ORDER BY b.sku, m.seller_sku, m.sid", (plan_id,))
+        claims = cur.fetchall()
+        cur.execute(
+            "SELECT seller_sku, sid, period_start, system_units FROM plan_demand_cell"
+            " WHERE plan_id = %s", (plan_id,))
+        before = {(r[0], r[1], r[2]): r[3] for r in cur.fetchall()}
+
+        recomputed: list[dict] = []
+        no_rate: list[dict] = []
+        unchanged = 0
+        for seller_sku, sid, platform in claims:
+            seeded = _seed_forecast(source, plan_id, seller_sku, sid, platform)
+            rate, extrapolated, basis = seeded["rate"], seeded["extrapolated"], seeded["basis"]
+            # ★ 判据⑥：「算不出速率」与「算出来了」分开列，不合成一个成功计数
+            if seeded["no_history"] is not None:
+                no_rate.append(seeded["no_history"])
+            for period in periods:
+                units, cell_basis = _cell_payload(rate, basis, period)
+                cur.execute(
+                    "UPDATE plan_demand_cell SET system_units = %s,"
+                    "  system_extrapolated = %s, system_basis = %s"
+                    " WHERE plan_id = %s AND seller_sku = %s AND sid = %s AND period_start = %s",
+                    (units, extrapolated, cell_basis, plan_id, seller_sku, sid, period))
+                prior = before.get((seller_sku, sid, period))
+                if prior == units:
+                    unchanged += 1
+                else:
+                    recomputed.append({"seller_sku": seller_sku, "sid": sid,
+                                       "period": _ym(period), "before": prior, "after": units})
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+    # ★ timed() 的 fields 在进入时就定死，塞不进事务里才算出来的计数——同 archive() 的做法，
+    #   补这一行事后日志：plan_id / 认领数 / 变化格子数 / 算不出速率的数 / 耗时缺一个都查不了。
+    log.info("op=recompute_forecast plan_id=%s actor=%s claims=%d recomputed=%d no_rate=%d"
+             " unchanged=%d elapsed_ms=%.0f",
+             plan_id, who, len(claims), len(recomputed), len(no_rate), unchanged, elapsed_ms)
+    return {"recomputed": recomputed, "unchanged": unchanged, "no_rate": no_rate}
 
 
 def _drop_purchase_cells(cur, plan_id: int, sku: str) -> list[dict]:

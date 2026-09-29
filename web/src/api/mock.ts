@@ -339,6 +339,28 @@ export function createMockApi(): SupplyChainApi {
       return { sku, released, dropped_cells, dropped_purchase_cells: settleSku(g, sku, released.map((m) => m.sid)) };
     },
 
+    // ★ task-23：与 claim() 同一个理由（OP-17）——mock 不重跑逐日台账，那是后端
+    //   forecast/ 的活，照抄一份迟早分叉。这里如实报「没有一格变了」（unchanged 全数），
+    //   只把「算不出速率」的 msku 按 claim() 同一个判据挑出来，不假装重算过。
+    async recomputeForecast(planId) {
+      writable(planId);
+      const g = grid(planId);
+      const keys = new Map(g.demand.map((d) => [`${d.seller_sku} ${d.sid}`,
+        { seller_sku: d.seller_sku, sid: d.sid }]));
+      const noRate: NoHistoryEntry[] = [];
+      for (const { seller_sku, sid } of keys.values()) {
+        const mine = g.demand.filter((d) => d.seller_sku === seller_sku && d.sid === sid);
+        const noSource = mine.map((d) => d.system_basis)
+          .find((b): b is SystemBasisNoSource => b?.reason === 'not_applicable_no_sales_source');
+        if (noSource) {
+          noRate.push({ seller_sku, sid, reason: 'not_applicable_no_sales_source', cause: noSource.cause });
+        } else if (mine.every((d) => d.system_units === null)) {
+          noRate.push({ seller_sku, sid, reason: 'no_sales_history' });
+        }
+      }
+      return { recomputed: [], unchanged: g.demand.length, no_rate: noRate };
+    },
+
     async submit(planId) {
       writable(planId);
       const held = inFlight.get(planId) ?? null;

@@ -328,6 +328,20 @@ export interface ClaimResult {
   /** ★ 同一计划里已在认领中 → 幂等空操作：没取数、没重种格子（seeded 为 0） */
   already_claimed: boolean;
 }
+/** `POST .../forecast/recompute`（task-23）：已认领的格子重新算一次预测销量。
+ *  ★ 绝不碰 expected_units —— 只重算 system_units/system_basis。
+ *  ★ 「算不出速率」与「算出来了」分开列，不合成一个成功计数：no_rate 是 msku 级
+ *  （一个 msku 各月速率相同，一条就够），recomputed 是格子级、逐格点名变化，
+ *  unchanged 只是一个数（before === after 的格子）。 */
+export interface RecomputedCell {
+  seller_sku: string; sid: Sid; period: Period;
+  before: number | null; after: number | null;
+}
+export interface RecomputeResult {
+  recomputed: RecomputedCell[];
+  unchanged: number;
+  no_rate: NoHistoryEntry[];
+}
 // ★ 后端把丢掉的格逐条回给界面（含人填过的数），不是一个数
 export interface DroppedCell { period: string; expected_units: number | null }
 /** ★ 业主裁定 2026-09-27（推翻 F5「搁浅采购格未删、待处理」）：货号没有 msku 了，采购格随之删掉，

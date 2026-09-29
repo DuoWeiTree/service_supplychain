@@ -116,6 +116,7 @@ export function createHttpApi(opt: HttpOptions): SupplyChainApi {
     releaseClaim: (planId, sellerSku, sid) =>
       call('DELETE', `/plans/${planId}/claims/${encodeURIComponent(sellerSku)}/${encodeURIComponent(sid)}`),
     removeSku: (planId, sku) => call('DELETE', `/plans/${planId}/skus/${encodeURIComponent(sku)}`),
+    recomputeForecast: (planId) => call('POST', `/plans/${planId}/forecast/recompute`),
 
     submit: (planId) => call('POST', `/plans/${planId}/submit`),
     listRevs: (planId) => call('GET', `/plans/${planId}/revs`),
