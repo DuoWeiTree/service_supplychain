@@ -55,6 +55,59 @@ def _switch_schema(text: str) -> str:
 _FRESHNESS_TEST_PINS = ("scheduler_enabled", "startup_gate")
 
 
+#: ★ 取数源也必须钉死。测试配置是**从真实 `config.toml` 生成**的（只换 schema），
+#: 所以 `[forecast] source` 会原样漏进来 —— 2026-09-28 负责人的机器上把它改成 `"ch"`
+#: 之后，23 条本该离线的测试当场开始打生产 ClickHouse 并失败。
+#: ★ 判据：**一个红绿取决于本机配置的门禁，等于没有门禁**。默认封闭、显式开口 ——
+#: 想连真 CH 的测试走 `use_source` 或 live 测试自己那套，不靠这个文件的默认值。
+#: ★ `[forecast]` 里的数值旋钮（snapshot_* / drop_threshold / min_rows /
+#: purchase_staleness_days）**故意不钉**：它们只在 `source = "ch"` 下生效，而真正用到
+#: 它们的是 live 测试，那些测试断言的就该是**本机配置的那个值**。钉死它们会让
+#: 「配置改了、live 测试还在验旧值」——那是另一个方向的假绿。
+_FORECAST_TEST_PINS = {"source": '"fixture"'}
+
+
+def _pin_section_keys(text: str, section: str, pins: dict[str, str]) -> str:
+    """把 `section` 段里 `pins` 的每个键钉成给定字面量。
+
+    三种情况都要覆盖（`config.toml` 三种都真实出现过）：① 键已在段里 → 覆盖；
+    ② 段在但缺键 → 段尾补；③ **整段都不在** → 追加一整段。
+    ★ 第 ③ 种就是 2026-09-28 那次的形状：`[forecast]` 整段缺失、一切吃默认值，
+    于是「测试用的是什么源」这件事在文件里**根本没有字面记录**。
+    """
+    out, inside, seen = [], False, set()
+
+    def flush():
+        out.extend(f"{k} = {v}\n" for k, v in pins.items() if k not in seen)
+
+    saw_section = False
+    for line in text.splitlines(keepends=True):
+        s = line.strip()
+        if s.startswith("["):
+            if inside:
+                flush()
+            inside = s.startswith(section)
+            saw_section = saw_section or inside
+            seen = set()
+        matched = next((k for k in pins if s.startswith(k)), None)
+        if inside and matched:
+            out.append(f"{matched} = {pins[matched]}\n")
+            seen.add(matched)
+            continue
+        out.append(line)
+    if inside:
+        flush()
+    if not saw_section:
+        out.append(f"\n{section}\n")
+        out.extend(f"{k} = {v}\n" for k, v in pins.items())
+    return "".join(out)
+
+
+def _pin_forecast_source(text: str) -> str:
+    """★ 见 `_FORECAST_TEST_PINS` 上面那段：取数源不许跟着本机配置走。"""
+    return _pin_section_keys(text, "[forecast]", _FORECAST_TEST_PINS)
+
+
 def _disable_scheduler(text: str) -> str:
     """★ 测试固定 `[freshness]` 里 `_FRESHNESS_TEST_PINS` 这几个键为 false ——
     不这样，每个 `with TestClient(create_app())` 都会在 `_lifespan` 里碰外部
@@ -94,7 +147,7 @@ def business_db(tmp_path_factory):
     from shared import config as config_module
 
     cfg = tmp_path_factory.mktemp("jxd_scm") / "config.toml"
-    text = _disable_scheduler(_switch_schema(CONFIG_TOML.read_text("utf-8")))
+    text = _pin_forecast_source(_disable_scheduler(_switch_schema(CONFIG_TOML.read_text("utf-8"))))
     cfg.write_text(text, encoding="utf-8")
     prev = os.environ.get("JXD_SCM_CONFIG")
     os.environ["JXD_SCM_CONFIG"] = str(cfg)
