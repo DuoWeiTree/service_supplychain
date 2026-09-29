@@ -8,6 +8,7 @@ import {
 import { basisTitle, FORECAST_WHY, ForecastBasis, type BasisTarget } from './ForecastBasis';
 import { Modal } from '../components/Modal';
 import { SkuImagePreview } from './SkuImagePreview';
+import { useInFlight } from '../shell/useInFlight';
 import { buildCards, cardMatches, monthLabel, riskOrder, stockState, summarize, type CardSummary, type SkuCard } from './planSheetModel';
 import { demandKey, purchaseKey, removeKey } from './usePlanGridSaves';
 
@@ -87,11 +88,35 @@ export function PlanSheet(props: PlanSheetProps) {
   const [basis, setBasis] = useState<BasisTarget | null>(null);
   /** sku-image 计划 Task 4：哪个货号正打开着主图预览；null = 没开。 */
   const [imageSku, setImageSku] = useState<string | null>(null);
+  // ★ 实测主图能有 7 MB（PM 给原图，没有缩略图接口，也不该自己发明一份缩略图）——
+  //   在飞护栏防同一个货号重复发起，跟其余六处写动作共用 useInFlight，不另发明一套。
+  //   `run()` 的 fn 是 Promise，而 <img> 的加载是 DOM 事件，用 imageSettleRef 接住
+  //   settleImage() 把两者接起来：图片 onLoad/onError 落地时 resolve；用户提前关闭
+  //   弹窗时 closeImage() 也调用它——否则半路关掉会让这个货号的按钮永远 disabled。
+  const { pending: imgPending, run: runImage } = useInFlight();
+  const imageSettleRef = useRef<(() => void) | null>(null);
   const [viewH, setViewH] = useState(FALLBACK_VIEW_H);
   const editRef = useRef<typeof editing>(null);
   const scRef = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
   const ROW = ROW_H[density];
+
+  function settleImage() {
+    imageSettleRef.current?.();
+    imageSettleRef.current = null;
+  }
+  function openImage(sku: string) {
+    if (imgPending.has(sku)) return;   // 同一个货号已经在飞：早退，不重复发起
+    void runImage(sku, () => new Promise<void>((resolve) => {
+      imageSettleRef.current = resolve;
+      setImageSku(sku);
+    }));
+  }
+  function closeImage() {
+    settleImage();
+    setImageSku(null);
+    focusGrid();
+  }
 
   const setEditing = (v: typeof editing) => { editRef.current = v; setEditingState(v); };
 
@@ -485,7 +510,7 @@ export function PlanSheet(props: PlanSheetProps) {
               <span className="ps-name" title={card.sku}>{card.sku}</span>
               {card.hasImage && (
                 <button type="button" className="pm-img" aria-label={`查看 ${card.sku} 的主图`}
-                  onClick={() => setImageSku(card.sku)}>🖼</button>
+                  disabled={imgPending.has(card.sku)} onClick={() => openImage(card.sku)}>🖼</button>
               )}
             </div>
             <div className="ps-subline">
@@ -737,8 +762,8 @@ export function PlanSheet(props: PlanSheetProps) {
       )}
 
       {imageSku && (
-        <Modal title={`${imageSku} 主图`} onClose={() => { setImageSku(null); focusGrid(); }}>
-          <SkuImagePreview sku={imageSku} />
+        <Modal title={`${imageSku} 主图`} onClose={closeImage}>
+          <SkuImagePreview sku={imageSku} onSettled={settleImage} />
         </Modal>
       )}
 

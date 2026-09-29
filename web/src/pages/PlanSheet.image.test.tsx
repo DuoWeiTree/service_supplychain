@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GridResponse } from '../api/types';
@@ -59,7 +59,7 @@ describe('sku-image 计划 Task 4：按需预览', () => {
     await user.click(screen.getByRole('button', { name: '查看 SKU-1 的主图' }));
 
     const img = screen.getByAltText('SKU-1 主图') as HTMLImageElement;
-    fireEvent.error(img);
+    await act(async () => { fireEvent.error(img); });
 
     expect(screen.getByRole('alert')).toHaveTextContent('图片加载失败');
     // ★ 不留破图图标：<img> 本身被隐藏，不是让它带着裂图标继续占位
@@ -73,10 +73,50 @@ describe('sku-image 计划 Task 4：按需预览', () => {
     await user.click(screen.getByRole('button', { name: '查看 SKU-1 的主图' }));
 
     const img = screen.getByAltText('SKU-1 主图') as HTMLImageElement;
-    fireEvent.load(img);
+    await act(async () => { fireEvent.load(img); });
 
     expect(img.style.display).toBe('block');
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  // ══════════════════════════════════════════════════════════════════════
+  //  实测主图可达 7 MB（PM 原图，无缩略图接口）——同一个货号在飞时不许
+  //  重复发起，照既有 useInFlight 护栏（PlanSheet.tsx::openImage）。
+  // ══════════════════════════════════════════════════════════════════════
+
+  it('★ 图片加载中，入口按钮进入 disabled——不许同一个货号重复发起', async () => {
+    renderSheet(withHasImage(true));
+    const user = userEvent.setup();
+    const btn = screen.getByRole('button', { name: '查看 SKU-1 的主图' });
+    await user.click(btn);
+    expect(btn).toBeDisabled();
+  });
+
+  it('加载落地（成功）后，入口按钮恢复可点', async () => {
+    renderSheet(withHasImage(true));
+    const user = userEvent.setup();
+    const btn = screen.getByRole('button', { name: '查看 SKU-1 的主图' });
+    await user.click(btn);
+    expect(btn).toBeDisabled();
+
+    const img = screen.getByAltText('SKU-1 主图') as HTMLImageElement;
+    await act(async () => { fireEvent.load(img); });
+
+    expect(btn).not.toBeDisabled();
+  });
+
+  it('★ 图片还没加载完就关闭弹窗，在飞标记也要放掉——不然这个货号的按钮永远 disabled', async () => {
+    renderSheet(withHasImage(true));
+    const user = userEvent.setup();
+    const btn = screen.getByRole('button', { name: '查看 SKU-1 的主图' });
+    await user.click(btn);
+    expect(btn).toBeDisabled();
+
+    // Modal 的关闭：点背景（role="presentation"）触发 onClose
+    const backdrop = document.querySelector('.modal-backdrop') as HTMLElement;
+    await act(async () => { fireEvent.click(backdrop); });
+
+    expect(btn).not.toBeDisabled();
   });
 });
