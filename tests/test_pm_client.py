@@ -23,9 +23,28 @@ import shared.pm_client as PM
 
 
 class _Resp:
-    def __init__(self, body):
+    def __init__(self, body, headers=None):
         self._b = json.dumps(body).encode()
-        self.headers = {}
+        self.headers = headers or {}
+
+    def read(self):
+        return self._b
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class _BytesResp:
+    """同 `_Resp`，但 `body` 是原样字节而不是要 JSON 编码的对象——
+    `fetch_image_bytes` 测试要的是「真的传回了 PNG 那几个字节」，
+    JSON 编码会把它们篡改掉。"""
+
+    def __init__(self, body: bytes, content_type: str):
+        self._b = body
+        self.headers = {"content-type": content_type}
 
     def read(self):
         return self._b
@@ -289,3 +308,44 @@ def test_requests_carry_explicit_user_agent(monkeypatch):
     assert ua == PM._UA
     assert not ua.lower().startswith("python-urllib"), (
         f"UA 是 urllib 默认值，会被当机器人拦 403：{ua!r}")
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  ⑤ fetch_image_bytes（Task 2：货号主图代理）
+# ══════════════════════════════════════════════════════════════════════
+
+def test_fetch_image_bytes_returns_raw_bytes_and_content_type(monkeypatch):
+    png_bytes = b"\x89PNG\r\n\x1a\n<fake bytes not really a png>"
+    opener = _RecordingOpener(lambda req: _BytesResp(png_bytes, "image/png"))
+    monkeypatch.setattr(PM, "_opener", lambda: opener)
+
+    content, content_type = PM.fetch_image_bytes(
+        "https://pm.zestrade.com/img/x/real.jpg", "tok")
+
+    assert content == png_bytes, "字节被改动了——不该对图片数据做任何加工"
+    assert content_type == "image/png"
+    req = opener.calls[0]
+    assert req.get_header("Authorization") == "Bearer tok"
+
+
+def test_fetch_image_bytes_defaults_content_type_when_missing(monkeypatch):
+    resp = _BytesResp(b"...", content_type="image/png")
+    resp.headers = {}  # ★ 模拟响应头里压根没有 content-type 这个键
+    opener = _RecordingOpener(lambda req: resp)
+    monkeypatch.setattr(PM, "_opener", lambda: opener)
+
+    _content, content_type = PM.fetch_image_bytes("https://pm.zestrade.com/x", "tok")
+    assert content_type == "application/octet-stream"
+
+
+def test_fetch_image_bytes_failure_is_not_swallowed(monkeypatch, caplog):
+    def _boom(req):
+        raise urllib.error.URLError(TimeoutError("timed out"))
+
+    opener = _RecordingOpener(_boom)
+    monkeypatch.setattr(PM, "_opener", lambda: opener)
+
+    caplog.set_level("ERROR")
+    with pytest.raises(urllib.error.URLError):
+        PM.fetch_image_bytes("https://pm.zestrade.com/img/x/real.jpg", "tok")
+    assert "kind" in caplog.text and "timeout" in caplog.text

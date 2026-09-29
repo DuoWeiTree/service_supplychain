@@ -85,9 +85,15 @@ def _describe_failure(exc: BaseException) -> dict:
 
 def _outbound(url: str, *, method: str = "GET", token: str | None = None,
               data: bytes | None = None, headers: dict[str, str] | None = None,
-              timeout: int = TIMEOUT_S) -> bytes:
+              timeout: int = TIMEOUT_S) -> tuple[bytes, str]:
     """打一次 PM/Keycloak，回答三问后把结果/异常交回去。失败不吞——
-    这里只负责记日志，`raise` 把原始异常原样交给调用方分类/处理。"""
+    这里只负责记日志，`raise` 把原始异常原样交给调用方分类/处理。
+
+    → ``(body, content_type)``。★ 连 content-type 一起交出去——`mint_token`/
+    `fetch_categories`/`fetch_products` 只要 JSON body 会把它丢在一边，但
+    `fetch_image_bytes`（Task 2：图片代理）要透传 PM 响应头里的 content-type，
+    不能凭空猜一个；两条调用路径共用同一段出站/日志/异常分类逻辑，不必
+    另写一份 try/except。"""
     req = urllib.request.Request(url, method=method, data=data)
     req.add_header("user-agent", _UA)
     if token is not None:
@@ -100,6 +106,7 @@ def _outbound(url: str, *, method: str = "GET", token: str | None = None,
     try:
         with _opener().open(req, timeout=timeout) as resp:
             body = resp.read()
+            content_type = resp.headers.get("content-type", "application/octet-stream")
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as e:
         elapsed_ms = (time.monotonic() - t0) * 1000
         log.error("op=pm_outbound host=%s path=%s elapsed_ms=%d outcome=fail %s",
@@ -108,7 +115,7 @@ def _outbound(url: str, *, method: str = "GET", token: str | None = None,
     elapsed_ms = (time.monotonic() - t0) * 1000
     log.info("op=pm_outbound host=%s path=%s elapsed_ms=%d outcome=ok bytes=%d",
              host, path, elapsed_ms, len(body))
-    return body
+    return body, content_type
 
 
 def mint_token(cfg: dict | None = None) -> str:
@@ -124,8 +131,8 @@ def mint_token(cfg: dict | None = None) -> str:
         "client_id": c["client_id"],
         "client_secret": c["client_secret"],
     }).encode()
-    raw = _outbound(c["token_url"], method="POST", data=body,
-                    headers={"content-type": "application/x-www-form-urlencoded"})
+    raw, _ct = _outbound(c["token_url"], method="POST", data=body,
+                        headers={"content-type": "application/x-www-form-urlencoded"})
     return json.loads(raw)["access_token"]
 
 
@@ -137,7 +144,8 @@ def fetch_categories(token: str, cfg: dict | None = None) -> list[dict]:
     """
     c = cfg if cfg is not None else pm_zestrade()
     url = c["pm_base"].rstrip("/") + "/api/integration/categories"
-    return json.loads(_outbound(url, token=token))
+    raw, _ct = _outbound(url, token=token)
+    return json.loads(raw)
 
 
 def fetch_products(token: str, cfg: dict | None = None) -> list[dict]:
@@ -155,7 +163,8 @@ def fetch_products(token: str, cfg: dict | None = None) -> list[dict]:
     page = 1
     while True:
         url = f"{base}?page={page}&page_size={PRODUCTS_PAGE_SIZE}"
-        payload = json.loads(_outbound(url, token=token))
+        raw, _ct = _outbound(url, token=token)
+        payload = json.loads(raw)
         page_items = payload["items"]
         items.extend(page_items)
         total = payload["total"]
@@ -164,3 +173,13 @@ def fetch_products(token: str, cfg: dict | None = None) -> list[dict]:
             break
         page += 1
     return items
+
+
+def fetch_image_bytes(url: str, token: str, timeout: int = TIMEOUT_S) -> tuple[bytes, str]:
+    """GET 任意 PM 资源 URL（Task 2：货号主图代理）。
+
+    与 `fetch_categories`/`fetch_products` 不同：调用方要的是原始字节 +
+    响应头里的 content-type（图片代理原样透传），不是解析好的 JSON——所以
+    这里不 `json.loads`，直接把 `_outbound` 的两个返回值交出去。
+    """
+    return _outbound(url, token=token, timeout=timeout)

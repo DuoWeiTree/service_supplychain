@@ -11,7 +11,18 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from api.ui import catalog, dashboard, lead_time, lines, ops, plans, source_factory, submit, system
+from api.ui import (
+    catalog,
+    dashboard,
+    images,
+    lead_time,
+    lines,
+    ops,
+    plans,
+    source_factory,
+    submit,
+    system,
+)
 from api.ui.errors import ApiError, translate
 from dim.registry import gate_503_names
 from jobs import refresh_dims
@@ -229,6 +240,7 @@ def create_app() -> FastAPI:
     app.include_router(plans.router, prefix="/v1")
     app.include_router(submit.router, prefix="/v1")
     app.include_router(catalog.router, prefix="/v1")
+    app.include_router(images.router, prefix="/v1")
     app.include_router(lines.router, prefix="/v1")
     app.include_router(dashboard.router, prefix="/v1")
     app.include_router(ops.router, prefix="/v1")
