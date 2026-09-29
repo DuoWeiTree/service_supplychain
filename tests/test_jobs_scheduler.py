@@ -10,11 +10,46 @@ from tests.helpers import make_ch_unreachable
 
 
 def _with_freshness(monkeypatch, **kw):
+    """★ 复核（sku-image 计划 Task 3~4 之间，负责人要求先弄红一次）：下面这行
+    裸赋值看起来像 `tests/test_pm_client.py::_point_config_at` 当初踩过的那颗
+    地雷（裸改全局配置缓存、不经过 monkeypatch），但**机制不同，不是同一类
+    bug**——`monkeypatch.setattr(config_module, "_CFG", …)` 已经在它之前把
+    这次改动记进了 monkeypatch 自己的撤销表；`.undo()`（测试结束时自动触发）
+    是按「setattr 那一刻记下的原值」无条件写回去，不管中途这个属性又被谁改
+    成了什么。下面这行裸赋值赋的是**同一个值**，纯属多余（可能是当初对着
+    "会不会不生效"的疑虑加的保险），但不会让原值回不去。
+    `test_freshness_pollution_does_not_survive_teardown` 用独立的
+    `MonkeyPatch()` 实例把这个机制单独重放了一遍——构造"前一个测试污染了
+    `_CFG`、后一个读到脏值"的顺序，结果是绿的，这是证据不是断言。"""
     base = {"max_age_hours": 24, "refresh_at": "06:30", "scheduler_enabled": True,
             "coverage_drop_threshold": 0.30, "startup_gate": True,   # OQ-6 裁定 09-22
             "refresh_timezone": "Asia/Shanghai"}
     monkeypatch.setattr(config_module, "_CFG", {"freshness": {**base, **kw}}, raising=False)
     config_module._CFG = {"freshness": {**base, **kw}}
+
+
+def test_freshness_pollution_does_not_survive_teardown(business_db):
+    """★ 独立复现 `_with_freshness` 的 monkeypatch 撤销机制——不依赖测试跑在
+    谁前谁后（那样的证据会被"这次刚好没轮到"蒙混过去）。
+
+    构造的正是负责人要求的那个顺序：① 前一个"测试"（这里用手动的
+    `MonkeyPatch()` 代替，效果等价）用 `_with_freshness` 同款写法把 `_CFG`
+    换成只有 `[freshness]` 的残缺配置；② 它的 `.undo()`（等价于该测试用例
+    结束）；③ 后一个测试读 `business_pg()`——如果地雷是真的，这里应该
+    `KeyError: 'business_pg'`。"""
+    from _pytest.monkeypatch import MonkeyPatch
+
+    from shared.pg_client import business_schema
+
+    before = business_schema()  # 先确认这台测试库当前是干净、可用的（scm_test）
+
+    mp = MonkeyPatch()
+    _with_freshness(mp, refresh_at="07:15")
+    assert config_module.freshness()["refresh_at"] == "07:15"  # 污染确实发生了
+    mp.undo()  # ★ 等价于用了 _with_freshness 的那条测试跑完、monkeypatch 收尾
+
+    # 后一个"测试"：business_pg() 不许 KeyError，_CFG 必须已经原样恢复
+    assert business_schema() == before
 
 
 def test_cron_uses_the_configured_time_and_timezone(monkeypatch):
