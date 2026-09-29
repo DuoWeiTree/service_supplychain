@@ -1271,6 +1271,7 @@
       "closing": -4,
       "demand": null,
       "excluded_not_applicable": 1,
+      "has_image": false,
       "in_transit": 60,
       "in_transit_excludes": [
         "fba_inbound"
@@ -1311,6 +1312,7 @@
       "closing": -37,
       "demand": null,
       "excluded_not_applicable": 1,
+      "has_image": false,
       "in_transit": 60,
       "in_transit_excludes": [
         "fba_inbound"
@@ -1351,6 +1353,7 @@
       "closing": -71,
       "demand": null,
       "excluded_not_applicable": 1,
+      "has_image": false,
       "in_transit": 60,
       "in_transit_excludes": [
         "fba_inbound"
@@ -1391,6 +1394,7 @@
       "closing": null,
       "demand": 34,
       "excluded_not_applicable": 0,
+      "has_image": false,
       "in_transit": 0,
       "in_transit_excludes": [
         "fba_inbound"
@@ -1427,6 +1431,7 @@
       "closing": null,
       "demand": 33,
       "excluded_not_applicable": 0,
+      "has_image": false,
       "in_transit": 0,
       "in_transit_excludes": [
         "fba_inbound"
@@ -1463,6 +1468,7 @@
       "closing": null,
       "demand": 34,
       "excluded_not_applicable": 0,
+      "has_image": false,
       "in_transit": 0,
       "in_transit_excludes": [
         "fba_inbound"
@@ -1499,6 +1505,7 @@
       "closing": null,
       "demand": null,
       "excluded_not_applicable": 0,
+      "has_image": true,
       "in_transit": 700,
       "in_transit_excludes": [
         "fba_inbound"
@@ -1553,6 +1560,7 @@
       "closing": null,
       "demand": null,
       "excluded_not_applicable": 0,
+      "has_image": true,
       "in_transit": 700,
       "in_transit_excludes": [
         "fba_inbound"
@@ -1607,6 +1615,7 @@
       "closing": null,
       "demand": null,
       "excluded_not_applicable": 0,
+      "has_image": true,
       "in_transit": 700,
       "in_transit_excludes": [
         "fba_inbound"

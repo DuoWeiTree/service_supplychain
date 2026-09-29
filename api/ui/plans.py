@@ -718,6 +718,39 @@ def _load_grid(cur, plan_id: int):
     return periods, demand, purchase
 
 
+def _has_image_by_sku(cur, skus: list[str]) -> dict[str, bool]:
+    """`sku_category` 左连——★ 零出站，这里只是一条 SQL，不碰 `shared/pm_client.py`
+    半个字符（sku-image 计划 Task 3 第一判据：grid 一次请求不产生任何 PM 出站）。
+
+    三态收敛成一个明确的布尔，不是 null/缺字段——`image_is_placeholder` 为
+    真、或这个货号在 `sku_category` 里压根没有行，都算 `False`；只有"有一行
+    且不是占位图"才算 `True`。用 `NOT image_is_placeholder` 直接在 SQL 里过滤，
+    没匹配上的货号自然不在结果集里，调用方对缺席的 sku 统一按 `False` 兜底
+    （`.get(sku, False)`），不许让「查不到」在这里悄悄变成 `None`。
+    """
+    if not skus:
+        return {}
+    cur.execute("SELECT sku FROM sku_category"
+                " WHERE sku = ANY(%s) AND NOT image_is_placeholder", (skus,))
+    return dict.fromkeys((r[0] for r in cur.fetchall()), True)
+
+
+def _attach_has_image(forecast_sku_rows: list[dict]) -> None:
+    """把 `has_image` 就地写进 `forecast_payload()` 产出的每一行 `forecast_sku`。
+
+    ★ 单独一次 `pg_conn()`——`_load_grid()`/`read_lead_time()` 用的那个连接
+    在这里已经关闭（同一函数体里 `with pg_conn() as c, c.cursor() as cur:`
+    的作用域只包到取数那一步），`forecast_payload()` 本身不碰 DB（模块
+    docstring："这里不算任何一个数……只搬运与改名"），所以这一步只能另开
+    一个短连接，不能复用已经关闭的游标。
+    """
+    skus = sorted({r["sku"] for r in forecast_sku_rows})
+    with timed("grid_has_image", skus=len(skus)), pg_conn() as c, c.cursor() as cur:
+        has_image = _has_image_by_sku(cur, skus)
+    for r in forecast_sku_rows:
+        r["has_image"] = has_image.get(r["sku"], False)
+
+
 @router.get("/plans/{plan_id}/grid")
 def grid(plan_id: int, request: Request,
          source: Annotated[Source, Depends(source_dep)],
@@ -767,6 +800,7 @@ def grid(plan_id: int, request: Request,
         as_of=as_of_date, periods=periods, demand_rows=out_demand, purchase_rows=purchase,
         fba=fba_by_msku, onhand=onhand_by_msku, base_rate=rate_by_msku, in_transit=in_transit,
         lead=lead, embargo_days=EMBARGO_DAYS, plan_id=plan_id, purchase_as_of=purchase_as_of)
+    _attach_has_image(payload["forecast_sku"])
     return {
         **payload,
         "plan_id": plan_id,

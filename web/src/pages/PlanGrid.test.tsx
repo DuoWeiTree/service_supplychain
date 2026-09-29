@@ -66,6 +66,7 @@ function transitRow(sku: string, period: string, units: number): SkuForecast {
     pipeline: { making: 0, shipping: 0, ordered_open: units, ordered_open_overdue: 0, ordered_open_sources: [],
                 fba_inbound: null, fba_inbound_reason: 'not_fetched' },
     in_transit: units, in_transit_excludes: ['fba_inbound'], unfilled_purchase: [],
+    has_image: false,
   };
 }
 

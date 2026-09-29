@@ -42,7 +42,7 @@ const fk = (period: string, making: number, shipping = 0, ordered = 0): SkuForec
   pipeline: { making, shipping, ordered_open: ordered, ordered_open_overdue: 0, ordered_open_sources: [],
               fba_inbound: null, fba_inbound_reason: 'not_fetched' },
   in_transit: making + shipping + ordered, in_transit_excludes: ['fba_inbound'],
-  unfilled_purchase: [],
+  unfilled_purchase: [], has_image: false,
 });
 const naStore = () => P.map((p) => st('90001', p, null, null, 'not_applicable'));
 

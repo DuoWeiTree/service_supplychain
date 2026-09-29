@@ -233,6 +233,10 @@ export interface SkuForecast {
   /** ★ null = 未知（OP-17 mock 未重算），不是 0 */
   pipeline: SkuPipeline; in_transit: number | null; in_transit_excludes: 'fba_inbound'[];
   unfilled_purchase: Period[] | null;
+  /** ★ 三态收敛成一个布尔（sku-image 计划 Task 3）：有真图 true；只有占位图
+   *  false；`sku_category` 里没有这个货号也 false —— 从不是 null、从不缺字段。
+   *  界面据它决定出不出图片入口（Task 4，负责人裁定 I-A：按需预览）。 */
+  has_image: boolean;
 }
 /** ★ 日期只由采购月 + 提前期定；`units` 与「这条还在不在」随采购量变 ——
  *  mock 改了采购后整条标 `not_recomputed_in_mock`、件数未知，留着不删（OP-17） */

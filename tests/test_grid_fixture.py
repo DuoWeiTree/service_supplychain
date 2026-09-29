@@ -35,6 +35,14 @@ def _build(client, seed):
         cur.execute("UPDATE plan_demand_cell SET system_units = NULL, system_extrapolated = FALSE"
                     " WHERE plan_id = %s AND seller_sku = %s AND sid = %s",
                     (pid, seed.msku_b[0], seed.msku_b[1]))
+        # ★ sku-image 计划 Task 3：这批货号里 sku_a 有真主图、sku_b/sku_e 在
+        #   sku_category 里压根没有行 —— 两种 has_image 形态都要在这份 fixture
+        #   里出现，否则前端（mock 数据源）永远画不出"有真图的行"那一种。
+        cur.execute(
+            "INSERT INTO sku_category (sku, category_id, category_path, pm_sku_matched,"
+            " match_path, main_image_url, image_is_placeholder, refreshed_at)"
+            " VALUES (%s, 'C1', '宠物用品/猫用品', %s, 'direct', 'https://x/real.jpg', false, now())",
+            (seed.sku_a, seed.sku_a))
     body = client.get(f"/v1/plans/{pid}/grid", headers={"x-actor": seed.actor}).json()
     body["plan_id"] = 1        # ★ 固化前抹掉自增主键，否则 fixture 每轮都在变
     return body
@@ -91,6 +99,10 @@ def test_the_fixture_covers_the_shapes_that_look_alike(client, seed):
     assert any(r["state"] == "not_applicable" for r in saved["forecast_store"]), "缺「不适用」"
     # ★ 预测不适用（没有销量取数源）与 FBA 不适用是两件事，各要一个靶子
     assert any(r["system_not_applicable"] for r in saved["forecast_store"]), "缺「预测不适用」"
+    # ★ sku-image 计划 Task 3：has_image 两态都要有靶子——只有 true 或只有 false
+    #   前端就永远画不出另一种（按需预览的核心分支：出不出图片入口）。
+    assert any(r["has_image"] for r in saved["forecast_sku"]), "缺「有真图」那一种"
+    assert any(not r["has_image"] for r in saved["forecast_sku"]), "缺「没有图」那一种"
     assert any((r["system_basis"] or {}).get("reason") == "not_applicable_no_sales_source"
                for r in saved["demand"]), "缺「认领时记下的无销量源」"
     assert any(r["reason"] == "unknown_onhand" for r in saved["forecast"]), "缺「未知在仓」"
