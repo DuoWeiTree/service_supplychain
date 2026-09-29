@@ -28,6 +28,24 @@ describe('spec §5：三种行各显示什么', () => {
     expect(cell).toHaveTextContent(/预测.*库存.*在途/);
   });
 
+  it('★ 负责人 09-29：多 msku 的店铺行只读 —— 它是 Σ，不是一个可以填的数', () => {
+    renderSheet();
+    // 11072 挂着两个 msku（MSKU-A / MSKU-B）⇒ 这一行原则上不该有人去填
+    const multi = screen.getByTestId('block-11072-SKU-1');
+    const roCell = within(multi).getByTestId('sku-cell-2026-10');
+    expect(roCell.className).toContain('is-ro');
+    expect(roCell.getAttribute('role')).not.toBe('gridcell');   // ★ 可编辑格才是 gridcell
+    // 90001 只有一个 msku（MSKU-W）⇒ 按 spec §5「单 msku 直接填」，这一行必须可填
+    const single = screen.getByTestId('block-90001-SKU-1');
+    const rwCell = within(single).getByTestId('sku-cell-2026-10');
+    expect(rwCell.getAttribute('role')).toBe('gridcell');
+    expect(rwCell.className).not.toContain('is-ro');
+    // ★ 「Σ 遇到任一 msku 未知就显示待填、绝不凑成 0」这条**不在这里钉**：三份冻结网格
+    //   里没有未知的需求格，要在 DOM 层验它得新造一份 fixture，而那三份是 Python 侧
+    //   test_label_grid_fixture.py 逐字守着的。规则本身钉在模型层：
+    //   planGridModel.test.ts 的 sumUnits([180, null, 210]) → unknown 与 demandAt 未知那两条。
+  });
+
   it('店铺行：期望 Σ + 预测 · 库存', () => {
     renderSheet();
     const block = screen.getByTestId('block-11072-SKU-1');

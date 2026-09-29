@@ -6,7 +6,7 @@ import { useActionError } from '../shell/useActionError';
 import { useInFlight } from '../shell/useInFlight';
 import { ErrorDetail } from '../components/ErrorDetail';
 import { api, ApiError } from '../api';
-import type { GridResponse, LeadTime, NoHistoryEntry, PlanSummary, Seller, SubmitResult } from '../api/types';
+import type { GridResponse, LeadTime, NoHistoryEntry, NoHistoryReason, PlanSummary, Seller, SubmitResult } from '../api/types';
 import { buildGridModel } from './planGridModel';
 import { usePlanGridSaves } from './usePlanGridSaves';
 import { LeadTimeBar } from './LeadTimeBar';
@@ -15,6 +15,23 @@ import { SubmitPanel, type InFlightBlock } from './SubmitPanel';
 
 const SUBMIT_KEY = 'submit';
 const RECOMPUTE_KEY = 'recompute';
+
+/** ★ 已知且**不算故障**的「算不出速率」成因（负责人 09-29）：列在这里的不出警告色。
+ *  认不出的第 N+1 种仍然出警告 —— 手列的宇宙必漏，所以这份名单只用来「降噪」，
+ *  不用来「盖章」（记忆 unrecognised-forms-must-default-to-visible）。 */
+const KNOWN_NO_RATE_REASONS: NoHistoryReason[] = ['no_sales_history', 'not_applicable_no_sales_source'];
+
+/** 名单里给人话，不给 reason 码。★ 两种成因的处置不同，所以不合并成一句：
+ *  没有销量历史 = 等它卖出第一单或人工填期望；没有销量来源 = 这家店/渠道压根取不到数。 */
+function noRateWhy(n: NoHistoryEntry): string {
+  if (n.reason === 'no_sales_history') return '还没有销量历史';
+  if (n.reason === 'not_applicable_no_sales_source') {
+    return n.cause === 'non_amazon_platform'
+      ? '不适用：非亚马逊平台，没有销量来源'
+      : '不适用：这家店在订单报表里没有数据';
+  }
+  return `认不出的成因：${n.reason}`;
+}
 
 export function PlanGrid() {
   const planId = Number(useParams().planId);
@@ -93,11 +110,16 @@ export function PlanGrid() {
         const r = await api.recomputeForecast(planId);
         setNoRate(r.no_rate);
         succeed(RECOMPUTE_KEY);
-        // ★ task-23 裁定：成功提示要点名「N 格更新 · M 格算不出速率」，不是「重算完成」——
-        //   「算不出速率」与「算出来了」是两件事，合成一句「重算完成」会把它们混成一个成功计数
+        // ★ task-23 裁定：成功提示要点名「N 格更新 · M 个 msku 没有速率」，不是「重算完成」——
+        //   「算不出速率」与「算出来了」是两件事，合成一句「重算完成」会把它们混成一个成功计数。
+        // ★ 负责人 09-29 裁定：**没有销量历史不是故障，不许出警告色**。它是数据的形状
+        //   （新品、或这家店压根没有销量取数源），而重算本身是成功的；警告色会让人以为重算失败了。
+        //   计数与名单照旧留着 —— 不出警告 ≠ 不说话（丢东西必须有声）。
+        // ★ 但认不出的 reason 仍然要显眼：形态识别必漏第 N+1 种，降噪名单只用来降噪，不用来盖章。
+        const odd = r.no_rate.filter((n) => !KNOWN_NO_RATE_REASONS.includes(n.reason));
         pushToast({
-          kind: r.no_rate.length === 0 ? 'ok' : 'warn',
-          text: `${r.recomputed.length} 格更新 · ${r.no_rate.length} 格算不出速率`,
+          kind: odd.length === 0 ? 'ok' : 'warn',
+          text: `${r.recomputed.length} 格更新 · ${r.no_rate.length} 个 msku 没有速率`,
         });
         await load();
       } catch (e) {
@@ -167,7 +189,7 @@ export function PlanGrid() {
         <div className="sec" data-testid="recompute-no-rate">
           {noRate.map((n) => (
             <div className="dropline" key={`${n.seller_sku}-${n.sid}`}>
-              <span className="k">{n.seller_sku}</span><span>{n.sid}</span><span>{n.reason}</span>
+              <span className="k">{n.seller_sku}</span><span>{n.sid}</span><span>{noRateWhy(n)}</span>
             </div>
           ))}
         </div>

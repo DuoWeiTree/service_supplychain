@@ -67,7 +67,7 @@ describe('重算预测', () => {
 
     const status = await screen.findByRole('status');
     expect(status).toHaveTextContent('1 格更新');
-    expect(status).toHaveTextContent('0 格算不出速率');
+    expect(status).toHaveTextContent('0 个 msku 没有速率');
     expect(status.textContent).not.toContain('重算完成');
   });
 
@@ -83,12 +83,55 @@ describe('重算预测', () => {
 
     const status = await screen.findByRole('status');
     expect(status).toHaveTextContent('0 格更新');
-    expect(status).toHaveTextContent('1 格算不出速率');
+    expect(status).toHaveTextContent('1 个 msku 没有速率');
 
     const panel = await screen.findByTestId('recompute-no-rate');
     expect(panel).toHaveTextContent('MSKU-A');
     expect(panel).toHaveTextContent('11072');
-    expect(panel).toHaveTextContent('no_sales_history');
+    expect(panel).toHaveTextContent('还没有销量历史');
+    expect(panel.textContent).not.toContain('no_sales_history');  // ★ reason 码是给程序看的，不给运营看
+  });
+
+  it('★ 负责人 09-29：没有销量历史不出警告色 —— 重算是成功的，那只是数据的形状', async () => {
+    const result: RecomputeResult = {
+      recomputed: [{ seller_sku: 'MSKU-B', sid: '11072', period: '2026-10', before: null, after: 31 }],
+      unchanged: 0,
+      no_rate: [
+        { seller_sku: 'MSKU-A', sid: '11072', reason: 'no_sales_history' },
+        { seller_sku: 'MSKU-C', sid: '11098', reason: 'not_applicable_no_sales_source',
+          cause: 'store_absent_from_order_report' },
+      ],
+    };
+    await renderGrid(async () => result);
+    await screen.findByTestId('plan-sheet');
+    await userEvent.click(screen.getByRole('button', { name: '重算预测' }));
+
+    const status = await screen.findByRole('status');
+    // ★ 判据是**类名**不是文案：警告色由 toast--warn 决定，断文案断不到颜色
+    expect(status.querySelector('.toast--warn')).toBeNull();
+    expect(status.querySelector('.toast--fail')).toBeNull();
+    expect(status.querySelector('.toast--ok')).not.toBeNull();
+    // ★ 不出警告 ≠ 不说话：计数与名单都还在
+    expect(status).toHaveTextContent('2 个 msku 没有速率');
+    const panel = await screen.findByTestId('recompute-no-rate');
+    expect(panel).toHaveTextContent('还没有销量历史');
+    expect(panel).toHaveTextContent('不适用：这家店在订单报表里没有数据');
+  });
+
+  it('★ 认不出的成因仍然要显眼 —— 降噪名单只用来降噪，不用来盖章', async () => {
+    const result = {
+      recomputed: [], unchanged: 0,
+      // ★ 故意喂一个类型里还没有的 reason：形态识别必漏第 N+1 种
+      no_rate: [{ seller_sku: 'MSKU-Z', sid: '11072', reason: 'some_new_reason_nobody_declared' }],
+    } as unknown as RecomputeResult;
+    await renderGrid(async () => result);
+    await screen.findByTestId('plan-sheet');
+    await userEvent.click(screen.getByRole('button', { name: '重算预测' }));
+
+    const status = await screen.findByRole('status');
+    expect(status.querySelector('.toast--warn')).not.toBeNull();
+    const panel = await screen.findByTestId('recompute-no-rate');
+    expect(panel).toHaveTextContent('认不出的成因：some_new_reason_nobody_declared');
   });
 
   it('★ 归档计划上的 409 原样上屏（ensure_writable 既有形状）', async () => {
