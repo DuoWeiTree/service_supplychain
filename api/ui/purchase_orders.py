@@ -7,6 +7,7 @@ from api.ui.deps import actor, actor_optional, declared
 from api.ui.errors import ApiError
 from repo import purchase as repo
 from shared.pg_client import pg_conn, timed
+from usecase import attention as attention_uc
 from usecase import draft_po, place_po
 
 router = APIRouter()
@@ -55,3 +56,27 @@ def delete(po_id: int, request: Request, who: str = Depends(actor)):
 def place(po_id: int, body: dict, request: Request, who: str = Depends(actor)):
     declared(request)
     return _call(place_po.place, po_id, (body or {}).get("confirm_token") or "", who)
+
+
+@router.get("/purchase-orders/{po_id}/timeline")
+def timeline(po_id: int, request: Request, who: str | None = Depends(actor_optional)):
+    declared(request)
+    return _call(attention_uc.timeline, po_id)
+
+
+@router.post("/purchase-orders/{po_id}/recheck")
+def recheck(po_id: int, request: Request, who: str = Depends(actor)):
+    declared(request)
+    return _call(attention_uc.recheck, po_id, who)
+
+
+@router.post("/purchase-orders/{po_id}/register-existing")
+def register_existing(po_id: int, body: dict, request: Request, who: str = Depends(actor)):
+    declared(request)
+    return _call(attention_uc.register_existing, po_id, (body or {}).get("order_sn") or "", who)
+
+
+@router.post("/purchase-orders/{po_id}/confirm-absent")
+def confirm_absent(po_id: int, body: dict, request: Request, who: str = Depends(actor)):
+    declared(request)
+    return _call(attention_uc.confirm_absent, po_id, (body or {}).get("reason") or "", who)

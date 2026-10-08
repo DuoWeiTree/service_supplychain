@@ -72,14 +72,15 @@ def _open_needs_verify(cur, po_id: int, create_call_id: int | None, opened_by: s
     return repo.open_attention_row(cur, po_id, "needs_verify", create_call_id, detail)
 
 
-def _settle_placed(cur, po_id: int, order_sn: str, actor: str, src: str, resolve_attention: bool) -> list:
+def _settle_placed(cur, po_id: int, order_sn: str, actor: str, src: str, resolve_attention: bool,
+                   reason: str | None = None) -> list:
     """★ 同一事务：锁单 → 锁行 → 记已下单 → 收待处理 → 重判行状态。先锁单后锁行，与改 / 删草稿同序。"""
     repo.lock_po(cur, po_id)
     line_ids = repo.source_line_ids(cur, po_id)
     repo.lock_plan_lines(cur, line_ids)
     repo.mark_placed(cur, po_id, order_sn, gateway.mode(), actor, src)
     if resolve_attention:
-        repo.resolve_attention(cur, po_id, "needs_verify", "rechecked_found", actor, None)
+        repo.resolve_attention(cur, po_id, "needs_verify", "rechecked_found", actor, reason)
     return reevaluate(cur, line_ids, actor, f"po:{po_id}:{src}")
 
 
@@ -93,7 +94,8 @@ def _read_back_safe(po_id: int, order: dict, call_id: int | None) -> None:
                     order.get("order_sn"), type(e).__name__, cause_chain(e))
 
 
-def lookup_and_settle(po_id: int, actor: str, opened_by_call: int | None, src: str) -> dict:
+def lookup_and_settle(po_id: int, actor: str, opened_by_call: int | None, src: str,
+                      reason: str | None = None) -> dict:
     """按幂等键查领星。找到 → 记已下单并收掉待核实；其余（没找到 / 查询本身失败 / 结果被截断）
     一律保持待核实 —— ★ 查不了不等于没有。"""
     po = load_po(po_id)
@@ -116,11 +118,12 @@ def lookup_and_settle(po_id: int, actor: str, opened_by_call: int | None, src: s
                         po_id, cid, bool(hit))
             hit = None
         elif locked["state"] == "已下单":
-            repo.resolve_attention(cur, po_id, "needs_verify", "rechecked_found", actor, None)
+            repo.resolve_attention(cur, po_id, "needs_verify", "rechecked_found", actor, reason)
             return {"outcome": "placed", "po_id": po_id, "order_sn": locked["order_sn"],
                     "erp_call_id": cid, "found_by": "already_recorded"}
         if hit:
-            moved = _settle_placed(cur, po_id, hit["order_sn"], actor, src, resolve_attention=True)
+            moved = _settle_placed(cur, po_id, hit["order_sn"], actor, src, resolve_attention=True,
+                                  reason=reason)
         else:
             _open_needs_verify(cur, po_id, opened_by_call, "self_heal", None, po["custom_order_sn"])
     if hit:

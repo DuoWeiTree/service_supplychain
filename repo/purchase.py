@@ -75,6 +75,13 @@ def open_attention(cur, po_id: int) -> list[dict]:
     return [{"attention_id": r[0], "kind": r[1], "opened_at": r[2].isoformat()} for r in cur.fetchall()]
 
 
+def open_attention_of(cur, po_id: int, kind: str) -> dict | None:
+    cur.execute("SELECT attention_id, opened_by_call, detail FROM po_attention"
+                " WHERE po_id = %s AND kind = %s AND resolved_at IS NULL", (po_id, kind))
+    r = cur.fetchone()
+    return None if r is None else {"attention_id": r[0], "opened_by_call": r[1], "detail": r[2]}
+
+
 def in_flight_call(cur, po_id: int) -> int | None:
     cur.execute("SELECT call_id FROM erp_call WHERE po_id = %s AND outcome = 'in_flight'"
                 " AND side_effect = 'irreversible'", (po_id,))

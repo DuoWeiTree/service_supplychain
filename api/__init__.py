@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api.ui import (
+    attention,
     catalog,
     dashboard,
     images,
@@ -272,6 +273,7 @@ def create_app() -> FastAPI:
     app.include_router(images.router, prefix="/v1")
     app.include_router(lines.router, prefix="/v1")
     app.include_router(purchase_orders.router, prefix="/v1")
+    app.include_router(attention.router, prefix="/v1")
     app.include_router(purchase_options.router, prefix="/v1")
     app.include_router(dashboard.router, prefix="/v1")
     app.include_router(ops.router, prefix="/v1")
