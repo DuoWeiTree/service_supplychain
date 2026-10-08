@@ -234,15 +234,10 @@ def place(po_id: int, token: str, actor: str) -> dict:
 
 
 def _first_check(po_id: int, order_sn: str, actor: str) -> None:
-    """下单成功后立即读回一次（spec §11 G1 首检）。★ 绝不抛：此时单已记账。"""
+    """下单成功后的落地核对（G1）。★ 绝不抛：此时单已记账，核对炸了不能把已下单变成 500。"""
+    from usecase import landed  # 函数内 import：landed 反向依赖本模块
     try:
-        cid, r = call_logged("purchase_order_list", {"order_sns": order_sn, "offset": 0, "length": 50},
-                              po_id=po_id, actor=actor, retry_of=None)
-        rows = [o for o in ((r.body or {}).get("data") or []) if o.get("order_sn") == order_sn]
-        if not rows:
-            log.warning("op=po_first_check po_id=%s order_sn=%s outcome=%s found=0", po_id, order_sn, r.outcome)
-            return
-        _read_back_safe(po_id, rows[0], cid)
+        landed.verify(po_id, actor)
     except Exception as e:  # noqa: BLE001
         log.warning("op=po_first_check po_id=%s order_sn=%s outcome=fail err_type=%s cause=%s", po_id, order_sn,
                     type(e).__name__, cause_chain(e))

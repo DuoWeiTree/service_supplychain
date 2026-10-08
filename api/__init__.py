@@ -14,6 +14,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from api.ui import (
     attention,
     catalog,
+    checks,
     dashboard,
     images,
     lead_time,
@@ -22,6 +23,7 @@ from api.ui import (
     plans,
     purchase_options,
     purchase_orders,
+    simulate,
     source_factory,
     submit,
     system,
@@ -278,4 +280,6 @@ def create_app() -> FastAPI:
     app.include_router(dashboard.router, prefix="/v1")
     app.include_router(ops.router, prefix="/v1")
     app.include_router(lead_time.router, prefix="/v1")
+    app.include_router(checks.router, prefix="/v1")
+    app.include_router(simulate.router, prefix="/v1")
     return app
