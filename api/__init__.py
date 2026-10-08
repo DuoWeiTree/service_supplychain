@@ -216,6 +216,10 @@ def check_outbound_config() -> None:
             missing.append("confirm_salt（空或仍是开发默认值）")
         if missing:
             raise RuntimeError(f"[erp] mode=live 缺配置：{missing}")
+    if a["mode"] == "rbac":
+        # ★ 放在 live 凭证检查之后：M2 摘掉这道闸时，上面那几条仍按原序生效。
+        #   rbac 鉴权链路（spec §12）M1 没有实现 —— 放行等于在 live 下照收伪造的 x-actor。
+        raise RuntimeError("[auth] mode=rbac：RBAC not implemented until M2（M1 只能 dev，因而也不能 live）")
     log.warning("startup erp mode=%s host=%s auth mode=%s", e["mode"], e["base_url"], a["mode"])
 
 
