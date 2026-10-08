@@ -46,6 +46,8 @@ END $$;
 CREATE OR REPLACE FUNCTION assert_line_po_qty(p_line_id bigint) RETURNS void LANGUAGE plpgsql AS $$
 DECLARE q record; v record; has_caps boolean;
 BEGIN
+    -- 检查延迟到提交，快照看不到并发事务未提交的行（写偏斜）；按记录串行化提交者，后到者才能看见先到者的行。★ 不能用 FOR UPDATE：它与并发事务经 FK 持有的 KEY SHARE 冲突，两个提交者会互相等
+    PERFORM 1 FROM plan_line WHERE line_id = p_line_id FOR NO KEY UPDATE;
     SELECT * INTO q FROM v_plan_line_po_qty WHERE line_id = p_line_id;
     IF q.confirmed_units > q.total_units THEN
         RAISE EXCEPTION USING ERRCODE = '23514', CONSTRAINT = 'po_over_total',

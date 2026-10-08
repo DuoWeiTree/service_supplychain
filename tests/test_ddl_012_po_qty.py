@@ -1,4 +1,7 @@
+import contextlib
 import json
+import threading
+import time
 
 import psycopg2
 import pytest
@@ -109,3 +112,51 @@ def test_check_po_landed_flags_quantity_drift(seed):
                     (seed.sku_a, seed.wid))
         cur.execute("SELECT problem, ours_units, lx_units FROM v_check_po_landed WHERE po_id=%s", (po_id,))
         assert cur.fetchall() == [("qty_or_price_differs", 24, 20)]
+
+
+def test_concurrent_commits_cannot_both_pass_the_total(seed):
+    # 写偏斜窗口：A、B 都在对方提交前插入 14 件（总量 24），延迟检查各自看不到对方未提交的行。
+    with pg_conn() as c, c.cursor() as cur:
+        lid = _line(cur, seed, 24, {seed.seller_a: {"units": 10, "basis": "human"}})
+        # 先提交 supplier：否则 B 的 ON CONFLICT 会在插入阶段就等 A，窗口开不起来
+        cur.execute("INSERT INTO supplier VALUES ('8085','01',now()) ON CONFLICT DO NOTHING")
+
+    stack = contextlib.ExitStack()
+
+    def open_tx():
+        conn = stack.enter_context(pg_conn())
+        cur = conn.cursor()
+        cur.execute("SET statement_timeout = '5s'")
+        po_id = _draft(cur, seed, 14)
+        cur.execute("INSERT INTO po_source_map VALUES (%s,1,%s,%s,14)", (po_id, lid, seed.seller_a))
+        return conn
+
+    a = open_tx()
+    b = open_tx()
+    outcome = {}
+
+    def run_b():
+        try:
+            with b.cursor() as cur:
+                cur.execute("SET CONSTRAINTS ALL IMMEDIATE")
+            b.commit()
+            outcome["b"] = None
+        except psycopg2.Error as ex:
+            outcome["b"] = ex
+
+    try:
+        # 提交时的检查在 A 提交完成后才跑，窗口不存在；提前触发检查才能复现真实竞态
+        with a.cursor() as cur:
+            cur.execute("SET CONSTRAINTS ALL IMMEDIATE")
+        t = threading.Thread(target=run_b)
+        t.start()
+        time.sleep(0.5)          # 无锁时 B 早已检查通过；有锁时 B 卡在 A 的行锁上
+        a.commit()
+        t.join(timeout=10)
+        assert not t.is_alive()
+        assert isinstance(outcome["b"], psycopg2.Error), "B 提交成功 —— 24 件的行被组了 28 件"
+        assert outcome["b"].diag.constraint_name == "po_over_total"
+    finally:
+        for conn in (a, b):
+            conn.rollback()
+        stack.close()
