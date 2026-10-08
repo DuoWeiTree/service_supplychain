@@ -149,3 +149,105 @@ def test_resolutions_refuse_when_nothing_open(client, seed, stuck):
                        ("register-existing", {"order_sn": "A"})):
         r = client.post(f"/v1/purchase-orders/{po_id}/{path}", json=body, headers=H(seed.actor))
         assert r.status_code == 409 and r.json()["error"] == "nothing_to_resolve", path
+
+
+# ---- fix round 1 ----
+
+def _register(client, seed, po_id, sn="FAKE-PO000001"):
+    return client.post(f"/v1/purchase-orders/{po_id}/register-existing", json={"order_sn": sn},
+                       headers=H(seed.actor))
+
+
+def test_last_lookup_ignores_register_lookups(client, seed, stuck):
+    po_id, _ = stuck
+    idem_lookup = client.get(f"/v1/purchase-orders/{po_id}/timeline").json()["attempts"][1]["call_id"]
+    assert _register(client, seed, po_id, "NOPE").status_code == 409     # 留下一条窄查询
+    t = client.get(f"/v1/purchase-orders/{po_id}/timeline").json()
+    assert t["attempts"][-1]["request"].get("order_sns") == "NOPE"
+    assert t["conclusion"]["last_lookup"]["call_id"] == idem_lookup
+    assert t["conclusion"]["last_lookup"]["window"]["start_date"]
+
+
+def test_confirm_absent_refused_while_lookup_in_flight(client, seed, stuck):
+    po_id, _ = stuck
+    from repo import purchase as repo
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT 1")
+        repo.insert_call(cur, endpoint="purchase_order_list", side_effect="read", mode="fake", po_id=po_id,
+                         idem_key=None, actor=seed.actor, request={"search_field_time": "create_time"})
+    r = client.post(f"/v1/purchase-orders/{po_id}/confirm-absent", json={"reason": "x"}, headers=H(seed.actor))
+    assert r.status_code == 409 and r.json()["error"] == "lookup_in_progress"
+    assert len(client.get("/v1/attention").json()["items"]) == 1
+
+
+def test_second_order_for_placed_po_opens_landed_mismatch(client, seed, stuck):
+    po_id, _ = stuck
+    from usecase import place_po
+    _late_order(seed, po_id)
+    assert _register(client, seed, po_id).status_code == 200
+    _late_order(seed, po_id)                                              # FAKE-PO000002，同幂等键
+    res = place_po.lookup_and_settle(po_id, seed.actor, None, "t")
+    assert res["order_sn"] == "FAKE-PO000001" and res["landed_mismatch"] == "FAKE-PO000002"
+    items = client.get("/v1/attention").json()["items"]
+    assert [(i["po_id"], i["kind"]) for i in items] == [(po_id, "landed_mismatch")]
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT detail FROM po_attention WHERE po_id=%s AND kind='landed_mismatch'", (po_id,))
+        d = cur.fetchone()[0]
+        assert (d["recorded_order_sn"], d["also_found_order_sn"]) == ("FAKE-PO000001", "FAKE-PO000002")
+        cur.execute("SELECT order_sn FROM po WHERE po_id=%s", (po_id,))
+        assert cur.fetchone()[0] == "FAKE-PO000001"
+
+
+def test_lookup_after_confirm_absent_does_not_reopen(client, seed, stuck):
+    po_id, _ = stuck
+    from usecase import place_po
+    tl = client.get(f"/v1/purchase-orders/{po_id}/timeline").json()
+    create_id = tl["attempts"][0]["call_id"]
+    assert client.post(f"/v1/purchase-orders/{po_id}/confirm-absent", json={"reason": "x"},
+                       headers=H(seed.actor)).status_code == 200
+    place_po.lookup_and_settle(po_id, seed.actor, create_id, "t")        # 迟到的旧查询：没找到
+    assert client.get("/v1/attention").json()["items"] == []
+
+
+def test_register_compares_wid_and_price(client, seed, stuck):
+    po_id, _ = stuck
+    _late_order(seed, po_id)
+    FAKE.mutate_item("FAKE-PO000001", seed.sku_a, price="3")
+    r = _register(client, seed, po_id)
+    assert r.status_code == 409 and r.json()["error"] == "order_mismatch" and "items" in r.json()["mismatch"]
+    FAKE.mutate_item("FAKE-PO000001", seed.sku_a, price="2")
+    FAKE._orders["FAKE-PO000001"]["item_list"][0]["wid"] = "99999"
+    r = _register(client, seed, po_id)
+    assert r.status_code == 409 and "items" in r.json()["mismatch"]
+
+
+def test_register_non_integer_quantity_is_mismatch_not_500(client, seed, stuck):
+    po_id, _ = stuck
+    _late_order(seed, po_id)
+    FAKE.mutate_item("FAKE-PO000001", seed.sku_a, quantity_real="abc")
+    r = _register(client, seed, po_id)
+    assert r.status_code == 409 and r.json()["error"] == "order_mismatch"
+
+
+def test_register_refuses_voided_order(client, seed, stuck):
+    po_id, _ = stuck
+    _late_order(seed, po_id)
+    FAKE._orders["FAKE-PO000001"]["status"] = -1
+    r = _register(client, seed, po_id)
+    assert r.status_code == 409 and r.json()["error"] == "order_voided"
+    assert len(client.get("/v1/attention").json()["items"]) == 1
+
+
+def test_register_lookup_failure_is_not_order_not_found(client, seed, stuck):
+    po_id, _ = stuck
+    FAKE.enqueue("purchase_order_list", "not_sent")
+    r = _register(client, seed, po_id)
+    assert r.status_code == 502 and r.json()["error"] == "lookup_failed"
+    assert r.json()["lookup_outcome"] == "not_sent" and "ConnectionRefusedError" in r.json()["cause"]
+
+
+def test_resolutions_on_missing_po_are_404(client, seed):
+    for path, body in (("recheck", None), ("confirm-absent", {"reason": "x"}),
+                       ("register-existing", {"order_sn": "A"})):
+        r = client.post(f"/v1/purchase-orders/999999/{path}", json=body, headers=H(seed.actor))
+        assert r.status_code == 404 and r.json()["error"] == "po_not_found", path

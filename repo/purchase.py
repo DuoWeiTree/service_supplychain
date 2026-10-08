@@ -82,6 +82,12 @@ def open_attention_of(cur, po_id: int, kind: str) -> dict | None:
     return None if r is None else {"attention_id": r[0], "opened_by_call": r[1], "detail": r[2]}
 
 
+def any_in_flight(cur, po_id: int) -> bool:
+    """★ 读调用也算：查重 / 核对在 HTTP 期间同样是 in_flight，此时不能下「确认无此单」的结论。"""
+    cur.execute("SELECT EXISTS (SELECT 1 FROM erp_call WHERE po_id = %s AND outcome = 'in_flight')", (po_id,))
+    return cur.fetchone()[0]
+
+
 def in_flight_call(cur, po_id: int) -> int | None:
     cur.execute("SELECT call_id FROM erp_call WHERE po_id = %s AND outcome = 'in_flight'"
                 " AND side_effect = 'irreversible'", (po_id,))

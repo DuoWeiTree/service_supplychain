@@ -118,6 +118,20 @@ def lookup_and_settle(po_id: int, actor: str, opened_by_call: int | None, src: s
                         po_id, cid, bool(hit))
             hit = None
         elif locked["state"] == "已下单":
+            # find_by_custom_sn 只给第一张；同键的多张里只要有一张不是已记账的那张就是异常
+            extra = next((o for o in rows if str(o.get("custom_order_sn")) == po["custom_order_sn"]
+                          and o["order_sn"] != locked["order_sn"]), None)
+            if extra:
+                hit = extra
+                # ★ 另有一张同幂等键的真单：不能当成「已记账」吞掉，也不替人决定收哪张
+                log.error("op=po_landed_mismatch po_id=%s recorded=%s also_found=%s lookup_call=%s",
+                          po_id, locked["order_sn"], hit["order_sn"], cid)
+                repo.open_attention_row(cur, po_id, "landed_mismatch", cid, {
+                    "recorded_order_sn": locked["order_sn"], "also_found_order_sn": hit["order_sn"],
+                    "custom_order_sn": po["custom_order_sn"], "lookup_call_id": cid})
+                return {"outcome": "placed", "po_id": po_id, "order_sn": locked["order_sn"],
+                        "erp_call_id": cid, "found_by": "already_recorded",
+                        "landed_mismatch": hit["order_sn"]}
             repo.resolve_attention(cur, po_id, "needs_verify", "rechecked_found", actor, reason)
             return {"outcome": "placed", "po_id": po_id, "order_sn": locked["order_sn"],
                     "erp_call_id": cid, "found_by": "already_recorded"}
@@ -125,7 +139,13 @@ def lookup_and_settle(po_id: int, actor: str, opened_by_call: int | None, src: s
             moved = _settle_placed(cur, po_id, hit["order_sn"], actor, src, resolve_attention=True,
                                   reason=reason)
         else:
-            _open_needs_verify(cur, po_id, opened_by_call, "self_heal", None, po["custom_order_sn"])
+            oc = repo.get_call(cur, opened_by_call) if opened_by_call else None
+            if oc and oc["finished_at"] and repo.confirmed_absent_after(cur, po_id, oc["finished_at"]):
+                # 查询期间已有人确认「领星无此单」：不再按「进程中断」语义重开
+                log.warning("op=po_lookup_after_confirmed_absent po_id=%s lookup_call=%s -- 不重开待核实",
+                            po_id, cid)
+            else:
+                _open_needs_verify(cur, po_id, opened_by_call, "self_heal", None, po["custom_order_sn"])
     if hit:
         _read_back_safe(po_id, hit, cid)
         log.warning("op=po_found_by_lookup po_id=%s order_sn=%s lookup_call=%s moved=%s",
