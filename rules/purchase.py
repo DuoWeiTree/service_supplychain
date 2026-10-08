@@ -27,7 +27,7 @@ class NoSellerBasis(Exception):
 
 def seller_caps(total_units: int, demand_by_seller: dict) -> dict[str, int]:
     bad = sorted(s for s, v in demand_by_seller.items()
-                 if (v or {}).get("basis") == "unknown" or not isinstance((v or {}).get("units"), int))
+                 if (v or {}).get("basis") == "unknown" or type((v or {}).get("units")) is not int)
     if bad:
         raise NoSellerBasis(bad)
     expected = {s: v["units"] for s, v in demand_by_seller.items()}

@@ -24,6 +24,7 @@ def test_caps_sum_to_total_and_match_sql_tie_break():
     ({"A": {"units": 0, "basis": "human"}}, ["A"]),
     ({"A": {"units": 3, "basis": "unknown"}, "B": {"units": 2, "basis": "human"}}, ["A"]),
     ({"A": {"units": None, "basis": "system"}}, ["A"]),
+    ({"A": {"units": True, "basis": "human"}}, ["A"]),
 ])
 def test_no_basis_names_the_sellers(demand, named):
     with pytest.raises(NoSellerBasis) as e:
