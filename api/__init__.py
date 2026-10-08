@@ -33,6 +33,7 @@ from jobs.lock import RefreshInFlight
 from shared import config as config_module
 from shared.logging import setup_logging
 from shared.pg_client import business_schema, pg_conn, pg_error_fields, pg_target, timed
+from usecase import place_po
 
 log = logging.getLogger("scm.api")
 
@@ -228,6 +229,12 @@ async def _lifespan(app: FastAPI):
     job_scheduler.start()          # ★ 先起调度器：启动检查可能要立刻触发一轮刷新
     try:
         _startup_check()
+        try:
+            recovered = place_po.recover_stuck()
+            if recovered:
+                log.warning("startup recover_stuck n=%d results=%s", len(recovered), recovered)
+        except Exception as e:  # noqa: BLE001 —— 恢复失败不拖垮启动，但必须首屏可见
+            log.error("startup recover_stuck outcome=fail err_type=%s err=%s", type(e).__name__, e)
         yield
     finally:
         job_scheduler.shutdown()

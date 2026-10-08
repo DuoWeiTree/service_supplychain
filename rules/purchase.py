@@ -106,3 +106,36 @@ def po_digest(po: dict) -> str:
 def confirm_token(po_id: int, digest: str, salt: str) -> str:
     """H-1：派生、不存储、不过期；内容一变 token 就对不上（00:350-357）。"""
     return hashlib.sha256(f"po|{po_id}|{digest}|{salt}".encode()).hexdigest()
+
+
+def create_order_payload(po: dict) -> dict:
+    """createPurchaseOrder 入参（17:50-51 · 06:186-190）。
+    ★ 多仓：单头 wid=0、仓在行上（B7，实测 55/143）。行上仓的入参名首单实调确认（spec §6.7）。
+    ★ price 转 Decimal：签名前由 erp.sign.normalize 统一成 JS 同款的数字打印（2.0000 → 2）。"""
+    wids = {ln["wid"] for ln in po["lines"]}
+    out = {"custom_order_sn": po["custom_order_sn"],
+           "supplier_id": int(po["supplier_id"]) if str(po["supplier_id"]).isdigit() else po["supplier_id"],
+           "purchaser_id": po["purchaser_id"], "opt_uid": po["opt_uid"], "qc_type": po["qc_type"],
+           "wid": next(iter(wids)) if len(wids) == 1 else 0,
+           "product_list": []}
+    for ln in po["lines"]:
+        item = {"sku": ln["sku"], "wid": ln["wid"], "quantity_real": ln["units"], "price": Decimal(str(ln["price"]))}
+        if ln.get("expect_arrive_date"):
+            item["expect_arrive_time"] = ln["expect_arrive_date"]
+        out["product_list"].append(item)
+    return out
+
+
+def extract_order_sn(body: dict) -> str | None:
+    """★ 响应形状未实测（spec §6.7）：认得出就用，认不出返回 None 交给查重，不猜。"""
+    d = (body or {}).get("data")
+    if isinstance(d, dict):
+        return d.get("order_sn") or None
+    if isinstance(d, list) and d and isinstance(d[0], dict):
+        return d[0].get("order_sn") or None
+    return None
+
+
+def find_by_custom_sn(orders: list[dict], custom_sn: str) -> dict | None:
+    hits = [o for o in orders if str(o.get("custom_order_sn")) == custom_sn]
+    return hits[0] if hits else None

@@ -7,7 +7,7 @@ from api.ui.deps import actor, actor_optional, declared
 from api.ui.errors import ApiError
 from repo import purchase as repo
 from shared.pg_client import pg_conn, timed
-from usecase import draft_po
+from usecase import draft_po, place_po
 
 router = APIRouter()
 
@@ -49,3 +49,9 @@ def delete(po_id: int, request: Request, who: str = Depends(actor)):
     declared(request)
     _call(draft_po.delete_draft, po_id, who)
     return Response(status_code=204)
+
+
+@router.post("/purchase-orders/{po_id}/place")
+def place(po_id: int, body: dict, request: Request, who: str = Depends(actor)):
+    declared(request)
+    return _call(place_po.place, po_id, (body or {}).get("confirm_token") or "", who)

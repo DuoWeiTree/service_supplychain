@@ -77,3 +77,40 @@ def test_digest_changes_with_content_and_token_with_digest():
     assert po_digest(a) != po_digest(b)
     assert po_digest(a) == po_digest({"lines": [{"units": 5, "sku": "S"}], "supplier_id": "8085"})
     assert confirm_token(1, po_digest(a), "salt") != confirm_token(1, po_digest(b), "salt")
+
+
+from decimal import Decimal
+
+from rules.purchase import create_order_payload, extract_order_sn, find_by_custom_sn
+
+
+def test_payload_carries_idem_key_and_lines():
+    po = {"custom_order_sn": "SCM-PO-7", "supplier_id": "8085", "purchaser_id": 111, "opt_uid": 1,
+          "qc_type": 2, "lines": [{"sku": "S1", "wid": 1001, "units": 30, "price": "12.5",
+                                   "expect_arrive_date": "2026-12-01"}]}
+    p = create_order_payload(po)
+    assert p["custom_order_sn"] == "SCM-PO-7" and p["supplier_id"] == 8085 and p["wid"] == 1001
+    assert p["product_list"] == [{"sku": "S1", "wid": 1001, "quantity_real": 30, "price": Decimal("12.5"),
+                                  "expect_arrive_time": "2026-12-01"}]
+
+
+def test_payload_multi_warehouse_header_wid_is_zero():
+    po = {"custom_order_sn": "X", "supplier_id": "8085", "purchaser_id": 1, "opt_uid": 1, "qc_type": 2,
+          "lines": [{"sku": "A", "wid": 1, "units": 1, "price": "1", "expect_arrive_date": None},
+                    {"sku": "B", "wid": 2, "units": 1, "price": "1", "expect_arrive_date": None}]}
+    assert create_order_payload(po)["wid"] == 0      # B7：实测单头 wid=0 是多仓采购的形态
+
+
+@pytest.mark.parametrize("body,want", [
+    ({"data": {"order_sn": "PO1"}}, "PO1"),
+    ({"data": [{"order_sn": "PO2"}]}, "PO2"),
+    ({"data": {}}, None), ({}, None),
+])
+def test_extract_order_sn_shapes(body, want):
+    assert extract_order_sn(body) == want
+
+
+def test_find_by_custom_sn_ignores_others():
+    rows = [{"order_sn": "PO1", "custom_order_sn": "PO1"}, {"order_sn": "PO2", "custom_order_sn": "SCM-PO-3"}]
+    assert find_by_custom_sn(rows, "SCM-PO-3")["order_sn"] == "PO2"
+    assert find_by_custom_sn(rows, "SCM-PO-4") is None

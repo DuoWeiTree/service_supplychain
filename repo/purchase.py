@@ -1,6 +1,8 @@
 """采购单相关 SQL。★ 只收 cursor（G-2）；事务边界在 usecase/。"""
 from __future__ import annotations
 
+import json
+
 
 def lock_plan_lines(cur, line_ids: list[int]) -> dict[int, dict]:
     """★ 按 line_id 升序加锁，并发组单时同序取锁不成环。
@@ -146,3 +148,76 @@ def list_pos(cur, state: str | None) -> list[dict]:
     for o in out:
         o["created_at"] = o["created_at"].isoformat()
     return out
+
+
+def insert_call(cur, *, endpoint: str, side_effect: str, mode: str, po_id: int | None, idem_key: str | None,
+                actor: str, request: dict, retry_of: int | None = None) -> int:
+    cur.execute("INSERT INTO erp_call (endpoint, side_effect, mode, po_id, idem_key, actor, request, retry_of)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s) RETURNING call_id",
+                (endpoint, side_effect, mode, po_id, idem_key, actor,
+                 json.dumps(request, ensure_ascii=False, default=str), retry_of))
+    return cur.fetchone()[0]
+
+
+def close_call(cur, call_id: int, r) -> None:
+    cur.execute("UPDATE erp_call SET outcome=%s, http_status=%s, lx_code=%s, lx_msg=%s, cause=%s,"
+                " response=%s::jsonb, host=%s, path=%s, elapsed_ms=%s, finished_at=now() WHERE call_id=%s",
+                (r.outcome, r.http_status, r.lx_code, r.lx_msg, r.cause,
+                 json.dumps(r.body, ensure_ascii=False, default=str) if r.body is not None else None,
+                 r.host, r.path, r.elapsed_ms, call_id))
+
+
+def mark_placed(cur, po_id: int, order_sn: str, mode: str, actor: str, src: str) -> None:
+    cur.execute("UPDATE po SET order_sn=%s, placed_mode=%s, placed_at=now() WHERE po_id=%s",
+                (order_sn, mode, po_id))
+    cur.execute("INSERT INTO po_event (po_id, from_state, to_state, actor, src)"
+                " VALUES (%s, '草稿', '已下单', %s, %s)", (po_id, actor, src))
+
+
+def open_attention_row(cur, po_id: int, kind: str, call_id: int | None, detail: dict) -> int | None:
+    cur.execute("INSERT INTO po_attention (po_id, kind, opened_by_call, detail) VALUES (%s, %s, %s, %s::jsonb)"
+                " ON CONFLICT (po_id, kind) WHERE resolved_at IS NULL DO NOTHING RETURNING attention_id",
+                (po_id, kind, call_id, json.dumps(detail, ensure_ascii=False, default=str)))
+    r = cur.fetchone()
+    return r[0] if r else None
+
+
+def resolve_attention(cur, po_id: int, kind: str, resolution: str, actor: str, reason: str | None) -> int:
+    cur.execute("UPDATE po_attention SET resolved_at=now(), resolution=%s, resolved_by=%s, reason=%s"
+                " WHERE po_id=%s AND kind=%s AND resolved_at IS NULL",
+                (resolution, actor, reason, po_id, kind))
+    return cur.rowcount
+
+
+def last_create_call(cur, po_id: int) -> int | None:
+    cur.execute("SELECT max(call_id) FROM erp_call WHERE po_id = %s AND endpoint = 'create_purchase_order'",
+                (po_id,))
+    return cur.fetchone()[0]
+
+
+def stuck_calls(cur, minutes: int) -> list[tuple[int, int, str]]:
+    cur.execute("SELECT call_id, po_id, actor FROM erp_call WHERE outcome='in_flight' AND side_effect='irreversible'"
+                " AND started_at < now() - make_interval(mins => %s) ORDER BY call_id", (minutes,))
+    return cur.fetchall()
+
+
+def insert_item_obs(cur, order_sn: str, items: list[dict], source: str, call_id: int | None) -> int:
+    n = 0
+    for it in items:
+        if str(it.get("is_delete", 0)) not in ("0", "False", "false"):
+            continue
+        cur.execute("INSERT INTO po_item_obs (order_sn, lx_item_id, sku, wid, quantity_real, price, source,"
+                    " source_captured_at, call_id) VALUES (%s, %s, %s, %s, %s, %s, %s, now(), %s)",
+                    (order_sn, str(it.get("item_id")) if it.get("item_id") is not None else None,
+                     it["sku"], it.get("wid"), int(it["quantity_real"]), it.get("price"), source, call_id))
+        n += 1
+    return n
+
+
+def backfill_item_ids(cur, po_id: int, items: list[dict]) -> int:
+    n = 0
+    for it in items:
+        cur.execute("UPDATE po_line SET lx_item_id=%s WHERE po_id=%s AND sku=%s AND wid IS NOT DISTINCT FROM %s"
+                    " AND lx_item_id IS NULL", (str(it.get("item_id")), po_id, it["sku"], it.get("wid")))
+        n += cur.rowcount
+    return n
