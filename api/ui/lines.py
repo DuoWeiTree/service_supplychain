@@ -197,3 +197,27 @@ def move_line(line_id: int, body: dict, request: Request, who: str = Depends(act
                                              who, f"transition:{line_id}")
     log.info("op=move_line line_id=%s from=%s to=%s actor=%s", lid, from_state, new_state, who)
     return {"line_id": lid, "state": new_state}
+
+
+@router.get("/plan-lines/{line_id}/trace")
+def trace(line_id: int, request: Request, who: str | None = Depends(actor_optional)):
+    """UC-O9/P7（08:83）：承重墙① 反查。排货侧（承重墙②）属阶段 C。"""
+    declared(request)
+    with timed("line_trace", line_id=line_id), pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT l.line_id, l.sku, l.period_start, l.total_units, l.state, q.confirmed_units,"
+                    " q.ordered_units FROM plan_line l JOIN v_plan_line_po_qty q USING (line_id)"
+                    " WHERE l.line_id=%s", (line_id,))
+        r = cur.fetchone()
+        if r is None:
+            raise ApiError(404, "line_not_found", "没有这条记录", {"line_id": line_id})
+        cur.execute("SELECT e.po_id, e.custom_order_sn, e.order_sn, e.state, e.is_void, m.seller_id, m.units"
+                    " FROM po_source_map m JOIN v_po_effective e USING (po_id)"
+                    " WHERE m.line_id=%s ORDER BY e.po_id, m.seller_id", (line_id,))
+        pos: dict[int, dict] = {}
+        for po_id, csn, osn, st, void, sid, u in cur.fetchall():
+            p = pos.setdefault(po_id, {"po_id": po_id, "custom_order_sn": csn, "order_sn": osn,
+                                       "state": st, "is_void": void, "sources": []})
+            p["sources"].append({"seller_id": sid, "units": u})
+    return {"line_id": r[0], "sku": r[1], "period": r[2].strftime("%Y-%m"), "total_units": r[3],
+            "state": r[4], "confirmed_units": r[5], "ordered_units": r[6],
+            "purchase_orders": list(pos.values())}

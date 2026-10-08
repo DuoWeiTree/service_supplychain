@@ -80,3 +80,10 @@ def register_existing(po_id: int, body: dict, request: Request, who: str = Depen
 def confirm_absent(po_id: int, body: dict, request: Request, who: str = Depends(actor)):
     declared(request)
     return _call(attention_uc.confirm_absent, po_id, (body or {}).get("reason") or "", who)
+
+
+@router.get("/purchase-orders/{po_id}/preflight")
+def preflight_(po_id: int, request: Request, who: str | None = Depends(actor_optional)):
+    declared(request)
+    po = _call(draft_po.load_po, po_id)
+    return {"po_id": po_id, "ok": all(g["ok"] for g in po["preflight"]), "gates": po["preflight"]}

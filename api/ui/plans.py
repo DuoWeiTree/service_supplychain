@@ -15,6 +15,7 @@ from api.ui.deps import (
     actor,
     actor_optional,
     declared,
+    ensure_plan,
     ensure_writable,
     known_states,
     require_fresh_mirrors,
@@ -897,3 +898,21 @@ def archive(plan_id: int, request: Request, who: str = Depends(actor)):
     log.info("op=archive plan_id=%s released=%d", plan_id, len(released))
     return {"archived_at": row[0].isoformat(), "released": len(released),
             "released_mskus": [{"seller_sku": s, "sid": i} for s, i in released]}
+
+
+@router.get("/plans/{plan_id}/purchase-progress")
+def purchase_progress(plan_id: int, request: Request, who: str | None = Depends(actor_optional)):
+    """G5：按计划看完成度。四列并排，不合成达成率（00e 阶段 D 同款判据）。"""
+    declared(request)
+    with timed("plan_purchase_progress", plan_id=plan_id), pg_conn() as c, c.cursor() as cur:
+        ensure_plan(cur, plan_id)
+        cur.execute("SELECT rev FROM plan_rev WHERE plan_id=%s ORDER BY in_flight DESC, rev DESC LIMIT 1",
+                    (plan_id,))
+        rev = (cur.fetchone() or [None])[0]
+        cur.execute("SELECT l.sku, l.period_start, l.total_units, q.confirmed_units, q.ordered_units"
+                    " FROM plan_line l JOIN v_plan_line_po_qty q USING (line_id)"
+                    " WHERE l.plan_id=%s AND l.rev=%s ORDER BY l.sku, l.period_start", (plan_id, rev))
+        rows = [{"sku": a, "period": b.strftime("%Y-%m"), "planned": c_, "confirmed": d, "ordered": e,
+                 "good_in": None} for a, b, c_, d, e in cur.fetchall()]
+    return {"plan_id": plan_id, "rev": rev, "rows": rows,
+            "basis": {"good_in": "M3 入库读回未接：null 表示「还没接」，不是 0"}}
