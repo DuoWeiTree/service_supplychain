@@ -137,7 +137,7 @@
 | 端点 | 行为 | 错误码 |
 |---|---|---|
 | `GET /v1/plan-lines`（扩展） | 加 `confirmed_units` · `ordered_units` · `sellers{sid:{expected,cap,used,remaining}}` · `blocked{reason,sellers}`；被滤掉的计入 `excluded{}` | — |
-| `POST /v1/purchase-orders` | 一单一供应商；同货号同仓合并一行；按 `line_id` 升序 `FOR UPDATE`；同事务写三表并再评估记录 | `unknown_supplier` · `missing_required` · `line_not_orderable` · `over_seller_cap` · `no_seller_basis` · `over_total` · `unplanned_reason_required` |
+| `POST /v1/purchase-orders` | 一单一供应商；同货号同仓合并一行；按 `line_id` 升序 `FOR NO KEY UPDATE`（§13 #1：`FOR UPDATE` 与映射外键的 `KEY SHARE` 互等）；同事务写三表并再评估记录 | `unknown_supplier` · `missing_required` · `line_not_orderable` · `over_seller_cap` · `no_seller_basis` · `over_total` · `unplanned_reason_required` |
 | `PUT /v1/purchase-orders/{id}` | 整单替换；带 `draft_version` | `stale_draft` · `po_frozen` · `po_placing` |
 | `DELETE /v1/purchase-orders/{id}` | 映射同删，记录按量退回 | `po_frozen` · `po_placing` |
 | `POST /plan-lines/{id}/transition` | 目标为 已确认 / 已下单 / 准备排货 → 拒绝 | 422 `derived_state` |
@@ -517,3 +517,5 @@ erp op= host= path= idem= ms= outcome= http= lx_code= lx_msg= cause=<__cause__ �
 | 5 | **settle 原子化**：close_call 与「记已下单」/「开待核实」同一事务（§6.2）；`needs_verify.detail` 冻结为事实、时间线实时推导已知 / 未知（§6.6） | §6.2 §6.6 |
 | 6 | **手动推进拒绝推导态**：`已确认 / 已下单 / 准备排货` → 422 `derived_state`，`allowed[]` 过滤它们；错误码优先级 404 → `unknown_state` → `terminal_state` → `derived_state` → `illegal_transition`（对已撤销记录说「由量推导」不真实） | `04` §1.2 |
 | 7 | 试过下单（有 `erp_call`）的草稿被删 → **软作废**（`discarded_at`），单头留档、释放额度；对已作废草稿的 place / 登记 → 409 `po_discarded` | `03` §4.0 |
+| 8 | ★ **M1 `[auth] mode=rbac` 启动即拒**（「RBAC not implemented until M2」）：鉴权链路未实现，放行等于 live 下照收伪造的 `x-actor`；因而 M1 不可能 live。live 凭证检查排在此闸之前 | §12.2 · `api/__init__.py` |
+| 9 | 终审修复波：`recover_stuck` 由调度器每 V5 分钟周期跑；`/v1/attention` 读时列出 `stuck_call`；卡住的读调用由恢复收尾；查重命中须对得上才记账（同键多张 / 对不上 → `landed_mismatch`）；不可逆端点非明确拒绝一律 `unknown`；`landed_mismatch` 出口 `acknowledge-mismatch`；下单前检查加 `sources_orderable` | §6.2 §6.3 §6.6 · `07` §2 · `08` |
