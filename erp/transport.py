@@ -1,0 +1,100 @@
+"""两段式出站（spec §6.2）：★ 能不能重试的分界是「请求发出去没有」，不是错误叫什么。
+
+connect() 失败 → not_sent（连不上，领星什么都没收到，可重试）
+request()/getresponse() 失败、或 5xx → unknown（可能已建单，必须查重，绝不自动重试）
+"""
+from __future__ import annotations
+
+import base64
+import http.client
+import json
+import time
+from dataclasses import dataclass
+from urllib.parse import urlencode, urlsplit
+
+
+@dataclass
+class CallResult:
+    outcome: str
+    host: str
+    path: str
+    elapsed_ms: int
+    http_status: int | None = None
+    lx_code: str | None = None
+    lx_msg: str | None = None
+    body: dict | None = None
+    cause: str | None = None
+
+
+def cause_chain(exc: BaseException) -> str:
+    """★ 不只取 str(e)：errno、对端地址都在链上（全局规范判据 1）。"""
+    parts, seen = [], set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        errno = getattr(exc, "errno", None)
+        parts.append(f"{type(exc).__name__}" + (f"[errno={errno}]" if errno else "") + f": {exc}")
+        exc = exc.__cause__ or exc.__context__
+    return " ← ".join(parts)
+
+
+def proxy_from(cfg: dict) -> dict | None:
+    if not cfg.get("proxy_host"):
+        return None
+    return {"host": cfg["proxy_host"], "port": int(cfg["proxy_port"]),
+            "user": cfg.get("proxy_user", ""), "password": cfg.get("proxy_password", "")}
+
+
+def _proxy_headers(proxy: dict) -> dict:
+    if not proxy.get("user"):
+        return {}
+    token = base64.b64encode(f"{proxy['user']}:{proxy['password']}".encode()).decode()
+    return {"Proxy-Authorization": f"Basic {token}"}
+
+
+def post_json(base_url: str, path: str, query: dict, body: dict, timeout_s: float,
+              user_agent: str, proxy: dict | None = None) -> CallResult:
+    """★ 领星有 IP 白名单（tools/nodejs/commerce/lingxing_erp/INDEX.md:45）：live 必须带 proxy。
+    经代理时走 CONNECT 隧道 —— 连代理、CONNECT 都在 connect() 里完成，失败仍归 not_sent。"""
+    u = urlsplit(base_url)
+    https = u.scheme == "https"
+    host, port = u.hostname, u.port or (443 if https else 80)
+    conn_cls = http.client.HTTPSConnection if https else http.client.HTTPConnection
+    if proxy:
+        conn = conn_cls(proxy["host"], int(proxy["port"]), timeout=timeout_s)
+        conn.set_tunnel(host, port, headers=_proxy_headers(proxy))
+        where = f"{host}:{port} via proxy {proxy['host']}:{proxy['port']}"
+    else:
+        conn = conn_cls(host, port, timeout=timeout_s)
+        where = f"{host}:{port}"
+    t0 = time.perf_counter()
+
+    def ms() -> int:
+        return int((time.perf_counter() - t0) * 1000)
+
+    try:
+        conn.connect()
+    except OSError as e:
+        conn.close()
+        return CallResult("not_sent", host, path, ms(), cause=cause_chain(e) + f" @ {where}")
+    try:
+        conn.request("POST", f"{path}?{urlencode(query)}" if query else path,
+                     body=json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+                     headers={"Content-Type": "application/json", "User-Agent": user_agent})
+        resp = conn.getresponse()
+        raw = resp.read()
+    except (OSError, http.client.HTTPException) as e:
+        return CallResult("unknown", host, path, ms(), cause=cause_chain(e) + f" @ {where}")
+    finally:
+        conn.close()
+    if resp.status >= 500:
+        return CallResult("unknown", host, path, ms(), http_status=resp.status,
+                          cause=f"http_{resp.status}: {raw[:200]!r}")
+    try:
+        j = json.loads(raw or b"{}")
+    except ValueError:
+        return CallResult("rejected", host, path, ms(), http_status=resp.status,
+                          cause=f"non_json: {raw[:200]!r}")
+    code = str(j.get("code"))
+    return CallResult("ok" if code in ("0", "200") else "rejected", host, path, ms(),
+                      http_status=resp.status, lx_code=code,
+                      lx_msg=j.get("message") or j.get("msg"), body=j)
