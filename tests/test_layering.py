@@ -101,6 +101,44 @@ def test_l4_l5_outbound_http_only_in_erp():
     assert not bad, f"L5 违规（出站写只能在 erp/）：{bad}"
 
 
+#: ★ 标准库的出站口：erp/transport.py 就是用它们打领星的。只按第三方包名扫（上面 HTTP_CLIENTS），
+#: usecase/ 里 `import http.client` 直连领星也不会红。按完整模块名比，`urllib.parse` 这类纯解析不算。
+STDLIB_OUTBOUND = ("http.client", "urllib.request", "socket")
+
+#: 允许名单（路径 → 理由）。★ 每条都必须仍然命中，否则就是过期的豁免（见下面的断言）。
+STDLIB_OUTBOUND_ALLOW = {
+    # PM 产品主数据只读客户端（GET + client_credentials 换 token），不碰领星；先于本规则存在
+    "shared/pm_client.py": "PM 只读：urllib.request 出站，socket 只用于异常分类",
+    # ClickHouse 只读客户端，出站走 clickhouse_connect；socket 只用于 gaierror 分类
+    "shared/ch_client.py": "CH 只读：socket 只用于异常分类",
+}
+
+
+def _stdlib_outbound(path: Path) -> list[str]:
+    hit = set()
+    for node in ast.walk(ast.parse(path.read_text("utf-8"))):
+        if isinstance(node, ast.Import):
+            hit |= {a.name for a in node.names if _hits(a.name, STDLIB_OUTBOUND)}
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            if _hits(node.module, STDLIB_OUTBOUND):
+                hit.add(node.module)
+            # `from urllib import request` / `from http import client` 的模块名只是父包
+            hit |= {f"{node.module}.{a.name}" for a in node.names
+                    if f"{node.module}.{a.name}" in STDLIB_OUTBOUND}
+    return sorted(hit)
+
+
+def test_l5_stdlib_outbound_only_in_erp_or_allow_listed():
+    others = [x for x in PACKAGES if x != "erp"]
+    found = {str(p.relative_to(ROOT)): _stdlib_outbound(p) for p in sources(*others)}
+    found = {k: v for k, v in found.items() if v}
+    bad = {k: v for k, v in found.items() if k not in STDLIB_OUTBOUND_ALLOW}
+    assert not bad, f"L5 违规（标准库出站只能在 erp/，或进允许名单并写理由）：{bad}"
+    stale = sorted(set(STDLIB_OUTBOUND_ALLOW) - set(found))
+    assert not stale, f"允许名单里这些文件已不再出站，删掉豁免：{stale}"
+    assert _stdlib_outbound(ROOT / "erp" / "transport.py"), "规则扫不到 erp/transport.py 的 http.client —— 空转"
+
+
 def test_l6_psycopg2_only_where_transactions_live():
     """★ L6 的原文是「psycopg 连接只在 api/ 与 jobs/」。
 
