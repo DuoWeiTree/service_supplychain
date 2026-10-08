@@ -1223,3 +1223,27 @@ class ChSource:
 
     def purchase_in_transit(self, sku: str) -> list[InTransit]:
         return list(self._in_transit().get(sku, ()))
+
+
+#: ★ 领星没有独立供应商表（02:485 · 17:87）；源 = 采购单头上的 supplier_id / supplier_name。
+#:   覆盖型表，按 order_sn 取最新一行再按 supplier 去重（spec §2：实测 3 家）。
+SQL_SUPPLIER = """
+SELECT toString(supplier_id) AS supplier_id,
+       argMax(supplier_name, _captured_at) AS name,
+       max(_captured_date) AS cap
+  FROM jxd_raw.lingxing_purchase_order_list
+ GROUP BY supplier_id
+"""
+
+
+def fetch_supplier(query: Query) -> Fetched:
+    raw = query(SQL_SUPPLIER)
+    _nonempty(raw, "lingxing_purchase_order_list")
+    rows, reasons, dropped = [], {}, 0
+    for sid, name, _cap in raw:
+        if not (sid or "").strip() or sid == "0":
+            _bump(reasons, "empty_supplier_id")
+            dropped += 1
+            continue
+        rows.append((sid, _coerce_empty(reasons, "name", name)))
+    return Fetched(rows, dropped, reasons, max(r[2] for r in raw))

@@ -177,3 +177,18 @@ def test_coerced_empty_strings_are_counted_not_silent():
 
     cat = cs.fetch_sku_catalog(R.replay([("SKU-1", None, R.D2)]))
     assert cat.drop_reasons.get("coerced_empty_name") == 1, cat.drop_reasons
+
+
+def test_fetch_supplier_dedups_and_counts_drops():
+    import datetime as dt
+
+    from dim.ch_source import fetch_supplier
+    day = dt.date(2026, 9, 29)
+    raw = [("8085", "01[吉信德宠物用品]", day), ("8086", "02[吉信隆]", day),
+           ("", "无名", day), ("22178", "", day)]
+    got = fetch_supplier(lambda sql, params=None: raw)
+    # ★ 空 supplier_id 丢弃并计数；空 name 不丢，强制成 '' 并以 coerced_empty_name 留痕（_coerce_empty 既有口径）
+    assert sorted(got.rows) == [("22178", ""), ("8085", "01[吉信德宠物用品]"), ("8086", "02[吉信隆]")]
+    assert got.dropped == 1
+    assert got.drop_reasons == {"empty_supplier_id": 1, "coerced_empty_name": 1}
+    assert got.source_max_captured == day

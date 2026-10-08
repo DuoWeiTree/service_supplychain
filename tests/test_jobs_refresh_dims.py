@@ -188,7 +188,7 @@ def test_provenance_write_failure_is_contained_and_others_still_run(seed, monkey
         " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING run_id")
 
     got = rd.refresh_all("cli", query=_mixed_query_all_good())
-    assert len(got) == 5, "五张镜像都要跑到——留痕写不出来不能打断循环"
+    assert len(got) == 6, "六张镜像都要跑到——留痕写不出来不能打断循环"
     assert all(r.ok is False for r in got), "留痕都没写成，这一轮不能算数"
     assert all(r.run_id == rd.NO_PROVENANCE_ROW for r in got)
     assert all("provenance_write_failed" in (r.error or "") for r in got)
@@ -353,14 +353,16 @@ def _mixed_query_with_db_level_failure():
     from dim import ch_source as cs
     dup_sku_catalog = [("SKU-DUP", "第一份", R.D2), ("SKU-DUP", "第二份(重复主键)", R.D2)]
     table = {cs.SQL_SKU_CATALOG: dup_sku_catalog, cs.SQL_MSKU_BRIDGE: R.MSKU_BRIDGE,
-             cs.SQL_WAREHOUSE: R.WAREHOUSE, cs.SQL_SELLER: R.SELLER}
+             cs.SQL_WAREHOUSE: R.WAREHOUSE, cs.SQL_SELLER: R.SELLER,
+             cs.SQL_SUPPLIER: [("8085", "01[吉信德宠物用品]", R.D2)]}
     return lambda sql: list(table[sql])
 
 
 def _mixed_query_all_good():
-    """四张镜像全给合法数据——用于只想验证留痕写入本身（不是 upsert）失败
+    """各张镜像全给合法数据——用于只想验证留痕写入本身（不是 upsert）失败
     时的隔离效果，不希望 upsert 阶段就先出错混淆归因。"""
     from dim import ch_source as cs
     table = {cs.SQL_SKU_CATALOG: R.SKU_CATALOG, cs.SQL_MSKU_BRIDGE: R.MSKU_BRIDGE,
-             cs.SQL_WAREHOUSE: R.WAREHOUSE, cs.SQL_SELLER: R.SELLER}
+             cs.SQL_WAREHOUSE: R.WAREHOUSE, cs.SQL_SELLER: R.SELLER,
+             cs.SQL_SUPPLIER: [("8085", "01[吉信德宠物用品]", R.D2)]}
     return lambda sql: list(table[sql])

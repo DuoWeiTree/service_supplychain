@@ -78,9 +78,13 @@ MIRRORS: tuple[Mirror, ...] = (
            key_columns=("po_no", "observed_on"), pending=True),
     Mirror(name="po_receipt", stage="B", kind="append", staleness="none",
            key_columns=("receipt_no",), pending=True),
-    Mirror(name="supplier", stage="B", kind="mutable", staleness="none",
-           key_columns=("supplier_id",), pending=True,
-           note="源是领星 /erp/sc/data/local_inventory/supplier（08:243），不是 CH"),
+    Mirror(name="supplier", stage="B", kind="refresh", staleness="label_only",
+           key_columns=("supplier_id",), columns=("supplier_id", "name"),
+           source="jxd_raw.lingxing_purchase_order_list",
+           fetch=ch_source.fetch_supplier, coverage=("rows",),
+           note="spec 2026-10-07 §3.1：领星无独立供应商表，取采购单头去重（实测 3 家）。"
+                "原登记的领星 /erp/sc/data/local_inventory/supplier 接口需凭证，M1 不用。"
+                "label_only：陈旧只影响下拉，不拒绝服务。"),
     Mirror(name="ext_stage_observation", stage="C", kind="append", staleness="none",
            key_columns=("ext_ref_id", "observed_on"), pending=True),
     Mirror(name="sales_actual", stage="D", kind="append", staleness="none",
