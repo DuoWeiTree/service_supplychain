@@ -139,3 +139,26 @@ def test_tick_returns_cleanly_when_ch_is_unreachable(wipe, scm_log, monkeypatch)
     assert "err_type=ChUnreachable" in scm_log.text, f"没带异常类名：{scm_log.text!r}"
     assert "outcome=skipped" not in scm_log.text, (
         "CH 连不上是真失败，不是「跳过」—— 与锁被占必须分得开")
+
+
+# ---- 终审修复波 #1：卡住的下单调用不能等下一次重启 ----
+
+def test_recover_stuck_runs_every_v5_minutes(monkeypatch):
+    import datetime as dt
+
+    from apscheduler.triggers.interval import IntervalTrigger
+    _with_freshness(monkeypatch)
+    job = S.build_scheduler().get_job(S.RECOVER_JOB_ID)
+    assert isinstance(job.trigger, IntervalTrigger)
+    assert job.trigger.interval == dt.timedelta(minutes=config_module.erp()["stale_in_flight_minutes"])
+    assert job.coalesce is True and job.max_instances == 1
+
+
+def test_recover_tick_failure_is_logged_not_raised(monkeypatch, scm_log):
+    from usecase import place_po
+
+    def boom(*a, **k):
+        raise RuntimeError("pg gone")
+    monkeypatch.setattr(place_po, "recover_stuck", boom)
+    S._recover_tick()
+    assert "op=recover_stuck_job outcome=fail" in scm_log.text and "pg gone" in scm_log.text

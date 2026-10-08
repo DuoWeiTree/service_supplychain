@@ -85,6 +85,13 @@ def _check_quantities(cur, lines: list[dict], exclude_po: int | None) -> list[in
     return line_ids
 
 
+def _check_supplier(cur, supplier_id) -> None:
+    # 不让外键冲突以 500 冒出：供应商镜像里没有 = 调用方填错，不是我们算错
+    if not repo.supplier_exists(cur, supplier_id):
+        raise Conflict(400, "unknown_supplier", "没有这个供应商（不在供应商镜像里）",
+                       supplier_id=supplier_id)
+
+
 def _assert_editable(cur, po_id: int) -> dict:
     po = repo.lock_po(cur, po_id)
     if po is None:
@@ -105,6 +112,7 @@ def create_draft(body: dict, actor: str) -> int:
     t0 = time.perf_counter()
     header, lines = _normalize(body)
     with timed("create_po", actor=actor), pg_conn() as c, c.cursor() as cur:
+        _check_supplier(cur, header["supplier_id"])
         line_ids = _check_quantities(cur, lines, exclude_po=None)
         po_id = repo.insert_po(cur, header, actor)
         repo.replace_lines(cur, po_id, lines)
@@ -119,6 +127,7 @@ def update_draft(po_id: int, body: dict, actor: str) -> int:
     header, lines = _normalize(body)
     with timed("update_po", actor=actor, po_id=po_id), pg_conn() as c, c.cursor() as cur:
         po = _assert_editable(cur, po_id)
+        _check_supplier(cur, header["supplier_id"])
         if body.get("draft_version") != po["draft_version"]:
             raise Conflict(409, "stale_draft", "草稿已被别人改过，请刷新后再改", po_id=po_id,
                            current_version=po["draft_version"], got=body.get("draft_version"))

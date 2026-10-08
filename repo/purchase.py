@@ -83,9 +83,13 @@ def open_attention_of(cur, po_id: int, kind: str) -> dict | None:
     return None if r is None else {"attention_id": r[0], "opened_by_call": r[1], "detail": r[2]}
 
 
-def any_in_flight(cur, po_id: int) -> bool:
-    """★ 读调用也算：查重 / 核对在 HTTP 期间同样是 in_flight，此时不能下「确认无此单」的结论。"""
-    cur.execute("SELECT EXISTS (SELECT 1 FROM erp_call WHERE po_id = %s AND outcome = 'in_flight')", (po_id,))
+def any_in_flight(cur, po_id: int, stale_minutes: int) -> bool:
+    """★ 读调用也算：查重 / 核对在 HTTP 期间同样是 in_flight，此时不能下「确认无此单」的结论。
+    但只算新鲜的读调用：超过 V5 的是进程死在半路留下的，由恢复收尾，不能永远挡住人工。
+    不可逆调用不论新旧都算 —— 下单真在路上时确认「没建」恰好是错的。"""
+    cur.execute("SELECT EXISTS (SELECT 1 FROM erp_call WHERE po_id = %s AND outcome = 'in_flight'"
+                " AND (side_effect = 'irreversible' OR started_at >= now() - make_interval(mins => %s)))",
+                (po_id, stale_minutes))
     return cur.fetchone()[0]
 
 
@@ -144,7 +148,15 @@ def read_po(cur, po_id: int) -> dict | None:
     for ln in po["lines"]:
         ln["sources_units"] = sum(s["units"] for s in ln["sources"])
         ln["unplanned_units"] = ln["units"] - ln["sources_units"]
+    cur.execute("SELECT DISTINCT m.line_id, p.state FROM po_source_map m JOIN plan_line p USING (line_id)"
+                " WHERE m.po_id = %s ORDER BY 1", (po_id,))
+    po["source_line_states"] = [{"line_id": a, "state": b} for a, b in cur.fetchall()]
     return po
+
+
+def supplier_exists(cur, supplier_id: str) -> bool:
+    cur.execute("SELECT EXISTS (SELECT 1 FROM supplier WHERE supplier_id = %s)", (str(supplier_id),))
+    return cur.fetchone()[0]
 
 
 def list_pos(cur, state: str | None) -> list[dict]:
@@ -171,14 +183,6 @@ def insert_call(cur, *, endpoint: str, side_effect: str, mode: str, po_id: int |
                 (endpoint, side_effect, mode, po_id, idem_key, actor,
                  json.dumps(request, ensure_ascii=False, default=str), retry_of))
     return cur.fetchone()[0]
-
-
-def close_call(cur, call_id: int, r) -> None:
-    cur.execute("UPDATE erp_call SET outcome=%s, http_status=%s, lx_code=%s, lx_msg=%s, cause=%s,"
-                " response=%s::jsonb, host=%s, path=%s, elapsed_ms=%s, finished_at=now() WHERE call_id=%s",
-                (r.outcome, r.http_status, r.lx_code, r.lx_msg, r.cause,
-                 json.dumps(r.body, ensure_ascii=False, default=str) if r.body is not None else None,
-                 r.host, r.path, r.elapsed_ms, call_id))
 
 
 def mark_placed(cur, po_id: int, order_sn: str, mode: str, actor: str, src: str) -> None:
@@ -209,10 +213,20 @@ def last_create_call(cur, po_id: int) -> int | None:
     return cur.fetchone()[0]
 
 
-def stuck_calls(cur, minutes: int) -> list[tuple[int, int, str]]:
-    cur.execute("SELECT call_id, po_id, actor FROM erp_call WHERE outcome='in_flight' AND side_effect='irreversible'"
-                " AND started_at < now() - make_interval(mins => %s) ORDER BY call_id", (minutes,))
+def stuck_calls(cur, minutes: int, side_effect: str = "irreversible") -> list[tuple[int, int, str]]:
+    cur.execute("SELECT call_id, po_id, actor FROM erp_call WHERE outcome='in_flight' AND side_effect=%s"
+                " AND started_at < now() - make_interval(mins => %s) ORDER BY call_id", (side_effect, minutes))
     return cur.fetchall()
+
+
+def stuck_call_rows(cur, minutes: int) -> list[dict]:
+    """待处理队列用：卡住的不可逆调用（只读推导，不落表）。"""
+    cur.execute("SELECT c.call_id, c.po_id, c.endpoint, c.actor, c.started_at, p.custom_order_sn, p.supplier_id"
+                " FROM erp_call c JOIN po p USING (po_id)"
+                " WHERE c.outcome='in_flight' AND c.side_effect='irreversible'"
+                " AND c.started_at < now() - make_interval(mins => %s) ORDER BY c.started_at", (minutes,))
+    keys = ("call_id", "po_id", "endpoint", "actor", "started_at", "custom_order_sn", "supplier_id")
+    return [dict(zip(keys, r, strict=True)) for r in cur.fetchall()]
 
 
 log = logging.getLogger("scm.repo.purchase")

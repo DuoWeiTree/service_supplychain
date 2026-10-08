@@ -81,7 +81,7 @@ def test_digest_changes_with_content_and_token_with_digest():
 
 from decimal import Decimal
 
-from rules.purchase import create_order_payload, extract_order_sn, find_by_custom_sn
+from rules.purchase import create_order_payload, extract_order_sn, orders_by_custom_sn
 
 
 def test_payload_carries_idem_key_and_lines():
@@ -110,7 +110,29 @@ def test_extract_order_sn_shapes(body, want):
     assert extract_order_sn(body) == want
 
 
-def test_find_by_custom_sn_ignores_others():
+def test_orders_by_custom_sn_ignores_others():
     rows = [{"order_sn": "PO1", "custom_order_sn": "PO1"}, {"order_sn": "PO2", "custom_order_sn": "SCM-PO-3"}]
-    assert find_by_custom_sn(rows, "SCM-PO-3")["order_sn"] == "PO2"
-    assert find_by_custom_sn(rows, "SCM-PO-4") is None
+    assert [o["order_sn"] for o in orders_by_custom_sn(rows, "SCM-PO-3")] == ["PO2"]
+    assert orders_by_custom_sn(rows, "SCM-PO-4") == []
+
+
+def _po_with_source(states):
+    po = {"supplier_id": "8085", "purchaser_id": 111, "opt_uid": 1, "qc_type": 2,
+          "lines": [{"line_no": 1, "sku": "S", "wid": 1, "units": 5, "price": "2", "sources_units": 5,
+                     "sources": [{"line_id": 7, "seller_id": "A", "units": 5}]}]}
+    if states is not None:
+        po["source_line_states"] = states
+    return po
+
+
+def test_sources_orderable_names_cancelled_lines():
+    g = next(g for g in preflight(_po_with_source([{"line_id": 7, "state": "已撤销"}]))
+             if g["gate"] == "sources_orderable")
+    assert g["ok"] is False and g["detail"]["offenders"] == [{"line_id": 7, "state": "已撤销"}]
+    assert all(g["ok"] for g in preflight(_po_with_source([{"line_id": 7, "state": "已确认"}])))
+
+
+def test_sources_orderable_unloaded_states_is_not_ok():
+    """★ 有来源却没带状态 = 没查过，不是「都可组单」。"""
+    g = next(g for g in preflight(_po_with_source(None)) if g["gate"] == "sources_orderable")
+    assert g["ok"] is False and g["detail"]["loaded"] is False

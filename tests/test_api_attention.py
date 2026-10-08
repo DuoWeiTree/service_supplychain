@@ -251,3 +251,69 @@ def test_resolutions_on_missing_po_are_404(client, seed):
                        ("register-existing", {"order_sn": "A"})):
         r = client.post(f"/v1/purchase-orders/999999/{path}", json=body, headers=H(seed.actor))
         assert r.status_code == 404 and r.json()["error"] == "po_not_found", path
+
+
+# ---- 终审修复波 ----
+
+def test_confirm_absent_not_blocked_by_stale_read_call(client, seed, stuck):
+    """#2：卡了超过 V5 的读调用不算「查询进行中」。"""
+    po_id, _ = stuck
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("INSERT INTO erp_call (endpoint, side_effect, mode, po_id, actor, request, started_at)"
+                    " VALUES ('purchase_order_list','read','fake',%s,%s,'{}', now() - interval '1 hour')",
+                    (po_id, seed.actor))
+    r = client.post(f"/v1/purchase-orders/{po_id}/confirm-absent", json={"reason": "x"}, headers=H(seed.actor))
+    assert r.status_code == 200, r.text
+
+
+@pytest.fixture
+def mismatched(client, seed):
+    """一张已下单、领星侧被改了数量、落地核对开了 landed_mismatch 的单。"""
+    from usecase import landed
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("INSERT INTO supplier VALUES ('8085','01',now())")
+        _, lid = mint(cur, seed.actor, seed.sku_a, total=10)
+        cur.execute("UPDATE plan_line SET demand_by_seller=%s::jsonb WHERE line_id=%s",
+                    (json.dumps({seed.seller_a: {"units": 5, "basis": "human"}}), lid))
+    body = {"supplier_id": "8085", "purchaser_id": 111, "opt_uid": 1, "qc_type": 2,
+            "lines": [{"sku": seed.sku_a, "wid": seed.wid, "units": 10, "price": "2",
+                       "sources": [{"line_id": lid, "seller_id": seed.seller_a, "units": 10}]}]}
+    po_id = client.post("/v1/purchase-orders", json=body, headers=H(seed.actor)).json()["po_id"]
+    tok = client.get(f"/v1/purchase-orders/{po_id}").json()["confirm_token"]
+    sn = client.post(f"/v1/purchase-orders/{po_id}/place", json={"confirm_token": tok},
+                     headers=H(seed.actor)).json()["order_sn"]
+    FAKE.mutate_item(sn, seed.sku_a, quantity_real=7)
+    assert landed.verify(po_id, seed.actor)["problems"]
+    return po_id
+
+
+def test_landed_mismatch_has_a_conclusion_and_can_be_acknowledged(client, seed, mismatched):
+    """#3：landed_mismatch 原来没有任何出口 —— 退回边必须真退得回去。"""
+    po_id = mismatched
+    cc = client.get(f"/v1/purchase-orders/{po_id}/timeline").json()["conclusion"]
+    assert cc["kind"] == "landed_mismatch" and cc["known"] and cc["unknown"]
+    assert cc["facts"]["problems"] and cc["facts"]["read_outcome"] == "ok"
+    url = f"/v1/purchase-orders/{po_id}/acknowledge-mismatch"
+    r = client.post(url, json={"reason": "  "}, headers=H(seed.actor))
+    assert r.status_code == 400 and r.json()["error"] == "reason_required"
+    r = client.post(url, json={"reason": "供应商电话确认改为 7 件，已知悉"}, headers=H(seed.actor))
+    assert r.status_code == 200, r.text
+    assert client.get("/v1/attention").json()["items"] == []
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT resolution, resolved_by, reason FROM po_attention WHERE po_id=%s", (po_id,))
+        assert cur.fetchall() == [("mismatch_acknowledged", seed.actor, "供应商电话确认改为 7 件，已知悉")]
+    r = client.post(url, json={"reason": "again"}, headers=H(seed.actor))
+    assert r.status_code == 409 and r.json()["error"] == "nothing_to_resolve"
+
+
+def test_acknowledge_mismatch_on_missing_po_is_404(client, seed):
+    r = client.post("/v1/purchase-orders/999999/acknowledge-mismatch", json={"reason": "x"}, headers=H(seed.actor))
+    assert r.status_code == 404 and r.json()["error"] == "po_not_found"
+
+
+def test_acknowledge_mismatch_does_not_touch_needs_verify(client, seed, stuck):
+    po_id, _ = stuck
+    r = client.post(f"/v1/purchase-orders/{po_id}/acknowledge-mismatch", json={"reason": "x"},
+                    headers=H(seed.actor))
+    assert r.status_code == 409 and r.json()["error"] == "nothing_to_resolve"
+    assert len(client.get("/v1/attention").json()["items"]) == 1

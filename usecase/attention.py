@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-from decimal import Decimal, InvalidOperation
 
 from repo import purchase as repo
+from rules.purchase import order_differences
+from shared.config import erp as erp_config
 from shared.pg_client import pg_conn, timed
 from usecase import place_po
 from usecase.draft_po import Conflict, load_po
@@ -64,6 +65,7 @@ def timeline(po_id: int) -> dict:
                       "resolved_at": d.isoformat() if d else None, "resolution": e, "resolved_by": f,
                       "reason": g, "detail": h} for a, b, c_, d, e, f, g, h in cur.fetchall()]
         open_nv = next((x for x in attention if x["resolved_at"] is None and x["kind"] == "needs_verify"), None)
+        open_lm = next((x for x in attention if x["resolved_at"] is None and x["kind"] == "landed_mismatch"), None)
         started = None
         if open_nv:
             call = repo.get_call(cur, open_nv["detail"].get("create_call_id") or 0)
@@ -78,35 +80,24 @@ def timeline(po_id: int) -> dict:
                       "how_to_search": {"custom_order_sn": d.get("custom_order_sn"),
                                         "window": {k: window[k] for k in ("search_field_time", "start_date",
                                                                           "end_date")}}}
+    elif open_lm:
+        d = open_lm["detail"]
+        conclusion = {"kind": "landed_mismatch",
+                      "known": d.get("known") or "领星里查到与本单同幂等键的另一张单",
+                      "unknown": d.get("unknown") or "该以哪一张为准",
+                      "facts": {k: v for k, v in d.items() if k not in ("known", "unknown")}}
     return {"po_id": po_id, "conclusion": conclusion, "attempts": attempts, "events": events,
             "attention": attention}
 
 
-def _require_open(cur, po_id: int) -> dict:
+def _require_open(cur, po_id: int, kind: str = "needs_verify") -> dict:
     cur.execute("SELECT 1 FROM po WHERE po_id=%s", (po_id,))
     if cur.fetchone() is None:
         raise Conflict(404, "po_not_found", "采购单不存在", po_id=po_id)
-    a = repo.open_attention_of(cur, po_id, "needs_verify")
+    a = repo.open_attention_of(cur, po_id, kind)
     if a is None:
-        raise Conflict(409, "nothing_to_resolve", "这张单没有待处理的项", po_id=po_id, kind="needs_verify")
+        raise Conflict(409, "nothing_to_resolve", "这张单没有待处理的项", po_id=po_id, kind=kind)
     return a
-
-
-def _item_keys(items) -> list:
-    """(sku, wid, units, price) 按 (sku, wid) 配对口径（v_check_po_landed 的无 lx_item_id 分支）；
-    数量 / 价格不是数 → 原样保留成对不上，不抛。"""
-    out = []
-    for sku, wid, units, price in items:
-        try:
-            u = int(units) if str(units).lstrip("-").isdigit() else f"?{units!r}"
-        except (TypeError, ValueError):
-            u = f"?{units!r}"
-        try:
-            pr = str(Decimal(str(price)).normalize())
-        except (InvalidOperation, TypeError, ValueError):
-            pr = f"?{price!r}"
-        out.append((str(sku), None if wid is None else str(wid), u, pr))
-    return sorted(out, key=repr)
 
 
 def recheck(po_id: int, actor: str) -> dict:
@@ -140,20 +131,12 @@ def register_existing(po_id: int, order_sn: str, actor: str) -> dict:
                     " lookup_call=%s lookup_outcome=%s", po_id, order_sn, actor, cid, r.outcome)
         raise Conflict(409, "order_not_found", "领星里查不到这个单号",
                        order_sn=order_sn, lookup_call=cid)
-    o, mismatch = rows[0], {}
-    if str(o.get("custom_order_sn")) != po["custom_order_sn"]:
-        mismatch["custom_order_sn"] = {"ours": po["custom_order_sn"], "lingxing": o.get("custom_order_sn")}
-    if str(o.get("supplier_id")) != str(po["supplier_id"]):
-        mismatch["supplier_id"] = {"ours": po["supplier_id"], "lingxing": o.get("supplier_id")}
-    if str(o.get("status")) == "-1":
+    o = rows[0]
+    mismatch = order_differences(po, o)
+    if mismatch.pop("status", None):
         log.warning("op=po_register_existing po_id=%s order_sn=%s actor=%s outcome=order_voided", po_id,
                     order_sn, actor)
         raise Conflict(409, "order_voided", "这张领星单已作废，不能登记", order_sn=order_sn, lookup_call=cid)
-    ours, theirs = _item_keys((ln["sku"], ln["wid"], ln["units"], ln["price"]) for ln in po["lines"]), \
-        _item_keys((it.get("sku"), it.get("wid"), it.get("quantity_real"), it.get("price"))
-                   for it in o.get("item_list") or [] if str(it.get("is_delete", 0)) in ("0", "False", "false"))
-    if ours != theirs:
-        mismatch["items"] = {"ours": ours, "lingxing": theirs}
     if mismatch:
         log.warning("op=po_register_existing po_id=%s order_sn=%s actor=%s outcome=order_mismatch fields=%s",
                     po_id, order_sn, actor, sorted(mismatch))
@@ -187,7 +170,7 @@ def confirm_absent(po_id: int, reason: str, actor: str) -> dict:
         locked = repo.lock_po(cur, po_id)
         if locked["state"] != "草稿":
             raise Conflict(409, "po_frozen", "采购单已下单", po_id=po_id, order_sn=locked["order_sn"])
-        if repo.any_in_flight(cur, po_id):
+        if repo.any_in_flight(cur, po_id, int(erp_config()["stale_in_flight_minutes"])):
             log.warning("op=po_confirm_absent po_id=%s actor=%s outcome=lookup_in_progress", po_id, actor)
             raise Conflict(409, "lookup_in_progress", "有查询 / 下单调用进行中，等它结束再确认", po_id=po_id)
         n = repo.resolve_attention(cur, po_id, "needs_verify", "confirmed_absent", actor, reason.strip())
@@ -197,11 +180,36 @@ def confirm_absent(po_id: int, reason: str, actor: str) -> dict:
     return {"po_id": po_id, "unlocked": ["place", "update", "delete"]}
 
 
+def acknowledge_mismatch(po_id: int, reason: str, actor: str) -> dict:
+    """landed_mismatch 的出口：人看过差异、知情接受。不改单、不改领星，只留「谁 · 何时 · 为什么」。"""
+    with pg_conn() as c, c.cursor() as cur:
+        _require_open(cur, po_id, "landed_mismatch")
+    if not (reason or "").strip():
+        raise Conflict(400, "reason_required", "知悉不一致必须写理由（核实了什么）")
+    with timed("po_acknowledge_mismatch", po_id=po_id, actor=actor), pg_conn() as c, c.cursor() as cur:
+        repo.lock_po(cur, po_id)
+        n = repo.resolve_attention(cur, po_id, "landed_mismatch", "mismatch_acknowledged", actor, reason.strip())
+    if n == 0:
+        raise Conflict(409, "nothing_to_resolve", "待处理项刚被别人处理了", po_id=po_id, kind="landed_mismatch")
+    log.warning("op=po_acknowledge_mismatch po_id=%s actor=%s reason=%r", po_id, actor, reason)
+    return {"po_id": po_id, "resolution": "mismatch_acknowledged"}
+
+
 def queue() -> list[dict]:
+    """★ 卡住的不可逆调用不落表、读时推导：恢复作业没跑（关着 / 还没轮到）时它也必须看得见。"""
+    minutes = int(erp_config()["stale_in_flight_minutes"])
     with timed("attention_queue"), pg_conn() as c, c.cursor() as cur:
         cur.execute("SELECT a.attention_id, a.po_id, a.kind, a.opened_at, p.custom_order_sn, p.supplier_id"
                     " FROM po_attention a JOIN po p USING (po_id) WHERE a.resolved_at IS NULL"
                     " ORDER BY a.opened_at")
-        return [{"attention_id": a, "po_id": b, "kind": k, "opened_at": d.isoformat(), "custom_order_sn": e,
-                 "supplier_id": f, "timeline": f"/v1/purchase-orders/{b}/timeline"}
-                for a, b, k, d, e, f in cur.fetchall()]
+        items = [{"attention_id": a, "po_id": b, "kind": k, "opened_at": d.isoformat(), "custom_order_sn": e,
+                  "supplier_id": f, "timeline": f"/v1/purchase-orders/{b}/timeline"}
+                 for a, b, k, d, e, f in cur.fetchall()]
+        stuck = repo.stuck_call_rows(cur, minutes)
+    for s in stuck:
+        items.append({"attention_id": None, "kind": "stuck_call", "po_id": s["po_id"], "call_id": s["call_id"],
+                      "endpoint": s["endpoint"], "actor": s["actor"], "started_at": s["started_at"].isoformat(),
+                      "opened_at": s["started_at"].isoformat(), "stale_after_minutes": minutes,
+                      "custom_order_sn": s["custom_order_sn"], "supplier_id": s["supplier_id"],
+                      "timeline": f"/v1/purchase-orders/{s['po_id']}/timeline"})
+    return items

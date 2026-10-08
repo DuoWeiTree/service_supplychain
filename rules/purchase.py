@@ -10,6 +10,7 @@ import json
 from decimal import Decimal, InvalidOperation
 
 NON_TERMINAL_PURCHASE_STATES = ("已提交", "已确认", "已下单")
+ORDERABLE_STATES = ("已提交", "已确认")   # 同 010 po_source_precondition
 
 #: 白名单里的边（003 + 010）。只描述本模块会走的那几条。
 _EDGES = {
@@ -95,7 +96,20 @@ def preflight(po: dict) -> list[dict]:
         gates.append(_gate("line_unplanned_reason",
                            unplanned <= 0 or (ln.get("unplanned_reason") or "").strip(),
                            line_no=n, unplanned=max(unplanned, 0)))
+    gates.append(_sources_orderable(po))
     return gates
+
+
+def _sources_orderable(po: dict) -> dict:
+    """组单之后记录可能被撤销（映射不随之消失）—— 下单前再判一次来源记录的状态。
+    ★ 有来源却没带上状态 = 没查过，不是「都可组单」。"""
+    has_sources = any(ln.get("sources") for ln in po.get("lines") or [])
+    states = po.get("source_line_states")
+    if states is None:
+        return _gate("sources_orderable", not has_sources, offenders=[], loaded=False)
+    offenders = [{"line_id": s["line_id"], "state": s["state"]} for s in states
+                 if s["state"] not in ORDERABLE_STATES]
+    return _gate("sources_orderable", not offenders, offenders=offenders)
 
 
 def po_digest(po: dict) -> str:
@@ -136,6 +150,42 @@ def extract_order_sn(body: dict) -> str | None:
     return None
 
 
-def find_by_custom_sn(orders: list[dict], custom_sn: str) -> dict | None:
-    hits = [o for o in orders if str(o.get("custom_order_sn")) == custom_sn]
-    return hits[0] if hits else None
+def orders_by_custom_sn(orders: list[dict], custom_sn: str) -> list[dict]:
+    """同一幂等键在领星可能不止一张（人工补建 / 重复提交）：全部交出去，由调用方决定，不挑第一张。"""
+    return [o for o in orders if str(o.get("custom_order_sn")) == custom_sn]
+
+
+def _live_item(it: dict) -> bool:
+    return str(it.get("is_delete", 0)) in ("0", "False", "false")
+
+
+def item_keys(items) -> list:
+    """(sku, wid, units, price) 按 (sku, wid) 配对口径（v_check_po_landed 的无 lx_item_id 分支）；
+    数量 / 价格不是数 → 原样保留成对不上，不抛。"""
+    out = []
+    for sku, wid, units, price in items:
+        u = int(units) if str(units).lstrip("-").isdigit() else f"?{units!r}"
+        try:
+            pr = str(Decimal(str(price)).normalize())
+        except (InvalidOperation, TypeError, ValueError):
+            pr = f"?{price!r}"
+        out.append((str(sku), None if wid is None else str(wid), u, pr))
+    return sorted(out, key=repr)
+
+
+def order_differences(po: dict, order: dict) -> dict:
+    """领星的一张单与本采购单的差异；空 dict = 对得上。登记已有单与按幂等键查重共用这一把尺子。
+    ★ 已作废（status -1）单独成一项：对得上也不能认。"""
+    diff = {}
+    if str(order.get("custom_order_sn")) != po["custom_order_sn"]:
+        diff["custom_order_sn"] = {"ours": po["custom_order_sn"], "lingxing": order.get("custom_order_sn")}
+    if str(order.get("supplier_id")) != str(po["supplier_id"]):
+        diff["supplier_id"] = {"ours": po["supplier_id"], "lingxing": order.get("supplier_id")}
+    if str(order.get("status")) == "-1":
+        diff["status"] = {"ours": "有效", "lingxing": order.get("status")}
+    ours = item_keys((ln["sku"], ln["wid"], ln["units"], ln["price"]) for ln in po["lines"])
+    theirs = item_keys((it.get("sku"), it.get("wid"), it.get("quantity_real"), it.get("price"))
+                       for it in order.get("item_list") or [] if _live_item(it))
+    if ours != theirs:
+        diff["items"] = {"ours": ours, "lingxing": theirs}
+    return diff

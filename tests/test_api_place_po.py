@@ -392,3 +392,173 @@ def test_read_back_failure_does_not_undo_placed(client, seed, draft, monkeypatch
     r = _place(client, seed, po_id)
     assert r.status_code == 200 and r.json()["outcome"] == "placed"
     assert _line_state(lid) == "已下单"
+
+
+# ---- 终审修复波 ----
+
+def test_settle_after_recovery_closed_the_call_is_honest(client, seed, draft, monkeypatch, scm_log):
+    """#1：事务② 之前恢复已把这条调用收成 unknown 并查回了单 —— place 不 500、不丢领星给的单号。"""
+    from erp import gateway
+    from usecase import place_po
+    po_id, lid = draft
+    token = _token(client, po_id)
+    real = gateway.call
+
+    def spy(name, params):
+        ep, r = real(name, params)
+        if name == "create_purchase_order":
+            assert [o["outcome"] for o in place_po.recover_stuck(0)] == ["placed"]
+        return ep, r
+    monkeypatch.setattr(gateway, "call", spy)
+    res = place_po.place(po_id, token, seed.actor)
+    assert res["outcome"] == "placed" and res["settled_by"] == "recover"
+    assert res["order_sn"] == "FAKE-PO000001" and _line_state(lid) == "已下单"
+    assert "op=po_place_settle_lost_race" in scm_log.text and "FAKE-PO000001" in scm_log.text
+    assert [c[1] for c in _creates(po_id)] == ["unknown"]
+
+
+def test_settle_after_recovery_found_nothing_reports_needs_verify(client, seed, draft, monkeypatch):
+    from erp import gateway
+    from usecase import place_po
+    po_id, _ = draft
+    token = _token(client, po_id)
+    real = gateway.call
+
+    def spy(name, params):
+        ep, r = real(name, params)
+        if name == "create_purchase_order":
+            FAKE.enqueue("purchase_order_list", "not_sent")
+            place_po.recover_stuck(0)
+        return ep, r
+    monkeypatch.setattr(gateway, "call", spy)
+    res = place_po.place(po_id, token, seed.actor)
+    assert res["outcome"] == "needs_verify" and res["settled_by"] == "recover"
+    assert [a[0] for a in _attentions(po_id) if a[1] is None] == ["needs_verify"]
+
+
+def test_stuck_call_is_listed_in_attention(client, seed, draft):
+    po_id, _ = draft
+    cid = _insert_call_row(po_id, seed.actor, "in_flight", age="1 hour")
+    items = client.get("/v1/attention").json()["items"]
+    stuck = [i for i in items if i["kind"] == "stuck_call"]
+    assert [(i["po_id"], i["call_id"]) for i in stuck] == [(po_id, cid)] and stuck[0]["started_at"]
+
+
+def test_fresh_in_flight_is_not_listed_as_stuck(client, seed, draft):
+    po_id, _ = draft
+    _insert_call_row(po_id, seed.actor, "in_flight", age="1 second")
+    assert client.get("/v1/attention").json()["items"] == []
+
+
+def _insert_read_call(po_id, actor, age):
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("INSERT INTO erp_call (endpoint, side_effect, mode, po_id, actor, request, started_at)"
+                    " VALUES ('purchase_order_list','read','fake',%s,%s,'{\"search_field_time\":\"create_time\"}',"
+                    f" now() - interval '{age}') RETURNING call_id", (po_id, actor))
+        return cur.fetchone()[0]
+
+
+def test_recover_closes_stale_read_calls_as_unknown(client, seed, draft):
+    """#2：卡住的读调用由恢复收尾，否则「确认无此单」永远 lookup_in_progress。"""
+    from usecase import place_po
+    po_id, _ = draft
+    stale = _insert_read_call(po_id, seed.actor, "1 hour")
+    fresh = _insert_read_call(po_id, seed.actor, "1 second")
+    place_po.recover_stuck()
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT call_id, outcome, cause, finished_at IS NOT NULL FROM erp_call WHERE call_id IN (%s,%s)"
+                    " ORDER BY call_id", (stale, fresh))
+        rows = cur.fetchall()
+    assert rows[0][1] == "unknown" and rows[0][2].startswith("recovered: in_flight >") and rows[0][3]
+    assert rows[1][1] == "in_flight"
+
+
+def test_cancelled_source_line_blocks_place(client, seed, draft):
+    """#5：记录被撤销后，草稿里挂着它的映射不能直通不可逆下单。"""
+    from tests.helpers import advance
+    po_id, lid = draft
+    with pg_conn() as c, c.cursor() as cur:
+        advance(cur, lid, "已撤销", actor=seed.actor)
+    po = client.get(f"/v1/purchase-orders/{po_id}").json()
+    gate = next(g for g in po["preflight"] if g["gate"] == "sources_orderable")
+    assert gate["ok"] is False and gate["detail"]["offenders"] == [{"line_id": lid, "state": "已撤销"}]
+    r = _place(client, seed, po_id)
+    assert r.status_code == 409 and r.json()["error"] == "preflight_failed"
+    assert any(g["gate"] == "sources_orderable" for g in r.json()["failed"])
+    assert _creates(po_id) == []
+
+
+@pytest.mark.parametrize("code", ["", False, None, "abc"])
+def test_ambiguous_rejection_of_irreversible_call_is_unknown(client, seed, draft, monkeypatch, code):
+    """#8：2xx 里 code 为空 / false —— 不是明确的业务拒绝，放开草稿就可能重下出第二张真单。"""
+    from erp import gateway
+    from erp.transport import CallResult
+    po_id, _ = draft
+    real = gateway.call
+
+    def spy(name, params):
+        if name == "create_purchase_order":
+            ep = gateway.endpoints.get(name)
+            return ep, CallResult("rejected", "fake", ep.path, 5, http_status=200, lx_code=str(code),
+                                  body={"code": code, "message": "?"})
+        return real(name, params)
+    monkeypatch.setattr(gateway, "call", spy)
+    r = _place(client, seed, po_id).json()
+    assert r["outcome"] == "needs_verify"
+    assert _creates(po_id)[0][1] == "unknown"
+    assert _place(client, seed, po_id).json()["error"] == "needs_verify"
+
+
+def test_explicit_business_rejection_still_releases_the_draft(client, seed, draft, monkeypatch):
+    from erp import gateway
+    from erp.transport import CallResult
+    po_id, _ = draft
+
+    def spy(name, params):
+        ep = gateway.endpoints.get(name)
+        return ep, CallResult("rejected", "fake", ep.path, 5, http_status=200, lx_code="1001",
+                              body={"code": "1001", "message": "供应商不存在"})
+    monkeypatch.setattr(gateway, "call", spy)
+    assert _place(client, seed, po_id).json()["outcome"] == "rejected"
+
+
+def _created_order(seed, po_id, **over):
+    from erp import gateway
+    p = {"custom_order_sn": f"SCM-PO-{po_id}", "supplier_id": 8085, "purchaser_id": 111, "opt_uid": 1,
+         "qc_type": 2, "wid": seed.wid,
+         "product_list": [{"sku": seed.sku_a, "wid": seed.wid, "quantity_real": 10, "price": "2"}]}
+    p.update(over)
+    gateway.call("create_purchase_order", p)
+
+
+def test_lookup_hit_that_does_not_match_is_not_adopted(client, seed, draft):
+    """#7：只凭 custom_order_sn 认单 —— 供应商 / 明细对不上就不记账，开 landed_mismatch 点名差异。"""
+    po_id, lid = draft
+    FAKE.enqueue("create_purchase_order", "unknown_absent")
+    _place(client, seed, po_id)
+    _created_order(seed, po_id, supplier_id=9999)
+    from usecase import place_po
+    res = place_po.lookup_and_settle(po_id, seed.actor, None, "t")
+    assert res["outcome"] == "needs_verify" and res["landed_mismatch"] == ["FAKE-PO000001"]
+    assert _line_state(lid) == "已确认"
+    open_ = {a[0]: a[2] for a in _attentions(po_id) if a[1] is None}
+    assert set(open_) == {"needs_verify", "landed_mismatch"}
+    assert "supplier_id" in open_["landed_mismatch"]["differences"]
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT state, order_sn FROM po WHERE po_id=%s", (po_id,))
+        assert cur.fetchone() == ("草稿", None)
+
+
+def test_lookup_with_two_orders_on_one_key_is_not_adopted(client, seed, draft):
+    po_id, lid = draft
+    FAKE.enqueue("create_purchase_order", "unknown_absent")
+    _place(client, seed, po_id)
+    _created_order(seed, po_id)
+    _created_order(seed, po_id)
+    from usecase import place_po
+    res = place_po.lookup_and_settle(po_id, seed.actor, None, "t")
+    assert res["outcome"] == "needs_verify"
+    assert res["landed_mismatch"] == ["FAKE-PO000001", "FAKE-PO000002"]
+    lm = next(a[2] for a in _attentions(po_id) if a[0] == "landed_mismatch")
+    assert lm["order_sns"] == ["FAKE-PO000001", "FAKE-PO000002"]
+    assert _line_state(lid) == "已确认"

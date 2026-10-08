@@ -11,14 +11,18 @@ from zoneinfo import ZoneInfo
 from apscheduler.events import EVENT_JOB_ERROR
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
+from erp.transport import cause_chain
 from jobs.lock import RefreshInFlight
 from jobs.refresh_dims import ChUnreachable, refresh_all
+from shared.config import erp as erp_config
 from shared.config import freshness
 
 log = logging.getLogger("scm.jobs")
 
 REFRESH_JOB_ID = "refresh_dims"
+RECOVER_JOB_ID = "recover_stuck"
 #: 睡醒/重启后补跑一次（1 小时内），不补跑一串。
 MISFIRE_GRACE_S = 3600
 
@@ -90,6 +94,19 @@ def _tick() -> None:
              len(runs), ok, len(runs) - ok)
 
 
+def _recover_tick() -> None:
+    """断点续跑的周期版（spec §6.3）：只在启动时跑，事务② 失败的单会卡在 po_placing 直到下次重启。
+    ★ 一轮失败只记一行、不抛：下一轮照跑。"""
+    from usecase import place_po  # 函数内 import：usecase 链路较重，调度器构建不该为它付代价
+    try:
+        out = place_po.recover_stuck()
+    except Exception as e:  # noqa: BLE001
+        log.error("op=recover_stuck_job outcome=fail err_type=%s cause=%s", type(e).__name__, cause_chain(e))
+        return
+    if out:
+        log.warning("op=recover_stuck_job outcome=recovered n=%d results=%s", len(out), out)
+
+
 def build_scheduler() -> AsyncIOScheduler | None:
     cfg = freshness()
     if not cfg.get("scheduler_enabled", True):
@@ -103,8 +120,12 @@ def build_scheduler() -> AsyncIOScheduler | None:
                 trigger=CronTrigger(hour=hour, minute=minute, timezone=tz),
                 coalesce=True, misfire_grace_time=MISFIRE_GRACE_S,
                 max_instances=1, replace_existing=True)
+    # 间隔取 V5 本身（不另设数字）：卡住的调用最迟 2×V5 被收尾
+    stale = int(erp_config()["stale_in_flight_minutes"])
+    sch.add_job(_recover_tick, id=RECOVER_JOB_ID, trigger=IntervalTrigger(minutes=stale),
+                coalesce=True, max_instances=1, replace_existing=True)
     sch.add_listener(_on_error, EVENT_JOB_ERROR)
-    log.info("op=scheduler outcome=built at=%02d:%02d tz=%s", hour, minute, tz)
+    log.info("op=scheduler outcome=built at=%02d:%02d tz=%s recover_every_min=%d", hour, minute, tz, stale)
     return sch
 
 

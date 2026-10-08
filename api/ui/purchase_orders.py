@@ -82,6 +82,12 @@ def confirm_absent(po_id: int, body: dict, request: Request, who: str = Depends(
     return _call(attention_uc.confirm_absent, po_id, (body or {}).get("reason") or "", who)
 
 
+@router.post("/purchase-orders/{po_id}/acknowledge-mismatch")
+def acknowledge_mismatch(po_id: int, body: dict, request: Request, who: str = Depends(actor)):
+    declared(request)
+    return _call(attention_uc.acknowledge_mismatch, po_id, (body or {}).get("reason") or "", who)
+
+
 @router.get("/purchase-orders/{po_id}/preflight")
 def preflight_(po_id: int, request: Request, who: str | None = Depends(actor_optional)):
     declared(request)

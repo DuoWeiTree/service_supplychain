@@ -6,14 +6,21 @@ HTTP：createPurchaseOrder（★ 不持锁跨 HTTP；in_flight 唯一索引就�
 """
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import logging
+import re
 
 from erp import gateway
 from erp.endpoints import get as get_endpoint
 from erp.transport import CallResult, cause_chain
 from repo import purchase as repo
-from rules.purchase import create_order_payload, extract_order_sn, find_by_custom_sn
+from rules.purchase import (
+    create_order_payload,
+    extract_order_sn,
+    order_differences,
+    orders_by_custom_sn,
+)
 from shared.config import erp as erp_config
 from shared.pg_client import pg_conn, timed
 from usecase.draft_po import Conflict, load_po
@@ -28,6 +35,32 @@ def _lookup_params(day: dt.date) -> dict:
     # ★ 无 custom_order_sn 过滤（erp/endpoints.py 出处）：按建单日前后各一天取，客户端筛
     return {"search_field_time": "create_time", "start_date": (day - dt.timedelta(days=1)).isoformat(),
             "end_date": (day + dt.timedelta(days=1)).isoformat(), "offset": 0, "length": _LOOKUP_LEN}
+
+
+def _int_like(v) -> bool:
+    return (isinstance(v, int) and not isinstance(v, bool)) or \
+        (isinstance(v, str) and re.fullmatch(r"-?\d+", v.strip()) is not None)
+
+
+def _explicit_rejection(r: CallResult) -> bool:
+    """领星明确说了「不」：HTTP 2xx/4xx 且 JSON 里有整数形的非成功 code。"""
+    code = (r.body or {}).get("code") if isinstance(r.body, dict) else None
+    return (r.http_status is not None and (200 <= r.http_status < 300 or 400 <= r.http_status < 500)
+            and _int_like(code) and int(code) not in (0, 200))
+
+
+def _classify(name: str, r: CallResult) -> CallResult:
+    """★ 不可逆端点上 rejected 会放开草稿、允许重下：只有明确的业务拒绝才配这个结论，
+    其余（code 为空 / false / 非数字、4xx 无 code …）都可能已经建了单 → unknown，走查重。
+    读端点不改：读失败本来就不放行任何东西。"""
+    if r.outcome != "rejected" or get_endpoint(name).side_effect != "irreversible" or _explicit_rejection(r):
+        return r
+    code = (r.body or {}).get("code") if isinstance(r.body, dict) else None
+    log.warning("op=erp_outcome_reclassified endpoint=%s from=rejected to=unknown http=%s code=%r cause=%s",
+                name, r.http_status, code, r.cause)
+    return dataclasses.replace(r, outcome="unknown",
+                               cause=f"not an explicit business rejection (http={r.http_status} code={code!r})"
+                                     + (f"; {r.cause}" if r.cause else ""))
 
 
 def _obs_source() -> str:
@@ -58,7 +91,10 @@ def call_logged(name: str, params: dict, *, po_id: int, actor: str,
                   type(e).__name__, cause_chain(e))
         r = CallResult("unknown", "-", "-", 0, cause=f"driver exception: {cause_chain(e)}")
     with pg_conn() as c, c.cursor() as cur:
-        repo.close_call(cur, cid, r)
+        if not repo.close_call_if_in_flight(cur, cid, r):
+            # 恢复已按「卡住」收成 unknown；本次真实结果只在这里留一次痕，调用方照常用它
+            log.warning("op=erp_read_closed_by_recovery name=%s po_id=%s call=%s outcome=%s http=%s cause=%s",
+                        name, po_id, cid, r.outcome, r.http_status, r.cause)
     return cid, r
 
 
@@ -107,7 +143,8 @@ def lookup_and_settle(po_id: int, actor: str, opened_by_call: int | None, src: s
     rows = (r.body or {}).get("data") or [] if r.outcome == "ok" else []
     total = (r.body or {}).get("total") if r.outcome == "ok" else None
     truncated = r.outcome == "ok" and ((isinstance(total, int) and total > len(rows)) or len(rows) >= _LOOKUP_LEN)
-    hit = find_by_custom_sn(rows, po["custom_order_sn"])
+    hits = orders_by_custom_sn(rows, po["custom_order_sn"])
+    hit, mismatch = None, None
     if truncated:
         log.warning("op=po_lookup po_id=%s lookup_call=%s truncated=true total=%s fetched=%s", po_id, cid,
                     total, len(rows))
@@ -115,12 +152,10 @@ def lookup_and_settle(po_id: int, actor: str, opened_by_call: int | None, src: s
         locked = repo.lock_po(cur, po_id)
         if locked["discarded"]:
             log.warning("op=po_lookup_on_discarded po_id=%s lookup_call=%s found=%s -- 不记账，待核实保持",
-                        po_id, cid, bool(hit))
-            hit = None
+                        po_id, cid, len(hits))
         elif locked["state"] == "已下单":
-            # find_by_custom_sn 只给第一张；同键的多张里只要有一张不是已记账的那张就是异常
-            extra = next((o for o in rows if str(o.get("custom_order_sn")) == po["custom_order_sn"]
-                          and o["order_sn"] != locked["order_sn"]), None)
+            # 同键的多张里只要有一张不是已记账的那张就是异常
+            extra = next((o for o in hits if o["order_sn"] != locked["order_sn"]), None)
             if extra:
                 hit = extra
                 # ★ 另有一张同幂等键的真单：不能当成「已记账」吞掉，也不替人决定收哪张
@@ -135,6 +170,10 @@ def lookup_and_settle(po_id: int, actor: str, opened_by_call: int | None, src: s
             repo.resolve_attention(cur, po_id, "needs_verify", "rechecked_found", actor, reason)
             return {"outcome": "placed", "po_id": po_id, "order_sn": locked["order_sn"],
                     "erp_call_id": cid, "found_by": "already_recorded"}
+        else:
+            hit, mismatch = _adoptable(po, hits, cid)
+            if mismatch:
+                _open_mismatch(cur, po_id, cid, mismatch)
         if hit:
             moved = _settle_placed(cur, po_id, hit["order_sn"], actor, src, resolve_attention=True,
                                   reason=reason)
@@ -152,11 +191,36 @@ def lookup_and_settle(po_id: int, actor: str, opened_by_call: int | None, src: s
                     po_id, hit["order_sn"], cid, moved)
         return {"outcome": "placed", "po_id": po_id, "order_sn": hit["order_sn"],
                 "erp_call_id": cid, "found_by": "lookup"}
-    log.warning("op=po_needs_verify po_id=%s custom_order_sn=%s lookup_call=%s lookup_outcome=%s truncated=%s",
-                po_id, po["custom_order_sn"], cid, r.outcome, truncated)
-    return {"outcome": "needs_verify", "po_id": po_id, "erp_call_id": opened_by_call,
-            "lookup_call_id": cid, "lookup_outcome": r.outcome, "truncated": truncated,
-            "timeline": f"/v1/purchase-orders/{po_id}/timeline"}
+    log.warning("op=po_needs_verify po_id=%s custom_order_sn=%s lookup_call=%s lookup_outcome=%s truncated=%s"
+                " hits=%s", po_id, po["custom_order_sn"], cid, r.outcome, truncated, [o["order_sn"] for o in hits])
+    out = {"outcome": "needs_verify", "po_id": po_id, "erp_call_id": opened_by_call,
+           "lookup_call_id": cid, "lookup_outcome": r.outcome, "truncated": truncated,
+           "timeline": f"/v1/purchase-orders/{po_id}/timeline"}
+    if mismatch:
+        out["landed_mismatch"] = mismatch.get("order_sns") or [mismatch["order_sn"]]
+    return out
+
+
+def _adoptable(po: dict, hits: list[dict], cid: int) -> tuple[dict | None, dict | None]:
+    """★ 幂等键对上不等于是这张单：同键多张不替人选；单张也要供应商 / 明细对得上才记账（同登记已有单的尺子）。"""
+    sns = sorted({o["order_sn"] for o in hits})
+    if len(sns) >= 2:
+        return None, {"known": "领星里有多张单用了本单的幂等键", "unknown": "哪一张是本单下出去的",
+                      "custom_order_sn": po["custom_order_sn"], "order_sns": sns, "lookup_call_id": cid}
+    if not sns:
+        return None, None
+    diff = order_differences(po, hits[0])
+    if diff:
+        return None, {"known": "领星里按幂等键查到的单与本单对不上", "unknown": "它是不是本单下出去的",
+                      "custom_order_sn": po["custom_order_sn"], "order_sn": sns[0], "differences": diff,
+                      "lookup_call_id": cid}
+    return hits[0], None
+
+
+def _open_mismatch(cur, po_id: int, cid: int, detail: dict) -> None:
+    aid = repo.open_attention_row(cur, po_id, "landed_mismatch", cid, detail)
+    log.error("op=po_lookup_mismatch po_id=%s lookup_call=%s attention=%s detail=%s", po_id, cid,
+              aid if aid else "already_open", detail)
 
 
 def place(po_id: int, token: str, actor: str) -> dict:
@@ -210,15 +274,20 @@ def place(po_id: int, token: str, actor: str) -> dict:
                   type(e).__name__, cause_chain(e))
         r = CallResult("unknown", "-", "-", 0, cause=f"driver exception: {cause_chain(e)}")
         sent = None
+    r = _classify("create_purchase_order", r)
 
     # 事务②：★ 「发出过但没记账」这个事实与 close_call 同一事务落盘
     order_sn = extract_order_sn(r.body) if r.outcome == "ok" else None
     with timed("po_place_settle", po_id=po_id, outcome=r.outcome), pg_conn() as c, c.cursor() as cur:
-        repo.close_call(cur, call_id, r)
-        if r.outcome == "ok" and order_sn:
+        closed = repo.close_call_if_in_flight(cur, call_id, r)
+        if not closed:
+            pass    # 恢复已先收尾（unknown + 待核实 + 查重）；这里再记账会与它的结论打架
+        elif r.outcome == "ok" and order_sn:
             moved = _settle_placed(cur, po_id, order_sn, actor, f"place:{call_id}", resolve_attention=False)
         elif r.outcome in ("ok", "unknown"):
             _open_needs_verify(cur, po_id, call_id, "place", sent, po["custom_order_sn"])
+    if not closed:
+        return _lost_race(po_id, call_id, r, order_sn)
     if r.outcome == "rejected":
         return {"outcome": "rejected", "po_id": po_id, "lx_code": r.lx_code, "lx_msg": r.lx_msg,
                 "erp_call_id": call_id}
@@ -231,6 +300,18 @@ def place(po_id: int, token: str, actor: str) -> dict:
         return {"outcome": "placed", "po_id": po_id, "order_sn": order_sn, "erp_call_id": call_id}
     # 结果未知，或成功却认不出单号 → 查重
     return lookup_and_settle(po_id, actor, call_id, f"lookup_after:{call_id}")
+
+
+def _lost_race(po_id: int, call_id: int, r: CallResult, order_sn: str | None) -> dict:
+    """★ 事务② 之前 recover_stuck 已把这条调用收成 unknown：领星给的真实结果只剩这一次机会留痕。"""
+    log.warning("op=po_place_settle_lost_race po_id=%s call=%s outcome=%s order_sn=%s http=%s lx_code=%s"
+                " body=%s -- 调用已被恢复收尾，以库里状态为准", po_id, call_id, r.outcome, order_sn,
+                r.http_status, r.lx_code, r.body)
+    po = load_po(po_id)
+    placed = po["state"] == "已下单"
+    return {"outcome": "placed" if placed else "needs_verify", "po_id": po_id, "order_sn": po["order_sn"],
+            "erp_call_id": call_id, "settled_by": "recover", "lingxing_outcome": r.outcome,
+            "lingxing_order_sn": order_sn, "timeline": f"/v1/purchase-orders/{po_id}/timeline"}
 
 
 def _first_check(po_id: int, order_sn: str, actor: str) -> None:
@@ -281,4 +362,21 @@ def recover_stuck(minutes: int | None = None) -> list[dict]:
             continue
         log.warning("op=recover_unsettled call=%s po_id=%s result=%s", call_id, po_id, res["outcome"])
         out.append(res)
+    _close_stale_reads(minutes)
     return out
+
+
+def _close_stale_reads(minutes: int) -> None:
+    """③ 卡住的读调用：不开待核实（读不建单），只收尾 —— 否则「确认无此单」永远 lookup_in_progress。"""
+    with pg_conn() as c, c.cursor() as cur:
+        stale = repo.stuck_calls(cur, minutes, "read")
+    for call_id, po_id, _ in stale:
+        try:
+            with pg_conn() as c, c.cursor() as cur:
+                n = repo.close_call_if_in_flight(cur, call_id, CallResult(
+                    "unknown", "-", "-", 0, cause=f"recovered: in_flight > {minutes} min（进程中断）"))
+        except Exception as e:  # noqa: BLE001 —— 一条失败不拖累其余
+            log.error("op=recover_stale_read call=%s po_id=%s outcome=fail err_type=%s cause=%s", call_id, po_id,
+                      type(e).__name__, cause_chain(e))
+            continue
+        log.warning("op=recover_stale_read call=%s po_id=%s closed=%s", call_id, po_id, n)

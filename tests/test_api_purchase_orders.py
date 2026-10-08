@@ -260,3 +260,15 @@ def test_put_moving_source_between_lines_rederives_both(client, seed, world):
     assert r.status_code == 200, r.text
     assert line_state(world) == "已提交"
     assert line_state(lid_b) == "已确认"
+
+
+def test_unknown_supplier_is_400_not_500(client, seed, world):
+    b = body(seed, world)
+    b["supplier_id"] = "NO-SUCH-SUPPLIER"
+    r = client.post("/v1/purchase-orders", json=b, headers=H(seed.actor))
+    assert r.status_code == 400 and r.json()["error"] == "unknown_supplier"
+    assert r.json()["supplier_id"] == "NO-SUCH-SUPPLIER"
+    po_id = client.post("/v1/purchase-orders", json=body(seed, world), headers=H(seed.actor)).json()["po_id"]
+    b["draft_version"] = 1
+    r = client.put(f"/v1/purchase-orders/{po_id}", json=b, headers=H(seed.actor))
+    assert r.status_code == 400 and r.json()["error"] == "unknown_supplier"
