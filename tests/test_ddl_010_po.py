@@ -88,3 +88,53 @@ def test_plan_line_has_new_back_edges(business_db):
         cur.execute("SELECT from_state, to_state FROM plan_line_transition WHERE from_state='已下单'"
                     " AND kind='back' ORDER BY to_state")
         assert cur.fetchall() == [("已下单", "已提交"), ("已下单", "已确认")]
+
+
+def _placed_po(cur, actor, sku, wid):
+    po_id, _ = _po(cur, actor, wid)
+    cur.execute("INSERT INTO po_line (po_id, line_no, sku, wid, units, price)"
+                " VALUES (%s, 1, %s, %s, 10, 1)", (po_id, sku, wid))
+    cur.execute("UPDATE po SET order_sn='FAKE-2', placed_mode='fake', placed_at=now()"
+                " WHERE po_id=%s", (po_id,))
+    cur.execute("INSERT INTO po_event (po_id, from_state, to_state, actor, src)"
+                " VALUES (%s, '草稿', '已下单', %s, 't')", (po_id, actor))
+    return po_id
+
+
+def test_placed_po_cannot_be_hard_deleted(po_world, seed):
+    with pg_conn() as c, c.cursor() as cur:
+        po_id = _placed_po(cur, seed.actor, seed.sku_a, seed.wid)
+    with pytest.raises(psycopg2.Error) as e, pg_conn() as c, c.cursor() as cur:
+        cur.execute("DELETE FROM po WHERE po_id=%s", (po_id,))
+    assert e.value.diag.constraint_name == "po_frozen"
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT (SELECT count(*) FROM po_line WHERE po_id=%s),"
+                    " (SELECT count(*) FROM po_event WHERE po_id=%s)", (po_id, po_id))
+        assert cur.fetchone() == (1, 2)
+
+
+def test_draft_po_delete_still_cascades(po_world, seed):
+    with pg_conn() as c, c.cursor() as cur:
+        po_id, _ = _po(cur, seed.actor, seed.wid)
+        cur.execute("INSERT INTO po_line (po_id, line_no, sku, wid, units, price)"
+                    " VALUES (%s, 1, %s, %s, 10, 1)", (po_id, seed.sku_a, seed.wid))
+        cur.execute("DELETE FROM po WHERE po_id=%s", (po_id,))
+        cur.execute("SELECT (SELECT count(*) FROM po_line WHERE po_id=%s),"
+                    " (SELECT count(*) FROM po_event WHERE po_id=%s)", (po_id, po_id))
+        assert cur.fetchone() == (0, 0)
+
+
+def test_po_cannot_be_inserted_in_a_non_draft_state(po_world, seed):
+    with pytest.raises(psycopg2.Error) as e, pg_conn() as c, c.cursor() as cur:
+        cur.execute("INSERT INTO po (supplier_id, purchaser_id, opt_uid, qc_type, created_by, state)"
+                    " VALUES ('8085', 111, 10925905, 2, %s, '已下单')", (seed.actor,))
+    assert e.value.diag.constraint_name == "po_born_as_draft"
+
+
+def test_birth_event_is_accepted_only_once(po_world, seed):
+    with pg_conn() as c, c.cursor() as cur:
+        po_id = _placed_po(cur, seed.actor, seed.sku_a, seed.wid)
+    with pytest.raises(psycopg2.Error) as e, pg_conn() as c, c.cursor() as cur:
+        cur.execute("INSERT INTO po_event (po_id, from_state, to_state, actor, src)"
+                    " VALUES (%s, '[*]', '草稿', %s, 't')", (po_id, seed.actor))
+    assert e.value.diag.constraint_name == "po_birth_once"

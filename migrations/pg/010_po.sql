@@ -93,7 +93,14 @@ END $$;
 CREATE OR REPLACE FUNCTION sync_po_state() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE cur text; sn text; mode text;
 BEGIN
-    IF NEW.from_state = '[*]' THEN RETURN NEW; END IF;
+    IF NEW.from_state = '[*]' THEN
+        -- 出生事件只认第一条，否则已下单的单也能被追加一条 [*]→草稿
+        IF EXISTS (SELECT 1 FROM po_event WHERE po_id = NEW.po_id AND seq < NEW.seq) THEN
+            RAISE EXCEPTION USING ERRCODE = '23514', CONSTRAINT = 'po_birth_once',
+                  MESSAGE = format('po %s 已有出生事件，不可重复', NEW.po_id);
+        END IF;
+        RETURN NEW;
+    END IF;
     SELECT state, order_sn, placed_mode INTO cur, sn, mode FROM po WHERE po_id = NEW.po_id FOR UPDATE;
     IF cur IS DISTINCT FROM NEW.from_state THEN
         RAISE EXCEPTION 'po % from_state 不匹配：当前 %，事件称 %', NEW.po_id, cur, NEW.from_state;
@@ -118,6 +125,26 @@ BEGIN
     IF OLD.state = '已下单' AND current_setting('app.in_po_state_sync', true) IS DISTINCT FROM 'on' THEN
         RAISE EXCEPTION USING ERRCODE = '23514', CONSTRAINT = 'po_frozen',
               MESSAGE = format('采购单 %s 已下单，不可改', OLD.po_id);
+    END IF;
+    RETURN NEW;
+END $$;
+
+-- 硬删已下单的单会连带抹掉明细、映射（释放额度）和事件；草稿照常可删（级联清事件）
+CREATE OR REPLACE FUNCTION po_guard_delete() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF OLD.state = '已下单' THEN
+        RAISE EXCEPTION USING ERRCODE = '23514', CONSTRAINT = 'po_frozen',
+              MESSAGE = format('采购单 %s 已下单，不可删除', OLD.po_id);
+    END IF;
+    RETURN OLD;
+END $$;
+
+-- 状态只能经 po_event 推进，出生时就不许直接写成别的状态
+CREATE OR REPLACE FUNCTION po_guard_insert() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.state IS DISTINCT FROM '草稿' THEN
+        RAISE EXCEPTION USING ERRCODE = '23514', CONSTRAINT = 'po_born_as_draft',
+              MESSAGE = format('采购单只能以 草稿 出生，收到 %s', NEW.state);
     END IF;
     RETURN NEW;
 END $$;
@@ -159,6 +186,10 @@ DROP TRIGGER IF EXISTS t_po_sync_state ON po_event;
 CREATE TRIGGER t_po_sync_state AFTER INSERT ON po_event FOR EACH ROW EXECUTE FUNCTION sync_po_state();
 DROP TRIGGER IF EXISTS t_po_guard ON po;
 CREATE TRIGGER t_po_guard BEFORE UPDATE ON po FOR EACH ROW EXECUTE FUNCTION po_guard_header();
+DROP TRIGGER IF EXISTS t_po_guard_delete ON po;
+CREATE TRIGGER t_po_guard_delete BEFORE DELETE ON po FOR EACH ROW EXECUTE FUNCTION po_guard_delete();
+DROP TRIGGER IF EXISTS t_po_guard_insert ON po;
+CREATE TRIGGER t_po_guard_insert BEFORE INSERT ON po FOR EACH ROW EXECUTE FUNCTION po_guard_insert();
 DROP TRIGGER IF EXISTS t_po_line_guard ON po_line;
 CREATE TRIGGER t_po_line_guard BEFORE INSERT OR UPDATE OR DELETE ON po_line
     FOR EACH ROW EXECUTE FUNCTION po_guard_children();
