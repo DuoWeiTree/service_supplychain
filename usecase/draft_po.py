@@ -123,6 +123,9 @@ def update_draft(po_id: int, body: dict, actor: str) -> int:
             raise Conflict(409, "stale_draft", "草稿已被别人改过，请刷新后再改", po_id=po_id,
                            current_version=po["draft_version"], got=body.get("draft_version"))
         before = repo.source_line_ids(cur, po_id)
+        incoming = {s["line_id"] for ln in lines for s in ln["sources"]}
+        # 被换掉的旧来源也要锁：否则并发提交可在 line_qty 与事件插入之间改它的状态
+        repo.lock_plan_lines(cur, sorted(set(before) | incoming))
         repo.replace_lines(cur, po_id, [])           # 先清，再按新内容判量（不和自己比）
         line_ids = _check_quantities(cur, lines, exclude_po=po_id)
         version = repo.update_po_header(cur, po_id, header)

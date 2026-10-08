@@ -104,14 +104,159 @@ def test_duplicate_sku_wid_lines_rejected(client, seed, world):
 
 
 def test_concurrent_drafts_cannot_both_take_the_same_quantity(client, seed, world):
-    """Review Focus #1：两个人同时组同一条记录，只能一个成功。"""
+    """Review Focus #1：两个人同时组同一条记录，只能一个成功。
+
+    ★ 断言输家的 body：应用层的行锁让它读到赢家已提交的 used=13 并点名 over_total；
+      没有锁时两边都读到 used=0，只能被库层兜底拦下（hint 带「并发组单」，numbers 不同）。
+    """
     results = []
 
     def go():
-        results.append(client.post("/v1/purchase-orders", json=body(seed, world, units=13),
-                                   headers=H(seed.actor)).status_code)
+        r = client.post("/v1/purchase-orders", json=body(seed, world, units=13), headers=H(seed.actor))
+        results.append((r.status_code, r.json()))
 
     ts = [threading.Thread(target=go) for _ in range(2)]
     [t.start() for t in ts]
     [t.join() for t in ts]
-    assert sorted(results) == [201, 409]
+    assert sorted(st for st, _ in results) == [201, 409], results
+    loser = next(j for st, j in results if st == 409)
+    assert loser["error"] == "over_total"
+    assert (loser["used"], loser["requested"], loser["total"]) == (13, 13, 24)
+    assert "并发组单" not in loser["hint"]
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT count(*) FROM po WHERE discarded_at IS NULL")
+        assert cur.fetchone()[0] == 1
+    assert line_state(world) == "已提交"
+
+
+# ---- 以下守护既有行为 ----
+
+def mk_other():
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("INSERT INTO seller (seller_id, name, market, has_fba, platform, refreshed_at)"
+                    " VALUES ('OTHER','o','US',true,'amazon',now()) ON CONFLICT DO NOTHING")
+
+
+def full_body(seed, lid, sku=None, version=None):
+    """A 店 13 + OTHER 11 = 24，正好填满。"""
+    b = body(seed, lid, units=13)
+    b["lines"][0]["units"] = 24
+    b["lines"][0]["sources"].append({"line_id": lid, "seller_id": "OTHER", "units": 11})
+    if sku:
+        b["lines"][0]["sku"] = sku
+    if version is not None:
+        b["draft_version"] = version
+    return b
+
+
+def mk_draft(client, seed, b):
+    r = client.post("/v1/purchase-orders", json=b, headers=H(seed.actor))
+    assert r.status_code == 201, r.text
+    return r.json()["po_id"]
+
+
+def sql(q, *a):
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute(q, a)
+        return cur.fetchall() if cur.description else None
+
+
+def place(po_id):
+    sql("UPDATE po SET order_sn='FAKE-1', placed_mode='fake', placed_at=now() WHERE po_id=%s", po_id)
+    sql("INSERT INTO po_event (po_id, from_state, to_state, actor, src)"
+        " VALUES (%s,'草稿','已下单','alice','test')", po_id)
+
+
+def mk_call(po_id, outcome, side="irreversible"):
+    sql("INSERT INTO erp_call (endpoint, side_effect, mode, po_id, actor, request, outcome)"
+        " VALUES ('x', %s, 'fake', %s, 'alice', '{}'::jsonb, %s)", side, po_id, outcome)
+
+
+def test_delete_after_erp_call_is_soft_discard(client, seed, world):
+    mk_other()
+    po_id = mk_draft(client, seed, full_body(seed, world))
+    assert line_state(world) == "已确认"
+    mk_call(po_id, "ok")
+    assert client.delete(f"/v1/purchase-orders/{po_id}", headers=H(seed.actor)).status_code == 204
+    assert sql("SELECT discarded_at IS NOT NULL FROM po WHERE po_id=%s", po_id) == [(True,)]
+    assert client.get(f"/v1/purchase-orders/{po_id}").json()["lines"] == []
+    assert line_state(world) == "已提交"
+    assert sql("SELECT count(*) FROM erp_call WHERE po_id=%s", po_id) == [(1,)]
+    r = client.delete(f"/v1/purchase-orders/{po_id}", headers=H(seed.actor))
+    assert r.status_code == 409 and r.json()["error"] == "po_discarded"
+    ids = [p["po_id"] for p in client.get("/v1/purchase-orders").json()["purchase_orders"]]
+    assert po_id not in ids
+
+
+@pytest.mark.parametrize("setup, error", [
+    (place, "po_frozen"),
+    (lambda po: mk_call(po, "in_flight"), "po_placing"),
+    (lambda po: sql("INSERT INTO po_attention (po_id, kind) VALUES (%s,'needs_verify')", po), "needs_verify"),
+])
+def test_put_and_delete_refused_when_not_editable(client, seed, world, setup, error):
+    po_id = mk_draft(client, seed, body(seed, world))
+    setup(po_id)
+    r = client.put(f"/v1/purchase-orders/{po_id}", json=body(seed, world, units=5, version=1),
+                   headers=H(seed.actor))
+    assert (r.status_code, r.json()["error"]) == (409, error)
+    r = client.delete(f"/v1/purchase-orders/{po_id}", headers=H(seed.actor))
+    assert (r.status_code, r.json()["error"]) == (409, error)
+
+
+def test_unknown_po_and_unknown_line_are_404(client, seed, world):
+    h = H(seed.actor)
+    for r in (client.get("/v1/purchase-orders/999999"),
+              client.put("/v1/purchase-orders/999999", json=body(seed, world, version=1), headers=h),
+              client.delete("/v1/purchase-orders/999999", headers=h)):
+        assert r.status_code == 404 and r.json()["error"] == "po_not_found"
+    r = client.post("/v1/purchase-orders", json=body(seed, 999999), headers=h)
+    assert r.status_code == 404 and r.json()["error"] == "line_not_found"
+
+
+def test_withdrawn_line_is_not_orderable(client, seed, world):
+    from tests.helpers import advance
+    with pg_conn() as c, c.cursor() as cur:
+        advance(cur, world, "已撤销", actor=seed.actor)
+    r = client.post("/v1/purchase-orders", json=body(seed, world), headers=H(seed.actor))
+    assert r.status_code == 409 and r.json()["error"] == "line_not_orderable"
+    assert r.json()["state"] == "已撤销"
+
+
+def test_over_total_names_total_used_requested(client, seed, world):
+    mk_other()
+    mk_draft(client, seed, full_body(seed, world))
+    r = client.post("/v1/purchase-orders", json=body(seed, world, units=1), headers=H(seed.actor))
+    assert r.status_code == 409 and r.json()["error"] == "over_total"
+    assert (r.json()["total"], r.json()["used"], r.json()["requested"]) == (24, 24, 1)
+
+
+def test_missing_header_field_is_named(client, seed, world):
+    b = body(seed, world)
+    del b["purchaser_id"]
+    r = client.post("/v1/purchase-orders", json=b, headers=H(seed.actor))
+    assert r.status_code == 400 and r.json()["error"] == "missing_required"
+    assert r.json()["missing"] == ["purchaser_id"]
+
+
+def test_confirm_token_changes_after_put(client, seed, world):
+    po_id = mk_draft(client, seed, body(seed, world))
+    t1 = client.get(f"/v1/purchase-orders/{po_id}").json()["confirm_token"]
+    assert client.put(f"/v1/purchase-orders/{po_id}", json=body(seed, world, units=10, version=1),
+                      headers=H(seed.actor)).status_code == 200
+    assert client.get(f"/v1/purchase-orders/{po_id}").json()["confirm_token"] != t1
+
+
+def test_put_moving_source_between_lines_rederives_both(client, seed, world):
+    mk_other()
+    with pg_conn() as c, c.cursor() as cur:
+        _, lid_b = mint(cur, seed.actor, seed.sku_b, total=24)
+        cur.execute("UPDATE plan_line SET demand_by_seller=%s::jsonb WHERE line_id=%s",
+                    (json.dumps({seed.seller_a: {"units": 12, "basis": "human"},
+                                 "OTHER": {"units": 11, "basis": "human"}}), lid_b))
+    po_id = mk_draft(client, seed, full_body(seed, world))
+    assert line_state(world) == "已确认"
+    moved = full_body(seed, lid_b, sku=seed.sku_b, version=1)
+    r = client.put(f"/v1/purchase-orders/{po_id}", json=moved, headers=H(seed.actor))
+    assert r.status_code == 200, r.text
+    assert line_state(world) == "已提交"
+    assert line_state(lid_b) == "已确认"
