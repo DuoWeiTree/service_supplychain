@@ -66,7 +66,7 @@ class FakeDriver:
                 "order_sn": order_sn, "custom_order_sn": p["custom_order_sn"],
                 "supplier_id": str(p["supplier_id"]), "status": 2,
                 "create_time": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),  # noqa: DTZ005 领星 create_time 是无时区本地时间串
-                "item_list": [{"item_id": str(9000 + n), "sku": it["sku"], "wid": it.get("wid", p.get("wid")),
+                "item_list": [{"id": str(9000 + n), "sku": it["sku"], "wid": it.get("wid", p.get("wid")),
                                "quantity_real": it["quantity_real"], "price": it["price"], "is_delete": 0}
                               for n, it in enumerate(p["product_list"], start=1)]}
         if outcome.startswith("unknown"):

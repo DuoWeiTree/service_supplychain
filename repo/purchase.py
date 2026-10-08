@@ -214,6 +214,7 @@ def stuck_calls(cur, minutes: int) -> list[tuple[int, int, str]]:
     return cur.fetchall()
 
 
+# ★ 明细行号在领星响应里叫 `id`（刀0 实测 2026-10-08），不是 `item_id`
 def insert_item_obs(cur, order_sn: str, items: list[dict], source: str, call_id: int | None) -> int:
     n = 0
     for it in items:
@@ -221,7 +222,7 @@ def insert_item_obs(cur, order_sn: str, items: list[dict], source: str, call_id:
             continue
         cur.execute("INSERT INTO po_item_obs (order_sn, lx_item_id, sku, wid, quantity_real, price, source,"
                     " source_captured_at, call_id) VALUES (%s, %s, %s, %s, %s, %s, %s, now(), %s)",
-                    (order_sn, str(it.get("item_id")) if it.get("item_id") is not None else None,
+                    (order_sn, str(it["id"]) if it.get("id") is not None else None,
                      it["sku"], it.get("wid"), int(it["quantity_real"]), it.get("price"), source, call_id))
         n += 1
     return n
@@ -231,7 +232,7 @@ def backfill_item_ids(cur, po_id: int, items: list[dict]) -> int:
     n = 0
     for it in items:
         cur.execute("UPDATE po_line SET lx_item_id=%s WHERE po_id=%s AND sku=%s AND wid IS NOT DISTINCT FROM %s"
-                    " AND lx_item_id IS NULL", (str(it.get("item_id")), po_id, it["sku"], it.get("wid")))
+                    " AND lx_item_id IS NULL", (str(it["id"]), po_id, it["sku"], it.get("wid")))
         n += cur.rowcount
     return n
 
