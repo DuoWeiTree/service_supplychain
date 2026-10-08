@@ -86,6 +86,11 @@ client_id    = "YOUR_PM_CLIENT_ID"
 client_secret = "YOUR_PM_CLIENT_SECRET"
 pm_base      = "https://pm.zestrade.com"
 
+[rbac]                         # ★ 权限判定（cf-access-rbac）。本服务不登录，只经 by-jwt 判权限（spec 2026-10-07 §12）
+api_url       = "https://rbac.bogoo.ai"
+client_id     = ""             # CF Access Service Token，向 RBAC 维护者申请
+client_secret = ""
+
 [erp]                          # ★ 领星网关（spec §6）。默认 fake；live 需 [auth] mode = "rbac"
 mode         = "fake"          # fake | live
 base_url     = "https://openapi.lingxing.com"

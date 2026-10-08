@@ -154,28 +154,39 @@
 
 ★ 用登记表不用前缀推断：`createPurchaseOrder` 在 `/erp/` 下却不可逆（文档矛盾，`07:351` vs `08:242`）。
 
-### 6.2 流程
+### 6.2 流程（★ 以 `usecase/place_po.py` 为准）
 
 ```
 GET  /v1/purchase-orders/{id}   → confirm_token（H-1）
 POST /v1/purchase-orders/{id}/place {confirm_token}
-  事务①：锁 po → 草稿？→ token 对？→ INSERT erp_call(in_flight) → COMMIT     ★ 不持锁跨 HTTP
-  HTTP createPurchaseOrder
-  事务②：按结果收尾
+  事务①：锁 po → 拒绝 已作废 / 已下单 / 在途 / 待核实 → 最近一次 create 为 ok·unknown 且无 confirmed_absent 也拒绝（补开待核实）
+         → draft_version 对？→ INSERT erp_call(in_flight) → COMMIT                  ★ 不持锁跨 HTTP
+  HTTP createPurchaseOrder（不持任何锁；in_flight 部分唯一索引就是锁）
+  事务②（★ 一个事务）：close_call + 按结果记账
 ```
 
-| 结果 | 判据 | 处置 |
-|---|---|---|
-| 成功 | `code=0` | 记 `order_sn` · 草稿→已下单 · 记录再评估 |
-| 业务拒绝 | `code≠0` | 原样回显，留草稿，不重试 |
-| 没发出去 | ★ 仅**建连阶段**：ConnectError / ConnectTimeout / DNS / 取 token 失败 | 可安全重试，留草稿 |
-| 结果未知 | 读超时 · ★ **请求发出后**的连接重置 / 协议错误 | 立即按 `custom_order_sn` 查 `PurchaseOrderList`：查到 → 采用；查不到 → 「待人工核实」，**不自动重试** |
+| 结果 | 判据 | 事务②（原子） | 之后 |
+|---|---|---|---|
+| 成功 | `ok` 且认得出 `order_sn` | close_call + 记已下单（`po_event`）+ 重判记录状态 | 读回（尽力而为，失败只 WARN）→ 落地首检（§11 G1） |
+| 业务拒绝 | `rejected`（`code≠0`，或 4xx 无 code） | 仅 close_call | 原样回显，留草稿，不重试 |
+| 没发出去 | `not_sent`：★ 仅**建连阶段**失败（含代理 CONNECT） | 仅 close_call | 可安全重试，留草稿 |
+| 结果未知 | `unknown`：读超时 · 请求发出后的连接重置 / 协议错误 · 5xx · 2xx 读不出 `code`；或 `ok` 却认不出 `order_sn`；或驱动意外抛异常 | close_call + **开 `needs_verify`**（detail 冻结） | 按 `custom_order_sn` 查重：查到 → 记已下单 + 收待核实；其余 → 保持待核实，**不自动重试** |
 
-「待人工核实」：界面给「重新核对」；核对确认不存在且人确认后才出现「重新下单」（新 `erp_call`，`retry_of` 串起）。
+★ **「已发出但没记账」与 close_call 同一事务落库**：若分开，两步之间进程死掉，这件事就没人记得。
+原子化后只剩 `in_flight` 一种半成品，由 §6.3 收。
+
+**查重口径**：`PurchaseOrderList` 无 `custom_order_sn` 过滤，按**开单那次 create 调用的 `started_at`** 日期 ±1 天取（`search_field_time=create_time`），客户端按幂等键筛。
+★ **查询失败 / 结果被截断（`total` > 已取条数）永远不算「查无」** —— 查不了不等于没有。
+已记账的单若查到**另一张**同幂等键的真单 → 不替人选，开 `landed_mismatch`。
+
+「待人工核实」：界面给「重新核对」；★ **最近一次 create 为 `ok` / `unknown` 的草稿，再次下单必须先有人 `confirmed_absent`**（§6.6）；
+`not_sent` / `rejected` 的草稿可直接重下。重下是新 `erp_call`，`retry_of` 串起。
 
 ### 6.3 断点续跑
 
-启动钩子 + 回读作业扫 in_flight 超过 V5 分钟的 `erp_call` → 按幂等键查重 → 补记已下单或转待人工核实（`CLAUDE.md` 出站 #3）。
+启动钩子 `recover_stuck`（`CLAUDE.md` 出站 #3）：① 扫 `in_flight` 超过 V5 分钟的不可逆 `erp_call` → close 为 `unknown`、开待核实、按幂等键查重；
+② 最近一次 create 为 `ok/unknown` 却没记账也没待核实的草稿 → 补开待核实、查重。
+★ 恢复动作记在**原下单人** `actor` 名下（`actor` 表里没有「系统」，不编一个），事件 `src=recover:<call_id>` 可分辨；一条失败只记 ERROR、不拖累其余。全程不自动重试 `createPurchaseOrder`。
 
 ### 6.4 fake / live
 
@@ -213,7 +224,8 @@ erp op= host= path= idem= ms= outcome= http= lx_code= lx_msg= cause=<__cause__ �
 10:01:33  系统按 SCM-PO-123 查 PurchaseOrderList · 耗时 0.8 s · 未找到（领星列表截至 10:01:33）
 ```
 
-顶部一句**大白话结论**，分「已知 / 未知」：
+顶部一句**大白话结论**，分「已知 / 未知」。★ **`po_attention.detail` 开立即冻结，只存事实**（`create_call_id` · `create_outcome` · `create_cause` · `request_confirmed_sent` · `custom_order_sn` · `opened_by`）；
+「已知」由时间线从 `erp_call` **实时推导**（请求是否确认发出 + create 的结果与原因），「未知」固定指**领星是否已建单**并附最近一次查重的 outcome / 时间 / 是否截断 —— 查重结果不写进 detail：
 
 ```
 已知：请求已发到领星，30 秒内没有回音；随后按 SCM-PO-123 查询，领星里暂未找到。
@@ -229,7 +241,7 @@ erp op= host= path= idem= ms= outcome= http= lx_code= lx_msg= cause=<__cause__ �
 | 重新核对 | — | 再查一次 `PurchaseOrderList`，结果追加进时间线 |
 | 去领星查 | — | 给出照着搜的条件：幂等键 · 供应商 · 货号清单 · 时间窗 |
 | 登记「领星已有此单」 | 填 `order_sn` | ★ 系统先用只读接口读回该单，核对 幂等键 / 供应商 / 明细（同 `v_check_po_landed`），**对上才接受** → 转已下单 |
-| 确认「领星无此单」 | 必填理由 | 解锁「重新下单」（新 `erp_call`，`retry_of` 串起）或「删除草稿」 |
+| 确认「领星无此单」 | 必填理由；无调用在途（否则 409 `lookup_in_progress`） | 记 `confirmed_absent`，解锁「重新下单」（新 `erp_call`，`retry_of` 串起）或「删除草稿」。★ 这是 `ok/unknown` 之后重下单的**唯一**放行条件 |
 
 处理中的单：改 / 删 / 下单 → 409 `needs_verify`（回显时间线链接）。
 
@@ -489,3 +501,19 @@ erp op= host= path= idem= ms= outcome= http= lx_code= lx_msg= cause=<__cause__ �
 | F2 | ★ 领星 OpenAPI 有 **IP 白名单**：必须经固定 IP 的 Squid 代理（HTTP CONNECT + Basic Auth）出站（出处 `/home/fido/work/2026/tools/nodejs/commerce/lingxing_erp/INDEX.md:32-45`）。凭证与代理 2026-10-07 复制进 `config.toml [erp]`（git-ignored）。live 缺代理 → 启动失败；经代理时 connect() 阶段失败仍归 not_sent，cause 点名代理地址 |
 | R1 | `rbac` 侧不校验 `aud`（`src/lib/jwt.ts:154-162`，与其 `docs/架构设计.md:492` 矛盾）：同一 team 下任一 Access 应用的 JWT 都能换到身份。不是本服务能修的，登记风险 |
 | R2 | RBAC 无主动失效：撤权后最多 5 分钟仍有效。对 ⛔ `place:scm-po` 可在下单前**绕过缓存**再查一次 —— 设计取值 V12，建议「是」 |
+
+---
+
+## 13. 实施中的裁定（M1，2026-10-07）
+
+> 台账原文在 `.superpowers/sdd/2026-10-07-purchase-order-m1/` 的 ledger；这里只登记**改变了设计**的几条，论证见各节。
+
+| # | 裁定 | 落点 |
+|---|---|---|
+| 1 | **锁模式 `FOR NO KEY UPDATE`**（不是 `FOR UPDATE`）：提交时检查锁 `plan_line`，`FOR UPDATE` 与并发事务经 `po_source_map` 外键持有的 `KEY SHARE` 冲突，两个提交者互等；`NO KEY UPDATE` 与 `KEY SHARE` 兼容且仍按记录串行。应用层 `lock_plan_lines` 同模式 | `012` `assert_line_po_qty` · `03` §4.0 |
+| 2 | **恢复动作的 actor = 原下单人**：库里无 system actor（`plan_line_event_actor_fk`），M1 不加种子；事件 `src=recover:<call_id>` 区分；M2 接 RBAC 时再定系统身份 | §6.3 |
+| 3 | **模拟接口门控**：仅 `[erp] mode=fake` 且 `[auth] mode=dev`，否则 403 `simulation_disabled`；测试配置钉死这两项，免得本机切 live 后测试经真代理打领星建真单 | `08` §1.2 |
+| 4 | **落地核对三态**：`checked` / `read_outcome` / `read_cause` / `problems`。读回不成 → `checked=false`，不开 `landed_mismatch`、不拿旧观测冒充「已核对」；`not_observed` 由 `v_check_po_landed` 如实反映 | `07` §2 |
+| 5 | **settle 原子化**：close_call 与「记已下单」/「开待核实」同一事务（§6.2）；`needs_verify.detail` 冻结为事实、时间线实时推导已知 / 未知（§6.6） | §6.2 §6.6 |
+| 6 | **手动推进拒绝推导态**：`已确认 / 已下单 / 准备排货` → 422 `derived_state`，`allowed[]` 过滤它们；错误码优先级 404 → `unknown_state` → `terminal_state` → `derived_state` → `illegal_transition`（对已撤销记录说「由量推导」不真实） | `04` §1.2 |
+| 7 | 试过下单（有 `erp_call`）的草稿被删 → **软作废**（`discarded_at`），单头留档、释放额度；对已作废草稿的 place / 登记 → 409 `po_discarded` | `03` §4.0 |
