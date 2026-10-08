@@ -104,3 +104,13 @@ def prepared(client, seed, purchase=500, expected=120):
         _ok(client.put(f"/v1/plans/{pid}/purchase/{seed.sku_a}/2026-10",
                        json={"planned_units": purchase}, headers=H(seed.actor)))
     return pid
+
+
+def advance(cur, line_id, *states, actor, reason="test"):
+    """沿白名单边把记录推到目标状态；每一步都是一条真事件，非法边照样会撞外键。"""
+    cur.execute("SELECT state FROM plan_line WHERE line_id = %s", (line_id,))
+    frm = cur.fetchone()[0]
+    for to in states:
+        cur.execute("INSERT INTO plan_line_event (line_id, from_state, to_state, actor, reason, src)"
+                    " VALUES (%s, %s, %s, %s, %s, 'test')", (line_id, frm, to, actor, reason))
+        frm = to

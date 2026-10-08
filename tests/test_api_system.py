@@ -71,7 +71,7 @@ def test_readiness_says_erp_is_not_implemented(client, seed):
     """★ 空实现会让「该做没做」和「本来就不用做」长得一样（规则五）。"""
     body = client.get("/v1/readiness", headers={"x-actor": seed.actor}).json()
     assert body["erp"] == "not_implemented"
-    assert body["migrations"][-1].startswith("00")
+    assert body["migrations"][-1].startswith(("00", "01"))
     assert len(body["mirrors"]) == 4
 
 

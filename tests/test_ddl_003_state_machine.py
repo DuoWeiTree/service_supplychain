@@ -22,6 +22,9 @@ WHITELIST = [
     ("准备排货", "已排货", "forward", False),
     ("已排货", "已完结", "forward", False),
     ("已确认", "已提交", "back", False),
+    # PB-D5：采购单作废的退回边（010 追加）
+    ("已下单", "已确认", "back", False),
+    ("已下单", "已提交", "back", False),
     ("已提交", "已撤销", "cancel", True),
     ("已确认", "已撤销", "cancel", True),
     ("已下单", "已撤销", "cancel", True),
@@ -39,10 +42,12 @@ def test_t21_whitelist_matches_the_document_row_by_row(wipe):
 
 
 def test_only_one_back_edge_exists(wipe):
-    """★ 04:800：back 只有一行。多一行就要重新论证「状态只前进」还成不成立。"""
+    """★ 04:800：back 多一行就要重新论证「状态只前进」还成不成立。
+    PB-D5 经论证追加两条（已下单 → 已确认/已提交，采购单作废）。"""
     with pg_conn() as c, c.cursor() as cur:
         cur.execute("SELECT from_state, to_state FROM plan_line_transition WHERE kind = 'back'")
-        assert cur.fetchall() == [("已确认", "已提交")]
+        assert sorted(cur.fetchall()) == sorted([
+            ("已确认", "已提交"), ("已下单", "已确认"), ("已下单", "已提交")])  # PB-D5
 
 
 def test_terminal_states_never_appear_as_from_state(wipe):
