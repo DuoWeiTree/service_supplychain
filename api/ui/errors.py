@@ -43,6 +43,15 @@ CONSTRAINT_ERRORS: dict[str, tuple[str, int, str]] = {
     "plan_demand_cell_claim_fk": ("msku_not_claimed", 409, "没认领就没有格子"),
     "plan_demand_cell_expected_nonneg": ("bad_units", 400, "期望销量不能为负"),
     "plan_purchase_cell_nonneg": ("bad_units", 400, "计划采购量不能为负"),
+    "po_over_total": ("over_total", 409, "超过记录总量（并发组单）"),
+    "po_over_seller_cap": ("over_seller_cap", 409, "超过该店上限（并发组单）"),
+    "po_no_seller_basis": ("no_seller_basis", 409, "期望销量为 0 或 unknown，不可组单"),
+    "po_unplanned_reason_required": ("unplanned_reason_required", 400, "超出计划来源的数量必须写理由"),
+    "po_line_below_sources": ("line_below_sources", 400, "明细数量少于来源合计"),
+    "po_line_one_per_sku_wid": ("duplicate_line", 400, "同一张单里同货号同仓只能一行"),
+    "po_frozen": ("po_frozen", 409, "采购单已下单，不可改"),
+    "po_source_line_not_orderable": ("line_not_orderable", 409, "只有 已提交/已确认 的记录能组单"),
+    "erp_call_one_in_flight_per_po": ("po_placing", 409, "下单请求进行中"),
 }
 
 
