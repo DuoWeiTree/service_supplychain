@@ -85,3 +85,21 @@ token_url    = "https://auth.zestrade.com/realms/sso/protocol/openid-connect/tok
 client_id    = "YOUR_PM_CLIENT_ID"
 client_secret = "YOUR_PM_CLIENT_SECRET"
 pm_base      = "https://pm.zestrade.com"
+
+[erp]                          # ★ 领星网关（spec §6）。默认 fake；live 需 [auth] mode = "rbac"
+mode         = "fake"          # fake | live
+base_url     = "https://openapi.lingxing.com"
+app_id       = ""
+app_secret   = ""
+timeout_s    = 30              # 设计取值 V6 · 未实测
+stale_in_flight_minutes = 10   # 设计取值 V5 · 未实测
+confirm_salt = ""              # live 必填；H-1 confirm_token 的盐
+user_agent   = "service_supplychain/0.1"
+# ★ 领星 IP 白名单：必须经固定 IP 代理（凭证见 /home/fido/work/2026/tools/config/services.toml [proxies.*]）
+proxy_host     = ""
+proxy_port     = 0
+proxy_user     = ""
+proxy_password = ""
+
+[auth]
+mode = "dev"                   # dev | rbac（生产必须 rbac，spec §12）

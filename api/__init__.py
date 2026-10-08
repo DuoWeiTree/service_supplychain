@@ -194,8 +194,27 @@ def _database_unavailable(exc: psycopg2.Error) -> ApiError | None:
                     {"target": target, "err_type": type(exc).__name__})
 
 
+def check_outbound_config() -> None:
+    """★ 配置类错误往启动钩子放（全局规范第 4 条）。故意不兜异常：配错就起不来。"""
+    e, a = config_module.erp(), config_module.auth()
+    if e["mode"] not in ("fake", "live"):
+        raise RuntimeError(f"[erp] mode 只能是 fake|live，得到 {e['mode']!r}")
+    if a["mode"] not in ("dev", "rbac"):
+        raise RuntimeError(f"[auth] mode 只能是 dev|rbac，得到 {a['mode']!r}")
+    if e["mode"] == "live":
+        if a["mode"] == "dev":
+            raise RuntimeError("[erp] mode=live 而 [auth] mode=dev：不可逆操作必须有主（spec §12.2）")
+        missing = [k for k in ("app_id", "app_secret", "proxy_host") if not e[k]]   # ★ 无代理 = 被 IP 白名单拒
+        if e["confirm_salt"] in ("", config_module._ERP_DEFAULTS["confirm_salt"]):
+            missing.append("confirm_salt（空或仍是开发默认值）")
+        if missing:
+            raise RuntimeError(f"[erp] mode=live 缺配置：{missing}")
+    log.warning("startup erp mode=%s host=%s auth mode=%s", e["mode"], e["base_url"], a["mode"])
+
+
 @contextlib.asynccontextmanager
 async def _lifespan(app: FastAPI):
+    check_outbound_config()
     # ★ FastAPI 0.141 移除了 add_event_handler（曾经只是 deprecated）——
     #   lifespan 是现在唯一的启动钩子入口，行为等价：serve 第一个请求前跑完。
     # ★ 取数源的装配已经改成「每请求一次」（终审 C-1/C-2/C-3），于是

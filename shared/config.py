@@ -112,3 +112,35 @@ def pm_zestrade() -> dict:
             f"config.toml [pm_zestrade] 缺字段 {missing}——"
             f"需要 {list(_PM_ZESTRADE_FIELDS)} 四项都非空")
     return {k: section[k] for k in _PM_ZESTRADE_FIELDS}
+
+
+#: ★ 默认 fake：任何一次漏配都不能变成「对领星建真单」（spec §6.4）。
+#: ★ 设计取值（spec §10.2）：timeout_s=30（V6）· stale_in_flight_minutes=10（V5）。
+_ERP_DEFAULTS = {
+    "mode": "fake",
+    "base_url": "https://openapi.lingxing.com",
+    "app_id": "",
+    "app_secret": "",
+    "timeout_s": 30,
+    "stale_in_flight_minutes": 10,
+    "confirm_salt": "dev-only-salt",
+    "user_agent": "service_supplychain/0.1",
+    # ★ 领星有 IP 白名单：生产与开发都必须经固定 IP 的 Squid 代理（HTTP CONNECT + Basic Auth）。
+    #   出处：/home/fido/work/2026/tools/nodejs/commerce/lingxing_erp/INDEX.md:32-45
+    "proxy_host": "",
+    "proxy_port": 0,
+    "proxy_user": "",
+    "proxy_password": "",
+}
+
+
+def erp() -> dict:
+    return {**_ERP_DEFAULTS, **_cfg().get("erp", {})}
+
+
+#: ★ 生产必须 rbac（spec §12，D11）。dev = 开发身份，留痕可伪造。
+_AUTH_DEFAULTS = {"mode": "dev"}
+
+
+def auth() -> dict:
+    return {**_AUTH_DEFAULTS, **_cfg().get("auth", {})}

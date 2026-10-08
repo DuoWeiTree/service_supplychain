@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 #: 按 01 §7 的目录结构。api/ui 是子包，随 api 一起扫到。
-PACKAGES = ["api", "dim", "erp", "forecast", "jobs", "migrations", "rules", "shared"]
+PACKAGES = ["api", "dim", "erp", "forecast", "jobs", "migrations", "repo", "rules", "shared", "usecase"]
 
 DB_CLIENTS = {"psycopg2", "clickhouse_connect", "clickhouse_driver"}
 HTTP_CLIENTS = {"httpx", "requests", "urllib3", "aiohttp"}
@@ -177,3 +177,28 @@ def test_new_layer_dirs_bring_their_own_rules():
 def test_every_declared_package_exists():
     missing = [p for p in PACKAGES if not (ROOT / p / "__init__.py").exists()]
     assert not missing, f"01 §7 声明了但不存在的包：{missing}"
+
+
+def test_repo_takes_cursors_only():
+    """repo/ 只收 cursor：不开连接、不碰出站、不知道接口层（G-2）。"""
+    forbidden = ("shared.pg_client", "psycopg2", "api", "erp", "usecase")
+    bad = {str(p.relative_to(ROOT)): sorted(m for m in full_imports(p) if _hits(m, forbidden))
+           for p in sources("repo")}
+    bad = {k: v for k, v in bad.items() if v}
+    assert not bad, f"repo/ 越层：{bad}"
+
+
+def test_usecase_does_not_know_the_http_layer():
+    bad = {str(p.relative_to(ROOT)): sorted(m for m in full_imports(p) if _hits(m, ("api", "fastapi")))
+           for p in sources("usecase")}
+    bad = {k: v for k, v in bad.items() if v}
+    assert not bad, f"usecase/ 不许知道 api/：{bad}"
+
+
+def test_erp_knows_no_storage():
+    """L4 + L6：网关不碰库、不知道动作编排。erp_call 由 usecase/ 落。"""
+    forbidden = ("shared.pg_client", "psycopg2", "api", "repo", "usecase")
+    bad = {str(p.relative_to(ROOT)): sorted(m for m in full_imports(p) if _hits(m, forbidden))
+           for p in sources("erp")}
+    bad = {k: v for k, v in bad.items() if v}
+    assert not bad, f"erp/ 越层：{bad}"
