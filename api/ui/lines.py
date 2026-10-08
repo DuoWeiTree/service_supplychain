@@ -13,6 +13,8 @@ from api.ui.deps import (
     require_fresh_mirrors,
 )
 from api.ui.errors import ApiError
+from repo.purchase import seller_used
+from rules.purchase import NoSellerBasis, seller_caps
 from shared.pg_client import pg_conn, timed
 
 log = logging.getLogger("scm.api")
@@ -20,6 +22,7 @@ log = logging.getLogger("scm.api")
 router = APIRouter(dependencies=[Depends(require_fresh_mirrors)])
 
 TERMINAL = ("已完结", "已撤销")
+DERIVED_STATES = ("已确认", "已下单", "准备排货")
 
 
 def _allowed_next(cur, state: str) -> list[str]:
@@ -36,7 +39,7 @@ def _allowed_next(cur, state: str) -> list[str]:
 
 @router.get("/plan-lines")
 def list_lines(request: Request, who: str | None = Depends(actor_optional)):
-    declared(request, "plan_ids", "state", "sku", "category", "period", "group_by")
+    declared(request, "plan_ids", "state", "sku", "category", "period", "group_by", "orderable")
     q = request.query_params
     if q.get("category") or q.get("group_by") == "category":
         # ★ 品类镜像（sku_category / A-1）不在阶段 A 的表里。默默忽略这个参数，
@@ -78,6 +81,25 @@ def list_lines(request: Request, who: str | None = Depends(actor_optional)):
                       "period": r[4].strftime("%Y-%m"), "total_units": r[5],
                       "demand_at_submit": r[6], "demand_by_seller": r[7], "state": r[8]}
                      for r in cur.fetchall()]
+        ids = [r["line_id"] for r in candidates]
+        cur.execute("SELECT line_id, confirmed_units, ordered_units FROM v_plan_line_po_qty"
+                    " WHERE line_id = ANY(%s)", (ids,))
+        qty = {r[0]: (r[1], r[2]) for r in cur.fetchall()}
+        used = seller_used(cur, ids, None)
+    for r in candidates:
+        conf, ordd = qty.get(r["line_id"], (0, 0))
+        r["confirmed_units"], r["ordered_units"] = conf, ordd
+        r["remaining"] = r["total_units"] - conf
+        try:
+            caps = seller_caps(r["total_units"], r["demand_by_seller"])
+            r["blocked"] = None
+        except NoSellerBasis as e:
+            caps, r["blocked"] = {}, {"reason": "no_seller_basis", "sellers": e.sellers}
+        r["sellers"] = {
+            sid: {"expected": (v or {}).get("units"), "cap": caps.get(sid),
+                  "used": used.get((r["line_id"], sid), 0),
+                  "remaining": None if sid not in caps else caps[sid] - used.get((r["line_id"], sid), 0)}
+            for sid, v in r["demand_by_seller"].items()}
 
     # ★ 每个 filter 各自在候选集上报告自己丢了多少，而不是合并成一个匿名总数——
     #   一个数分不清是 state 丢的还是 period 丢的，人只能猜（对照 /v1/plans 的
@@ -93,6 +115,12 @@ def list_lines(request: Request, who: str | None = Depends(actor_optional)):
     if q.get("period"):
         excluded["period"] = sum(1 for r in candidates if r["period"] != q["period"])
         lines = [r for r in lines if r["period"] == q["period"]]
+    excluded["fully_confirmed"] = 0
+    if q.get("orderable") == "1":
+        excluded["state"] += sum(1 for r in lines if r["state"] not in ("已提交", "已确认"))
+        lines = [r for r in lines if r["state"] in ("已提交", "已确认")]
+        excluded["fully_confirmed"] = sum(1 for r in lines if r["remaining"] <= 0)
+        lines = [r for r in lines if r["remaining"] > 0]
     # ★ category 恒为 0：给了这个参数在函数开头就已经 400 了，走不到这里。
 
     groups: dict[str, dict] = {}
@@ -160,6 +188,10 @@ def move_line(line_id: int, body: dict, request: Request, who: str = Depends(act
     """
     declared(request)
     to_state = (body.get("to_state") or "").strip()
+    if to_state in DERIVED_STATES:
+        # ★ C1：状态事实驱动。这几个态由采购量 / 入库推导（spec §5），不许手推
+        raise ApiError(422, "derived_state", "这个状态由采购量推导，不能手动推进",
+                       {"line_id": line_id, "to": to_state})
     lid, from_state, new_state = _transition(line_id, to_state, (body.get("reason") or "").strip(),
                                              who, f"transition:{line_id}")
     log.info("op=move_line line_id=%s from=%s to=%s actor=%s", lid, from_state, new_state, who)

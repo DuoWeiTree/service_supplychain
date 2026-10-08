@@ -107,7 +107,8 @@ def test_criterion_5_the_back_edge_exists_and_terminal_states_are_sealed(client,
     cancelled = client.post(f"/v1/plan-lines/{line}/cancel", json={"reason": "封存它"},
                             headers=H(seed.actor))
     assert cancelled.status_code == 200 and cancelled.json()["state"] == "已撤销"
-    sealed = client.post(f"/v1/plan-lines/{line}/transition", json={"to_state": "已确认"},
+    # 目标取非派生态：已确认等手推会先被 422 derived_state（spec §5 / C1）拦下，测不到终态密封
+    sealed = client.post(f"/v1/plan-lines/{line}/transition", json={"to_state": "已提交"},
                          headers=H(seed.actor))
     assert sealed.status_code == 422 and sealed.json()["error"] == "terminal_state"
     assert sealed.json()["state"] == "已撤销" and sealed.json()["line_id"] == line

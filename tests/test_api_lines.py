@@ -115,7 +115,8 @@ def test_excluded_never_counts_rows_outside_plan_ids(client, seed):
     assert body["lines"] == []
     # 候选集只有 p1 那 1 行（已提交）；state=已撤销 把它整条丢掉——
     # p2 完全没进候选集，不该被算进任何一个桶
-    assert body["excluded"] == {"state": 1, "sku": 0, "category": 0, "period": 0}
+    assert body["excluded"] == {"state": 1, "sku": 0, "category": 0, "period": 0,
+                                "fully_confirmed": 0}
 
 
 def test_category_is_refused_loudly_not_ignored(client, seed):

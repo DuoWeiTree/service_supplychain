@@ -1,4 +1,6 @@
-from helpers import H, prepared
+from helpers import H, advance, prepared
+
+from shared.pg_client import pg_conn
 
 
 def test_plan_counts_return_the_full_set_even_where_stage_a_cannot_reach(client, seed):
@@ -30,9 +32,9 @@ def test_a_confirmed_plan_lands_in_its_own_bucket_not_only_in_progress(client, s
                        headers=H(seed.actor)).json()["lines"]
     assert lines, "没有铸出记录 —— 下面的断言会是空转的"
     for line in lines:
-        r = client.post(f"/v1/plan-lines/{line['line_id']}/transition",
-                        json={"to_state": "已确认"}, headers=H(seed.actor))
-        assert r.status_code == 200, r.text
+        # spec §5 / C1：手推「已确认」现为 422 derived_state，setup 改走白名单事件
+        with pg_conn() as c, c.cursor() as cur:
+            advance(cur, line["line_id"], "已确认", actor=seed.actor)
     counts = client.get("/v1/dashboard/plans", headers=H(seed.actor)).json()["counts"]
     assert counts["已确认"] == 1
     assert counts["已提交"] == 0 and counts["已提交未确认"] == 0
