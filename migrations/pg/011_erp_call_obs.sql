@@ -81,6 +81,12 @@ BEGIN
     IF NEW.resolved_at IS NULL OR NEW.resolution IS NULL OR NEW.resolved_by IS NULL THEN
         RAISE EXCEPTION '处理待处理必须同时给出 resolved_at / resolution / resolved_by';
     END IF;
+    -- 处理是唯一允许的 UPDATE，不能顺手改写「这条待处理是关于什么的」
+    IF (NEW.po_id, NEW.kind, NEW.opened_at, NEW.opened_by_call, NEW.detail)
+       IS DISTINCT FROM
+       (OLD.po_id, OLD.kind, OLD.opened_at, OLD.opened_by_call, OLD.detail) THEN
+        RAISE EXCEPTION '待处理 % 只能填处理结果，身份列不可改', OLD.attention_id;
+    END IF;
     RETURN NEW;
 END $$;
 DROP TRIGGER IF EXISTS t_po_attention_resolve_once ON po_attention;
