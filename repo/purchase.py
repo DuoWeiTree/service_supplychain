@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 
 
 def lock_plan_lines(cur, line_ids: list[int]) -> dict[int, dict]:
@@ -214,7 +215,17 @@ def stuck_calls(cur, minutes: int) -> list[tuple[int, int, str]]:
     return cur.fetchall()
 
 
-# ★ 明细行号在领星响应里叫 `id`（刀0 实测 2026-10-08），不是 `item_id`
+log = logging.getLogger("scm.repo.purchase")
+
+
+def _lx_item_id(it: dict) -> str | None:
+    """★ 领星响应里明细行号叫 `id`（刀0 实测 2026-10-08）；`item_id` 是 CH 来源观测的键（M3）。"""
+    v = it.get("id")
+    if v is None:
+        v = it.get("item_id")
+    return None if v is None else str(v)
+
+
 def insert_item_obs(cur, order_sn: str, items: list[dict], source: str, call_id: int | None) -> int:
     n = 0
     for it in items:
@@ -222,18 +233,24 @@ def insert_item_obs(cur, order_sn: str, items: list[dict], source: str, call_id:
             continue
         cur.execute("INSERT INTO po_item_obs (order_sn, lx_item_id, sku, wid, quantity_real, price, source,"
                     " source_captured_at, call_id) VALUES (%s, %s, %s, %s, %s, %s, %s, now(), %s)",
-                    (order_sn, str(it["id"]) if it.get("id") is not None else None,
+                    (order_sn, _lx_item_id(it),
                      it["sku"], it.get("wid"), int(it["quantity_real"]), it.get("price"), source, call_id))
         n += 1
     return n
 
 
 def backfill_item_ids(cur, po_id: int, items: list[dict]) -> int:
-    n = 0
+    n = skipped = 0
     for it in items:
+        lx_id = _lx_item_id(it)
+        if lx_id is None:
+            skipped += 1
+            continue
         cur.execute("UPDATE po_line SET lx_item_id=%s WHERE po_id=%s AND sku=%s AND wid IS NOT DISTINCT FROM %s"
-                    " AND lx_item_id IS NULL", (str(it["id"]), po_id, it["sku"], it.get("wid")))
+                    " AND lx_item_id IS NULL", (lx_id, po_id, it["sku"], it.get("wid")))
         n += cur.rowcount
+    if skipped:
+        log.warning("op=backfill_item_ids po_id=%s skipped_no_id=%s of=%s", po_id, skipped, len(items))
     return n
 
 
