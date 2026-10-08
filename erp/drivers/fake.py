@@ -31,12 +31,17 @@ class FakeDriver:
 
     def mutate_item(self, order_sn: str, sku: str, quantity_real=None, price=None) -> None:
         """模拟领星侧变更单（实测 3 张）改了落下的数 —— 喂 G1 核对。"""
-        for it in self._orders[order_sn]["item_list"]:
-            if it["sku"] == sku:
-                if quantity_real is not None:
-                    it["quantity_real"] = quantity_real
-                if price is not None:
-                    it["price"] = price
+        order = self._orders.get(order_sn)
+        if order is None:
+            raise KeyError(f"fake 里没有 order_sn={order_sn!r}")
+        hit = [it for it in order["item_list"] if it["sku"] == sku]
+        if not hit:
+            raise KeyError(f"order_sn={order_sn!r} 里没有 sku={sku!r}")
+        for it in hit:
+            if quantity_real is not None:
+                it["quantity_real"] = quantity_real
+            if price is not None:
+                it["price"] = price
 
     def call(self, ep: Endpoint, params: dict) -> CallResult:
         with self._lock:
