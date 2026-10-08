@@ -73,7 +73,8 @@ def post_json(base_url: str, path: str, query: dict, body: dict, timeout_s: floa
 
     try:
         conn.connect()
-    except OSError as e:
+    except (OSError, http.client.HTTPException) as e:
+        # 代理对 CONNECT 回非 HTTP 状态行会抛 BadStatusLine/LineTooLong（非 OSError）；仍在 connect() 内 = 没发出去
         conn.close()
         return CallResult("not_sent", host, path, ms(), cause=cause_chain(e) + f" @ {where}")
     try:
@@ -89,12 +90,19 @@ def post_json(base_url: str, path: str, query: dict, body: dict, timeout_s: floa
     if resp.status >= 500:
         return CallResult("unknown", host, path, ms(), http_status=resp.status,
                           cause=f"http_{resp.status}: {raw[:200]!r}")
+    # ★ 2xx/3xx 却读不出 code = 不知道领星认没认；不可逆调用上 rejected 会放行重提 → 一律 unknown。
+    # 4xx 无 code 才是明确的拒绝。
+    sent_ok = resp.status < 400
     try:
         j = json.loads(raw or b"{}")
+        why = None if isinstance(j, dict) and j.get("code") is not None else \
+            f"no_code: {raw[:200]!r}"
     except ValueError:
-        return CallResult("rejected", host, path, ms(), http_status=resp.status,
-                          cause=f"non_json: {raw[:200]!r}")
-    code = str(j.get("code"))
+        j, why = None, f"non_json: {raw[:200]!r}"
+    if why:
+        return CallResult("unknown" if sent_ok else "rejected", host, path, ms(),
+                          http_status=resp.status, cause=why)
+    code = str(j["code"])
     return CallResult("ok" if code in ("0", "200") else "rejected", host, path, ms(),
                       http_status=resp.status, lx_code=code,
                       lx_msg=j.get("message") or j.get("msg"), body=j)

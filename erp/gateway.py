@@ -6,7 +6,7 @@ import logging
 from erp import endpoints
 from erp.drivers.fake import FAKE
 from erp.drivers.live import LiveDriver
-from erp.transport import CallResult
+from erp.transport import CallResult, cause_chain
 from shared.config import erp as erp_config
 
 log = logging.getLogger("scm.erp")
@@ -28,7 +28,13 @@ def redact(params: dict) -> dict:
 
 def call(name: str, params: dict) -> tuple[endpoints.Endpoint, CallResult]:
     ep = endpoints.get(name)
-    r = _driver().call(ep, params)
+    try:
+        r = _driver().call(ep, params)
+    except Exception as e:
+        # 驱动不该抛；抛了也不许无声（可能已发出请求，结果未知）
+        log.warning("erp op=%s mode=%s path=%s idem=%s outcome=exception cause=%s", name, mode(), ep.path,
+                    params.get(ep.idem_param) if ep.idem_param else None, cause_chain(e))
+        raise
     log.log(logging.INFO if r.outcome == "ok" else logging.WARNING,
             "erp op=%s mode=%s host=%s path=%s idem=%s ms=%s outcome=%s http=%s lx_code=%s lx_msg=%s cause=%s",
             name, mode(), r.host, r.path, params.get(ep.idem_param) if ep.idem_param else None,

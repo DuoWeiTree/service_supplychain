@@ -44,3 +44,24 @@ def test_fake_unknown_absent_is_not_findable():
 def test_redact_hides_secrets():
     assert gateway.redact({"access_token": "t", "sign": "s", "sku": "S1"}) == \
         {"access_token": "***", "sign": "***", "sku": "S1"}
+
+
+def test_fake_list_honours_scripted_outcomes():
+    for scripted, want in [("not_sent", "not_sent"), ("rejected", "rejected"),
+                           ("unknown_created", "unknown"), ("unknown_absent", "unknown")]:
+        FAKE.enqueue("purchase_order_list", scripted)
+        _, r = gateway.call("purchase_order_list", {})
+        assert r.outcome == want, scripted
+    _, r = gateway.call("purchase_order_list", {})
+    assert r.outcome == "ok"
+
+
+def test_unexpected_driver_exception_is_logged_then_reraised(monkeypatch, caplog):
+    class Boom:
+        def call(self, ep, params):
+            raise RuntimeError("boom")
+    monkeypatch.setattr(gateway, "_driver", lambda: Boom())
+    with caplog.at_level("WARNING", logger="scm.erp"), pytest.raises(RuntimeError):
+        gateway.call("create_purchase_order", _p())
+    msg = " ".join(r.getMessage() for r in caplog.records)
+    assert "outcome=exception" in msg and "SCM-PO-1" in msg and "RuntimeError" in msg

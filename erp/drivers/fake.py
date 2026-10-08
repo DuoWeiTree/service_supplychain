@@ -44,7 +44,7 @@ class FakeDriver:
             if ep.name == "create_purchase_order":
                 return self._create(ep, params, outcome)
             if ep.name == "purchase_order_list":
-                return self._list(ep, params)
+                return self._list(ep, params, outcome)
         raise NotImplementedError(f"fake driver 未实现 {ep.name}")
 
     def _create(self, ep: Endpoint, p: dict, outcome: str) -> CallResult:
@@ -69,7 +69,14 @@ class FakeDriver:
         return CallResult("ok", "fake", ep.path, 5, http_status=200, lx_code="0",
                           body={"code": 0, "data": {"order_sn": order_sn}})
 
-    def _list(self, ep: Endpoint, p: dict) -> CallResult:
+    def _list(self, ep: Endpoint, p: dict, outcome: str) -> CallResult:
+        if outcome == "not_sent":
+            return CallResult("not_sent", "fake", ep.path, 1, cause="fake: ConnectionRefusedError[errno=111]")
+        if outcome == "rejected":
+            return CallResult("rejected", "fake", ep.path, 1, http_status=200, lx_code="1001",
+                              lx_msg="fake: 查询被拒", body={"code": 1001, "message": "fake: 查询被拒"})
+        if outcome.startswith("unknown"):
+            return CallResult("unknown", "fake", ep.path, 30000, cause="fake: TimeoutError: timed out (read)")
         rows = list(self._orders.values())
         if p.get("order_sns"):
             wanted = set(str(p["order_sns"]).split(","))

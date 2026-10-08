@@ -98,3 +98,32 @@ def test_the_config_the_fixture_actually_wrote_says_fixture(business_db):
 
     # ★ 再经一次真正的读取路径：代码读到的也必须是 fixture，而不只是文件里写着。
     assert config_module.forecast()["source"] == "fixture"
+
+
+_LIVE_SRC = """
+[erp]
+mode = "live"
+base_url = "https://x.invalid"
+
+[auth]
+mode = "rbac"
+"""
+
+
+def test_erp_and_auth_are_pinned_to_fake_and_dev_even_if_source_says_live():
+    """★ 测试配置从真实 config.toml 生成：live 漏进来 = 测试带真凭证打领星（含不可逆建单）。"""
+    out = _parse(ct._pin_erp_auth(_LIVE_SRC))
+    assert out["erp"]["mode"] == "fake" and out["auth"]["mode"] == "dev"
+    assert out["erp"]["base_url"] == "https://x.invalid", "不该改动别的键"
+
+
+def test_erp_and_auth_pins_cover_missing_sections():
+    out = _parse(ct._pin_erp_auth('[business_pg]\nschema = "scm"\n'))
+    assert out["erp"]["mode"] == "fake" and out["auth"]["mode"] == "dev"
+
+
+def test_the_written_config_pins_erp_and_auth(business_db):
+    import os
+
+    written = tomllib.loads(Path(os.environ["JXD_SCM_CONFIG"]).read_text("utf-8"))
+    assert written["erp"]["mode"] == "fake" and written["auth"]["mode"] == "dev"

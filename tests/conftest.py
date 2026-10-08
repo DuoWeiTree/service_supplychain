@@ -114,6 +114,12 @@ def _pin_forecast_source(text: str) -> str:
     return _pin_section_keys(text, "[forecast]", _FORECAST_TEST_PINS)
 
 
+#: ★ 同理：领星网关与鉴权也钉死。live 漏进测试 = 带真凭证打领星（含不可逆建单）。
+def _pin_erp_auth(text: str) -> str:
+    text = _pin_section_keys(text, "[erp]", {"mode": '"fake"'})
+    return _pin_section_keys(text, "[auth]", {"mode": '"dev"'})
+
+
 def _disable_scheduler(text: str) -> str:
     """★ 测试固定 `[freshness]` 里 `_FRESHNESS_TEST_PINS` 这几个键为 false ——
     不这样，每个 `with TestClient(create_app())` 都会在 `_lifespan` 里碰外部
@@ -153,7 +159,7 @@ def business_db(tmp_path_factory):
     from shared import config as config_module
 
     cfg = tmp_path_factory.mktemp("jxd_scm") / "config.toml"
-    text = _pin_forecast_source(_disable_scheduler(_switch_schema(CONFIG_TOML.read_text("utf-8"))))
+    text = _pin_erp_auth(_pin_forecast_source(_disable_scheduler(_switch_schema(CONFIG_TOML.read_text("utf-8")))))
     cfg.write_text(text, encoding="utf-8")
     prev = os.environ.get("JXD_SCM_CONFIG")
     os.environ["JXD_SCM_CONFIG"] = str(cfg)

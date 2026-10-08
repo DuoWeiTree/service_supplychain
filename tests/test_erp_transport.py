@@ -93,3 +93,63 @@ def test_ok_and_user_agent_sent():
     r = post_json(base, "/x", {"q": 1}, {}, 2, "scm-test/1")
     _stop(srv)
     assert r.outcome == "ok" and r.body["data"]["order_sn"] == "PO1" and seen["ua"] == "scm-test/1"
+
+
+def _raw_server(reply: bytes):
+    """逐字节回包的本机 socket：http.server 发不出非 HTTP 的状态行。"""
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("127.0.0.1", 0)); s.listen(5)
+
+    def run():
+        while True:
+            try:
+                c, _ = s.accept()
+            except OSError:
+                return
+            c.settimeout(2)
+            try:
+                c.recv(65536)
+            except OSError:
+                pass
+            c.sendall(reply); c.close()
+    threading.Thread(target=run, daemon=True).start()
+    return s, s.getsockname()[1]
+
+
+def _http(body: bytes, status: bytes = b"200 OK") -> bytes:
+    return b"HTTP/1.1 " + status + b"\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body
+
+
+def _post_raw(reply: bytes):
+    s, port = _raw_server(reply)
+    try:
+        return post_json(f"http://127.0.0.1:{port}", "/x", {}, {}, 2, "t")
+    finally:
+        s.close()
+
+
+def test_2xx_without_usable_code_is_unknown_never_rejected():
+    """★ 不可逆调用上 rejected = 放行重提 = 可能重复建单。"""
+    for label, reply in [("empty", _http(b"")), ("html", _http(b"<html>gw</html>")),
+                         ("no code", _http(b'{"data":{"order_sn":"P1"}}')),
+                         ("list", _http(b"[1,2]")), ("string", _http(b'"x"')),
+                         ("bad utf8", _http(b"\xff\xfe"))]:
+        r = _post_raw(reply)
+        assert r.outcome == "unknown", label
+        assert r.lx_code is None and r.cause, label
+
+
+def test_non_json_4xx_stays_rejected():
+    r = _post_raw(_http(b"<html>", b"403 Forbidden"))
+    assert r.outcome == "rejected" and r.http_status == 403
+
+
+def test_proxy_answering_connect_with_garbage_is_not_sent():
+    s, port = _raw_server(b"SSH-2.0-OpenSSH\r\n")
+    try:
+        r = post_json("https://target.invalid", "/x", {}, {}, 2, "t",
+                      proxy={"host": "127.0.0.1", "port": port, "user": "u", "password": "p"})
+    finally:
+        s.close()
+    assert r.outcome == "not_sent" and f"via proxy 127.0.0.1:{port}" in r.cause
