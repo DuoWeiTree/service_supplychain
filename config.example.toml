@@ -86,7 +86,7 @@ client_id    = "YOUR_PM_CLIENT_ID"
 client_secret = "YOUR_PM_CLIENT_SECRET"
 pm_base      = "https://pm.zestrade.com"
 
-[rbac]                         # ★ 权限判定（cf-access-rbac）。本服务不登录，只经 by-jwt 判权限（spec 2026-10-07 §12）
+[rbac]                         # ★ 权限判定（cf-access-rbac）。本服务不登录，只经 by-jwt 判权限（spec 2026-10-07 §12）。M2 起读取；M1 未接线，填不填都不生效
 api_url       = "https://rbac.bogoo.ai"
 client_id     = ""             # CF Access Service Token，向 RBAC 维护者申请
 client_secret = ""
