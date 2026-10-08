@@ -22,16 +22,19 @@ def _ok(client):
 def test_plan_to_order_chain(client, seed):
     plan_id = prepared(client, seed)                    # 阶段 A：建计划 → 填两种量
     assert client.post(f"/v1/plans/{plan_id}/submit", headers=H(seed.actor)).status_code == 200
+    _ok(client)
     with pg_conn() as c, c.cursor() as cur:
         cur.execute("INSERT INTO supplier VALUES ('8085','01',now()) ON CONFLICT DO NOTHING")
     cands = client.get(f"/v1/plan-lines?plan_ids={plan_id}&orderable=1").json()["lines"]
     assert cands, "提交后应有可组单的记录"
     _ok(client)
 
-    line = next(c for c in cands if c["blocked"] is None)
+    line = next(cand for cand in cands if cand["blocked"] is None)
     sources = [{"line_id": line["line_id"], "seller_id": sid, "units": v["remaining"]}
                for sid, v in line["sellers"].items() if v["remaining"]]
+    assert len(sources) >= 2, sources                   # 两个店铺，按店余量真的被用到
     units = sum(s["units"] for s in sources)
+    assert units > 0
     body = {"supplier_id": "8085", "purchaser_id": 111, "opt_uid": 10925905, "qc_type": 2,
             "lines": [{"sku": line["sku"], "wid": seed.wid, "units": units, "price": "3.2",
                        "sources": sources}]}
@@ -43,8 +46,13 @@ def test_plan_to_order_chain(client, seed):
     FAKE.enqueue("create_purchase_order", "rejected")
     FAKE.enqueue("create_purchase_order", "unknown_created")
     tok = client.get(f"/v1/purchase-orders/{po_id}").json()["confirm_token"]
-    assert client.post(f"/v1/purchase-orders/{po_id}/place", json={"confirm_token": tok},
-                       headers=H(seed.actor)).json()["outcome"] == "rejected"
+    r0 = client.post(f"/v1/purchase-orders/{po_id}/place", json={"confirm_token": tok},
+                     headers=H(seed.actor))
+    assert r0.status_code == 200 and r0.json()["outcome"] == "rejected"
+    po = client.get(f"/v1/purchase-orders/{po_id}").json()
+    assert po["state"] == "草稿" and po["order_sn"] is None
+    assert client.get(f"/v1/plan-lines/{line['line_id']}/trace").json()["state"] == "已确认"
+    _ok(client)
     r = client.post(f"/v1/purchase-orders/{po_id}/place", json={"confirm_token": tok}, headers=H(seed.actor))
     assert r.json()["outcome"] == "placed" and r.json()["found_by"] == "lookup"
     _ok(client)
@@ -56,3 +64,6 @@ def test_plan_to_order_chain(client, seed):
     assert [a["outcome"] for a in tl["attempts"] if a["endpoint"] == "create_purchase_order"] == \
         ["rejected", "unknown"]
     assert client.get("/v1/attention").json()["count"] == 0
+    assert len(FAKE._orders) == 1                       # 领星侧只有一张，不看我们自己的日志
+    assert next(iter(FAKE._orders)) == t["purchase_orders"][0]["order_sn"]
+    _ok(client)
