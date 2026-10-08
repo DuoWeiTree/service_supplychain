@@ -56,8 +56,8 @@ def test_placing_requires_order_sn(po_world, seed):
 def test_placed_po_is_frozen(po_world, seed):
     with pg_conn() as c, c.cursor() as cur:
         po_id, _ = _po(cur, seed.actor, seed.wid)
-        cur.execute("INSERT INTO po_line (po_id, line_no, sku, wid, units, price)"
-                    " VALUES (%s, 1, %s, %s, 10, 1)", (po_id, seed.sku_a, seed.wid))
+        cur.execute("INSERT INTO po_line (po_id, line_no, sku, wid, units, price, unplanned_reason)"
+                    " VALUES (%s, 1, %s, %s, 10, 1, 't')", (po_id, seed.sku_a, seed.wid))
         cur.execute("UPDATE po SET order_sn='FAKE-1', placed_mode='fake', placed_at=now()"
                     " WHERE po_id=%s", (po_id,))
         cur.execute("INSERT INTO po_event (po_id, from_state, to_state, actor, src)"
@@ -92,8 +92,8 @@ def test_plan_line_has_new_back_edges(business_db):
 
 def _placed_po(cur, actor, sku, wid):
     po_id, _ = _po(cur, actor, wid)
-    cur.execute("INSERT INTO po_line (po_id, line_no, sku, wid, units, price)"
-                " VALUES (%s, 1, %s, %s, 10, 1)", (po_id, sku, wid))
+    cur.execute("INSERT INTO po_line (po_id, line_no, sku, wid, units, price, unplanned_reason)"
+                " VALUES (%s, 1, %s, %s, 10, 1, 't')", (po_id, sku, wid))
     cur.execute("UPDATE po SET order_sn='FAKE-2', placed_mode='fake', placed_at=now()"
                 " WHERE po_id=%s", (po_id,))
     cur.execute("INSERT INTO po_event (po_id, from_state, to_state, actor, src)"
@@ -116,8 +116,8 @@ def test_placed_po_cannot_be_hard_deleted(po_world, seed):
 def test_draft_po_delete_still_cascades(po_world, seed):
     with pg_conn() as c, c.cursor() as cur:
         po_id, _ = _po(cur, seed.actor, seed.wid)
-        cur.execute("INSERT INTO po_line (po_id, line_no, sku, wid, units, price)"
-                    " VALUES (%s, 1, %s, %s, 10, 1)", (po_id, seed.sku_a, seed.wid))
+        cur.execute("INSERT INTO po_line (po_id, line_no, sku, wid, units, price, unplanned_reason)"
+                    " VALUES (%s, 1, %s, %s, 10, 1, 't')", (po_id, seed.sku_a, seed.wid))
         cur.execute("DELETE FROM po WHERE po_id=%s", (po_id,))
         cur.execute("SELECT (SELECT count(*) FROM po_line WHERE po_id=%s),"
                     " (SELECT count(*) FROM po_event WHERE po_id=%s)", (po_id, po_id))
