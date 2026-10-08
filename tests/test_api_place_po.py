@@ -155,3 +155,240 @@ def test_placing_a_discarded_draft_is_po_discarded(client, seed, draft):
     r = _place(client, seed, po_id)
     assert r.status_code == 409 and r.json()["error"] == "po_discarded"
     assert [c[0] for c in _calls(po_id)].count("create_purchase_order") == 1
+
+
+# ---- fix round 1：下单后「发出过但没记账」的窗口 ----
+
+def _token(client, po_id):
+    return client.get(f"/v1/purchase-orders/{po_id}").json()["confirm_token"]
+
+
+def _creates(po_id):
+    return [c for c in _calls(po_id) if c[0] == "create_purchase_order"]
+
+
+def _attentions(po_id):
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT kind, resolution, detail FROM po_attention WHERE po_id=%s ORDER BY attention_id",
+                    (po_id,))
+        return cur.fetchall()
+
+
+def _insert_call_row(po_id, actor, outcome, age="1 hour"):
+    """直接造一条 create 调用现场。in_flight 以外的带 finished_at。"""
+    fin = "NULL" if outcome == "in_flight" else f"now() - interval '{age}' + interval '1 second'"
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("INSERT INTO erp_call (endpoint, side_effect, mode, po_id, idem_key, actor, request,"
+                    f" outcome, started_at, finished_at) VALUES ('create_purchase_order','irreversible','fake',"
+                    f" %s, %s, %s, '{{}}', %s, now() - interval '{age}', {fin}) RETURNING call_id",
+                    (po_id, f"SCM-PO-{po_id}", actor, outcome))
+        return cur.fetchone()[0]
+
+
+def test_second_click_during_lookup_is_refused(client, seed, draft, monkeypatch):
+    from erp import gateway
+    from usecase import place_po
+    from usecase.draft_po import Conflict
+    po_id, _ = draft
+    token = _token(client, po_id)
+    FAKE.enqueue("create_purchase_order", "unknown_absent")
+    real, inner = gateway.call, {}
+
+    def spy(name, params):
+        if name == "purchase_order_list" and not inner:
+            try:
+                place_po.place(po_id, token, seed.actor)     # 第二次点击落在查重窗口
+            except Conflict as e:
+                inner["err"] = e.error
+        return real(name, params)
+    monkeypatch.setattr(gateway, "call", spy)
+    place_po.place(po_id, token, seed.actor)
+    assert inner["err"] == "needs_verify"
+    assert len(_creates(po_id)) == 1
+
+
+def test_ok_txn_failure_leaves_in_flight_and_recovery_finds_order(client, seed, draft, monkeypatch):
+    """记账事务整体回滚 → 调用仍是 in_flight（挡住重下）；启动恢复按幂等键找回，不重下。"""
+    from usecase import place_po
+    po_id, lid = draft
+    token = _token(client, po_id)
+
+    def boom(*a, **k):
+        raise RuntimeError("die in settle txn")
+    monkeypatch.setattr(place_po.repo, "mark_placed", boom)
+    with pytest.raises(RuntimeError):
+        place_po.place(po_id, token, seed.actor)
+    monkeypatch.undo()
+    with pytest.raises(Exception) as ei:
+        place_po.place(po_id, token, seed.actor)
+    assert ei.value.error == "po_placing"
+    out = place_po.recover_stuck(0)
+    assert [o["outcome"] for o in out] == ["placed"]
+    assert len(_creates(po_id)) == 1 and _line_state(lid) == "已下单"
+
+
+def test_crash_after_close_unknown_is_covered_by_attention(client, seed, draft, monkeypatch):
+    """close_call 与待核实同事务：之后查重阶段崩溃，也不会留下可重下的窗口。"""
+    from usecase import place_po
+    po_id, _ = draft
+    token = _token(client, po_id)
+    FAKE.enqueue("create_purchase_order", "unknown_absent")
+
+    def boom(*a, **k):
+        raise RuntimeError("die in lookup")
+    monkeypatch.setattr(place_po, "lookup_and_settle", boom)
+    with pytest.raises(RuntimeError):
+        place_po.place(po_id, token, seed.actor)
+    monkeypatch.undo()
+    assert [a[0] for a in _attentions(po_id)] == ["needs_verify"]
+    r = _place(client, seed, po_id)
+    assert r.status_code == 409 and r.json()["error"] == "needs_verify"
+    assert len(_creates(po_id)) == 1
+
+
+def test_self_heal_refuses_and_opens_attention(client, seed, draft):
+    """旧数据 / 异常路径留下「create=unknown 却无待核实」的草稿：place 补开待核实再拒。"""
+    po_id, _ = draft
+    _insert_call_row(po_id, seed.actor, "unknown")
+    r = _place(client, seed, po_id)
+    assert r.status_code == 409 and r.json()["error"] == "needs_verify"
+    att = _attentions(po_id)
+    assert [a[0] for a in att] == ["needs_verify"] and att[0][2]["opened_by"] == "self_heal"
+    assert len(_creates(po_id)) == 1
+
+
+def test_confirmed_absent_later_than_the_call_allows_replace(client, seed, draft):
+    po_id, _ = draft
+    cid = _insert_call_row(po_id, seed.actor, "unknown", age="2 hours")
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("INSERT INTO po_attention (po_id, kind, opened_by_call) VALUES (%s,'needs_verify',%s)"
+                    " RETURNING attention_id", (po_id, cid))
+        aid = cur.fetchone()[0]
+        cur.execute("UPDATE po_attention SET resolved_at=now(), resolution='confirmed_absent', resolved_by=%s"
+                    " WHERE attention_id=%s", (seed.actor, aid))
+    assert _place(client, seed, po_id).json()["outcome"] == "placed"
+
+
+def test_recover_scans_unsettled_drafts(client, seed, draft):
+    from usecase import place_po
+    po_id, _ = draft
+    _insert_call_row(po_id, seed.actor, "unknown")
+    out = place_po.recover_stuck()
+    assert [o["outcome"] for o in out] == ["needs_verify"]
+    att = _attentions(po_id)
+    assert [a[0] for a in att] == ["needs_verify"] and att[0][2]["opened_by"] == "recover"
+
+
+@pytest.mark.parametrize("lookup_outcome", ["not_sent", "rejected", "unknown_absent"])
+def test_failed_lookup_is_not_absence(client, seed, draft, lookup_outcome):
+    po_id, lid = draft
+    FAKE.enqueue("create_purchase_order", "unknown_created")     # 领星其实建了单
+    FAKE.enqueue("purchase_order_list", lookup_outcome)          # 但查重本身失败
+    r = _place(client, seed, po_id)
+    assert r.json()["outcome"] == "needs_verify" and r.json()["lookup_outcome"] != "ok"
+    assert _line_state(lid) == "已确认"
+    assert _place(client, seed, po_id).json()["error"] == "needs_verify"
+    assert len(_creates(po_id)) == 1
+
+
+def test_truncated_lookup_keeps_needs_verify(client, seed, draft, monkeypatch):
+    import dataclasses
+
+    from erp import gateway
+    po_id, _ = draft
+    FAKE.enqueue("create_purchase_order", "unknown_absent")
+    real = gateway.call
+
+    def spy(name, params):
+        ep, r = real(name, params)
+        if name == "purchase_order_list":
+            r = dataclasses.replace(r, body={**r.body, "total": 999})
+        return ep, r
+    monkeypatch.setattr(gateway, "call", spy)
+    r = _place(client, seed, po_id).json()
+    assert r["outcome"] == "needs_verify" and r["truncated"] is True
+
+
+def test_ok_without_order_sn_goes_through_lookup(client, seed, draft, monkeypatch):
+    from usecase import place_po
+    monkeypatch.setattr(place_po, "extract_order_sn", lambda body: None)
+    po_id, lid = draft
+    r = _place(client, seed, po_id).json()
+    assert r["outcome"] == "placed" and r["found_by"] == "lookup"
+    assert _line_state(lid) == "已下单" and len(_creates(po_id)) == 1
+    assert [a[1] for a in _attentions(po_id)] == ["rechecked_found"]
+
+
+def test_concurrent_click_is_po_placing(client, seed, draft):
+    po_id, _ = draft
+    _insert_call_row(po_id, seed.actor, "in_flight", age="1 second")
+    r = _place(client, seed, po_id)
+    assert r.status_code == 409 and r.json()["error"] == "po_placing"
+
+
+def test_lookup_call_points_at_the_create_call(client, seed, draft):
+    po_id, _ = draft
+    FAKE.enqueue("create_purchase_order", "unknown_created")
+    _place(client, seed, po_id)
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT call_id FROM erp_call WHERE po_id=%s AND endpoint='create_purchase_order'", (po_id,))
+        create_id = cur.fetchone()[0]
+        cur.execute("SELECT retry_of FROM erp_call WHERE po_id=%s AND endpoint='purchase_order_list'"
+                    " ORDER BY call_id", (po_id,))
+        assert cur.fetchall()[0][0] == create_id
+
+
+def test_recover_with_order_absent_goes_needs_verify(client, seed, draft):
+    from usecase import place_po
+    po_id, lid = draft
+    cid = _insert_call_row(po_id, seed.actor, "in_flight")
+    out = place_po.recover_stuck()
+    assert [o["outcome"] for o in out] == ["needs_verify"] and out[0]["erp_call_id"] == cid
+    assert _line_state(lid) == "已确认"
+
+
+def test_fresh_in_flight_is_left_alone(client, seed, draft):
+    from usecase import place_po
+    po_id, _ = draft
+    _insert_call_row(po_id, seed.actor, "in_flight", age="1 second")
+    assert place_po.recover_stuck() == []
+    assert _calls(po_id)[-1][1] == "in_flight"
+
+
+def test_attention_detail_is_facts_only(client, seed, draft):
+    po_id, _ = draft
+    FAKE.enqueue("create_purchase_order", "unknown_absent")
+    _place(client, seed, po_id)
+    d = _attentions(po_id)[0][2]
+    assert set(d) == {"create_call_id", "create_outcome", "create_cause", "request_confirmed_sent",
+                      "custom_order_sn", "opened_by"}
+    assert d["create_outcome"] == "unknown" and d["request_confirmed_sent"] is True and d["opened_by"] == "place"
+    assert d["custom_order_sn"] == f"SCM-PO-{po_id}"
+
+
+def test_lookup_on_discarded_po_does_not_mark_placed(client, seed, draft):
+    from usecase import place_po
+    po_id, _ = draft
+    FAKE.enqueue("create_purchase_order", "unknown_created")
+    FAKE.enqueue("purchase_order_list", "not_sent")
+    _place(client, seed, po_id)
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("UPDATE po SET discarded_at=now(), discarded_by=%s WHERE po_id=%s", (seed.actor, po_id))
+    res = place_po.lookup_and_settle(po_id, seed.actor, None, "t")
+    assert res["outcome"] == "needs_verify"
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT state, order_sn FROM po WHERE po_id=%s", (po_id,))
+        assert cur.fetchone() == ("草稿", None)
+    assert _attentions(po_id)[0][1] is None
+
+
+def test_read_back_failure_does_not_undo_placed(client, seed, draft, monkeypatch):
+    from usecase import place_po
+
+    def boom(*a, **k):
+        raise RuntimeError("obs insert failed")
+    monkeypatch.setattr(place_po, "read_back", boom)
+    po_id, lid = draft
+    r = _place(client, seed, po_id)
+    assert r.status_code == 200 and r.json()["outcome"] == "placed"
+    assert _line_state(lid) == "已下单"

@@ -27,6 +27,7 @@ from api.ui import (
 )
 from api.ui.errors import ApiError, translate
 from dim.registry import gate_503_names
+from erp.transport import cause_chain
 from jobs import refresh_dims
 from jobs import scheduler as job_scheduler
 from jobs.lock import RefreshInFlight
@@ -234,7 +235,7 @@ async def _lifespan(app: FastAPI):
             if recovered:
                 log.warning("startup recover_stuck n=%d results=%s", len(recovered), recovered)
         except Exception as e:  # noqa: BLE001 —— 恢复失败不拖垮启动，但必须首屏可见
-            log.error("startup recover_stuck outcome=fail err_type=%s err=%s", type(e).__name__, e)
+            log.error("startup recover_stuck outcome=fail err_type=%s cause=%s", type(e).__name__, cause_chain(e))
         yield
     finally:
         job_scheduler.shutdown()

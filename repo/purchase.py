@@ -221,3 +221,48 @@ def backfill_item_ids(cur, po_id: int, items: list[dict]) -> int:
                     " AND lx_item_id IS NULL", (str(it.get("item_id")), po_id, it["sku"], it.get("wid")))
         n += cur.rowcount
     return n
+
+
+def close_call_if_in_flight(cur, call_id: int, r) -> int:
+    """★ 只收仍在 in_flight 的：别的路径已收尾则 rowcount=0，调用方跳过。"""
+    cur.execute("UPDATE erp_call SET outcome=%s, http_status=%s, lx_code=%s, lx_msg=%s, cause=%s,"
+                " response=%s::jsonb, host=%s, path=%s, elapsed_ms=%s, finished_at=now()"
+                " WHERE call_id=%s AND outcome='in_flight'",
+                (r.outcome, r.http_status, r.lx_code, r.lx_msg, r.cause,
+                 json.dumps(r.body, ensure_ascii=False, default=str) if r.body is not None else None,
+                 r.host, r.path, r.elapsed_ms, call_id))
+    return cur.rowcount
+
+
+def get_call(cur, call_id: int) -> dict | None:
+    cur.execute("SELECT call_id, po_id, endpoint, outcome, cause, started_at, finished_at"
+                " FROM erp_call WHERE call_id = %s", (call_id,))
+    r = cur.fetchone()
+    return None if r is None else dict(zip(("call_id", "po_id", "endpoint", "outcome", "cause", "started_at",
+                                            "finished_at"), r, strict=True))
+
+
+def latest_create_call(cur, po_id: int) -> dict | None:
+    cid = last_create_call(cur, po_id)
+    return None if cid is None else get_call(cur, cid)
+
+
+def confirmed_absent_after(cur, po_id: int, finished_at) -> bool:
+    cur.execute("SELECT EXISTS (SELECT 1 FROM po_attention WHERE po_id = %s AND kind = 'needs_verify'"
+                " AND resolution = 'confirmed_absent' AND resolved_at > %s)", (po_id, finished_at))
+    return cur.fetchone()[0]
+
+
+def unsettled_drafts(cur) -> list[tuple[int, int, str]]:
+    """草稿的最近一次 create 是 ok / unknown，既没有未处理的待核实、也没有之后的「确认没建」。"""
+    cur.execute(
+        "SELECT c.call_id, c.po_id, c.actor FROM erp_call c"
+        " JOIN po p ON p.po_id = c.po_id AND p.state = '草稿' AND p.discarded_at IS NULL"
+        " WHERE c.endpoint = 'create_purchase_order' AND c.outcome IN ('ok', 'unknown')"
+        " AND c.call_id = (SELECT max(x.call_id) FROM erp_call x WHERE x.po_id = c.po_id"
+        "                  AND x.endpoint = 'create_purchase_order')"
+        " AND NOT EXISTS (SELECT 1 FROM po_attention a WHERE a.po_id = c.po_id AND a.kind = 'needs_verify'"
+        "                 AND (a.resolved_at IS NULL OR (a.resolution = 'confirmed_absent'"
+        "                                                AND a.resolved_at > c.finished_at)))"
+        " ORDER BY c.call_id")
+    return cur.fetchall()
