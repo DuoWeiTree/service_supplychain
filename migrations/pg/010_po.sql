@@ -177,11 +177,34 @@ BEGIN
     RETURN NEW;
 END $$;
 
+-- ⑦b 领星行号一次写入：回填是唯一被放行的已下单改动，改第二次就是在改证据
+CREATE OR REPLACE FUNCTION po_line_lx_item_id_once() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF OLD.lx_item_id IS NOT NULL AND NEW.lx_item_id IS DISTINCT FROM OLD.lx_item_id THEN
+        RAISE EXCEPTION USING ERRCODE = '23514', CONSTRAINT = 'po_line_lx_item_id_set_once',
+              MESSAGE = format('po %s 行 %s 的 lx_item_id 已是 %s，不可改为 %s',
+                               OLD.po_id, OLD.line_no, OLD.lx_item_id, NEW.lx_item_id);
+    END IF;
+    RETURN NEW;
+END $$;
+
+-- ⑦c 事件只追加（铁律 8）。唯一放行：删草稿时随单头级联 —— 级联执行时单头已不可见
+CREATE OR REPLACE FUNCTION po_event_guard_delete() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM po WHERE po_id = OLD.po_id) THEN
+        RAISE EXCEPTION 'po_event 是只追加表，不允许 DELETE（证据一旦可改，就不再是证据）；po % 仍在', OLD.po_id;
+    END IF;
+    RETURN OLD;
+END $$;
+
 DROP TRIGGER IF EXISTS t_po_birth ON po;
 CREATE TRIGGER t_po_birth AFTER INSERT ON po FOR EACH ROW EXECUTE FUNCTION po_birth_event();
 DROP TRIGGER IF EXISTS t_po_event_append_only ON po_event;
 CREATE TRIGGER t_po_event_append_only BEFORE UPDATE ON po_event
     FOR EACH ROW EXECUTE FUNCTION forbid_update_delete();
+DROP TRIGGER IF EXISTS t_po_event_no_delete ON po_event;
+CREATE TRIGGER t_po_event_no_delete BEFORE DELETE ON po_event
+    FOR EACH ROW EXECUTE FUNCTION po_event_guard_delete();
 DROP TRIGGER IF EXISTS t_po_sync_state ON po_event;
 CREATE TRIGGER t_po_sync_state AFTER INSERT ON po_event FOR EACH ROW EXECUTE FUNCTION sync_po_state();
 DROP TRIGGER IF EXISTS t_po_guard ON po;
@@ -197,8 +220,12 @@ DROP TRIGGER IF EXISTS t_po_source_guard ON po_source_map;
 CREATE TRIGGER t_po_source_guard BEFORE INSERT OR UPDATE OR DELETE ON po_source_map
     FOR EACH ROW EXECUTE FUNCTION po_guard_children();
 DROP TRIGGER IF EXISTS t_po_source_pre ON po_source_map;
-CREATE TRIGGER t_po_source_pre BEFORE INSERT ON po_source_map
+-- ★ UPDATE OF line_id 同样要判：否则把映射改挂到已撤销记录上能绕过本闸
+CREATE TRIGGER t_po_source_pre BEFORE INSERT OR UPDATE OF line_id ON po_source_map
     FOR EACH ROW EXECUTE FUNCTION po_source_precondition();
+DROP TRIGGER IF EXISTS t_po_line_lx_item_id_once ON po_line;
+CREATE TRIGGER t_po_line_lx_item_id_once BEFORE UPDATE ON po_line
+    FOR EACH ROW EXECUTE FUNCTION po_line_lx_item_id_once();
 
 -- ⑧ 计划单记录：作废退回边（PB-D5）。由量判据自动落点，不需要理由
 INSERT INTO plan_line_transition VALUES

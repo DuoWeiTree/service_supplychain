@@ -48,6 +48,13 @@ BEGIN
         OLD.actor, OLD.request, OLD.started_at) THEN
         RAISE EXCEPTION 'erp_call % 只能收尾结果列，请求侧不可改', OLD.call_id;
     END IF;
+    -- 唯一允许的 UPDATE 是收尾：留在 in_flight 却写了结果列，等于一次没有落点的「半收尾」
+    IF NEW.outcome = 'in_flight' THEN
+        RAISE EXCEPTION 'erp_call % 收尾必须离开 in_flight', OLD.call_id;
+    END IF;
+    IF NEW.finished_at IS NULL THEN
+        RAISE EXCEPTION 'erp_call % 收尾必须给出 finished_at', OLD.call_id;
+    END IF;
     RETURN NEW;
 END $$;
 DROP TRIGGER IF EXISTS t_erp_call_close_once ON erp_call;
@@ -68,7 +75,12 @@ CREATE TABLE IF NOT EXISTS po_attention (
                                               'confirmed_absent','mismatch_acknowledged')),
     resolved_by    text REFERENCES actor(actor_id),
     reason         text,
-    detail         jsonb NOT NULL DEFAULT '{}'::jsonb
+    detail         jsonb NOT NULL DEFAULT '{}'::jsonb,
+    -- 「确认领星无此单」收掉一条明细不符，会把一个没人核对过的结论写进留痕
+    CONSTRAINT po_attention_resolution_fits_kind CHECK (
+        resolution IS NULL
+        OR (kind = 'needs_verify' AND resolution IN ('rechecked_found','found_existing','confirmed_absent'))
+        OR (kind = 'landed_mismatch' AND resolution = 'mismatch_acknowledged'))
 );
 CREATE UNIQUE INDEX IF NOT EXISTS po_attention_one_open
     ON po_attention (po_id, kind) WHERE resolved_at IS NULL;
@@ -89,6 +101,18 @@ BEGIN
     END IF;
     RETURN NEW;
 END $$;
+-- 待处理不许删：已处理的是留痕（铁律 8），未处理的删了就是静默丢掉一条转人工。
+-- 唯一放行：删草稿时随单头级联（级联执行时单头已不可见）
+CREATE OR REPLACE FUNCTION po_attention_guard_delete() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM po WHERE po_id = OLD.po_id) THEN
+        RAISE EXCEPTION '待处理 % 不许删除（po % 仍在）', OLD.attention_id, OLD.po_id;
+    END IF;
+    RETURN OLD;
+END $$;
+DROP TRIGGER IF EXISTS t_po_attention_no_delete ON po_attention;
+CREATE TRIGGER t_po_attention_no_delete BEFORE DELETE ON po_attention
+    FOR EACH ROW EXECUTE FUNCTION po_attention_guard_delete();
 DROP TRIGGER IF EXISTS t_po_attention_resolve_once ON po_attention;
 CREATE TRIGGER t_po_attention_resolve_once BEFORE UPDATE ON po_attention
     FOR EACH ROW EXECUTE FUNCTION po_attention_resolve_once();

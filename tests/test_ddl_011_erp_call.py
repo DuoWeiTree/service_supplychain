@@ -156,3 +156,41 @@ def test_observation_source_check(business_db, wipe):
         cur.execute("INSERT INTO po_item_obs (order_sn, sku, quantity_real, source, source_captured_at)"
                     " VALUES ('PO1','S',1,'bogus',now())")
     assert e.value.diag.constraint_name == "po_item_obs_source_known"
+
+
+# ---- 终审修复波 #6 / #3 ----
+
+def test_erp_call_close_requires_finished_at(draft, seed):
+    with pg_conn() as c, c.cursor() as cur:
+        cid = _call(cur, draft, seed.actor)
+    with pytest.raises(psycopg2.Error, match="finished_at"), pg_conn() as c, c.cursor() as cur:
+        cur.execute("UPDATE erp_call SET outcome='ok' WHERE call_id=%s", (cid,))
+
+
+def test_erp_call_cannot_be_updated_while_staying_in_flight(draft, seed):
+    with pg_conn() as c, c.cursor() as cur:
+        cid = _call(cur, draft, seed.actor)
+    with pytest.raises(psycopg2.Error, match="in_flight"), pg_conn() as c, c.cursor() as cur:
+        cur.execute("UPDATE erp_call SET http_status=200, response='{}' WHERE call_id=%s", (cid,))
+
+
+@pytest.mark.parametrize("kind,resolution", [
+    ("needs_verify", "mismatch_acknowledged"),
+    ("landed_mismatch", "confirmed_absent"),
+    ("landed_mismatch", "rechecked_found"),
+])
+def test_attention_resolution_must_fit_kind(draft, seed, kind, resolution):
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("INSERT INTO po_attention (po_id, kind) VALUES (%s,%s) RETURNING attention_id", (draft, kind))
+        aid = cur.fetchone()[0]
+    with pytest.raises(psycopg2.Error) as e, pg_conn() as c, c.cursor() as cur:
+        cur.execute("UPDATE po_attention SET resolved_at=now(), resolution=%s, resolved_by=%s"
+                    " WHERE attention_id=%s", (resolution, seed.actor, aid))
+    assert e.value.diag.constraint_name == "po_attention_resolution_fits_kind"
+
+
+def test_open_attention_cannot_be_deleted(draft, seed):
+    with pg_conn() as c, c.cursor() as cur:
+        aid = _open_attention(cur, draft)
+    with pytest.raises(psycopg2.Error, match="不许删除"), pg_conn() as c, c.cursor() as cur:
+        cur.execute("DELETE FROM po_attention WHERE attention_id=%s", (aid,))

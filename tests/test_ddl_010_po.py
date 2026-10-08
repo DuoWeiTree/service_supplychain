@@ -1,3 +1,5 @@
+import json
+
 import psycopg2
 import pytest
 
@@ -138,3 +140,57 @@ def test_birth_event_is_accepted_only_once(po_world, seed):
         cur.execute("INSERT INTO po_event (po_id, from_state, to_state, actor, src)"
                     " VALUES (%s, '[*]', '草稿', %s, 't')", (po_id, seed.actor))
     assert e.value.diag.constraint_name == "po_birth_once"
+
+
+# ---- 终审修复波 #6：只追加 / 一次写入的库层闸 ----
+
+def test_po_event_cannot_be_deleted_directly(po_world, seed):
+    """铁律 8：事件是留痕；草稿的也不行 —— 只有删草稿时随单头级联走。"""
+    with pg_conn() as c, c.cursor() as cur:
+        draft, _ = _po(cur, seed.actor, seed.wid)
+        placed = _placed_po(cur, seed.actor, seed.sku_a, seed.wid)
+    for po_id in (draft, placed):
+        with pytest.raises(psycopg2.Error, match="只追加"), pg_conn() as c, c.cursor() as cur:
+            cur.execute("DELETE FROM po_event WHERE po_id=%s", (po_id,))
+
+
+def test_resolved_attention_cannot_be_deleted_but_draft_cascade_can(po_world, seed):
+    with pg_conn() as c, c.cursor() as cur:
+        po_id, _ = _po(cur, seed.actor, seed.wid)
+        cur.execute("INSERT INTO po_attention (po_id, kind) VALUES (%s,'needs_verify') RETURNING attention_id",
+                    (po_id,))
+        aid = cur.fetchone()[0]
+        cur.execute("UPDATE po_attention SET resolved_at=now(), resolution='confirmed_absent', resolved_by=%s"
+                    " WHERE attention_id=%s", (seed.actor, aid))
+    with pytest.raises(psycopg2.Error, match="不许删除"), pg_conn() as c, c.cursor() as cur:
+        cur.execute("DELETE FROM po_attention WHERE attention_id=%s", (aid,))
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("DELETE FROM po WHERE po_id=%s", (po_id,))          # 删草稿：级联放行
+        cur.execute("SELECT count(*) FROM po_attention WHERE po_id=%s", (po_id,))
+        assert cur.fetchone()[0] == 0
+
+
+def test_mapping_update_onto_unorderable_line_is_rejected(po_world, seed):
+    with pg_conn() as c, c.cursor() as cur:
+        _, done_line = mint(cur, seed.actor, seed.sku_a, total=5)
+        advance(cur, done_line, "已撤销", actor=seed.actor)
+        cur.execute("UPDATE plan_line SET demand_by_seller=%s::jsonb WHERE line_id=%s",
+                    (json.dumps({seed.seller_a: {"units": 5, "basis": "human"}}), po_world))
+        po_id, _ = _po(cur, seed.actor, seed.wid)
+        cur.execute("INSERT INTO po_line (po_id, line_no, sku, wid, units, price)"
+                    " VALUES (%s, 1, %s, %s, 5, 1)", (po_id, seed.sku_a, seed.wid))
+        cur.execute("INSERT INTO po_source_map VALUES (%s, 1, %s, %s, 5)", (po_id, po_world, seed.seller_a))
+    with pytest.raises(psycopg2.Error) as e, pg_conn() as c, c.cursor() as cur:
+        cur.execute("UPDATE po_source_map SET line_id=%s WHERE po_id=%s", (done_line, po_id))
+    assert e.value.diag.constraint_name == "po_source_line_not_orderable"
+
+
+def test_lx_item_id_is_set_once(po_world, seed):
+    with pg_conn() as c, c.cursor() as cur:
+        po_id = _placed_po(cur, seed.actor, seed.sku_a, seed.wid)
+        cur.execute("UPDATE po_line SET lx_item_id='9001' WHERE po_id=%s", (po_id,))   # NULL → 值：放行
+        cur.execute("UPDATE po_line SET lx_item_id='9001' WHERE po_id=%s", (po_id,))   # 同值：不算改
+    for v in ("'9002'", "NULL"):
+        with pytest.raises(psycopg2.Error) as e, pg_conn() as c, c.cursor() as cur:
+            cur.execute(f"UPDATE po_line SET lx_item_id={v} WHERE po_id=%s", (po_id,))
+        assert e.value.diag.constraint_name == "po_line_lx_item_id_set_once"
