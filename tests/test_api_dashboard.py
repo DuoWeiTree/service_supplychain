@@ -22,7 +22,8 @@ def test_plan_counts_return_the_full_set_even_where_stage_a_cannot_reach(client,
 
 
 def test_a_confirmed_plan_lands_in_its_own_bucket_not_only_in_progress(client, seed):
-    """★ 「已确认」在阶段 A 走得通（POST /plan-lines/{id}/transition 在白名单里），
+    """★ 「已确认」在阶段 A 到得了（白名单里有边；手动 transition 现为 422 derived_state，spec §5 / C1，
+    所以下面用白名单事件造），
     却曾经没有自己的桶 —— 这样的计划只在「进行中」里出现一次，
     看板上「提交了还没人确认」和「已经确认过」长得一模一样，而这两件事催的是不同的人。
     """

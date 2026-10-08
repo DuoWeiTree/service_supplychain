@@ -34,7 +34,8 @@ def _allowed_next(cur, state: str) -> list[str]:
         "SELECT t.to_state FROM plan_line_transition t"
         " LEFT JOIN plan_line_state_rank r ON r.state = t.to_state"
         " WHERE t.from_state = %s ORDER BY r.rank NULLS LAST, t.to_state", (state,))
-    return [r[0] for r in cur.fetchall()]
+    # ★ 手动端点拒绝推导态（spec §5 / C1），allowed[] 不能再列它们，否则按它画的按钮永远 422
+    return [r[0] for r in cur.fetchall() if r[0] not in DERIVED_STATES]
 
 
 @router.get("/plan-lines")
@@ -153,6 +154,10 @@ def _transition(line_id: int, to_state: str, reason: str, who: str, src: str) ->
         if state in TERMINAL:
             raise ApiError(422, "terminal_state", "这条记录已在终态，离不开",
                            {"line_id": line_id, "state": state})
+        if to_state in DERIVED_STATES:
+            # ★ C1：状态事实驱动（spec §5）。排在 404 / 终态之后：封存的记录不推导任何东西
+            raise ApiError(422, "derived_state", "这个状态由采购量推导，不能手动推进",
+                           {"line_id": line_id, "to": to_state})
         allowed = _allowed_next(cur, state)
         if to_state not in allowed:
             # ★ allowed[] 必须回显（04 §1.4）
@@ -182,16 +187,12 @@ def cancel_line(line_id: int, body: dict, request: Request, who: str = Depends(a
 @router.post("/plan-lines/{line_id}/transition")
 def move_line(line_id: int, body: dict, request: Request, who: str = Depends(actor)):
     """哪些迁移合法完全由 003 迁移的白名单（`plan_line_transition`）裁决，
-    这里不设阶段 A 专属的关卡——比如「已提交→已确认」这条 forward 边今天就走得通，
-    是因为它在白名单里，不是因为这段代码替它开了路。非法就 422 并回显 allowed[]，
+    这里不设阶段 A 专属的关卡——推导态（已确认 / 已下单 / 准备排货）例外：白名单里有边，
+    但由采购量推导，这里一律 422 derived_state（spec §5 / C1）。非法就 422 并回显 allowed[]，
     让「不在白名单里」看起来就是「现在不行」，而不是一个默默成功的动作。
     """
     declared(request)
     to_state = (body.get("to_state") or "").strip()
-    if to_state in DERIVED_STATES:
-        # ★ C1：状态事实驱动。这几个态由采购量 / 入库推导（spec §5），不许手推
-        raise ApiError(422, "derived_state", "这个状态由采购量推导，不能手动推进",
-                       {"line_id": line_id, "to": to_state})
     lid, from_state, new_state = _transition(line_id, to_state, (body.get("reason") or "").strip(),
                                              who, f"transition:{line_id}")
     log.info("op=move_line line_id=%s from=%s to=%s actor=%s", lid, from_state, new_state, who)

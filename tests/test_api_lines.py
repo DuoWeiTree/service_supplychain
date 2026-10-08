@@ -162,7 +162,8 @@ def test_illegal_transition_echoes_where_it_could_go(client, seed):
     r = client.post(f"/v1/plan-lines/{line}/transition",
                     json={"to_state": "已排货"}, headers=H(seed.actor))
     assert r.status_code == 422 and r.json()["error"] == "illegal_transition"
-    assert r.json()["allowed"] == ["已确认", "已撤销"]
+    # spec §5 / C1：已确认是推导态，手动端点不再把它列为可去处
+    assert r.json()["allowed"] == ["已撤销"]
 
 
 def test_unknown_state_value_is_400(client, seed):

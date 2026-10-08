@@ -99,7 +99,7 @@ def test_criterion_5_the_back_edge_exists_and_terminal_states_are_sealed(client,
         assert cur.fetchone()[0] == "已提交"
     r = client.post(f"/v1/plan-lines/{line}/transition", json={"to_state": "已完结"},
                     headers=H(seed.actor))
-    assert r.status_code == 422 and r.json()["allowed"] == ["已确认", "已撤销"]
+    assert r.status_code == 422 and r.json()["allowed"] == ["已撤销"]  # 已确认为推导态，不列（spec §5 / C1）
 
     # ★ 判据⑤ 的后半句「终态密封」此前一条断言都没有：上面那次 422 是
     #   illegal_transition（这条边不在白名单里），与「这条记录已经在终态、
@@ -107,8 +107,7 @@ def test_criterion_5_the_back_edge_exists_and_terminal_states_are_sealed(client,
     cancelled = client.post(f"/v1/plan-lines/{line}/cancel", json={"reason": "封存它"},
                             headers=H(seed.actor))
     assert cancelled.status_code == 200 and cancelled.json()["state"] == "已撤销"
-    # 目标取非派生态：已确认等手推会先被 422 derived_state（spec §5 / C1）拦下，测不到终态密封
-    sealed = client.post(f"/v1/plan-lines/{line}/transition", json={"to_state": "已提交"},
+    sealed = client.post(f"/v1/plan-lines/{line}/transition", json={"to_state": "已确认"},
                          headers=H(seed.actor))
     assert sealed.status_code == 422 and sealed.json()["error"] == "terminal_state"
     assert sealed.json()["state"] == "已撤销" and sealed.json()["line_id"] == line
