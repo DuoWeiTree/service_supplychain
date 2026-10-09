@@ -21,6 +21,7 @@ async function app(entry: string) {
     import('../pages/PlanAdd'), import('../pages/PlanRevs'),
   ]);
   const { PurchasePlaceholder } = await import('../pages/PurchasePlaceholder');
+  const { PurchaseHome } = await import('../pages/purchase/PurchaseHome');
   const utils = render(
     <MemoryRouter initialEntries={[entry]}>
       <Routes>
@@ -28,7 +29,7 @@ async function app(entry: string) {
         <Route path="/plans/:planId" element={<PlanGrid />} />
         <Route path="/plans/:planId/add" element={<PlanAdd />} />
         <Route path="/plans/:planId/revs" element={<PlanRevs />} />
-        <Route path="/purchase" element={<PurchasePlaceholder crumb="采购" />} />
+        <Route path="/purchase" element={<PurchaseHome />} />
         <Route path="/purchase/new" element={<PurchasePlaceholder crumb="新建采购单" />} />
         <Route path="/purchase/:poId" element={<PurchasePlaceholder crumb="采购单" />} />
       </Routes>
@@ -58,6 +59,7 @@ describe('文案纪律', () => {
       const { unmount } = await app(entry);
       // 等这一屏真的出了内容再扫 —— 空屏上扫不出元串，那是假绿
       await screen.findByRole('heading');
+      if (entry === '/purchase') await screen.findByTestId('po-list');
       const text = document.body.textContent ?? '';
       expect(text.length).toBeGreaterThan(50);
       expect(text).not.toContain(' · ');
