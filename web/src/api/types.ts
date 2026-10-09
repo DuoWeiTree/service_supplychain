@@ -412,6 +412,8 @@ export interface LineInPurchase {
   state: LineState;
   change: 'replace' | 'remove';
   po_ids: PoId[];
+  /** to = null：这次不再包含（不是 0） */
+  total_units: { from: number; to: number | null };
 }
 
 export interface Rev {

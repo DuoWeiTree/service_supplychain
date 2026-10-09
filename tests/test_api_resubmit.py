@@ -169,7 +169,10 @@ def test_changing_a_line_that_a_draft_po_sources_is_409_and_changes_nothing(clie
     r = client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
     assert r.status_code == 409 and r.json()["error"] == "lines_in_purchase", r.text
     assert r.json()["lines"] == [{"sku": seed.sku_a, "period": OCT, "line_id": lid,
-                                  "state": "已提交", "change": "replace", "po_ids": [po_id]}]
+                                  "state": "已提交", "change": "replace", "po_ids": [po_id],
+                                  "total_units": {"from": 500, "to": 600}}]
+    # ★ 处置按条在 lines[] 里：已完结 / 没进采购单的那条没有「从采购单移掉」这条路，总提示不许替它说
+    assert "移掉" not in r.json()["hint"]
     assert _snapshot(pid) == snap
 
 
@@ -183,6 +186,8 @@ def test_removing_a_line_that_a_draft_po_sources_is_409(client, seed, two_skus):
     r = client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
     assert r.status_code == 409 and r.json()["lines"][0]["change"] == "remove"
     assert r.json()["lines"][0]["po_ids"] == [po_id]
+    # ★ 去掉的：新值是 null（这次没有这条），不是 0
+    assert r.json()["lines"][0]["total_units"] == {"from": 300, "to": None}
     assert _snapshot(pid) == snap
 
 
@@ -198,7 +203,8 @@ def test_changing_a_line_past_submitted_is_409_even_without_po_sources(client, s
     r = client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
     assert r.status_code == 409
     assert r.json()["lines"] == [{"sku": seed.sku_a, "period": OCT, "line_id": lid,
-                                  "state": "已下单", "change": "replace", "po_ids": []}]
+                                  "state": "已下单", "change": "replace", "po_ids": [],
+                                  "total_units": {"from": 500, "to": 600}}]
     assert _snapshot(pid) == snap
 
 
@@ -327,7 +333,8 @@ def test_a_completed_cell_that_changed_is_refused(client, seed, two_skus):
     r = client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
     assert r.status_code == 409
     assert r.json()["lines"] == [{"sku": seed.sku_a, "period": OCT, "line_id": lid,
-                                  "state": "已完结", "change": "replace", "po_ids": []}]
+                                  "state": "已完结", "change": "replace", "po_ids": [],
+                                  "total_units": {"from": 500, "to": 600}}]
     assert _snapshot(pid) == snap
 
 

@@ -130,17 +130,23 @@ def submit(plan_id: int, request: Request, who: str = Depends(actor)):
             log.error("op=submit outcome=s4_violation plan_id=%s actor=%s detail=%s",
                       plan_id, who, e)
             raise
+        # ★ 带上旧值：处置是「改回原来的 X 件」，不给 X 人得去别处翻；去掉的 to = null（不是 0）
+        new_total = {(m.sku, m.period): m.total_units for m in lines}
         blocked = [{"sku": p.sku, "period": p.period, "line_id": p.line_id, "state": p.state,
-                    "change": change, "po_ids": refs.get(p.line_id, [])}
+                    "change": change, "po_ids": refs.get(p.line_id, []),
+                    "total_units": {"from": p.total_units,
+                                    "to": new_total.get((p.sku, p.period))}}
                    for p, change in rec.blocked]
         if blocked:
             log.warning("op=submit outcome=lines_in_purchase plan_id=%s actor=%s offenders=%s",
                         plan_id, who, "; ".join(
                             f"sku={b['sku']} period={b['period']} line_id={b['line_id']}"
                             f" state={b['state']} change={b['change']} po_ids={b['po_ids']}"
+                            f" total={b['total_units']['from']}->{b['total_units']['to']}"
                             for b in blocked))
             raise ApiError(409, "lines_in_purchase",
-                           "要改动的记录已进采购：先从采购单里移掉，或保持该货号·月不变",
+                           # ★ 处置按条在 lines[] 里：已完结 / 没进采购单的没有「从采购单移掉」这条路
+                           "要改动的记录已进采购，这次提交没有生效",
                            {"plan_id": plan_id, "lines": blocked})
 
         cur.execute("SELECT coalesce(max(rev), 0) + 1 FROM plan_rev WHERE plan_id = %s",

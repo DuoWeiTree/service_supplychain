@@ -1,15 +1,21 @@
 import { Link } from 'react-router-dom';
 import type { ApiError } from '../api/client';
+import { ErrorDetail } from '../components/ErrorDetail';
 import { Fold } from '../components/Fold';
 import type { LineInPurchase, PlanId, Seller, SkippedCell, SubmitResult } from '../api/types';
 
 export interface LinesInPurchaseBlock { err: ApiError; lines: LineInPurchase[] }
+/** 提交后另取的「这张计划待采购几条」：null = 还在取 */
+export type OrderableCount = { n: number } | { err: ApiError } | null;
+
+const KNOWN_REASONS: readonly string[] = ['empty_purchase', 'zero_purchase', 'no_claimed_msku'];
 
 const CHANGE: Record<LineInPurchase['change'], string> = { replace: '这次改了量', remove: '这次不再包含' };
 
 /** 处置按条说：已完结 的记录没有「从采购单移掉」这条路（裁定 A） */
 function howToProceed(l: LineInPurchase): string {
-  const restore = l.change === 'remove' ? '把采购量填回原来的数' : '改回原来的量';
+  const restore = l.change === 'remove'
+    ? `把采购量填回原来的 ${l.total_units.from} 件` : `改回原来的 ${l.total_units.from} 件`;
   if (l.state === '已完结' || l.po_ids.length === 0) return restore;
   return `${restore}，或先从采购单里移掉这条记录`;
 }
@@ -28,17 +34,20 @@ function CellList({ cells }: { cells: SkippedCell[] }) {
 
 /** 提交结果的展示层。两块互斥：409 lines_in_purchase 时只有 `blocked`，
  *  成功（含空版本）时只有 `report` —— 由 PlanGrid.tsx 的 submit() 决定哪个非空。 */
-export function SubmitPanel({ planId, report, blocked, sellers }: {
+export function SubmitPanel({ planId, report, blocked, sellers, orderable = null }: {
   planId: PlanId;
   report: SubmitResult | null;
   blocked: LinesInPurchaseBlock | null;
   sellers: Seller[] | null;
+  orderable?: OrderableCount;
 }) {
   const sellerName = (sid: string) => sellers?.find((s) => s.seller_id === sid)?.name ?? sid;
   const by = (reason: SkippedCell['reason']) => report?.skipped.filter((s) => s.reason === reason) ?? [];
   const empty = by('empty_purchase');
   const zero = by('zero_purchase');
   const noMsku = by('no_claimed_msku');
+  // ★ 认不出的第 N+1 种原因默认显眼，不许被三个已知桶静默筛掉
+  const unknown = report?.skipped.filter((s) => !KNOWN_REASONS.includes(s.reason)) ?? [];
 
   return (
     <>
@@ -51,6 +60,7 @@ export function SubmitPanel({ planId, report, blocked, sellers }: {
               <li key={l.line_id} className="gate__detail">
                 <span className="k">{l.sku}</span> <span>{l.period}</span>{' '}
                 <span className="chip chip--dim">{l.state}</span> <span>{CHANGE[l.change]}</span>{' '}
+                {l.change === 'replace' && <span>{l.total_units.from} → {l.total_units.to}</span>}{' '}
                 {l.po_ids.map((po) => (
                   <Link key={po} to={`/purchase/${po}`}>采购单 {po}</Link>
                 )).flatMap((a, i) => (i === 0 ? [a] : [' ', a]))}
@@ -133,7 +143,7 @@ export function SubmitPanel({ planId, report, blocked, sellers }: {
           {/* ★ 空版本：说出「没有占在流转位」，否则人会以为提交成功了，
                然后奇怪为什么采购那边什么都没有 */}
           {report.lines === 0 && (
-            <div className="flash flash--bad" data-testid="empty-rev">
+            <div className="note" data-testid="empty-rev">
               这一版是空的{report.in_flight === false && '，没有占在流转位'}
             </div>
           )}
@@ -156,6 +166,19 @@ export function SubmitPanel({ planId, report, blocked, sellers }: {
                   <li className="dropline" key={`${s.sku}-${s.period}`}>
                     <span className="k">{s.sku}</span>
                     <span>{s.period}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {unknown.length > 0 && (
+            <div data-testid="skip-unknown">
+              <div className="gate__sum">认不出的跳过原因 {unknown.length} 个</div>
+              <ul>
+                {unknown.map((s) => (
+                  <li className="dropline" key={`${s.sku}-${s.period}`}>
+                    <span className="k">{s.sku}</span>
+                    <span>{s.period}</span>
                     <span className="gate__code">{s.reason}</span>
                   </li>
                 ))}
@@ -163,9 +186,16 @@ export function SubmitPanel({ planId, report, blocked, sellers }: {
             </div>
           )}
           {/* ★ 不自动跳走：skipped[] 只在这一次响应里存在，由人点「去版本」。
-               去采购不带 N：kept 里哪些还可组单，响应里没有（剩余量要另查） */}
+               N 另取（orderable=1，与采购首页同一口径）；取不到就不带 N，原因折叠 —— 不猜数 */}
+          {orderable !== null && 'err' in orderable && (
+            <div className="muted" data-testid="orderable-unavailable">
+              <Fold summary="待采购数取不到"><ErrorDetail err={orderable.err} /></Fold>
+            </div>
+          )}
           <div className="gate__sum">
-            <Link className="btn btn--sm" to="/purchase">去采购</Link>
+            <Link className="btn btn--sm" to="/purchase">
+              {orderable !== null && 'n' in orderable ? `去采购（${orderable.n} 条待采购）` : '去采购'}
+            </Link>
             <Link className="btn btn--sm" to={`/plans/${planId}/revs`}>去版本</Link>
           </div>
         </div>

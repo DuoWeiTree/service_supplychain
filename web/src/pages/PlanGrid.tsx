@@ -13,7 +13,7 @@ import { buildGridModel } from './planGridModel';
 import { usePlanGridSaves } from './usePlanGridSaves';
 import { LeadTimeBar } from './LeadTimeBar';
 import { PlanSheet } from './PlanSheet';
-import { SubmitPanel, type LinesInPurchaseBlock } from './SubmitPanel';
+import { SubmitPanel, type LinesInPurchaseBlock, type OrderableCount } from './SubmitPanel';
 
 const SUBMIT_KEY = 'submit';
 const RECOMPUTE_KEY = 'recompute';
@@ -53,6 +53,7 @@ export function PlanGrid() {
   const { err: actionErr, fail, succeed, dismiss } = useActionError();
   const [report, setReport] = useState<SubmitResult | null>(null);
   const [blocked, setBlocked] = useState<LinesInPurchaseBlock | null>(null);
+  const [orderable, setOrderable] = useState<OrderableCount>(null);
   // task-23：重算预测点名了哪些 msku 算不出速率——留到下次重算/刷新前，不是闪一下 toast 就没了
   // （与 PlanAdd.tsx 的 noHistory 同一个理由）
   const [noRate, setNoRate] = useState<NoHistoryEntry[]>([]);
@@ -83,6 +84,7 @@ export function PlanGrid() {
     await run(SUBMIT_KEY, async () => {
       setReport(null);
       setBlocked(null);
+      setOrderable(null);
       try {
         const r = await api.submit(planId);
         setReport(r);
@@ -93,7 +95,7 @@ export function PlanGrid() {
           kind: r.skipped.some((s) => s.reason === 'no_claimed_msku') ? 'warn' : 'ok',
           text: `已提交 rev ${r.rev}，这一版 ${r.lines} 条`,
         });
-        await load();
+        await Promise.all([load(), loadOrderable()]);
       } catch (e) {
         const ae = e as ApiError;
         // ★ D1：要改的记录已进采购 —— 逐条点名，处置在面板里按条说，不落到通用错误区
@@ -105,6 +107,20 @@ export function PlanGrid() {
         fail(SUBMIT_KEY, ae);
       }
     });
+  }
+
+  /** I1：「去采购（N 条待采购）」的 N = 这张计划 orderable=1 的记录 —— 与采购首页同一口径，不从提交响应里猜 */
+  async function loadOrderable() {
+    try {
+      const r = await api.listCandidateLines({ plan_ids: [planId] });
+      setOrderable({ n: r.lines.length });
+    } catch (e) {
+      const ae = e as ApiError;
+      // http 层已记了打的谁 / 多久 / 怎么失败的；这里补「对屏上意味着什么」
+      console.warn('[submit]', JSON.stringify({ plan_id: planId, orderable_count: 'unavailable',
+        status: ae.status, error: ae.error }));
+      setOrderable({ err: ae });
+    }
   }
 
   async function recompute() {
@@ -179,7 +195,7 @@ export function PlanGrid() {
       {planErr && <ErrorDetail err={planErr} />}
       {!plan && !planErr && <div className="empty"><p className="empty__title">正在取计划抬头…</p></div>}
 
-      <SubmitPanel planId={planId} report={report} blocked={blocked} sellers={sellers} />
+      <SubmitPanel planId={planId} report={report} blocked={blocked} sellers={sellers} orderable={orderable} />
 
       {gridErr && <ErrorDetail err={gridErr} />}
       {sellersErr && <ErrorDetail err={sellersErr} />}

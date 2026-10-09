@@ -37,7 +37,12 @@ const GRID: GridResponse = {
 
 beforeEach(() => { vi.resetModules(); });
 
-async function renderGrid(submit: (...args: unknown[]) => Promise<SubmitResult>) {
+const ORDERABLE = { lines: [{ line_id: 11 }, { line_id: 12 }, { line_id: 13 }], groups: {}, excluded: {} };
+
+async function renderGrid(
+  submit: (...args: unknown[]) => Promise<SubmitResult>,
+  listCandidateLines: (...args: unknown[]) => Promise<unknown> = async () => ORDERABLE,
+) {
   const { ApiError } = await import('../api/client');
   vi.doMock('../api', () => ({
     ApiError,
@@ -49,6 +54,7 @@ async function renderGrid(submit: (...args: unknown[]) => Promise<SubmitResult>)
       putPurchase: async () => GRID.purchase[0]!,
       releaseClaim: async () => ({ released: { seller_sku: '', sid: '' }, dropped_cells: [], dropped_purchase_cells: [] }),
       submit,
+      listCandidateLines,
       // ★ Task 20：PlanGrid 挂载即调 getLeadTime（LeadTimeBar）—— 与本测试无关，给固定值
       getLeadTime: async () => ({ route: 'oversea_sea', make_days: 30, ship_days: 60, anchor_day: 15,
         valid_from: { making: '2026-01-01', shipping: '2026-01-01' } }),
@@ -173,10 +179,39 @@ describe('提交', () => {
     expect(lc).toHaveTextContent('rev 1');
   });
 
-  it('★ 结果页给去采购的路；N 从响应推不准，只给「去采购」', async () => {
-    const report = await submitWith(OK);
-    expect(within(report).getByRole('link', { name: '去采购' })).toHaveAttribute('href', '/purchase');
+  it('★ I1：去采购带 N —— N 是这张计划 orderable=1 的记录条数（与采购首页同一口径）', async () => {
+    const list = vi.fn(async () => ORDERABLE);
+    await renderGrid(async () => OK, list);
+    await screen.findByTestId('plan-sheet');
+    await userEvent.click(screen.getByRole('button', { name: '提交' }));
+    const report = await screen.findByTestId('submit-report');
+    const link = await within(report).findByRole('link', { name: '去采购（3 条待采购）' });
+    expect(link).toHaveAttribute('href', '/purchase');
+    expect(list).toHaveBeenCalledWith({ plan_ids: [1] });
     expect(within(report).getByRole('link', { name: '去版本' })).toHaveAttribute('href', '/plans/1/revs');
+  });
+
+  it('★ I1：待采购数取不到 —— 不猜数、不静默：只给「去采购」，原因折叠', async () => {
+    const { ApiError } = await import('../api/client');
+    await renderGrid(async () => OK, async () => { throw new ApiError(503, 'upstream_down', '取不到', {}); });
+    await screen.findByTestId('plan-sheet');
+    await userEvent.click(screen.getByRole('button', { name: '提交' }));
+    const report = await screen.findByTestId('submit-report');
+    const miss = await within(report).findByTestId('orderable-unavailable');
+    expect(miss).toHaveTextContent('待采购数取不到');
+    const fold = miss.querySelector('details')!;
+    expect(fold.open).toBe(false);
+    expect(fold).toHaveTextContent('503 upstream_down');
+    expect(within(report).getByRole('link', { name: '去采购' })).toHaveAttribute('href', '/purchase');
+  });
+
+  it('★ 认不出的跳过原因照样显眼，不被静默丢掉', async () => {
+    const report = await submitWith(result({
+      skipped: [{ sku: 'SKU-7', period: '2026-10', reason: 'mystery_reason' as never }],
+    }));
+    const odd = within(report).getByTestId('skip-unknown');
+    expect(odd).toHaveTextContent('SKU-7');
+    expect(odd).toHaveTextContent('mystery_reason');
   });
 
   it('★ 空版本要说出来：这一版 0 条，且没有占在流转位', async () => {
@@ -187,6 +222,8 @@ describe('提交', () => {
                 { sku: 'SKU-1', period: '2026-12', reason: 'no_claimed_msku' }],
     }));
     expect(screen.getByTestId('empty-rev')).toHaveTextContent('没有占在流转位');
+    // ★ 全空 / 全 0 是人的选择，不是故障：空版本不出红块
+    expect(screen.getByTestId('empty-rev').className).not.toContain('flash--bad');
     expect(report).toHaveTextContent('这一版 0 条');
     // ★ 三种理由都要出现，不许只报第一种
     expect(within(report).getByTestId('skip-zero_purchase')).toBeInTheDocument();
@@ -200,9 +237,12 @@ describe('提交', () => {
       throw new ApiError(409, 'lines_in_purchase', '要改动的记录已进采购：先从采购单里移掉，或保持该货号·月不变', {
         plan_id: 1,
         lines: [
-          { sku: 'SKU-1', period: '2026-10', line_id: 7, state: '已提交', change: 'replace', po_ids: [5, 6] },
-          { sku: 'SKU-2', period: '2026-11', line_id: 8, state: '已确认', change: 'remove', po_ids: [] },
-          { sku: 'SKU-3', period: '2026-12', line_id: 9, state: '已完结', change: 'replace', po_ids: [4] },
+          { sku: 'SKU-1', period: '2026-10', line_id: 7, state: '已提交', change: 'replace', po_ids: [5, 6],
+            total_units: { from: 500, to: 600 } },
+          { sku: 'SKU-2', period: '2026-11', line_id: 8, state: '已确认', change: 'remove', po_ids: [],
+            total_units: { from: 300, to: null } },
+          { sku: 'SKU-3', period: '2026-12', line_id: 9, state: '已完结', change: 'replace', po_ids: [4],
+            total_units: { from: 70, to: 90 } },
         ],
       });
     });
@@ -219,14 +259,15 @@ describe('提交', () => {
     expect(rows[0]).toHaveTextContent('改了量');
     expect(within(rows[0]!).getByRole('link', { name: '采购单 5' })).toHaveAttribute('href', '/purchase/5');
     expect(within(rows[0]!).getByRole('link', { name: '采购单 6' })).toHaveAttribute('href', '/purchase/6');
-    expect(rows[0]).toHaveTextContent('改回原来的量，或先从采购单里移掉这条记录');
+    expect(rows[0]).toHaveTextContent('500 → 600');
+    expect(rows[0]).toHaveTextContent('改回原来的 500 件，或先从采购单里移掉这条记录');
     expect(rows[1]).toHaveTextContent('不再包含');
-    expect(rows[1]).toHaveTextContent('把采购量填回原来的数');
+    expect(rows[1]).toHaveTextContent('把采购量填回原来的 300 件');
     expect(rows[1]).not.toHaveTextContent('移掉');
     // ★ 已完结：从采购单移掉不适用
     expect(rows[2]).toHaveTextContent('已完结');
     expect(rows[2]).not.toHaveTextContent('移掉');
-    expect(rows[2]).toHaveTextContent('改回原来的量');
+    expect(rows[2]).toHaveTextContent('改回原来的 70 件');
     expect(screen.queryByTestId('submit-report')).toBeNull();
     expect(box.textContent).not.toContain(' · ');
   });

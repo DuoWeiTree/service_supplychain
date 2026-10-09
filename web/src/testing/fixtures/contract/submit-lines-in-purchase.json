@@ -1,6 +1,6 @@
 {
   "error": "lines_in_purchase",
-  "hint": "要改动的记录已进采购：先从采购单里移掉，或保持该货号·月不变",
+  "hint": "要改动的记录已进采购，这次提交没有生效",
   "plan_id": 1,
   "lines": [
     {
@@ -11,7 +11,11 @@
       "change": "replace",
       "po_ids": [
         1
-      ]
+      ],
+      "total_units": {
+        "from": 80,
+        "to": 90
+      }
     }
   ]
 }
