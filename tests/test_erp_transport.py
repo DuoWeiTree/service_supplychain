@@ -64,7 +64,7 @@ def test_5xx_after_send_is_unknown():
 def test_dead_proxy_is_not_sent_and_names_the_proxy():
     """★ 经代理时，连不上代理 / CONNECT 被拒 都发生在 connect() 阶段 —— 领星什么都没收到。"""
     port = _free_port()
-    r = post_json("https://openapi.lingxing.com", "/x", {}, {}, 2, "t",
+    r = post_json("https://target.invalid", "/x", {}, {}, 2, "t",
                   proxy={"host": "127.0.0.1", "port": port, "user": "u", "password": "p"})
     assert r.outcome == "not_sent" and f"via proxy 127.0.0.1:{port}" in r.cause
 

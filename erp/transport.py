@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import base64
 import http.client
+import ipaddress
 import json
+import sys
 import time
 from dataclasses import dataclass
 from urllib.parse import urlencode, urlsplit
@@ -51,6 +53,27 @@ def _proxy_headers(proxy: dict) -> dict:
     return {"Proxy-Authorization": f"Basic {token}"}
 
 
+def host_safe_in_tests(host: str | None) -> bool:
+    h = (host or "").strip("[]").rstrip(".").lower()
+    if h == "localhost" or h.endswith(".invalid"):
+        return True
+    try:
+        return ipaddress.ip_address(h).is_loopback
+    except ValueError:
+        return False
+
+
+def _refuse_outside_sandbox(host: str | None, proxy: dict | None) -> None:
+    """★ 测试永远打不到真领星（PB-D14/D15：建单不可逆）。闸放在唯一出站口，
+    而不是 driver / token 上 —— 后者挡不住新写的出站路径，也让真 driver 无法对本机桩做端到端测试。
+    判据用 sys.modules 而非 PYTEST_CURRENT_TEST：后者在收集期与 session 夹具外不存在。"""
+    if "pytest" not in sys.modules:
+        return
+    bad = [h for h in (host, proxy["host"] if proxy else "localhost") if not host_safe_in_tests(h)]
+    if bad:
+        raise RuntimeError(f"测试进程禁止出站到非本机 / 非 .invalid 主机：{bad}")
+
+
 def post_json(base_url: str, path: str, query: dict, body: dict, timeout_s: float,
               user_agent: str, proxy: dict | None = None) -> CallResult:
     """★ 领星有 IP 白名单（tools/nodejs/commerce/lingxing_erp/INDEX.md:45）：live 必须带 proxy。
@@ -58,6 +81,7 @@ def post_json(base_url: str, path: str, query: dict, body: dict, timeout_s: floa
     u = urlsplit(base_url)
     https = u.scheme == "https"
     host, port = u.hostname, u.port or (443 if https else 80)
+    _refuse_outside_sandbox(host, proxy)
     conn_cls = http.client.HTTPSConnection if https else http.client.HTTPConnection
     if proxy:
         conn = conn_cls(proxy["host"], int(proxy["port"]), timeout=timeout_s)

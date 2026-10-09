@@ -7,6 +7,7 @@ import logging
 import os
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import pytest
 from lingxing_double import LingxingDouble
@@ -14,6 +15,7 @@ from lingxing_double import LingxingDouble
 from erp import auth as erp_auth
 from erp import gateway
 from erp.drivers.live import LiveDriver
+from erp.transport import host_safe_in_tests
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_TOML = ROOT / "config.toml"
@@ -119,9 +121,10 @@ def _pin_forecast_source(text: str) -> str:
     return _pin_section_keys(text, "[forecast]", _FORECAST_TEST_PINS)
 
 
-#: ★ 领星目标与凭证一律钉成不可达的测试值：真凭证根本不进测试进程。
-#: 网关只有真 driver（PB-D14），挡住它的是下面两道闸；这里是第三道 ——
-#: 即便两道都被绕过，请求也只会打到 `.invalid`。盐非默认值：启动闸要它。
+#: ★ business_db 夹具生成的测试配置里，领星目标与凭证钉成不可达的测试值 ——
+#: 只作用于经该夹具读配置的路径；不经它的（如未请求 business_db 时读到的本机 config.toml）
+#: 不受此约束。真正挡住真调用的是 transport 层的测试闸（非本机 / 非 .invalid 主机直接抛）
+#: 与下面的替身注入。盐非默认值：启动闸要它。
 ERP_TEST_PINS = {
     "base_url": '"https://lingxing.invalid"',
     "app_id": '"test-app-id"',
@@ -141,23 +144,43 @@ def _pin_erp_auth(text: str) -> str:
 
 #: ★ 测试永远打不到真领星（PB-D14）。conftest 一被导入就装上，早于任何测试模块与夹具：
 #: ① `lingxing` autouse 夹具把网关的 driver 工厂换成替身；
-#: ② 绕过 ① 也没用 —— 测试进程里实例化 LiveDriver、向领星取 access_token 都直接抛。
-#: ★ 故意不留开口：领星背后是不可逆的建单。
+#: ② 实例化 LiveDriver、取 access_token 只放行指向本机（loopback）的配置 —— 只为
+#:    tests/test_erp_live_driver.py 对本机桩做端到端；
+#: ③ 兜底在 erp/transport.post_json：测试进程里非本机 / 非 .invalid 主机直接抛。
 LIVE_DRIVER_FORBIDDEN = "测试禁止实例化真领星 driver"
 TOKEN_FORBIDDEN = "测试禁止向真领星取 access_token"
 REAL_DRIVER_FACTORY = gateway._driver
+_REAL_LIVE_INIT = LiveDriver.__init__
+_REAL_TOKEN = erp_auth.token
 
 
-def _forbidden_live_init(self, *args, **kwargs):
-    raise RuntimeError(LIVE_DRIVER_FORBIDDEN)
+def _local_only(cfg) -> bool:
+    if not isinstance(cfg, dict):
+        return False
+    host = urlsplit(str(cfg.get("base_url") or "")).hostname
+    proxy = cfg.get("proxy_host") or ""
+    return _is_loopback(host) and (not proxy or _is_loopback(proxy))
 
 
-def _forbidden_token(*args, **kwargs):
-    raise RuntimeError(TOKEN_FORBIDDEN)
+def _is_loopback(host) -> bool:
+    # ★ 比 transport 闸更窄：.invalid 在这里不放行 —— 真 driver 只许对着本机桩
+    return host_safe_in_tests(host) and not str(host).rstrip(".").lower().endswith(".invalid")
 
 
-LiveDriver.__init__ = _forbidden_live_init
-erp_auth.token = _forbidden_token
+def _guarded_live_init(self, cfg, *args, **kwargs):
+    if not _local_only(cfg):
+        raise RuntimeError(LIVE_DRIVER_FORBIDDEN)
+    _REAL_LIVE_INIT(self, cfg, *args, **kwargs)
+
+
+def _guarded_token(cfg, *args, **kwargs):
+    if not _local_only(cfg):
+        raise RuntimeError(TOKEN_FORBIDDEN)
+    return _REAL_TOKEN(cfg, *args, **kwargs)
+
+
+LiveDriver.__init__ = _guarded_live_init
+erp_auth.token = _guarded_token
 DOUBLE = LingxingDouble()
 
 

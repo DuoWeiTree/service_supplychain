@@ -1,7 +1,8 @@
-"""★ 测试永远打不到真领星：两道闸，任一道单独都要能挡住。
+"""★ 测试永远打不到真领星：三道闸，任一道单独都要能挡住。
 
 ① autouse 夹具把网关的 driver 工厂换成替身；
-② 即便绕过了 ①，测试进程里实例化 LiveDriver 也直接失败。
+② 即便绕过了 ①，测试进程里对非本机目标实例化 LiveDriver / 取 token 也直接失败；
+③ transport 层：非本机 / 非 .invalid 主机直接抛（tests/test_erp_live_driver.py）。
 """
 import conftest as ct
 import pytest
