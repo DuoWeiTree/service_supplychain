@@ -218,7 +218,13 @@ def acknowledge_mismatch(po_id: int, reason: str, actor: str) -> dict:
     if not (reason or "").strip():
         raise Conflict(400, "reason_required", "知悉不一致必须写理由（核实了什么）")
     with timed("po_acknowledge_mismatch", po_id=po_id, actor=actor), pg_conn() as c, c.cursor() as cur:
-        repo.lock_po(cur, po_id)
+        locked = repo.lock_po(cur, po_id)
+        if locked["state"] != "已下单":
+            # ★ PB-D16：草稿上没有「接受差异」出口 —— 知悉后草稿就可再下单，而领星里已有同键单
+            log.warning("op=po_acknowledge_mismatch po_id=%s actor=%s outcome=mismatch_on_draft", po_id, actor)
+            raise Conflict(409, "mismatch_on_draft",
+                           "草稿上的不一致不能知悉放行；去领星改对后重新核对，或在领星作废该单（PB-D16）",
+                           po_id=po_id, timeline=f"/v1/purchase-orders/{po_id}/timeline")
         n = repo.resolve_attention(cur, po_id, "landed_mismatch", "mismatch_acknowledged", actor, reason.strip())
     if n == 0:
         raise Conflict(409, "nothing_to_resolve", "待处理项刚被别人处理了", po_id=po_id, kind="landed_mismatch")

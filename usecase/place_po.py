@@ -23,7 +23,7 @@ from rules.purchase import (
 )
 from shared.config import erp as erp_config
 from shared.pg_client import pg_conn, timed
-from usecase.draft_po import Conflict, load_po
+from usecase.draft_po import MISMATCH_OPEN_HINT, Conflict, load_po
 from usecase.line_state import reevaluate
 
 log = logging.getLogger("scm.usecase")
@@ -239,8 +239,14 @@ def place(po_id: int, token: str, actor: str) -> dict:
             raise Conflict(409, "po_frozen", "采购单已下单", po_id=po_id, order_sn=locked["order_sn"])
         if repo.in_flight_call(cur, po_id):
             raise Conflict(409, "po_placing", "下单请求进行中", po_id=po_id)
-        if any(a["kind"] == "needs_verify" for a in repo.open_attention(cur, po_id)):
+        open_kinds = {a["kind"] for a in repo.open_attention(cur, po_id)}
+        if "needs_verify" in open_kinds:
             blocked = "open"
+        elif "landed_mismatch" in open_kinds:
+            # ★ PB-D16：领星里有同幂等键却对不上的单 —— 重下就是第二张真单；只能去领星改对 / 作废
+            log.warning("op=po_place_refused po_id=%s reason=mismatch_open", po_id)
+            raise Conflict(409, "mismatch_open", MISMATCH_OPEN_HINT, po_id=po_id,
+                           timeline=f"/v1/purchase-orders/{po_id}/timeline")
         else:
             last = repo.latest_create_call(cur, po_id)
             if last and last["outcome"] in ("ok", "unknown") and not repo.confirmed_absent_after(

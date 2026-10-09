@@ -3,6 +3,7 @@ import json
 import pytest
 
 from erp import gateway
+from repo import purchase as repo
 from shared.pg_client import pg_conn
 from tests.helpers import H, mint
 
@@ -349,8 +350,9 @@ def test_confirm_absent_refused_when_lookup_found_our_key(client, seed, single_h
 def test_confirm_absent_still_refused_after_mismatch_acknowledged(client, seed, single_hit_mismatch):
     """知悉不一致只收掉 landed_mismatch；查重找到过同键单这个事实还在。"""
     po_id, lookup_call = single_hit_mismatch
-    assert client.post(f"/v1/purchase-orders/{po_id}/acknowledge-mismatch", json={"reason": "看过了"},
-                       headers=H(seed.actor)).status_code == 200
+    # 草稿上不许「知悉」（PB-D16）；这里直接在库里收掉 landed_mismatch，只验证证据 ① 还在
+    with pg_conn() as c, c.cursor() as cur:
+        assert repo.resolve_attention(cur, po_id, "landed_mismatch", "mismatch_acknowledged", seed.actor, "x") == 1
     r = client.post(f"/v1/purchase-orders/{po_id}/confirm-absent", json={"reason": "x"}, headers=H(seed.actor))
     assert r.status_code == 409 and r.json()["error"] == "contradicts_evidence"
     assert r.json()["open_landed_mismatch"] is False and r.json()["lookup_call_id"] == lookup_call
@@ -394,3 +396,46 @@ def test_mismatch_exit_fix_in_lingxing_then_recheck_adopts(client, seed, single_
         cur.execute("SELECT resolution FROM po_attention WHERE po_id=%s AND kind='needs_verify'", (po_id,))
         assert cur.fetchone()[0] == "rechecked_found"
     assert _creates(po_id) == 1
+
+
+# ---- PB-D16：草稿上的 landed_mismatch 没有「接受差异」出口（Task 6 fix round 1，C1）----
+
+@pytest.fixture
+def mismatch_only_draft(client, seed, single_hit_mismatch):
+    """竞态的结局：确认无此单抢先收掉了 needs_verify，并发的查重随后开出 landed_mismatch 且不重开待核实
+    （place_po.lookup_and_settle 的 confirmed_absent_after 分支）。草稿上只剩 landed_mismatch。"""
+    po_id, _ = single_hit_mismatch
+    with pg_conn() as c, c.cursor() as cur:
+        assert repo.resolve_attention(cur, po_id, "needs_verify", "confirmed_absent", seed.actor, "竞态") == 1
+    kinds = {i["kind"] for i in client.get("/v1/attention").json()["items"]}
+    assert kinds == {"landed_mismatch"}
+    return po_id
+
+
+def test_place_refused_while_mismatch_open_on_draft(client, seed, mismatch_only_draft):
+    po_id = mismatch_only_draft
+    tok = client.get(f"/v1/purchase-orders/{po_id}").json()["confirm_token"]
+    r = client.post(f"/v1/purchase-orders/{po_id}/place", json={"confirm_token": tok}, headers=H(seed.actor))
+    assert r.status_code == 409 and r.json()["error"] == "mismatch_open", r.text
+    assert r.json()["po_id"] == po_id
+    assert _creates(po_id) == 1          # 没有第二次真下单
+
+
+def test_acknowledge_refused_on_draft(client, seed, mismatch_only_draft):
+    po_id = mismatch_only_draft
+    r = client.post(f"/v1/purchase-orders/{po_id}/acknowledge-mismatch", json={"reason": "看过了"},
+                    headers=H(seed.actor))
+    assert r.status_code == 409 and r.json()["error"] == "mismatch_on_draft", r.text
+    kinds = {i["kind"] for i in client.get("/v1/attention").json()["items"]}
+    assert kinds == {"landed_mismatch"}  # 没收掉
+
+
+def test_draft_edit_and_delete_refused_while_mismatch_open(client, seed, mismatch_only_draft):
+    po_id = mismatch_only_draft
+    po = client.get(f"/v1/purchase-orders/{po_id}").json()
+    body = {k: po[k] for k in ("supplier_id", "purchaser_id", "opt_uid", "qc_type", "draft_version")}
+    body["lines"] = [{k: ln[k] for k in ("sku", "wid", "units", "price", "sources")} for ln in po["lines"]]
+    r = client.put(f"/v1/purchase-orders/{po_id}", json=body, headers=H(seed.actor))
+    assert r.status_code == 409 and r.json()["error"] == "mismatch_open", r.text
+    r = client.delete(f"/v1/purchase-orders/{po_id}", headers=H(seed.actor))
+    assert r.status_code == 409 and r.json()["error"] == "mismatch_open", r.text

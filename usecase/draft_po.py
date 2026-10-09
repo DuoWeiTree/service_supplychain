@@ -92,6 +92,9 @@ def _check_supplier(cur, supplier_id) -> None:
                        supplier_id=supplier_id)
 
 
+MISMATCH_OPEN_HINT = "领星里有与本单同幂等键、对不上的单未处理；去领星改对后重新核对，或在领星作废该单（PB-D16）"
+
+
 def _assert_editable(cur, po_id: int) -> dict:
     po = repo.lock_po(cur, po_id)
     if po is None:
@@ -102,9 +105,13 @@ def _assert_editable(cur, po_id: int) -> dict:
         raise Conflict(409, "po_frozen", "采购单已下单，不可改", po_id=po_id, order_sn=po["order_sn"])
     if repo.in_flight_call(cur, po_id):
         raise Conflict(409, "po_placing", "下单请求进行中", po_id=po_id)
-    if any(a["kind"] == "needs_verify" for a in repo.open_attention(cur, po_id)):
+    open_kinds = {a["kind"] for a in repo.open_attention(cur, po_id)}
+    if "needs_verify" in open_kinds:
         raise Conflict(409, "needs_verify", "这张单的下单结果待人工核实，先处理", po_id=po_id,
                        timeline=f"/v1/purchase-orders/{po_id}/timeline")
+    if "landed_mismatch" in open_kinds:
+        # PB-D16：草稿阻塞至领星侧改对（重新核对）或作废回读；改 / 删都会让那张真单失去对照
+        raise Conflict(409, "mismatch_open", MISMATCH_OPEN_HINT, po_id=po_id, timeline=f"/v1/purchase-orders/{po_id}/timeline")
     return po
 
 
