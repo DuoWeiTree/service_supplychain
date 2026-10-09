@@ -98,7 +98,7 @@ UNRESOLVED: frozenset[tuple[str, str]] = frozenset({
 #:     11100   A4Pet-BS-JP-JP               34 个        0 单
 #:
 #:   三个都是 `platform='amazon'` 的真店，它们的 179 个 msku 都能被认领 ——
-#:   `source = "ch"` 一开，这条取数链路上取不到它们的任何一单。
+#:   在真 CH 上，这条取数链路取不到它们的任何一单。
 #:
 #: ★ 为什么是豁免而不是补映射：`amazon_sp_api_report_all_orders` **有史以来**
 #:   只出现过 5 个 store 值（PETSFIT_NORTH_AMERICA / PETSFIT_EUROPE /

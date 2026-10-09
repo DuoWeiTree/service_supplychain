@@ -99,7 +99,7 @@ SELECT wid,
 #: ★ review 09-22 修复：两表的 sid 类型不同——lingxing_seller_list.sid 是
 #:   String，lingxing_product_listing.sid 是 Int64（均见 design §7.0）。
 #:   裸 `ON l.sid = s.sid` 在真实 CH 上直接报 NO_COMMON_TYPE，`fetch_seller`
-#:   fixture 回放测不出来（replay() 无视 SQL 文本）。转成
+#:   测试里的回放测不出来（replay() 无视 SQL 文本）。转成
 #:   `toString(l.sid) = s.sid`，不是反过来 `toInt64OrNull(s.sid)`——
 #:   PG 侧 seller_id 是 text（001），保持以字符串为准的一侧不做数值解析，
 #:   避免 sid 里出现非数字格式时 toInt64OrNull 悄悄给出 NULL 而漏关联。

@@ -243,8 +243,9 @@ L11_FORBIDDEN = ("VITE_DATA_SOURCE", "createMockApi", "memoryBackend", "not_in_m
 _FAKE_WORD = re.compile(r"mock|fake|simulat", re.IGNORECASE)
 #: `from '../testing/x'` · `import '../testing/x'` · `import('../testing/x')`
 _TESTING_IMPORT = re.compile(r"""(?:\bfrom|\bimport)\s*\(?\s*['"][^'"]*(?:^|/)testing/""")
-#: ★ 拒绝旧开关必须点它的名（PB-D17「启动即拒并点名」）—— 只有这两处可以提，且不许是赋值
-L11_MAY_NAME_RETIRED = {"web/src/api/index.ts", "web/.env.example"}
+#: ★ 拒绝旧开关必须点它的名（PB-D17「启动即拒并点名」）—— 只有这几处可以提，且不许是赋值；
+#:   vite.config.ts 在起服务的终端里拒，index.ts 在浏览器里拒（判据 4：配置错放启动第一屏）
+L11_MAY_NAME_RETIRED = {"web/src/api/index.ts", "web/vite.config.ts", "web/.env.example"}
 _RETIRED_ASSIGN = re.compile(r"^\s*VITE_DATA_SOURCE\s*=", re.MULTILINE)
 
 

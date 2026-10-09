@@ -260,7 +260,7 @@ export type Unallocated = UnallocatedBatch | UnallocatedMsku;
 export interface ForecastParams {
   as_of: string; route: 'oversea_sea'; make_days: number; ship_days: number;
   anchor_day: number; embargo_days: number | null;
-  /** 判在途「已逾期」用的快照日：CH 源是采购快照日，fixture 源退到 as_of */
+  /** 判在途「已逾期」用的快照日：采购快照日；源没给采购快照日时退到 as_of */
   in_transit_as_of: string;
 }
 

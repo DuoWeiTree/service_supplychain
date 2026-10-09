@@ -12,7 +12,7 @@ FORBIDDEN = re.compile(
     r"fake|simulat|placed_mode|[\"']sim[\"']|gateway\.mode"
     # PB-D17：预测只读真 CH —— CSV 取数源、它的档位值、指向测试底料的路径都不许回到产品里
     r"|FixtureSource|fixture_source|[\"']fixture[\"']|source\s*=\s*[\"']fixture"
-    r"|tests[\"']?\s*/\s*[\"']?fixtures",
+    r"|tests[\"']?\s*\)?\s*/\s*[\"']?fixtures",
     re.IGNORECASE)
 
 

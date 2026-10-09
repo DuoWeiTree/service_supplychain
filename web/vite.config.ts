@@ -1,7 +1,13 @@
-import { defineConfig } from 'vite';
+import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 
-export default defineConfig({
+export default defineConfig(({ mode }) => {
+  // ★ PB-D17：没有假数据源。在起服务的终端第一屏就拒（CLAUDE.md 判据 4），不等打开浏览器看控制台
+  const retired = loadEnv(mode, process.cwd(), 'VITE_')['VITE_DATA_SOURCE'];
+  if (retired !== undefined) {
+    throw new Error(`VITE_DATA_SOURCE 已废除（PB-D17：前端只打真后端），收到 ${JSON.stringify(retired)} —— 从 .env / 环境变量里删掉`);
+  }
+  return {
   plugins: [react()],
   build: { outDir: 'dist' },
   // ★ I5 裁定：VITE_API_BASE 默认 `/v1` 是相对路径，dev server 起在 5173，
@@ -16,4 +22,5 @@ export default defineConfig({
     setupFiles: ['./vitest.setup.ts'],
     css: true,
   },
+  };
 });
