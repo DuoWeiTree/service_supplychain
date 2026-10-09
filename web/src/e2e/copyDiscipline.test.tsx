@@ -20,8 +20,8 @@ async function app(entry: string) {
     import('../pages/OpsHome'), import('../pages/PlanGrid'),
     import('../pages/PlanAdd'), import('../pages/PlanRevs'),
   ]);
-  const { PurchasePlaceholder } = await import('../pages/PurchasePlaceholder');
   const { PurchaseHome } = await import('../pages/purchase/PurchaseHome');
+  const { PoEditor, PoRoute } = await import('../pages/purchase/PoEditor');
   const utils = render(
     <MemoryRouter initialEntries={[entry]}>
       <Routes>
@@ -30,8 +30,8 @@ async function app(entry: string) {
         <Route path="/plans/:planId/add" element={<PlanAdd />} />
         <Route path="/plans/:planId/revs" element={<PlanRevs />} />
         <Route path="/purchase" element={<PurchaseHome />} />
-        <Route path="/purchase/new" element={<PurchasePlaceholder crumb="新建采购单" />} />
-        <Route path="/purchase/:poId" element={<PurchasePlaceholder crumb="采购单" />} />
+        <Route path="/purchase/new" element={<PoEditor key="new" poId={null} />} />
+        <Route path="/purchase/:poId" element={<PoRoute />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -51,7 +51,8 @@ describe('文案纪律', () => {
     ['版本', '/plans/2/revs'],
     ['采购', '/purchase'],
     ['新建采购单', '/purchase/new'],
-    ['采购单', '/purchase/7'],
+    ['采购单（不存在）', '/purchase/7'],
+    ['草稿', '/purchase/1'],
   ];
 
   for (const [name, entry] of screens) {
@@ -60,6 +61,8 @@ describe('文案纪律', () => {
       // 等这一屏真的出了内容再扫 —— 空屏上扫不出元串，那是假绿
       await screen.findByRole('heading');
       if (entry === '/purchase') await screen.findByTestId('po-list');
+      if (entry === '/purchase/new' || entry === '/purchase/1') await screen.findByTestId('cand-sku-A4P-TOY-002');
+      if (entry === '/purchase/1') await screen.findByTestId('po-line-1');
       const text = document.body.textContent ?? '';
       expect(text.length).toBeGreaterThan(50);
       expect(text).not.toContain(' · ');
@@ -98,6 +101,29 @@ describe('文案纪律', () => {
     const report = await screen.findByTestId('claim-report');
     expect(report).toHaveTextContent('已添加');
     expect(report.textContent).not.toContain('已认领');
+  });
+
+  it('★ 保存草稿：按钮说「保存草稿」，toast 说「已保存草稿」', async () => {
+    await app('/purchase/1');
+    await screen.findByTestId('po-line-1');
+    await userEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    const toast = await screen.findByRole('status');
+    expect(toast).toHaveTextContent('已保存草稿');
+    expect(toast.textContent).not.toContain(' · ');
+  });
+
+  it('★ 删除草稿：按钮说「删除草稿」，toast 说「已删除草稿」', async () => {
+    await app('/purchase/1');
+    await userEvent.click(await screen.findByRole('button', { name: '删除草稿' }));
+    await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '删除草稿' }));
+    const toast = await screen.findByRole('status');
+    expect(toast).toHaveTextContent('已删除草稿');
+  });
+
+  it('★ 加入来源：按钮说「加入」', async () => {
+    await app('/purchase/new');
+    const rec = await screen.findByTestId('cand-101');
+    expect(within(rec).getAllByRole('button', { name: '加入' }).length).toBeGreaterThan(0);
   });
 
   it('★ 新建销售计划：按钮说「新建」，表单提交按钮也说「新建」，不混「创建」', async () => {
