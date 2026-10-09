@@ -41,10 +41,10 @@
 ## 预测取数（`[forecast]`）
 
 阶段 A 的销量/在仓/采购在途取数走 `dim/ch_source.py::ChSource`（详细口径见
-`docs/superpowers/specs/2026-09-23-chsource-design.md`）。换源只改一行：
+`docs/superpowers/specs/2026-09-23-chsource-design.md`）。取数源只有一个：
 
     [forecast]
-    source = "fixture"   # 改成 "ch" 即切到真 ClickHouse，无需改代码
+    # 没有 source 键：只读真 ClickHouse（PB-D17）；config.toml 里还留着 source → 启动即拒
 
 取数源**每请求装配一个**，不缓存、不共享（`api/ui/source_factory.py::source_dep`）。
 一个 `ChSource` 身上全是可变的每次调用状态外加一个 CH 客户端，跨请求共享它会让
