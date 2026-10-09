@@ -6,6 +6,7 @@ import { Fold } from '../../components/Fold';
 import { Qty, type QtyValue } from '../../components/Qty';
 import { api, ApiError } from '../../api';
 import type { AttentionKind, AttentionQueue, PoList, PurchaseChecks } from '../../api/types';
+import { asApiError } from '../../api/client';
 
 export const KIND_LABEL: Record<AttentionKind, string> = {
   needs_verify: '下单结果待核实',
@@ -13,13 +14,6 @@ export const KIND_LABEL: Record<AttentionKind, string> = {
   stuck_call: '下单请求卡住',
 };
 
-// 非 ApiError（建连失败等）也要落成可显示明细：cause.code 是分辨「超时」与「连不上」的唯一线索
-function asApiError(e: unknown): ApiError {
-  if (e instanceof ApiError) return e;
-  const err = e as { name?: string; message?: string; cause?: { code?: string } };
-  return new ApiError(0, err.name ?? 'Error', err.message ?? String(e),
-    err.cause?.code ? { cause_code: err.cause.code } : {});
-}
 
 export function PurchaseHome() {
   const navigate = useNavigate();

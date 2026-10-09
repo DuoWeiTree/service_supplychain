@@ -27,6 +27,14 @@ export class ApiError extends Error {
   }
 }
 
+/** 非 ApiError（建连失败等）也落成可显示的明细。★ cause.code 是分辨「超时」与「连不上」的唯一线索 */
+export function asApiError(e: unknown): ApiError {
+  if (e instanceof ApiError) return e;
+  const err = e as { name?: string; message?: string; cause?: { code?: string } };
+  return new ApiError(0, err.name ?? 'Error', err.message ?? String(e),
+    err.cause?.code ? { cause_code: err.cause.code } : {});
+}
+
 /** ★ sku-image 计划 Task 4：`<img src>` 必须指向**本仓**的代理端点，不是 PM 的地址——
  *  PM 凭证不出后端，界面拿到的图片 URL 只能是我们自己的 `/v1/skus/{sku}/image`。
  *  与 `src/api/index.ts` 读同一个 `VITE_API_BASE`（默认 `/v1`）：`mock` 数据源下这个端点

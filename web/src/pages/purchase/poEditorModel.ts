@@ -32,6 +32,15 @@ export const unplannedUnits = (l: DraftLine): number => lineUnits(l) - sourcesUn
 
 const key = (lineId: number, sid: string) => `${lineId}|${sid}`;
 
+/** 记录级剩余，同 available 的口径：后端 remaining 已扣本单已保存的量，加回后再扣本稿 */
+export function recordRemaining(c: Pick<CandidateLine, 'line_id' | 'remaining'>, d: Draft, base: Baseline): number {
+  let saved = 0;
+  for (const [k, v] of base) if (k.startsWith(`${c.line_id}|`)) saved += v;
+  let now = 0;
+  for (const ln of d.lines) for (const s of ln.sources) if (s.line_id === c.line_id) now += s.units;
+  return c.remaining + saved - now;
+}
+
 /** 已保存草稿自己占着的量。★ 后端 sellers[].used 已含本单，不加回来就会把自己算成别人 */
 export type Baseline = ReadonlyMap<string, number>;
 export function baselineOf(po: Pick<PurchaseOrder, 'lines'> | null): Baseline {
@@ -48,8 +57,11 @@ export function inDraft(d: Draft, lineId: number, sid: string): number {
   return n;
 }
 
+/** 能往里加来源的东西：候选记录，或候选里已不列出的「本单原有来源」 */
+export type SourceTarget = Pick<CandidateLine, 'line_id' | 'sku' | 'blocked' | 'sellers'>;
+
 /** null = 剩余未知（无分店依据），不是 0 */
-export function available(c: CandidateLine, sid: string, d: Draft, base: Baseline): number | null {
+export function available(c: Pick<SourceTarget, 'line_id' | 'sellers'>, sid: string, d: Draft, base: Baseline): number | null {
   const r = c.sellers[sid]?.remaining;
   if (r === null || r === undefined) return null;
   return r + (base.get(key(c.line_id, sid)) ?? 0) - inDraft(d, c.line_id, sid);
@@ -79,7 +91,7 @@ export type AddRefusal = 'blocked' | 'no_seller' | 'bad_units' | 'over_remaining
 export type AddResult = { ok: true; draft: Draft } | { ok: false; reason: AddRefusal; available?: number };
 
 /** `wid` 不给：并进该货号的第一行，没有就新开一行（仓待选） */
-export function addSource(d: Draft, c: CandidateLine, sid: string, units: number, base: Baseline, wid?: string): AddResult {
+export function addSource(d: Draft, c: SourceTarget, sid: string, units: number, base: Baseline, wid?: string): AddResult {
   if (c.blocked) return { ok: false, reason: 'blocked' };
   if (!(sid in c.sellers)) return { ok: false, reason: 'no_seller' };
   if (!Number.isInteger(units) || units <= 0) return { ok: false, reason: 'bad_units' };
@@ -215,4 +227,23 @@ export function groupCandidates(lines: CandidateLine[]): CandidateGroup[] {
     .map(([sku, records]) => ({
       sku, records: [...records].sort((a, b) => a.period.localeCompare(b.period) || a.line_id - b.line_id),
     }));
+}
+
+export interface OwnRecord { target: SourceTarget; saved: Record<string, number> }
+
+/** 本单已保存的来源里、候选没列出的记录（本单把它组满了 ⇒ 后端按 fully_confirmed 滤掉）。
+ *  ★ 不列出来，移除后到保存前就加不回去。remaining 记 0：可加的只有本单原有的量（下限，
+ *  记录的完整分店余量要后端排除本单才算得出） */
+export function ownOnlyRecords(po: Pick<PurchaseOrder, 'lines'> | null, listed: readonly { line_id: number }[]): OwnRecord[] {
+  const shown = new Set(listed.map((l) => l.line_id));
+  const m = new Map<number, OwnRecord>();
+  for (const ln of po?.lines ?? []) for (const s of ln.sources) {
+    if (shown.has(s.line_id)) continue;
+    const sid = String(s.seller_id);
+    const r = m.get(s.line_id) ?? { target: { line_id: s.line_id, sku: ln.sku, blocked: null, sellers: {} }, saved: {} };
+    r.saved[sid] = (r.saved[sid] ?? 0) + s.units;
+    r.target.sellers[sid] = { expected: null, cap: null, used: 0, remaining: 0 };
+    m.set(s.line_id, r);
+  }
+  return [...m.values()].sort((a, b) => a.target.sku.localeCompare(b.target.sku) || a.target.line_id - b.target.line_id);
 }

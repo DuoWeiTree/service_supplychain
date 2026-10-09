@@ -11,20 +11,13 @@ import { Modal } from '../../components/Modal';
 import { Qty } from '../../components/Qty';
 import { PurchasePlaceholder } from '../PurchasePlaceholder';
 import { api, ApiError } from '../../api';
-import type { CandidateLine, CandidateLines, PoId, PreflightGate, PurchaseOptions, PurchaseOrder } from '../../api/types';
+import type { CandidateLines, PoId, PreflightGate, PurchaseOptions, PurchaseOrder, Seller } from '../../api/types';
 import {
-  addSource, available, baselineOf, emptyDraft, fromPo, gateText, groupCandidates, lineUnits, QC_LABEL,
-  removeSource, setHeader, setLineWid, sourcesUnits, toBody, unplannedUnits, updateLine, validate,
-  type AddRefusal, type Baseline, type Draft, type DraftHeader, type QcType,
+  addSource, available, baselineOf, emptyDraft, fromPo, gateText, groupCandidates, lineUnits, ownOnlyRecords, QC_LABEL,
+  recordRemaining, removeSource, setHeader, setLineWid, sourcesUnits, toBody, unplannedUnits, updateLine, validate,
+  type AddRefusal, type Baseline, type Draft, type DraftHeader, type QcType, type SourceTarget,
 } from './poEditorModel';
-
-// 非 ApiError（建连失败等）也要落成可显示明细：cause.code 是分辨「超时」与「连不上」的唯一线索
-function asApiError(e: unknown): ApiError {
-  if (e instanceof ApiError) return e;
-  const err = e as { name?: string; message?: string; cause?: { code?: string } };
-  return new ApiError(0, err.name ?? 'Error', err.message ?? String(e),
-    err.cause?.code ? { cause_code: err.cause.code } : {});
-}
+import { asApiError } from '../../api/client';
 
 const logFail = (name: string, err: ApiError, t0: number) => {
   console.warn(`[po-editor] ${name} failed`, JSON.stringify({
@@ -82,16 +75,25 @@ function ActorSelect({ label, value, options, loading, onChange }: {
 function UnitsInput({ value, onChange }: { value: number; onChange: (v: number | null) => void }) {
   const [text, setText] = useState(String(value));
   const [focused, setFocused] = useState(false);
-  useEffect(() => { if (!focused) setText(String(value)); }, [value, focused]);
+  const [bad, setBad] = useState(false);
+  useEffect(() => { if (!focused) { setText(String(value)); setBad(false); } }, [value, focused]);
   return (
-    <input className="inp inp--tiny" type="number" min={0} step={1} aria-label="数量" value={text}
-      onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
-      onChange={(e) => {
-        const v = e.target.value.trim();
-        setText(e.target.value);
-        if (v === '') onChange(null);
-        else if (Number.isFinite(Number(v))) onChange(Math.trunc(Number(v)));
-      }} />
+    <>
+      <input className="inp inp--tiny" type="number" min={0} step={1} aria-label="数量" value={text}
+        aria-invalid={bad}
+        onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
+        onChange={(e) => {
+          const v = e.target.value.trim();
+          setText(e.target.value);
+          if (v === '') { setBad(false); onChange(null); return; }
+          const n = Number(v);
+          // 小数 / 负数不截断：截了就是替人改了数，人看不出来
+          if (!Number.isInteger(n) || n < 0) { setBad(true); return; }
+          setBad(false);
+          onChange(n);
+        }} />
+      {bad && <span className="i-red"> 数量要是非负整数，未采用</span>}
+    </>
   );
 }
 
@@ -117,6 +119,8 @@ export function PoEditor({ poId }: { poId: PoId | null }) {
   const [poErr, setPoErr] = useState<ApiError | null>(null);
   const [gates, setGates] = useState<PreflightGate[] | null>(null);
   const [gatesErr, setGatesErr] = useState<ApiError | null>(null);
+  const [sellers, setSellers] = useState<Seller[] | null>(null);
+  const [sellersErr, setSellersErr] = useState<ApiError | null>(null);
 
   const [draft, setDraft] = useState<Draft>(emptyDraft);
   const [baseline, setBaseline] = useState<Baseline>(() => baselineOf(null));
@@ -126,7 +130,8 @@ export function PoEditor({ poId }: { poId: PoId | null }) {
   const [missing, setMissing] = useState<string[] | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  const edit = (next: Draft) => { setDraft(next); setDirty(true); };
+  // 稿一变，旧的拒绝理由（按旧可用量算的）就不再成立
+  const edit = (next: Draft) => { setDraft(next); setDirty(true); setRefusal({}); };
 
   const loadCands = useCallback(() => {
     const t0 = performance.now();
@@ -173,6 +178,9 @@ export function PoEditor({ poId }: { poId: PoId | null }) {
       },
       (e: unknown) => { const err = asApiError(e); logFail('getPurchaseOptions', err, t0); setOptionsErr(err); },
     );
+    const t1 = performance.now();
+    Promise.resolve().then(() => api.listSellers()).then(setSellers,
+      (e: unknown) => { const err = asApiError(e); logFail('listSellers', err, t1); setSellersErr(err); });
     loadCands();
     if (poId !== null) loadPo(poId).catch((e: unknown) => setPoErr(e as ApiError));
   }, [poId, loadCands, loadPo]);
@@ -180,9 +188,13 @@ export function PoEditor({ poId }: { poId: PoId | null }) {
   const groups = useMemo(() => groupCandidates(cands?.lines ?? []), [cands]);
   const candById = useMemo(() => new Map((cands?.lines ?? []).map((l) => [l.line_id, l])), [cands]);
   const localGates = useMemo(() => validate(draft), [draft]);
+  const ownOnly = useMemo(() => (cands !== null || candsErr !== null ? ownOnlyRecords(po, cands?.lines ?? []) : []),
+    [po, cands, candsErr]);
+  const sellerName = useMemo(() => new Map((sellers ?? []).map((x) => [x.seller_id, x.name])), [sellers]);
+  const shop = (sid: string) => { const n = sellerName.get(sid); return n ? `${n}（${sid}）` : sid; };
   const useLocal = poId === null || dirty;
 
-  const doAdd = (c: CandidateLine, sid: string) => {
+  const doAdd = (c: SourceTarget, sid: string) => {
     const k = `${c.line_id}|${sid}`;
     const raw = (addQty[k] ?? '').trim();
     const r = addSource(draft, c, sid, raw === '' ? NaN : Number(raw), baseline);
@@ -191,7 +203,6 @@ export function PoEditor({ poId }: { poId: PoId | null }) {
         ? `超过该店剩余，最多还能加 ${r.available ?? 0}` : REFUSAL_TEXT[r.reason] });
       return;
     }
-    setRefusal(({ [k]: _drop, ...rest }) => rest);
     setAddQty(({ [k]: _drop, ...rest }) => rest);
     edit(r.draft);
   };
@@ -207,7 +218,7 @@ export function PoEditor({ poId }: { poId: PoId | null }) {
         console.info('[po-editor] createPurchaseOrder ok', JSON.stringify({ po_id, lines: r.body.lines.length,
           ms: Math.round(performance.now() - t0) }));
         succeed('save');
-        pushToast({ kind: 'ok', text: `已保存草稿 SCM-PO-${po_id}` });
+        pushToast({ kind: 'ok', text: '已保存草稿' });
         refreshAttention();
         navigate(`/purchase/${po_id}`);
         return;
@@ -291,6 +302,39 @@ export function PoEditor({ poId }: { poId: PoId | null }) {
   const shownGates = useLocal ? localGates : gates;
   const failing = shownGates?.filter((g) => !g.ok).length ?? 0;
 
+  const sellerTable = (r: SourceTarget, saved?: Record<string, number>) => (
+    <table className="table table--dense">
+      <thead><tr><th>店</th>{saved && <th className="r">本单原有</th>}<th className="r">剩余</th><th>数量</th><th /></tr></thead>
+      <tbody>
+        {Object.keys(r.sellers).sort().map((sid) => {
+          const k = `${r.line_id}|${sid}`;
+          const avail = available(r, sid, draft, baseline);
+          const off = avail === null || avail <= 0;
+          return (
+            <tr key={sid} data-testid={`seller-${sid}`}>
+              <td>{shop(sid)}</td>
+              {saved && <td className="r">{saved[sid] ?? 0}</td>}
+              <td className="r" data-testid="avail">
+                {avail === null ? <Qty v={{ kind: 'unknown' }} /> : avail}
+              </td>
+              <td>
+                <input className="inp inp--tiny" type="number" min={1} step={1}
+                  aria-label={`店 ${sid} 加入数量`} disabled={off}
+                  value={addQty[k] ?? ''} onChange={(e) => setAddQty({ ...addQty, [k]: e.target.value })} />
+              </td>
+              <td>
+                <button type="button" className="btn btn--sm" disabled={off} onClick={() => doAdd(r, sid)}>加入</button>
+                {avail !== null && avail <= 0 && <span className="muted"> 已无剩余</span>}
+                {avail === null && <span className="muted"> 剩余未知</span>}
+                {refusal[k] && <span className="i-red"> {refusal[k]}</span>}
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+
   return (
     <AppShell crumb={po ? po.custom_order_sn : '新建采购单'}>
       <div className="head">
@@ -341,6 +385,12 @@ export function PoEditor({ poId }: { poId: PoId | null }) {
           <div className="panel__head">可组单记录</div>
           <div className="panel__body">
             {candsErr && <ErrorDetail err={candsErr} />}
+            {sellersErr && (
+              <div data-testid="seller-names-failed">
+                <span className="muted">店名取不到，按店编号显示</span>
+                <Fold summary="原因"><ErrorDetail err={sellersErr} /></Fold>
+              </div>
+            )}
             {cands && (Object.keys(EXCLUDED_LABEL) as (keyof CandidateLines['excluded'])[])
               .filter((k) => (cands.excluded[k] ?? 0) > 0)
               .map((k) => <div className="dropline" key={k}>{EXCLUDED_LABEL[k]} {cands.excluded[k]} 条</div>)}
@@ -351,44 +401,22 @@ export function PoEditor({ poId }: { poId: PoId | null }) {
                   <div className="sec__title"><span className="num">{g.sku}</span></div>
                   {g.records.map((r) => (
                     <div key={r.line_id} data-testid={`cand-${r.line_id}`} className={r.blocked ? 'muted' : undefined}>
-                      <div>计划 #{r.plan_id} {r.period} 剩 <span className="num">{r.remaining}/{r.total_units}</span></div>
+                      <div>计划 #{r.plan_id} {r.period} 剩 <span className="num">{recordRemaining(r, draft, baseline)}/{r.total_units}</span></div>
                       {r.blocked ? (
-                        <div>无分店依据：{r.blocked.sellers.join('、')}</div>
-                      ) : (
-                        <table className="table table--dense">
-                          <thead><tr><th>店</th><th className="r">剩余</th><th>数量</th><th /></tr></thead>
-                          <tbody>
-                            {Object.keys(r.sellers).sort().map((sid) => {
-                              const k = `${r.line_id}|${sid}`;
-                              const avail = available(r, sid, draft, baseline);
-                              return (
-                                <tr key={sid} data-testid={`seller-${sid}`}>
-                                  <td>{sid}</td>
-                                  <td className="r" data-testid="avail">
-                                    {avail === null ? <Qty v={{ kind: 'unknown' }} /> : avail}
-                                  </td>
-                                  <td>
-                                    <input className="inp inp--tiny" type="number" min={1} step={1}
-                                      aria-label={`店 ${sid} 加入数量`} disabled={!avail}
-                                      value={addQty[k] ?? ''} onChange={(e) => setAddQty({ ...addQty, [k]: e.target.value })} />
-                                  </td>
-                                  <td>
-                                    <button type="button" className="btn btn--sm" disabled={!avail}
-                                      onClick={() => doAdd(r, sid)}>加入</button>
-                                    {avail === 0 && <span className="muted"> 已无剩余</span>}
-                                    {avail === null && <span className="muted"> 剩余未知</span>}
-                                    {refusal[k] && <span className="i-red"> {refusal[k]}</span>}
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      )}
+                        <div>无分店依据：{r.blocked.sellers.map(shop).join('、')}</div>
+                      ) : sellerTable(r)}
                     </div>
                   ))}
                 </div>
               ))}
+            {ownOnly.map((o) => (
+              <div className="sec" key={`own-${o.target.line_id}`} data-testid={`own-${o.target.line_id}`}>
+                <div className="sec__title"><span className="num">{o.target.sku}</span> 本单原有来源</div>
+                <div className="muted">记录 #{o.target.line_id}</div>
+                <Fold summary="为什么单列">本单把这条记录组满了，候选不再列出它；这里只能加回本单原有的量。</Fold>
+                {sellerTable(o.target, o.saved)}
+              </div>
+            ))}
           </div>
         </div>
 
@@ -427,7 +455,7 @@ export function PoEditor({ poId }: { poId: PoId | null }) {
                       const c = candById.get(s.line_id);
                       return (
                         <li key={`${s.line_id}|${s.seller_id}`}>
-                          店 {s.seller_id} 量 <span className="num">{s.units}</span>
+                          店 {shop(s.seller_id)} 量 <span className="num">{s.units}</span>
                           {' '}<span className="muted">{c ? `计划 #${c.plan_id} ${c.period}` : `记录 #${s.line_id}`}</span>
                           {' '}<button type="button" className="btn btn--sm btn--ghost"
                             onClick={() => edit(removeSource(draft, i, j))}>移除</button>

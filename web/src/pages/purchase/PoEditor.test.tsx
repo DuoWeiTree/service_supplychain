@@ -42,6 +42,7 @@ async function mount(entry: string, over: Record<string, unknown> = {}) {
   const { ApiError } = await import('../../api/client');
   const api = {
     listAttention: vi.fn(async () => ({ count: 0, items: [] })),
+    listSellers: vi.fn(async () => [{ seller_id: '11072', name: 'A4Pet-US', market: 'US', has_fba: true, platform: 'amazon' }]),
     getPurchaseOptions: vi.fn(async () => OPTIONS),
     listCandidateLines: vi.fn(async () => CANDS),
     getPurchaseOrder: vi.fn(async () => DRAFT),
@@ -106,7 +107,7 @@ describe('采购单编辑器：新建', () => {
   it('★ blocked 记录照样列出、灰显、点名原因，不能加', async () => {
     await mount('/purchase/new');
     const rec = await screen.findByTestId('cand-103');
-    expect(rec).toHaveTextContent('无分店依据：11072');
+    expect(rec).toHaveTextContent('无分店依据：A4Pet-US（11072）');
     expect(rec).toHaveClass('muted');
     expect(within(rec).queryByRole('button', { name: '加入' })).toBeNull();
   });
@@ -301,4 +302,100 @@ describe('采购单编辑器：已保存草稿', () => {
     expect(await screen.findByText('采购单不存在')).toBeInTheDocument();
     expect(screen.getByRole('heading')).toBeInTheDocument();
   });
+
+  it('★ 本单把记录组满（候选不列）：单列「本单原有来源」，移除后能加回，超过原有量拒绝', async () => {
+    const full: PurchaseOrder = { ...DRAFT, lines: [{ ...DRAFT.lines[0]!, sku: 'SKU-Z', units: 50,
+      sources: [{ line_id: 200, seller_id: '11072', units: 50 }], sources_units: 50 }] };
+    await mount('/purchase/1', { getPurchaseOrder: vi.fn(async () => full) });
+    const own = await screen.findByTestId('own-200');
+    expect(own).toHaveTextContent('本单原有来源');
+    const row = within(own).getByTestId('seller-11072');
+    expect(within(row).getByTestId('avail')).toHaveTextContent('0');
+    expect(within(row).getByRole('button', { name: '加入' })).toBeDisabled();
+
+    await userEvent.click(within(screen.getByTestId('po-line-1')).getByRole('button', { name: '移除' }));
+    expect(screen.queryByTestId('po-line-1')).toBeNull();
+    const row2 = within(screen.getByTestId('own-200')).getByTestId('seller-11072');
+    expect(within(row2).getByTestId('avail')).toHaveTextContent('50');
+    await userEvent.type(within(row2).getByRole('spinbutton'), '51');
+    await userEvent.click(within(row2).getByRole('button', { name: '加入' }));
+    expect(row2).toHaveTextContent('最多还能加 50');
+    expect(screen.queryByTestId('po-line-1')).toBeNull();
+    await userEvent.clear(within(row2).getByRole('spinbutton'));
+    await userEvent.type(within(row2).getByRole('spinbutton'), '50');
+    await userEvent.click(within(row2).getByRole('button', { name: '加入' }));
+    const line = await screen.findByTestId('po-line-1');
+    expect(line).toHaveTextContent('SKU-Z');
+    expect(within(line).getByTestId('sources')).toHaveTextContent('50');
+  });
+
+  it('记录级剩余与分店可用同口径（加回本单已保存）', async () => {
+    await mount('/purchase/1');
+    expect(await screen.findByTestId('cand-101')).toHaveTextContent('剩 120/500');
+    await userEvent.click(within(screen.getByTestId('po-line-1')).getByRole('button', { name: '移除' }));
+    expect(screen.getByTestId('cand-101')).toHaveTextContent('剩 150/500');
+  });
+
+  it('稿变了，旧的拒绝理由收掉', async () => {
+    await mount('/purchase/1');
+    const row = await sellerRow(101, '11072');
+    await userEvent.type(within(row).getByRole('spinbutton'), '999');
+    await userEvent.click(within(row).getByRole('button', { name: '加入' }));
+    expect(row).toHaveTextContent('最多还能加');
+    await userEvent.click(within(screen.getByTestId('po-line-1')).getByRole('button', { name: '移除' }));
+    expect(await sellerRow(101, '11072')).not.toHaveTextContent('最多还能加');
+  });
+
+  it('数量填小数或负数：不截断，明说未采用', async () => {
+    await mount('/purchase/1');
+    const line = await screen.findByTestId('po-line-1');
+    const qty = within(line).getByLabelText('数量');
+    await userEvent.clear(qty);
+    await userEvent.type(qty, '-5');
+    expect(line).toHaveTextContent('数量要是非负整数，未采用');
+    expect(qty).toHaveAttribute('aria-invalid', 'true');
+    // 没被采用：仍跟随来源合计，不出「少于来源合计」
+    expect(line).not.toHaveTextContent('少于来源合计');
+    await userEvent.clear(qty);
+    await userEvent.type(qty, '40.5');
+    expect(line).toHaveTextContent('数量要是非负整数，未采用');
+    expect(line).toHaveTextContent('无计划来源 10 件');   // 停在最后一个合法值 40，没截成别的
+  });
 });
+
+describe('店名', () => {
+  it('★ listSellers 失败：按店编号显示，且明说取不到', async () => {
+    const { ApiError } = await import('../../api/client');
+    await mount('/purchase/new', { listSellers: vi.fn(async () => { throw new ApiError(500, 'boom', '店铺取不到', {}); }) });
+    const box = await screen.findByTestId('seller-names-failed');
+    expect(box).toHaveTextContent('店名取不到，按店编号显示');
+    expect(box).toHaveTextContent('店铺取不到');
+    expect(await screen.findByTestId('cand-103')).toHaveTextContent('无分店依据：11072');
+  });
+});
+
+describe('后端 409 点名字段', () => {
+  const cases: [string, string, Record<string, unknown>, string[]][] = [
+    ['over_total', '超过记录总量', { line_id: 101, total: 500, used: 480, requested: 30 }, ['line_id', 'total', 'used', 'requested', '480']],
+    ['duplicate_line', '同一张单里同货号同仓只能一行', { sku: 'SKU-A', wid: 'W-SZ' }, ['sku', 'SKU-A', 'wid', 'W-SZ']],
+    ['unplanned_reason_required', '超出计划来源的数量必须写理由', { sku: 'SKU-A', unplanned: 20 }, ['unplanned', '20']],
+    ['no_seller_basis', '期望销量为 0 或 unknown 的店无法定分店上限', { line_id: 103, sellers: ['11072'] }, ['sellers', '["11072"]']],
+    ['line_not_orderable', '只有 已提交/已确认 的记录能组单', { line_id: 101, state: '已撤销' }, ['state', '已撤销']],
+    ['unknown_supplier', '没有这个供应商（不在供应商镜像里）', { supplier_id: 'S-9' }, ['supplier_id', 'S-9']],
+    ['missing_required', '单价必填且为数字', { missing: ['lines[].price'], sku: 'SKU-A' }, ['missing', 'lines[].price']],
+  ];
+  for (const [code, hint, fields, shown] of cases) {
+    it(`${code}：hint、错误码与字段都在`, async () => {
+      const { ApiError } = await import('../../api/client');
+      await mount('/purchase/1', { updatePurchaseOrder: vi.fn(async () => {
+        throw new ApiError(code === 'over_total' || code === 'no_seller_basis' || code === 'line_not_orderable' ? 409 : 400,
+          code, hint, fields); }) });
+      await screen.findByTestId('po-line-1');
+      await userEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+      const box = (await screen.findByText(hint)).closest('[role=alert]')!;
+      expect(box).toHaveTextContent(code);
+      for (const t of shown) expect(box).toHaveTextContent(t);
+    });
+  }
+});
+

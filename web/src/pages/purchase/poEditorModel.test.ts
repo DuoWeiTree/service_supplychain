@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   addSource, available, baselineOf, emptyDraft, fromPo, gateText, groupCandidates, lineUnits,
-  removeSource, setHeader, setLineWid, toBody, unplannedUnits, updateLine, validate,
+  ownOnlyRecords, recordRemaining, removeSource, setHeader, setLineWid, toBody, unplannedUnits, updateLine, validate,
   type Draft,
 } from './poEditorModel';
 import type { CandidateLine, PurchaseOrder } from '../../api/types';
@@ -212,5 +212,42 @@ describe('候选分组', () => {
       cand({ line_id: 2, sku: 'A', period: '2026-10' }),
     ]);
     expect(g.map((x) => [x.sku, x.records.map((r) => r.line_id)])).toEqual([['A', [2, 1]], ['B', [3]]]);
+  });
+});
+
+describe('本单原有来源（候选已滤掉的记录）', () => {
+  const po = {
+    supplier_id: 'S', purchaser_id: 'p', opt_uid: 'u', qc_type: 0,
+    lines: [{ line_no: 1, sku: 'SKU-Z', wid: 'W', units: 50, price: '1', expect_arrive_date: null, unplanned_reason: null,
+      lx_item_id: null, sources: [{ line_id: 200, seller_id: '11072', units: 30 }, { line_id: 200, seller_id: '11094', units: 20 },
+        { line_id: 101, seller_id: '11072', units: 0 }], sources_units: 50, unplanned_units: 0 }],
+  } as unknown as PurchaseOrder;
+
+  it('只列候选里没有的记录；可加 = 本单原有 − 本稿现有', () => {
+    const own = ownOnlyRecords(po, [cand()]);
+    expect(own.map((r) => r.target.line_id)).toEqual([200]);
+    expect(own[0]!.saved).toEqual({ '11072': 30, '11094': 20 });
+    const base = baselineOf(po);
+    let d = fromPo(po);
+    expect(available(own[0]!.target, '11072', d, base)).toBe(0);
+    d = removeSource(d, 0, 0);
+    expect(available(own[0]!.target, '11072', d, base)).toBe(30);
+  });
+
+  it('移除后加回：不超过原有量；超了拒绝并点名可加量', () => {
+    const own = ownOnlyRecords(po, [cand()])[0]!;
+    const base = baselineOf(po);
+    const d = removeSource(fromPo(po), 0, 0);
+    expect(addSource(d, own.target, '11072', 31, base)).toEqual({ ok: false, reason: 'over_remaining', available: 30 });
+    const r = addSource(d, own.target, '11072', 30, base, 'W');
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.draft.lines[0]!.sources).toContainEqual({ line_id: 200, seller_id: '11072', units: 30 });
+  });
+
+  it('记录级剩余同口径：加回本单已保存、扣本稿', () => {
+    const base = baselineOf(po);
+    const d = fromPo(po);
+    expect(recordRemaining({ line_id: 200, remaining: 0 }, d, base)).toBe(0);
+    expect(recordRemaining({ line_id: 200, remaining: 0 }, removeSource(d, 0, 1), base)).toBe(20);
   });
 });

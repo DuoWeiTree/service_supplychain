@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { api, ApiError } from '../api';
 import { ErrorDetail } from '../components/ErrorDetail';
+import { asApiError } from '../api/client';
 
 const listeners = new Set<() => void>();
 
@@ -15,13 +16,6 @@ type State =
   | { kind: 'ok'; count: number }
   | { kind: 'fail'; err: ApiError };
 
-// 非 ApiError（建连失败等）也要落成可显示的明细，cause.code 是唯一能分辨「超时」与「连不上」的线索
-function asApiError(e: unknown): ApiError {
-  if (e instanceof ApiError) return e;
-  const err = e as { name?: string; message?: string; cause?: { code?: string } };
-  return new ApiError(0, err.name ?? 'Error', err.message ?? String(e),
-    err.cause?.code ? { cause_code: err.cause.code } : {});
-}
 
 export function AttentionBanner() {
   const [state, setState] = useState<State>({ kind: 'loading' });
