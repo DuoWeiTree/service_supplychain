@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, screen, within } from '@testing-library/react';
-import { fail } from '../../testing/backendStub';
+import userEvent from '@testing-library/user-event';
+import { fail, ok } from '../../testing/backendStub';
 import { DRAFT, EMPTY_TIMELINE, PLACED, createAttempt, mountPurchase, purchaseRoutes, type BackendState } from '../../testing/purchaseBackend';
 
 beforeEach(() => { vi.resetModules(); });
@@ -39,6 +40,16 @@ describe('采购单详情', () => {
     const rows = await screen.findAllByTestId('detail-line');
     expect(await within(rows[1]!).findByText('反查取不到')).toBeInTheDocument();
     expect(await within(rows[0]!).findByTestId('trace-101')).toHaveTextContent('已确认 30');
+  });
+
+  it('读失败可以就地重新载入', async () => {
+    let n = 0;
+    await mountPurchase('/purchase/1', purchaseRoutes(placed(), {
+      'GET /v1/purchase-orders/1/timeline': () => (n++ < 2 ? fail(500, 'internal', '服务端错误') : ok(EMPTY_TIMELINE)),
+    }));
+    expect(await screen.findByText('服务端错误')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: '重新载入' }));
+    await vi.waitFor(() => expect(screen.queryByText('服务端错误')).toBeNull());
   });
 
   it('时间线取不到：点名错误，单头明细照常', async () => {

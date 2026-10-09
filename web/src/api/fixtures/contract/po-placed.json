@@ -1,0 +1,117 @@
+{
+  "po_id": 3,
+  "supplier_id": "8085",
+  "purchaser_id": 111,
+  "opt_uid": 10925905,
+  "qc_type": 2,
+  "wid": null,
+  "custom_order_sn": "SCM-PO-3",
+  "order_sn": "FAKE-PO000001",
+  "state": "已下单",
+  "placed_at": "2026-10-09T04:35:29.131469-04:00",
+  "draft_version": 1,
+  "created_by": "alice",
+  "is_void": false,
+  "discarded_at": null,
+  "lines": [
+    {
+      "line_no": 1,
+      "sku": "DCC1800264G1",
+      "wid": 1,
+      "units": 10,
+      "price": "2.5000",
+      "expect_arrive_date": null,
+      "unplanned_reason": null,
+      "lx_item_id": "9001",
+      "sources": [
+        {
+          "line_id": 3,
+          "seller_id": "11072",
+          "units": 10
+        }
+      ],
+      "sources_units": 10,
+      "unplanned_units": 0
+    }
+  ],
+  "source_line_states": [
+    {
+      "line_id": 3,
+      "state": "已下单"
+    }
+  ],
+  "attention": [],
+  "preflight": [
+    {
+      "gate": "supplier",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "gate": "purchaser",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "gate": "opt_uid",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "gate": "qc_type",
+      "ok": true,
+      "detail": {
+        "got": 2
+      }
+    },
+    {
+      "gate": "lines",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "gate": "line_wid",
+      "ok": true,
+      "detail": {
+        "line_no": 1
+      }
+    },
+    {
+      "gate": "line_price",
+      "ok": true,
+      "detail": {
+        "line_no": 1
+      }
+    },
+    {
+      "gate": "line_units",
+      "ok": true,
+      "detail": {
+        "line_no": 1,
+        "units": 10,
+        "sources": 10
+      }
+    },
+    {
+      "gate": "line_unplanned_reason",
+      "ok": true,
+      "detail": {
+        "line_no": 1,
+        "unplanned": 0
+      }
+    },
+    {
+      "gate": "sources_orderable",
+      "ok": false,
+      "detail": {
+        "offenders": [
+          {
+            "line_id": 3,
+            "state": "已下单"
+          }
+        ]
+      }
+    }
+  ],
+  "confirm_token": "71615a96fca13dbe475547e49971c6baef6119e49c162645ace3185b84756757"
+}

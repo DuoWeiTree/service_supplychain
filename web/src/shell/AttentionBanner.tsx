@@ -28,7 +28,8 @@ export function AttentionBanner() {
       const t0 = performance.now();
       // 包一层 then：api 同步抛（桩缺方法）也落进 catch，不让红条位悄悄消失
       Promise.resolve().then(() => api.listAttention()).then(
-        (q) => { if (alive && mine === seq) setState({ kind: 'ok', count: q.count }); },
+        // ★ 「N 张采购单」数的是单，不是项：一张单常同时开着待核实与不一致（final review I2）
+        (q) => { if (alive && mine === seq) setState({ kind: 'ok', count: new Set(q.items.map((i) => i.po_id)).size }); },
         (e: unknown) => {
           const err = asApiError(e);
           console.warn('[attention] listAttention failed', JSON.stringify({

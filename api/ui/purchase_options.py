@@ -34,8 +34,8 @@ def _history(query) -> tuple[dict, dict]:
                     (time.perf_counter() - t0) * 1000, f["kind"], f["code"], f["causes"], f["msg"])
         return ({"available": False, "cause": f"{f['kind']}: {f['type']} ({f['causes']})",
                  "as_of": None, "dropped": 0}, {"purchasers": [], "opt_uids": []})
-    log.info("op=purchase_options_history elapsed_ms=%d outcome=ok purchasers=%d opt_uids=%d "
-             "dropped=%d drop_reasons=%s",
+    log.info("op=purchase_options_history target=jxd_raw.lingxing_purchase_order_list elapsed_ms=%d outcome=ok "
+             "purchasers=%d opt_uids=%d dropped=%d drop_reasons=%s",
              (time.perf_counter() - t0) * 1000, len(got.purchasers), len(got.opt_uids),
              got.dropped, got.drop_reasons)
     return ({"available": True, "cause": None,

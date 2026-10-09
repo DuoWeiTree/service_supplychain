@@ -92,7 +92,8 @@ def _check_supplier(cur, supplier_id) -> None:
                        supplier_id=supplier_id)
 
 
-MISMATCH_OPEN_HINT = "领星里有与本单同幂等键、对不上的单未处理；去领星改对后重新核对，或在领星作废该单（PB-D16）"
+# 不写「重新核对」：只剩不一致（无待核实）时没有这一步（PB-U12），出口按状态在详情页给
+MISMATCH_OPEN_HINT = "领星里有与本单同幂等键、对不上的单未处理；只能在领星改对或作废那张单，出口见本单详情（PB-D16）"
 
 
 def _assert_editable(cur, po_id: int) -> dict:

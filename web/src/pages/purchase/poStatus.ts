@@ -13,8 +13,11 @@ export const POLL_MS = 3000;
 
 /** 写动作没拿到明确答复：请求可能已到后端并在执行（建单 / 查单）。
  *  ★ 只有后端给出的明确错误码才算「被拒」；超时 · 连不上 · 5xx · 回的不是 JSON 都是「不知道」。
- *  例外：后端自己发的 502 lookup_failed 是明确结论（查询本身失败，什么也没改）。 */
+ *  例外：后端自己发的 502 lookup_failed 是明确结论（查询本身失败，什么也没改）；
+ *  mock 的 501 not_in_mock 与界面自己的 client_exception 也是确定的「没做」。 */
 export function isUnknownOutcome(err: ApiError): boolean {
+  // mock 的 501 not_in_mock 是确定的「没做」（spec §8.1）；界面自己抛的异常发生在发请求之前或之外
+  if (err.status === 501 || err.error === 'not_in_mock' || err.error === 'client_exception') return false;
   if (err.status === 0 || err.error === 'bad_response') return true;
   return err.status >= 500 && err.error !== 'lookup_failed';
 }
@@ -40,12 +43,20 @@ export function usePoll(active: boolean, tick: () => Promise<boolean>, tag: stri
     if (!active) return;
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let round = 0;
     const loop = () => {
       timer = setTimeout(() => {
-        ref.current().then(
+        const t0 = performance.now();
+        round += 1;
+        Promise.resolve().then(() => ref.current()).then(
           (done) => { if (alive && !done) loop(); },
           (e: unknown) => {
-            console.warn(`[${tag}] poll failed`, JSON.stringify({ err: String(e) }));
+            // http 层已记过打的谁；这里补上是第几轮、多久、什么错（含 tick 里非接口的异常）
+            const x = e as { name?: string; message?: string; status?: number; error?: string; fields?: Record<string, unknown>;
+              cause?: { code?: string } };
+            console.warn(`[${tag}] poll failed`, JSON.stringify({ round, ms: Math.round(performance.now() - t0),
+              name: x?.name, status: x?.status ?? null, error: x?.error ?? null, message: x?.message ?? String(e),
+              cause_code: x?.cause?.code ?? (x?.fields?.['cause_code'] as string | undefined) ?? null }));
             if (alive) loop();
           },
         );

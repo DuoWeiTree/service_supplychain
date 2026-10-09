@@ -20,6 +20,7 @@ import {
   type AddRefusal, type Baseline, type Draft, type DraftHeader, type QcType, type SourceTarget,
 } from './poEditorModel';
 import { asApiError } from '../../api/client';
+import { handlerThrew } from './fmt';
 
 const logFail = (name: string, err: ApiError, t0: number) => {
   console.warn(`[po-editor] ${name} failed`, JSON.stringify({
@@ -29,6 +30,10 @@ const logFail = (name: string, err: ApiError, t0: number) => {
 
 const EXCLUDED_LABEL: Record<keyof CandidateLines['excluded'], string> = {
   state: '状态不可组单', sku: '货号不符', category: '品类不符', period: '月份不符', fully_confirmed: '已组满',
+};
+const fieldLabel = (k: string) => {
+  const m = /^lines\[(\d+)\]\.wid$/.exec(k);
+  return m ? `第 ${m[1]} 行仓` : MISSING_LABEL[k] ?? k;
 };
 const MISSING_LABEL: Record<string, string> = {
   supplier_id: '供应商', purchaser_id: '采购方', opt_uid: '采购员', qc_type: '质检方式', lines: '明细',
@@ -172,6 +177,7 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
   const [addQty, setAddQty] = useState<Record<string, string>>({});
   const [refusal, setRefusal] = useState<Record<string, string>>({});
   const [missing, setMissing] = useState<string[] | null>(null);
+  const [invalid, setInvalid] = useState<string[]>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [placing, setPlacing] = useState(false);
 
@@ -262,11 +268,12 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
   };
 
   const save = () => run('save', async () => {
-    const r = toBody(draft);
-    if (!r.ok) { setMissing(r.missing); return; }
-    setMissing(null);
     const t0 = performance.now();
     try {
+      const r = toBody(draft);
+      if (!r.ok) { setMissing(r.missing); setInvalid(r.invalid); return; }
+      setMissing(null);
+      setInvalid([]);
       if (poId === null) {
         const { po_id } = await api.createPurchaseOrder(r.body);
         console.info('[po-editor] createPurchaseOrder ok', JSON.stringify({ po_id, lines: r.body.lines.length,
@@ -287,7 +294,7 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
       loadCands();
       await loadPo(poId).catch((e: unknown) => fail('reload', e as ApiError));
     } catch (e) {
-      const err = asApiError(e);
+      const err = e instanceof ApiError ? e : handlerThrew('po-editor', 'save', e);
       logFail(poId === null ? 'createPurchaseOrder' : 'updatePurchaseOrder', err, t0);
       if (movedOn(err)) return;
       fail('save', err);
@@ -301,7 +308,7 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
       loadCands();
       dismiss();
     } catch (e) {
-      fail('reload', e as ApiError);
+      fail('reload', handlerThrew('po-editor', 'reload', e));
     }
   });
 
@@ -316,7 +323,7 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
       refreshAttention();
       navigate('/purchase');
     } catch (e) {
-      const err = asApiError(e);
+      const err = e instanceof ApiError ? e : handlerThrew('po-editor', 'delete', e);
       logFail('deletePurchaseOrder', err, t0);
       setConfirmDelete(false);
       if (movedOn(err)) return;
@@ -352,9 +359,9 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
   const h = draft.header;
   const setH = (patch: Partial<DraftHeader>) => edit(setHeader(draft, patch));
   const purchaserOpts: ActorOption[] | null = options && options.purchasers.map((p) => ({
-    value: p.purchaser_id, text: `${p.purchaser_id}${countText(p.source, p.count)}`, history: p.source === '领星历史' }));
+    value: String(p.purchaser_id), text: `${p.purchaser_id}${countText(p.source, p.count)}`, history: p.source === '领星历史' }));
   const optUidOpts: ActorOption[] | null = options && options.opt_uids.map((p) => ({
-    value: p.opt_uid, text: `${p.opt_uid}${p.name ? ` ${p.name}` : ''}${countText(p.source, p.count)}`,
+    value: String(p.opt_uid), text: `${p.opt_uid}${p.name ? ` ${p.name}` : ''}${countText(p.source, p.count)}`,
     history: p.source === '领星历史' }));
   const suppliers = options?.suppliers ?? [];
   const warehouses = options?.warehouses ?? [];
@@ -504,8 +511,8 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
                     <span className="field"><span className="lbl">仓</span>
                       <select className="inp" aria-label="仓" value={l.wid} onChange={(e) => edit(setLineWid(draft, i, e.target.value))}>
                         <option value="">{options === null ? (optionsErr ? '仓取不到' : '正在取仓…') : '请选择'}</option>
-                        {warehouses.map((w) => <option key={w.wid} value={w.wid}>{w.name}（{w.wid}）</option>)}
-                        {l.wid && !warehouses.some((w) => w.wid === l.wid) && <option value={l.wid}>{l.wid}</option>}
+                        {warehouses.map((w) => <option key={w.wid} value={String(w.wid)}>{w.name}（{w.wid}）</option>)}
+                        {l.wid && !warehouses.some((w) => String(w.wid) === l.wid) && <option value={l.wid}>{l.wid}</option>}
                       </select>
                     </span>
                     <span className="field"><span className="lbl">数量</span>
@@ -574,9 +581,10 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
         </div>
       </div>
 
-      {missing && (
+      {missing && (missing.length > 0 || invalid.length > 0) && (
         <div className="flash flash--bad" role="alert" data-testid="save-missing">
-          <div>保存草稿前要先填：{missing.map((k) => MISSING_LABEL[k] ?? k).join('、')}</div>
+          {missing.length > 0 && <div>保存草稿前要先填：{missing.map(fieldLabel).join('、')}</div>}
+          {invalid.length > 0 && <div data-testid="save-invalid">要填整数：{invalid.map(fieldLabel).join('、')}</div>}
         </div>
       )}
       {actErr && (

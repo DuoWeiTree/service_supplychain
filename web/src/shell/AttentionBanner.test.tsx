@@ -6,6 +6,11 @@ import type { AttentionQueue } from '../api/types';
 beforeEach(() => { vi.resetModules(); });
 afterEach(() => { vi.restoreAllMocks(); vi.doUnmock('../api'); });
 
+/** n 张单、各一项 */
+const q = (n: number): AttentionQueue => ({ count: n, items: Array.from({ length: n }, (_, i) => ({
+  attention_id: i + 1, po_id: i + 1, kind: 'needs_verify' as const, opened_at: '2026-10-09T10:00:00+08:00',
+  custom_order_sn: `SCM-PO-${i + 1}`, supplier_id: 'S', timeline: `/v1/purchase-orders/${i + 1}/timeline` })) });
+
 async function mount(listAttention: () => Promise<AttentionQueue>) {
   const { ApiError } = await import('../api/client');
   vi.doMock('../api', () => ({ api: { listAttention }, ApiError }));
@@ -17,15 +22,22 @@ async function mount(listAttention: () => Promise<AttentionQueue>) {
 
 describe('AttentionBanner', () => {
   it('count>0 → 红条点名张数，链到 /purchase，没有关闭按钮', async () => {
-    await mount(async () => ({ count: 3, items: [] }));
+    await mount(async () => (q(3)));
     const link = screen.getByRole('link', { name: /3 张采购单需要人工处理/ });
     expect(link).toHaveAttribute('href', '/purchase');
     expect(link.textContent).toContain('⛔');
     expect(screen.queryByRole('button')).toBeNull();
   });
 
+  it('★ 数的是单不是项：一张单同时开着两项（待核实 + 不一致）→ 1 张', async () => {
+    const one = q(1);
+    const item = one.items[0]!;
+    await mount(async () => ({ count: 2, items: [item, { ...item, attention_id: 2, kind: 'landed_mismatch' }] }));
+    expect(screen.getByRole('link', { name: /1 张采购单需要人工处理/ })).toBeInTheDocument();
+  });
+
   it('count=0 → 什么都不渲染', async () => {
-    const { container } = await mount(async () => ({ count: 0, items: [] }));
+    const { container } = await mount(async () => (q(0)));
     expect(container.textContent).toBe('');
   });
 
@@ -47,7 +59,7 @@ describe('AttentionBanner', () => {
 
   it('refreshAttention() 重新取数：0 → 2 红条出现', async () => {
     let n = 0;
-    const fn = vi.fn(async () => ({ count: n, items: [] }));
+    const fn = vi.fn(async () => (q(n)));
     const { refreshAttention } = await mount(fn);
     expect(fn).toHaveBeenCalledTimes(1);
     n = 2;
@@ -68,7 +80,7 @@ describe('AttentionBanner', () => {
     const region = screen.getByTestId('attention-region');
     expect(region).toHaveAttribute('aria-live', 'polite');
     expect(region.textContent).toBe('');
-    await act(async () => { release({ count: 4, items: [] }); });
+    await act(async () => { release(q(4)); });
     expect(screen.getByTestId('attention-region')).toBe(region);
     expect(region).toHaveTextContent('4 张采购单需要人工处理');
   });
@@ -79,7 +91,7 @@ describe('AttentionBanner', () => {
     const { ApiError } = await import('../api/client');
     const { refreshAttention } = await mount(async () => {
       if (fail) throw new ApiError(502, 'bad_gateway', '网关错误');
-      return { count: 2, items: [] };
+      return q(2);
     });
     expect(screen.getByRole('link', { name: /2 张/ })).toBeInTheDocument();
     fail = true;

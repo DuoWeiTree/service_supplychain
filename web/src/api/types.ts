@@ -447,9 +447,11 @@ export type PoId = number;
 export interface PoSource { line_id: number; seller_id: SellerId; units: number }
 
 /** 请求体里的一行：price 为字符串（后端 Decimal，库里 numeric::text） */
+/** ★ purchaser_id / opt_uid / wid 后端是整数列（010_po.sql：int / bigint / int），JSON 里是数；
+ *  界面输入框里是文本，在 poEditorModel 的 fromPo / toBody 边界上转换。契约样本：api/fixtures/contract/ */
 export interface PoLineInput {
   sku: string;
-  wid: string;
+  wid: number;
   units: number;
   price: string;
   sources: PoSource[];
@@ -459,8 +461,8 @@ export interface PoLineInput {
 }
 export interface PoBody {
   supplier_id: string;
-  purchaser_id: string;
-  opt_uid: string;
+  purchaser_id: number;
+  opt_uid: number;
   qc_type: 0 | 1 | 2;
   lines: PoLineInput[];
 }
@@ -468,7 +470,7 @@ export interface PoBody {
 export interface PoLine {
   line_no: number;
   sku: string;
-  wid: string;
+  wid: number;
   units: number;
   price: string;
   expect_arrive_date: string | null;
@@ -490,10 +492,10 @@ export interface PoAttentionBrief { attention_id: number; kind: AttentionKind; o
 export interface PurchaseOrder {
   po_id: PoId;
   supplier_id: string;
-  purchaser_id: string;
-  opt_uid: string;
+  purchaser_id: number;
+  opt_uid: number;
   qc_type: 0 | 1 | 2;
-  wid: string | null;
+  wid: number | null;
   custom_order_sn: string;
   /** 草稿为 null */
   order_sn: string | null;
@@ -615,9 +617,9 @@ export interface AcknowledgeResult { po_id: PoId; resolution: 'mismatch_acknowle
 
 export interface PurchaseOptions {
   suppliers: { supplier_id: string; name: string }[];
-  warehouses: { wid: string; name: string }[];
-  purchasers: { purchaser_id: string; source: '本服务' | '领星历史'; count: number | null }[];
-  opt_uids: { opt_uid: string; name: string | null; source: '本服务' | '领星历史'; count: number | null }[];
+  warehouses: { wid: number; name: string }[];
+  purchasers: { purchaser_id: number; source: '本服务' | '领星历史'; count: number | null }[];
+  opt_uids: { opt_uid: number; name: string | null; source: '本服务' | '领星历史'; count: number | null }[];
   history: { available: boolean; cause: string | null; as_of: string | null; dropped: number };
 }
 

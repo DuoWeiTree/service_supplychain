@@ -1,0 +1,24 @@
+{
+  "line_id": 1,
+  "sku": "DCC1800264G1",
+  "period": "2026-10",
+  "total_units": 10,
+  "state": "已提交",
+  "confirmed_units": 4,
+  "ordered_units": 0,
+  "purchase_orders": [
+    {
+      "po_id": 1,
+      "custom_order_sn": "SCM-PO-1",
+      "order_sn": null,
+      "state": "草稿",
+      "is_void": false,
+      "sources": [
+        {
+          "seller_id": "11072",
+          "units": 4
+        }
+      ]
+    }
+  ]
+}

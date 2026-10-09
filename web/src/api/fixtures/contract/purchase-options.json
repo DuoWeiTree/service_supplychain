@@ -1,0 +1,46 @@
+{
+  "suppliers": [
+    {
+      "supplier_id": "8085",
+      "name": "01[吉信德]"
+    }
+  ],
+  "warehouses": [
+    {
+      "wid": 1,
+      "name": "测试仓"
+    }
+  ],
+  "purchasers": [
+    {
+      "purchaser_id": 111,
+      "source": "本服务",
+      "count": null
+    },
+    {
+      "purchaser_id": 185,
+      "source": "领星历史",
+      "count": 3
+    }
+  ],
+  "opt_uids": [
+    {
+      "opt_uid": 10925905,
+      "name": null,
+      "source": "本服务",
+      "count": null
+    },
+    {
+      "opt_uid": 777,
+      "name": "王五",
+      "source": "领星历史",
+      "count": 3
+    }
+  ],
+  "history": {
+    "available": true,
+    "cause": null,
+    "as_of": "2026-10-07",
+    "dropped": 0
+  }
+}

@@ -189,6 +189,9 @@ describe('待核实的动作', () => {
     const p = await panel();
     await userEvent.click(within(p).getByRole('button', { name: '重新核对' }));
     expect(await within(p).findByText('mock 数据源不下单')).toBeInTheDocument();
+    expect(within(p).queryByTestId('attn-unknown')).toBeNull();
+    expect(p).not.toHaveTextContent('结果未知：');
+    expect(within(p).getByRole('button', { name: '重新核对' })).toBeEnabled();
   });
 });
 
@@ -242,8 +245,8 @@ describe('领星明细不一致（按后端四种开立路径的真实形状）'
     const detail = { known: '领星里按幂等键查到的单与本单对不上', unknown: '它是不是本单下出去的', custom_order_sn: 'SCM-PO-1',
       order_sn: 'PO261009777', lookup_call_id: 11, differences: {
         supplier_id: { ours: 'S-1001', [THEIRS]: 'S-2002' },
-        items: { ours: [['SKU-A', 'W-SZ', 30, '12.5'], ['SKU-B', 'W-SZ', 12, '0.3333']],
-                 [THEIRS]: [['SKU-A', 'W-SZ', 25, '12.5'], ['SKU-B', 'W-SZ', 12, '0.3333']] } } };
+        items: { ours: [['SKU-A', '101', 30, '12.5'], ['SKU-B', '101', 12, '0.3333']],
+                 [THEIRS]: [['SKU-A', '101', 25, '12.5'], ['SKU-B', '101', 12, '0.3333']] } } };
     const nv = nvTimeline(true);
     return { po: { ...DRAFT, attention: [NV_OPEN, LM_BRIEF] }, queue: [],
       timeline: { ...nv, attempts: [CREATE, LOOKUP], attention: [...nv.attention, lmRow(detail)] } };
@@ -268,9 +271,9 @@ describe('领星明细不一致（按后端四种开立路径的真实形状）'
   const placedProblems = (): BackendState => {
     const detail = { known: '领星里的采购单明细与本单不一致', unknown: '是谁、为何改的', order_sn: 'PO261009001',
       read_back_call: 12, read_outcome: 'ok', problems: [
-        { problem: 'qty_or_price_differs', po_id: 1, order_sn: 'PO261009001', line_no: 1, sku: 'SKU-A', wid: 'W-SZ',
+        { problem: 'qty_or_price_differs', po_id: 1, order_sn: 'PO261009001', line_no: 1, sku: 'SKU-A', wid: 101,
           ours_units: 30, lx_units: 7, ours_price: '12.5000', lx_price: '12.5000' },
-        { problem: 'unexpected_item', po_id: 1, order_sn: 'PO261009001', line_no: null, sku: 'SKU-Z', wid: 'W-SZ',
+        { problem: 'unexpected_item', po_id: 1, order_sn: 'PO261009001', line_no: null, sku: 'SKU-Z', wid: 101,
           ours_units: null, lx_units: 3, ours_price: null, lx_price: '1.0000' }] };
     return { po: { ...PLACED, attention: [LM_BRIEF] }, queue: [], timeline: { po_id: 1,
       conclusion: { kind: 'landed_mismatch', known: detail.known, unknown: detail.unknown, facts: detail },
@@ -324,10 +327,10 @@ describe('领星明细不一致（按后端四种开立路径的真实形状）'
     const p = await panel();
     const rows = within(within(p).getByTestId('mismatch-rows')).getAllByTestId('mismatch-row');
     expect(rows).toHaveLength(2);
-    expect(rows[0]).toHaveTextContent('第 1 行 SKU-A W-SZ：数量或单价不同');
+    expect(rows[0]).toHaveTextContent('第 1 行 SKU-A 101：数量或单价不同');
     expect(rows[0]).toHaveTextContent('30 件，单价 12.5000');
     expect(rows[0]).toHaveTextContent('7 件，单价 12.5000');
-    expect(rows[1]).toHaveTextContent('SKU-Z W-SZ：领星多出这一行');
+    expect(rows[1]).toHaveTextContent('SKU-Z 101：领星多出这一行');
     expect(rows[1]).toHaveTextContent('无');
     const btn = within(p).getByRole('button', { name: '确认知悉' });
     expect(btn).toBeDisabled();

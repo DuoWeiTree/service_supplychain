@@ -53,7 +53,8 @@ describe('采购首页', () => {
     expect(rows[0]).toHaveTextContent('PO260930001');
     expect(within(rows[0]!).getByText('2')).toHaveClass('chip--bad');
     expect(rows[1]).toHaveTextContent('SCM-PO-1');
-    expect(within(rows[1]!).getAllByText('—').length).toBeGreaterThan(0);
+    // 草稿没有领星单号是「不适用」，不是「未知」
+    expect(rows[1]).toHaveTextContent('未下单');
     expect(rows[1]!.querySelector('.chip--bad')).toBeNull();
   });
 
@@ -80,6 +81,8 @@ describe('采购首页', () => {
     expect(box).toHaveTextContent('SCM-PO-3');
     const links = within(box).getAllByRole('link', { name: '打开' });
     expect(links.map((l) => l.getAttribute('href'))).toEqual(['/purchase/2', '/purchase/2', '/purchase/3']);
+    expect(within(screen.getByTestId('attention-group-needs_verify')).getAllByRole('link')).toHaveLength(1);
+    expect(screen.getByTestId('attention-group-stuck_call')).toHaveTextContent('SCM-PO-3');
   });
 
   it('核对不一致：说 N 项，折叠区列明细', async () => {

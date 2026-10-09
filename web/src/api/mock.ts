@@ -609,7 +609,7 @@ export function createMockApi(): SupplyChainApi {
     async getPurchaseOrder(poId) { return withDerived(po(poId)); },
     async createPurchaseOrder(body) {
       const id = nextPo;
-      const p: PoRow = { po_id: id, supplier_id: '', purchaser_id: '', opt_uid: '', qc_type: 0, wid: null,
+      const p: PoRow = { po_id: id, supplier_id: '', purchaser_id: 0, opt_uid: 0, qc_type: 0, wid: null,
         custom_order_sn: `SCM-PO-${id}`, order_sn: null, state: '草稿', placed_at: null, draft_version: 1,
         created_by: 'ops.zhang', is_void: false, discarded_at: null, lines: [], source_line_states: [],
         attention: [], preflight: [], confirm_token: '', created_at: new Date().toISOString() };

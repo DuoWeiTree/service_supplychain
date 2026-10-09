@@ -13,6 +13,7 @@ export interface DraftLine {
   unplanned_reason: string;
   sources: DraftSource[];
 }
+/** ★ 采购方 / 采购员 / 仓在稿里是**文本**（下拉值与手填框都是字符串），后端是整数：只在 fromPo / toBody 转 */
 export interface DraftHeader { supplier_id: string; purchaser_id: string; opt_uid: string; qc_type: QcType | null }
 export interface Draft { header: DraftHeader; lines: DraftLine[] }
 
@@ -142,11 +143,12 @@ export function updateLine(
 
 export function fromPo(po: Pick<PurchaseOrder, 'supplier_id' | 'purchaser_id' | 'opt_uid' | 'qc_type' | 'lines'>): Draft {
   return {
-    header: { supplier_id: po.supplier_id, purchaser_id: po.purchaser_id, opt_uid: po.opt_uid, qc_type: po.qc_type },
+    header: { supplier_id: String(po.supplier_id), purchaser_id: String(po.purchaser_id), opt_uid: String(po.opt_uid),
+      qc_type: po.qc_type },
     lines: po.lines.map((ln) => {
       const srcSum = ln.sources.reduce((a, s) => a + s.units, 0);
       return {
-        sku: ln.sku, wid: ln.wid,
+        sku: ln.sku, wid: String(ln.wid),
         units: ln.units === srcSum && ln.sources.length > 0 ? null : ln.units,
         price: ln.price ?? '', expect_arrive_date: ln.expect_arrive_date ?? '',
         unplanned_reason: ln.unplanned_reason ?? '',
@@ -163,14 +165,15 @@ const gate = (g: string, ok: boolean, detail: Record<string, unknown> = {}): Pre
 export function validate(d: Draft): PreflightGate[] {
   const h = d.header;
   const out = [
-    gate('supplier', !!h.supplier_id), gate('purchaser', !!h.purchaser_id), gate('opt_uid', !!h.opt_uid),
+    // 采购方 / 采购员是整数列：手填了字母也算没过（后端 preflight 只判有无，入库才炸）
+    gate('supplier', !!h.supplier_id), gate('purchaser', intOf(h.purchaser_id) !== null), gate('opt_uid', intOf(h.opt_uid) !== null),
     gate('qc_type', h.qc_type !== null, { got: h.qc_type }), gate('lines', d.lines.length > 0),
   ];
   d.lines.forEach((l, i) => {
     const n = i + 1;
     const units = lineUnits(l);
     const src = sourcesUnits(l);
-    out.push(gate('line_wid', !!l.wid, { line_no: n }));
+    out.push(gate('line_wid', intOf(l.wid) !== null, { line_no: n }));
     out.push(gate('line_price', nonnegNumber(l.price), { line_no: n }));
     out.push(gate('line_units', units >= src, { line_no: n, units, sources: src }));
     out.push(gate('line_unplanned_reason', units - src <= 0 || !!l.unplanned_reason.trim(),
@@ -192,22 +195,43 @@ export function gateText(g: PreflightGate): string {
   return typeof n === 'number' ? `第 ${n} 行${label}` : label;
 }
 
-export type BodyResult = { ok: true; body: PoBody } | { ok: false; missing: string[] };
+export type BodyResult = { ok: true; body: PoBody } | { ok: false; missing: string[]; invalid: string[] };
 
-/** 缺单头 / 没有明细时不出 body（qc_type 没选就没有合法值可发）；其余照发，由后端点名 */
+/** 文本 → 整数；不是纯数字（手填了字母、小数、负号）就是 null，不猜 */
+export function intOf(s: string): number | null {
+  const t = s.trim();
+  if (!/^\d+$/.test(t)) return null;
+  const n = Number(t);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
+/** 缺单头 / 没有明细 / 有行没选仓时不出 body（没有合法整数可发，不编一个 0）；
+ *  采购方 / 采购员 / 仓填了却不是整数 → invalid 点名，不发（后端是整数列）。其余照发，由后端点名 */
 export function toBody(d: Draft): BodyResult {
   const h = d.header;
   const missing = (['supplier_id', 'purchaser_id', 'opt_uid'] as const).filter((k) => !h[k].trim()) as string[];
   if (h.qc_type === null) missing.push('qc_type');
   if (d.lines.length === 0) missing.push('lines');
-  if (missing.length > 0 || h.qc_type === null) return { ok: false, missing };
+  const invalid: string[] = [];
+  const purchaser = intOf(h.purchaser_id);
+  const optUid = intOf(h.opt_uid);
+  if (h.purchaser_id.trim() && purchaser === null) invalid.push('purchaser_id');
+  if (h.opt_uid.trim() && optUid === null) invalid.push('opt_uid');
+  const wids = d.lines.map((l) => (l.wid === '' ? null : intOf(l.wid)));
+  d.lines.forEach((l, i) => {
+    if (l.wid === '') missing.push(`lines[${i + 1}].wid`);
+    else if (wids[i] === null) invalid.push(`lines[${i + 1}].wid`);
+  });
+  if (missing.length > 0 || invalid.length > 0 || h.qc_type === null || purchaser === null || optUid === null) {
+    return { ok: false, missing, invalid };
+  }
   return {
     ok: true,
     body: {
-      supplier_id: h.supplier_id, purchaser_id: h.purchaser_id.trim(), opt_uid: h.opt_uid.trim(), qc_type: h.qc_type,
-      lines: d.lines.map((l) => {
+      supplier_id: h.supplier_id, purchaser_id: purchaser, opt_uid: optUid, qc_type: h.qc_type,
+      lines: d.lines.map((l, i) => {
         const out: PoLineInput = {
-          sku: l.sku, wid: l.wid, units: lineUnits(l), price: l.price.trim(),
+          sku: l.sku, wid: wids[i]!, units: lineUnits(l), price: l.price.trim(),
           sources: l.sources.map((s) => ({ ...s })),
         };
         const reason = l.unplanned_reason.trim();

@@ -9,9 +9,9 @@ afterEach(() => { vi.doUnmock('../../api'); vi.restoreAllMocks(); });
 
 const OPTIONS: PurchaseOptions = {
   suppliers: [{ supplier_id: 'S-1001', name: '东莞宏达' }],
-  warehouses: [{ wid: 'W-SZ', name: '深圳本地仓' }, { wid: 'W-NB', name: '宁波本地仓' }],
-  purchasers: [{ purchaser_id: '111', source: '领星历史', count: 135 }, { purchaser_id: '185', source: '本服务', count: 2 }],
-  opt_uids: [{ opt_uid: '10925905', name: '陈彩凤', source: '领星历史', count: 143 }],
+  warehouses: [{ wid: 101, name: '深圳本地仓' }, { wid: 102, name: '宁波本地仓' }],
+  purchasers: [{ purchaser_id: 111, source: '领星历史', count: 135 }, { purchaser_id: 185, source: '本服务', count: 2 }],
+  opt_uids: [{ opt_uid: 10925905, name: '陈彩凤', source: '领星历史', count: 143 }],
   history: { available: true, cause: null, as_of: '2026-10-08', dropped: 0 },
 };
 const CANDS: CandidateLines = {
@@ -29,10 +29,10 @@ const CANDS: CandidateLines = {
   excluded: { state: 1, sku: 0, category: 0, period: 0, fully_confirmed: 2 },
 };
 const DRAFT: PurchaseOrder = {
-  po_id: 1, supplier_id: 'S-1001', purchaser_id: '111', opt_uid: '10925905', qc_type: 1, wid: 'W-SZ',
+  po_id: 1, supplier_id: 'S-1001', purchaser_id: 111, opt_uid: 10925905, qc_type: 1, wid: 101,
   custom_order_sn: 'SCM-PO-1', order_sn: null, state: '草稿', placed_at: null, draft_version: 4,
   created_by: 'ops.zhang', is_void: false, discarded_at: null,
-  lines: [{ line_no: 1, sku: 'SKU-A', wid: 'W-SZ', units: 30, price: '12.5000', expect_arrive_date: null,
+  lines: [{ line_no: 1, sku: 'SKU-A', wid: 101, units: 30, price: '12.5000', expect_arrive_date: null,
     unplanned_reason: null, lx_item_id: null, sources: [{ line_id: 101, seller_id: '11072', units: 30 }],
     sources_units: 30, unplanned_units: 0 }],
   source_line_states: [{ line_id: 101, state: '已提交' }], attention: [], preflight: [], confirm_token: 't',
@@ -167,12 +167,12 @@ describe('采购单编辑器：新建', () => {
     await userEvent.type(within(row).getByRole('spinbutton'), '30');
     await userEvent.click(within(row).getByRole('button', { name: '加入' }));
     const line = screen.getByTestId('po-line-1');
-    await userEvent.selectOptions(within(line).getByLabelText('仓'), 'W-NB');
+    await userEvent.selectOptions(within(line).getByLabelText('仓'), '102');
     await userEvent.type(within(line).getByLabelText('单价'), '3.20');
     await userEvent.click(screen.getByRole('button', { name: '保存草稿' }));
     expect(api.createPurchaseOrder).toHaveBeenCalledWith({
-      supplier_id: 'S-1001', purchaser_id: '222', opt_uid: '10925905', qc_type: 2,
-      lines: [{ sku: 'SKU-A', wid: 'W-NB', units: 30, price: '3.20',
+      supplier_id: 'S-1001', purchaser_id: 222, opt_uid: 10925905, qc_type: 2,
+      lines: [{ sku: 'SKU-A', wid: 102, units: 30, price: '3.20',
         sources: [{ line_id: 101, seller_id: '11072', units: 30 }] }],
     });
     // 跳到 /purchase/9 后按新单号载入
@@ -382,7 +382,7 @@ describe('店名', () => {
 describe('后端 409 点名字段', () => {
   const cases: [string, string, Record<string, unknown>, string[]][] = [
     ['over_total', '超过记录总量', { line_id: 101, total: 500, used: 480, requested: 30 }, ['line_id', 'total', 'used', 'requested', '480']],
-    ['duplicate_line', '同一张单里同货号同仓只能一行', { sku: 'SKU-A', wid: 'W-SZ' }, ['sku', 'SKU-A', 'wid', 'W-SZ']],
+    ['duplicate_line', '同一张单里同货号同仓只能一行', { sku: 'SKU-A', wid: 101 }, ['sku', 'SKU-A', 'wid', '101']],
     ['unplanned_reason_required', '超出计划来源的数量必须写理由', { sku: 'SKU-A', unplanned: 20 }, ['unplanned', '20']],
     ['no_seller_basis', '期望销量为 0 或 unknown 的店无法定分店上限', { line_id: 103, sellers: ['11072'] }, ['sellers', '["11072"]']],
     ['line_not_orderable', '只有 已提交/已确认 的记录能组单', { line_id: 101, state: '已撤销' }, ['state', '已撤销']],
@@ -404,3 +404,23 @@ describe('后端 409 点名字段', () => {
   }
 });
 
+
+describe('★ 写动作的处理函数自己抛了：不许静默', () => {
+  afterEach(() => { vi.doUnmock('./poEditorModel'); });
+
+  it('toBody 抛 TypeError → 屏上 ErrorDetail 点名，日志带异常名', async () => {
+    vi.doMock('./poEditorModel', async (orig) => ({
+      ...(await orig<typeof import('./poEditorModel')>()),
+      toBody: () => { throw new TypeError('h[k].trim is not a function'); },
+    }));
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { api } = await mount('/purchase/1');
+    await screen.findByTestId('po-line-1');
+    await userEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('界面内部出错，这一步没有完成（TypeError: h[k].trim is not a function）');
+    expect(alert).toHaveTextContent('client_exception');
+    expect(api.updatePurchaseOrder).not.toHaveBeenCalled();
+    expect(err.mock.calls.some((c) => String(c[0]).includes('[po-editor] save threw'))).toBe(true);
+  });
+});

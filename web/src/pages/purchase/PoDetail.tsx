@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AppShell } from '../../shell/AppShell';
+import { useInFlight } from '../../shell/useInFlight';
 import { ErrorDetail } from '../../components/ErrorDetail';
 import { Fold } from '../../components/Fold';
 import { Qty } from '../../components/Qty';
@@ -35,6 +36,7 @@ export function PoDetail({ poId, onEditable }: { poId: PoId; onEditable?: () => 
   const [queue, setQueue] = useState<AttentionItem[] | null>(null);
   const [queueErr, setQueueErr] = useState<ApiError | null>(null);
   const [traces, setTraces] = useState<Record<number, TraceState>>({});
+  const { pending, run } = useInFlight();
 
   const load = useCallback(async () => {
     await Promise.all([
@@ -83,11 +85,17 @@ export function PoDetail({ poId, onEditable }: { poId: PoId; onEditable?: () => 
     }
   }, [lineKey]);   // eslint-disable-line react-hooks/exhaustive-deps
 
+  // 读失败后不用整页刷新：同一个 load 再跑一遍，各读各自落地
+  const retry = (
+    <button type="button" className="btn btn--sm" disabled={pending.has('reload')}
+      onClick={() => void run('reload', load)}>重新载入</button>
+  );
+
   if (po === null) {
     return (
       <AppShell crumb="采购单">
         <div className="head"><div className="head__main"><h1>采购单 {poId}</h1></div></div>
-        {poErr ? <ErrorDetail err={poErr} /> : <div className="empty">正在取采购单…</div>}
+        {poErr ? <><ErrorDetail err={poErr} />{retry}</> : <div className="empty">正在取采购单…</div>}
       </AppShell>
     );
   }
@@ -102,6 +110,7 @@ export function PoDetail({ poId, onEditable }: { poId: PoId; onEditable?: () => 
       </div>
 
       {poErr && <ErrorDetail err={poErr} />}
+      {(poErr || tlErr || queueErr) && retry}
       {queueErr && (
         <div>
           <span className="muted">待处理队列取不到，卡住的调用可能没显示</span>

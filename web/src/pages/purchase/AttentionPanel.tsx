@@ -6,10 +6,9 @@ import { useActionError } from '../../shell/useActionError';
 import { pushToast, type Toast } from '../../shell/toastStore';
 import { refreshAttention } from '../../shell/AttentionBanner';
 import { api, ApiError } from '../../api';
-import { asApiError } from '../../api/client';
 import type { AttentionItem, AttentionKind, PoAttempt, PoTimeline, PurchaseOrder, TimelineConclusion } from '../../api/types';
 import { KIND_LABEL, isUnknownOutcome, usePoll } from './poStatus';
-import { fmtAt, logWrite, logWriteFail } from './fmt';
+import { fmtAt, handlerThrew, logWrite, logWriteFail } from './fmt';
 
 const OUTCOME_LABEL: Record<string, string> = {
   ok: '成功', rejected: '拒绝', not_sent: '没发出', unknown: '结果未知', in_flight: '进行中',
@@ -204,7 +203,7 @@ export function AttentionPanel({ po, timeline, timelineErr, stuck, placing, onCh
         errs.succeed(key);
         pushToast(d.toast);
       } catch (e) {
-        const err = asApiError(e);
+        const err = e instanceof ApiError ? e : handlerThrew('po-attention', key, e);
         logWriteFail('po-attention', call, t0, err);
         errs.fail(key, err);
         if ((key === 'recheck' || key === 'register') && isUnknownOutcome(err)) { setUnknownKey(key); return; }
@@ -274,6 +273,7 @@ export function AttentionPanel({ po, timeline, timelineErr, stuck, placing, onCh
                 去领星照此搜：幂等键 {conclusion.how_to_search.custom_order_sn ?? '—'}
                 {conclusion.how_to_search.window['search_field_time'] === 'create_time' ? '，创建时间 ' : '，时间 '}
                 {String(conclusion.how_to_search.window['start_date'] ?? '—')} 至 {String(conclusion.how_to_search.window['end_date'] ?? '—')}
+                ，供应商 {po.supplier_id}，货号 {[...new Set(po.lines.map((l) => l.sku))].join('、') || '—'}
               </div>
             )}
           </div>

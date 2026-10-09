@@ -1,0 +1,112 @@
+{
+  "po_id": 1,
+  "supplier_id": "8085",
+  "purchaser_id": 111,
+  "opt_uid": 10925905,
+  "qc_type": 2,
+  "wid": null,
+  "custom_order_sn": "SCM-PO-1",
+  "order_sn": null,
+  "state": "草稿",
+  "placed_at": null,
+  "draft_version": 1,
+  "created_by": "alice",
+  "is_void": false,
+  "discarded_at": null,
+  "lines": [
+    {
+      "line_no": 1,
+      "sku": "DCC1800264G1",
+      "wid": 1,
+      "units": 4,
+      "price": "2.5000",
+      "expect_arrive_date": null,
+      "unplanned_reason": null,
+      "lx_item_id": null,
+      "sources": [
+        {
+          "line_id": 1,
+          "seller_id": "11072",
+          "units": 4
+        }
+      ],
+      "sources_units": 4,
+      "unplanned_units": 0
+    }
+  ],
+  "source_line_states": [
+    {
+      "line_id": 1,
+      "state": "已提交"
+    }
+  ],
+  "attention": [],
+  "preflight": [
+    {
+      "gate": "supplier",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "gate": "purchaser",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "gate": "opt_uid",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "gate": "qc_type",
+      "ok": true,
+      "detail": {
+        "got": 2
+      }
+    },
+    {
+      "gate": "lines",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "gate": "line_wid",
+      "ok": true,
+      "detail": {
+        "line_no": 1
+      }
+    },
+    {
+      "gate": "line_price",
+      "ok": true,
+      "detail": {
+        "line_no": 1
+      }
+    },
+    {
+      "gate": "line_units",
+      "ok": true,
+      "detail": {
+        "line_no": 1,
+        "units": 4,
+        "sources": 4
+      }
+    },
+    {
+      "gate": "line_unplanned_reason",
+      "ok": true,
+      "detail": {
+        "line_no": 1,
+        "unplanned": 0
+      }
+    },
+    {
+      "gate": "sources_orderable",
+      "ok": true,
+      "detail": {
+        "offenders": []
+      }
+    }
+  ],
+  "confirm_token": "b81e1597dc8da2dd50daabea2e20e68ed1f903126ff7be64d39e2efa2a6bcddc"
+}

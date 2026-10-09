@@ -71,7 +71,7 @@ describe('⛔ 下单确认弹窗', () => {
     const rows = within(dlg).getAllByTestId('place-line');
     expect(rows).toHaveLength(2);
     expect(rows[1]).toHaveTextContent('SKU-B');
-    expect(rows[1]).toHaveTextContent('深圳本地仓（W-SZ）');
+    expect(rows[1]).toHaveTextContent('深圳本地仓（101）');
     expect(rows[1]).toHaveTextContent('0.3333');
     expect(within(rows[1]!).getByTestId('unplanned')).toHaveTextContent('2');
     // 金额精确求和，不经浮点：30×12.5 + 12×0.3333
@@ -237,10 +237,21 @@ describe('结果未知：每 3 秒查调用记录，等真实结果', () => {
     expect(await screen.findByTestId('po-axes')).toHaveTextContent('已下单');
   });
 
-  it('409 po_placing 也是「结果未知」，不是普通错误', async () => {
-    const { dlg } = await toUnknown(fresh(), () => fail(409, 'po_placing', '下单请求进行中', { po_id: 1 }));
-    expect(confirmIn(dlg)).toBeDisabled();
-    expect(within(dlg).getByTestId('place-poll')).toBeInTheDocument();
+  it('409 po_placing（别的页签的下单在途）→ 不是普通错误：交回路由，详情「下单进行中」', async () => {
+    const st = fresh();
+    await mountPurchase('/purchase/1', purchaseRoutes(st, {
+      'POST /v1/purchase-orders/1/place': () => {
+        st.timeline = { ...EMPTY_TIMELINE, attempts: [createAttempt({ call_id: 3 })] };
+        return fail(409, 'po_placing', '下单请求进行中', { po_id: 1 });
+      },
+    }));
+    await vi.waitFor(async () => expect(await placeBtn()).toBeEnabled());
+    const dlg = await openDialog();
+    await vi.waitFor(() => expect(confirmIn(dlg)).toBeEnabled());
+    await userEvent.click(confirmIn(dlg));
+    expect(await screen.findByTestId('attn-placing')).toHaveTextContent('下单进行中');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByRole('button', { name: '⛔ 下单' })).toBeNull();
   });
 
   it('只认打开之后的那次下单：上一轮的 not_sent 不冒充这一轮的结果', async () => {
@@ -278,5 +289,10 @@ describe('mock 数据源', () => {
     const res = await within(dlg).findByTestId('place-result');
     expect(res).toHaveTextContent('not_in_mock');
     expect(res).toHaveTextContent('mock 数据源不下单');
+    // ★ 501 是确定的「没做」，不是「结果未知」：不锁、不轮询、能关
+    expect(dlg).not.toHaveTextContent('结果未知');
+    expect(within(dlg).queryByTestId('place-poll')).toBeNull();
+    await userEvent.click(within(dlg).getByRole('button', { name: '取消' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 });

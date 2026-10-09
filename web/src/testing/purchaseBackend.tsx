@@ -7,21 +7,21 @@ import { ok, stubBackend, type Handler } from './backendStub';
 /** 采购单页的 http 打桩：形状照后端（usecase/draft_po.py::load_po、usecase/attention.py::timeline）。 */
 export const OPTIONS: PurchaseOptions = {
   suppliers: [{ supplier_id: 'S-1001', name: '东莞宏达' }],
-  warehouses: [{ wid: 'W-SZ', name: '深圳本地仓' }],
-  purchasers: [{ purchaser_id: '111', source: '领星历史', count: 135 }],
-  opt_uids: [{ opt_uid: '10925905', name: '陈彩凤', source: '领星历史', count: 143 }],
+  warehouses: [{ wid: 101, name: '深圳本地仓' }],
+  purchasers: [{ purchaser_id: 111, source: '领星历史', count: 135 }],
+  opt_uids: [{ opt_uid: 10925905, name: '陈彩凤', source: '领星历史', count: 143 }],
   history: { available: true, cause: null, as_of: '2026-10-08', dropped: 0 },
 };
 
 export const DRAFT: PurchaseOrder = {
-  po_id: 1, supplier_id: 'S-1001', purchaser_id: '111', opt_uid: '10925905', qc_type: 1, wid: 'W-SZ',
+  po_id: 1, supplier_id: 'S-1001', purchaser_id: 111, opt_uid: 10925905, qc_type: 1, wid: 101,
   custom_order_sn: 'SCM-PO-1', order_sn: null, state: '草稿', placed_at: null, draft_version: 4,
   created_by: 'ops.zhang', is_void: false, discarded_at: null,
   lines: [
-    { line_no: 1, sku: 'SKU-A', wid: 'W-SZ', units: 30, price: '12.5000', expect_arrive_date: null,
+    { line_no: 1, sku: 'SKU-A', wid: 101, units: 30, price: '12.5000', expect_arrive_date: null,
       unplanned_reason: null, lx_item_id: null, sources: [{ line_id: 101, seller_id: '11072', units: 30 }],
       sources_units: 30, unplanned_units: 0 },
-    { line_no: 2, sku: 'SKU-B', wid: 'W-SZ', units: 12, price: '0.3333', expect_arrive_date: null,
+    { line_no: 2, sku: 'SKU-B', wid: 101, units: 12, price: '0.3333', expect_arrive_date: null,
       unplanned_reason: '补样品', lx_item_id: null, sources: [{ line_id: 102, seller_id: '11072', units: 10 }],
       sources_units: 10, unplanned_units: 2 },
   ],

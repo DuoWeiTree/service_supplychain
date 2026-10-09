@@ -1,0 +1,71 @@
+{
+  "po_id": 1,
+  "ok": true,
+  "gates": [
+    {
+      "gate": "supplier",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "gate": "purchaser",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "gate": "opt_uid",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "gate": "qc_type",
+      "ok": true,
+      "detail": {
+        "got": 2
+      }
+    },
+    {
+      "gate": "lines",
+      "ok": true,
+      "detail": {}
+    },
+    {
+      "gate": "line_wid",
+      "ok": true,
+      "detail": {
+        "line_no": 1
+      }
+    },
+    {
+      "gate": "line_price",
+      "ok": true,
+      "detail": {
+        "line_no": 1
+      }
+    },
+    {
+      "gate": "line_units",
+      "ok": true,
+      "detail": {
+        "line_no": 1,
+        "units": 4,
+        "sources": 4
+      }
+    },
+    {
+      "gate": "line_unplanned_reason",
+      "ok": true,
+      "detail": {
+        "line_no": 1,
+        "unplanned": 0
+      }
+    },
+    {
+      "gate": "sources_orderable",
+      "ok": true,
+      "detail": {
+        "offenders": []
+      }
+    }
+  ]
+}

@@ -443,8 +443,8 @@ describe('★ Task 22（业主裁定 2026-09-27）：货号没有 msku 了，货
 
   describe('采购（只读 + 草稿增删改；不下单）', () => {
     const body = (over: Record<string, unknown> = {}, units = 10, seller = '11072', lineId = 101) => ({
-      supplier_id: 'S-1001', purchaser_id: 'ops.zhang', opt_uid: 'u-501', qc_type: 1 as const,
-      lines: [{ sku: 'A4P-TOY-002', wid: 'W-SZ', units, price: '12.5',
+      supplier_id: 'S-1001', purchaser_id: 111, opt_uid: 10925905, qc_type: 1 as const,
+      lines: [{ sku: 'A4P-TOY-002', wid: 101, units, price: '12.5',
                 sources: [{ line_id: lineId, seller_id: seller, units }] }],
       ...over,
     });

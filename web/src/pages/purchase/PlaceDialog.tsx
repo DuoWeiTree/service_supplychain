@@ -10,7 +10,7 @@ import { api, ApiError } from '../../api';
 import { asApiError } from '../../api/client';
 import type { PlaceResult, PoTimeline, PurchaseOptions, PurchaseOrder } from '../../api/types';
 import { QC_LABEL } from './poEditorModel';
-import { exactTotal, fmtAt, logWrite, logWriteFail } from './fmt';
+import { exactTotal, fmtAt, handlerThrew, logWrite, logWriteFail } from './fmt';
 import { isCreate, isUnknownOutcome, lastCreateId, usePoll } from './poStatus';
 
 type Res =
@@ -41,7 +41,7 @@ export function PlaceDialog({ po, options, onClose, onSettled, onStale }: {
 
   const supplier = options?.suppliers.find((x) => x.supplier_id === snap.supplier_id);
   const optUid = options?.opt_uids.find((o) => o.opt_uid === snap.opt_uid);
-  const wh = (wid: string) => {
+  const wh = (wid: number) => {
     const w = options?.warehouses.find((x) => x.wid === wid);
     return w ? `${w.name}（${wid}）` : wid;
   };
@@ -77,24 +77,34 @@ export function PlaceDialog({ po, options, onClose, onSettled, onStale }: {
   usePoll(unknown && baseline !== null, async () => settleFrom(await api.getTimeline(snap.po_id)), 'po-place');
 
   const confirm = () => run('place', async () => {
+    try {
+      await doPlace();
+    } catch (e) {
+      setRes({ kind: 'error', err: handlerThrew('po-place', 'place', e) });
+    }
+  });
+
+  const doPlace = async () => {
     const call = `POST /purchase-orders/${snap.po_id}/place`;
     const t0 = performance.now();
     let r: PlaceResult;
     try {
       r = await api.placePurchaseOrder(snap.po_id, snap.confirm_token);
     } catch (e) {
-      const err = asApiError(e);
+      const err = e instanceof ApiError ? e : handlerThrew('po-place', 'place', e);
       logWriteFail('po-place', call, t0, err);
       refreshAttention();
       if (err.error === 'stale_confirm_token') { setRes({ kind: 'stale' }); onStale(); return; }
       // 状态在别处变了：回到按状态分发
-      if (err.error === 'needs_verify' || err.error === 'po_frozen' || err.error === 'mismatch_open') {
+      // po_placing：本次请求被在途锁挡下、什么也没建；在途的那次（可能是别的页签）在详情页「下单进行中」里等
+      if (err.error === 'needs_verify' || err.error === 'po_frozen' || err.error === 'mismatch_open'
+          || err.error === 'po_placing') {
         pushToast({ kind: 'warn', text: err.hint });
         onSettled();
         return;
       }
       // 没拿到明确答复 / 已有下单在途：请求可能已在建单 —— 关掉确认，按调用记录等真实结果
-      if (isUnknownOutcome(err) || err.error === 'po_placing') {
+      if (isUnknownOutcome(err)) {
         setRes({ kind: 'unknown', err, note: '正在查调用记录' });
         return;
       }
@@ -114,10 +124,13 @@ export function PlaceDialog({ po, options, onClose, onSettled, onStale }: {
       onSettled();
     } else if (r.outcome === 'rejected') {
       setRes({ kind: 'rejected', code: r.lx_code, msg: r.lx_msg });
-    } else {
+    } else if (r.outcome === 'not_sent') {
       setRes({ kind: 'not_sent', cause: r.cause });
+    } else {
+      // ★ 不可逆路径上认不出的结果只能是「不知道」，绝不默认成「没发出」
+      setRes({ kind: 'unknown', err: null, note: `后端回了认不出的结果：${String((r as { outcome?: unknown }).outcome)}` });
     }
-  });
+  };
 
   return (
     <Modal danger warn="这一步会在领星建出真实采购单，不可撤销" title="⛔ 下单到领星"

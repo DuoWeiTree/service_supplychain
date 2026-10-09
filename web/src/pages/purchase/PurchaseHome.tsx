@@ -5,7 +5,7 @@ import { ErrorDetail } from '../../components/ErrorDetail';
 import { Fold } from '../../components/Fold';
 import { Qty, type QtyValue } from '../../components/Qty';
 import { api, ApiError } from '../../api';
-import type { AttentionQueue, PoList, PurchaseChecks } from '../../api/types';
+import type { AttentionKind, AttentionQueue, PoList, PurchaseChecks } from '../../api/types';
 import { asApiError } from '../../api/client';
 import { KIND_LABEL } from './poStatus';
 
@@ -59,13 +59,21 @@ export function PurchaseHome() {
         <div className="panel sec" data-testid="attention-list">
           <div className="panel__head">需要人工处理</div>
           <div className="panel__body">
-            {attn.items.map((it) => (
-              <div key={`${it.po_id}-${it.kind}`} className="bar">
-                <span className="chip chip--bad">{KIND_LABEL[it.kind]}</span>
-                <span className="num">{it.custom_order_sn}</span>
-                <Link to={`/purchase/${it.po_id}`}>打开</Link>
-              </div>
-            ))}
+            {/* spec §6.6 ①：按类型分组 */}
+            {(Object.keys(KIND_LABEL) as AttentionKind[]).map((k) => {
+              const its = attn.items.filter((it) => it.kind === k);
+              return its.length === 0 ? null : (
+                <div key={k} className="sec" data-testid={`attention-group-${k}`}>
+                  <div className="sec__title"><span className="chip chip--bad">{KIND_LABEL[k]}</span> {its.length} 项</div>
+                  {its.map((it) => (
+                    <div key={`${it.po_id}-${it.kind}`} className="bar">
+                      <span className="num">{it.custom_order_sn}</span>
+                      <Link to={`/purchase/${it.po_id}`}>打开</Link>
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -108,7 +116,7 @@ export function PurchaseHome() {
                   <td>
                     {p.state}{p.is_void && <> <span className="chip chip--dim">作废</span></>}
                   </td>
-                  <td>{p.order_sn ?? <Qty v={{ kind: 'unknown' }} />}</td>
+                  <td>{p.order_sn ?? (p.state === '草稿' ? <span className="muted">未下单</span> : <Qty v={{ kind: 'unknown' }} />)}</td>
                   <td className="r">{p.lines}</td>
                   <td className="r">{p.units}</td>
                   <td className="r">{p.open_attention > 0

@@ -1,0 +1,40 @@
+{
+  "lines": [
+    {
+      "line_id": 1,
+      "plan_id": 1,
+      "rev": 1,
+      "sku": "DCC1800264G1",
+      "period": "2026-10",
+      "total_units": 10,
+      "demand_at_submit": 0,
+      "demand_by_seller": {
+        "11072": {
+          "basis": "human",
+          "units": 5
+        }
+      },
+      "state": "已提交",
+      "confirmed_units": 4,
+      "ordered_units": 0,
+      "remaining": 6,
+      "blocked": null,
+      "sellers": {
+        "11072": {
+          "expected": 5,
+          "cap": 10,
+          "used": 4,
+          "remaining": 6
+        }
+      }
+    }
+  ],
+  "groups": {},
+  "excluded": {
+    "state": 1,
+    "sku": 0,
+    "category": 0,
+    "period": 0,
+    "fully_confirmed": 1
+  }
+}

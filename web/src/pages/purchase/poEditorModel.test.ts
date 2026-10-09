@@ -27,7 +27,7 @@ const okAdd = (d: Draft, c: CandidateLine, sid: string, n: number, wid?: string)
 const filled = (): Draft => {
   let d = setHeader(emptyDraft(), { supplier_id: 'S-1', purchaser_id: '111', opt_uid: '10925905', qc_type: 0 });
   d = okAdd(d, cand(), '11072', 30);
-  d = setLineWid(d, 0, 'W-SZ');
+  d = setLineWid(d, 0, '101');
   return updateLine(d, 0, { price: '12.5' });
 };
 
@@ -61,10 +61,10 @@ describe('来源合并', () => {
 
   it('同货号两仓：改仓撞上同 (货号, 仓) → 两行合并', () => {
     let d = okAdd(emptyDraft(), cand(), '11072', 30);
-    d = setLineWid(d, 0, 'W-SZ');
-    d = okAdd(d, cand(), '11094', 10, 'W-NB');
-    expect(d.lines.map((l) => l.wid)).toEqual(['W-SZ', 'W-NB']);
-    d = setLineWid(d, 1, 'W-SZ');
+    d = setLineWid(d, 0, '101');
+    d = okAdd(d, cand(), '11094', 10, '102');
+    expect(d.lines.map((l) => l.wid)).toEqual(['101', '102']);
+    d = setLineWid(d, 1, '101');
     expect(d.lines).toHaveLength(1);
     expect(lineUnits(d.lines[0]!)).toBe(40);
   });
@@ -81,8 +81,8 @@ describe('来源合并', () => {
     const c = cand({ sellers: { '11072': { expected: 40, cap: 67, used: 67, remaining: 0 } } });
     const po = { lines: [{ sources: [{ line_id: 101, seller_id: '11072', units: 67 }] }] } as unknown as PurchaseOrder;
     const base = baselineOf(po);
-    const d = fromPo({ ...po, supplier_id: 'S', purchaser_id: 'p', opt_uid: 'u', qc_type: 0,
-      lines: [{ line_no: 1, sku: 'SKU-A', wid: 'W', units: 67, price: '1', expect_arrive_date: null,
+    const d = fromPo({ ...po, supplier_id: 'S', purchaser_id: 1, opt_uid: 2, qc_type: 0,
+      lines: [{ line_no: 1, sku: 'SKU-A', wid: 1, units: 67, price: '1', expect_arrive_date: null,
         unplanned_reason: null, lx_item_id: null, sources: [{ line_id: 101, seller_id: '11072', units: 67 }],
         sources_units: 67, unplanned_units: 0 }] } as PurchaseOrder);
     expect(available(c, '11072', d, base)).toBe(0);
@@ -121,14 +121,14 @@ describe('无计划来源', () => {
   it('fromPo：数量等于来源合计的行回到「跟随」，加来源时数量一起涨', () => {
     const po = {
       po_id: 1, supplier_id: 'S', purchaser_id: 'p', opt_uid: 'u', qc_type: 1,
-      lines: [{ line_no: 1, sku: 'SKU-A', wid: 'W', units: 30, price: '12.5000', expect_arrive_date: '2026-11-01',
+      lines: [{ line_no: 1, sku: 'SKU-A', wid: 1, units: 30, price: '12.5000', expect_arrive_date: '2026-11-01',
         unplanned_reason: null, lx_item_id: null, sources: [{ line_id: 101, seller_id: '11072', units: 30 }],
         sources_units: 30, unplanned_units: 0 }],
     } as unknown as PurchaseOrder;
     let d = fromPo(po);
     expect(d.header).toEqual({ supplier_id: 'S', purchaser_id: 'p', opt_uid: 'u', qc_type: 1 });
     expect(d.lines[0]).toMatchObject({ units: null, price: '12.5000', expect_arrive_date: '2026-11-01', unplanned_reason: '' });
-    d = okAdd(d, cand(), '11094', 10, 'W');
+    d = okAdd(d, cand(), '11094', 10, '1');
     expect(lineUnits(d.lines[0]!)).toBe(40);
   });
 });
@@ -151,7 +151,7 @@ describe('本地校验（闸名同后端 preflight）', () => {
     expect(byGate('line_units').ok).toBe(true);
     expect(byGate('line_unplanned_reason').ok).toBe(true);
 
-    d = updateLine(setLineWid(d, 0, 'W'), 0, { price: '-1', units: 50 });
+    d = updateLine(setLineWid(d, 0, '1'), 0, { price: '-1', units: 50 });
     g = validate(d);
     expect(byGate('line_wid').ok).toBe(true);
     expect(byGate('line_price').ok).toBe(false);
@@ -180,8 +180,8 @@ describe('toBody', () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.body).toEqual({
-      supplier_id: 'S-1', purchaser_id: '111', opt_uid: '10925905', qc_type: 0,
-      lines: [{ sku: 'SKU-A', wid: 'W-SZ', units: 30, price: '12.5',
+      supplier_id: 'S-1', purchaser_id: 111, opt_uid: 10925905, qc_type: 0,
+      lines: [{ sku: 'SKU-A', wid: 101, units: 30, price: '12.5',
         sources: [{ line_id: 101, seller_id: '11072', units: 30 }] }],
     });
     expect('unplanned_reason' in r.body.lines[0]!).toBe(false);
@@ -200,7 +200,23 @@ describe('toBody', () => {
 
   it('单头缺项 / 没有明细 → 不出 body，点名缺什么（同后端 missing_required 的键）', () => {
     expect(toBody(emptyDraft())).toEqual({ ok: false,
-      missing: ['supplier_id', 'purchaser_id', 'opt_uid', 'qc_type', 'lines'] });
+      missing: ['supplier_id', 'purchaser_id', 'opt_uid', 'qc_type', 'lines'], invalid: [] });
+  });
+
+  it('★ 采购方 / 采购员 / 仓是整数列：稿里的文本在这里转数；手填非数字点名、不发', () => {
+    const bad = setHeader(filled(), { purchaser_id: 'ops.zhang', opt_uid: '1.5' });
+    expect(toBody(bad)).toEqual({ ok: false, missing: [], invalid: ['purchaser_id', 'opt_uid'] });
+    expect(toBody(setLineWid(filled(), 0, 'W-SZ'))).toEqual({ ok: false, missing: [], invalid: ['lines[1].wid'] });
+    expect(toBody(setLineWid(filled(), 0, ''))).toEqual({ ok: false, missing: ['lines[1].wid'], invalid: [] });
+  });
+
+  it('★ 后端回来的整数 id 经 fromPo → toBody 往返不炸、不变型', () => {
+    const r = toBody(fromPo({ supplier_id: 'S-1', purchaser_id: 111, opt_uid: 10925905, qc_type: 2,
+      lines: [{ line_no: 1, sku: 'SKU-A', wid: 1, units: 5, price: '2.5000', expect_arrive_date: null,
+        unplanned_reason: null, lx_item_id: null, sources: [{ line_id: 1, seller_id: '11072', units: 5 }],
+        sources_units: 5, unplanned_units: 0 }] }));
+    if (!r.ok) throw new Error(JSON.stringify(r));
+    expect(r.body).toMatchObject({ purchaser_id: 111, opt_uid: 10925905, lines: [{ wid: 1 }] });
   });
 });
 
@@ -217,8 +233,8 @@ describe('候选分组', () => {
 
 describe('本单原有来源（候选已滤掉的记录）', () => {
   const po = {
-    supplier_id: 'S', purchaser_id: 'p', opt_uid: 'u', qc_type: 0,
-    lines: [{ line_no: 1, sku: 'SKU-Z', wid: 'W', units: 50, price: '1', expect_arrive_date: null, unplanned_reason: null,
+    supplier_id: 'S', purchaser_id: 1, opt_uid: 2, qc_type: 0,
+    lines: [{ line_no: 1, sku: 'SKU-Z', wid: 1, units: 50, price: '1', expect_arrive_date: null, unplanned_reason: null,
       lx_item_id: null, sources: [{ line_id: 200, seller_id: '11072', units: 30 }, { line_id: 200, seller_id: '11094', units: 20 },
         { line_id: 101, seller_id: '11072', units: 0 }], sources_units: 50, unplanned_units: 0 }],
   } as unknown as PurchaseOrder;
@@ -239,7 +255,7 @@ describe('本单原有来源（候选已滤掉的记录）', () => {
     const base = baselineOf(po);
     const d = removeSource(fromPo(po), 0, 0);
     expect(addSource(d, own.target, '11072', 31, base)).toEqual({ ok: false, reason: 'over_remaining', available: 30 });
-    const r = addSource(d, own.target, '11072', 30, base, 'W');
+    const r = addSource(d, own.target, '11072', 30, base, '1');
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.draft.lines[0]!.sources).toContainEqual({ line_id: 200, seller_id: '11072', units: 30 });
   });

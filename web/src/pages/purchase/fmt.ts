@@ -1,4 +1,4 @@
-import type { ApiError } from '../../api/client';
+import { ApiError } from '../../api/client';
 
 /** 照后端给的本地时间显示到秒，不换时区：时间线要能和服务端日志逐行对上 */
 export const fmtAt = (iso: string | null | undefined): string =>
@@ -18,6 +18,20 @@ export function exactTotal(lines: { units: number; price: string }[]): string | 
   const s = sum.toString().padStart(scale + 1, '0');
   const frac = s.slice(-scale).replace(/0+$/, '');
   return frac === '' ? s.slice(0, -scale) : `${s.slice(0, -scale)}.${frac}`;
+}
+
+/** 写动作的处理函数自己抛了（不是接口的错，是界面 / 模型的 bug）。★ 不许静默：
+ *  useInFlight 会把异常往外抛，`void run(...)` 落成没人接的 rejection —— 屏上什么都没有（final review C1）。
+ *  这里转成能交给 ErrorDetail 的错，并带上异常名、消息与 cause 记日志。 */
+export function handlerThrew(tag: string, action: string, e: unknown): ApiError {
+  if (e instanceof ApiError) return e;
+  const x = e as { name?: string; message?: string; stack?: string; cause?: { code?: string } };
+  const name = x?.name ?? 'Error';
+  const message = x?.message ?? String(e);
+  console.error(`[${tag}] ${action} threw`, JSON.stringify({ name, message, cause_code: x?.cause?.code ?? null,
+    at: x?.stack?.split('\n')[1]?.trim() ?? null }));
+  return new ApiError(0, 'client_exception', `界面内部出错，这一步没有完成（${name}: ${message}）`,
+    { action, ...(x?.cause?.code ? { cause_code: x.cause.code } : {}) });
 }
 
 /** 写动作的三问日志：打的谁（call）· 多久（ms）· 怎么失败的（status / error / cause_code） */

@@ -1,0 +1,119 @@
+{
+  "po_id": 2,
+  "conclusion": {
+    "kind": "needs_verify",
+    "known": "请求已发到领星，未收到可确认的结果（unknown，double: TimeoutError: timed out (read)）",
+    "unknown": "领星是否已建单",
+    "last_lookup": {
+      "call_id": 2,
+      "at": "2026-10-09T04:35:28.978651-04:00",
+      "outcome": "ok",
+      "truncated": false,
+      "window": {
+        "search_field_time": "create_time",
+        "start_date": "2026-10-08",
+        "end_date": "2026-10-10"
+      }
+    },
+    "how_to_search": {
+      "custom_order_sn": "SCM-PO-2",
+      "window": {
+        "search_field_time": "create_time",
+        "start_date": "2026-10-08",
+        "end_date": "2026-10-10"
+      }
+    }
+  },
+  "attempts": [
+    {
+      "call_id": 1,
+      "actor": "alice",
+      "endpoint": "create_purchase_order",
+      "host": "erp.invalid",
+      "path": "/erp/sc/routing/purchase/purchase/createPurchaseOrder",
+      "idem_key": "SCM-PO-2",
+      "elapsed_ms": 30000,
+      "outcome": "unknown",
+      "http_status": null,
+      "lx_code": null,
+      "lx_msg": null,
+      "cause": "double: TimeoutError: timed out (read)",
+      "retry_of": null,
+      "request": {
+        "wid": 1,
+        "opt_uid": 10925905,
+        "qc_type": 2,
+        "supplier_id": 8085,
+        "product_list": [
+          {
+            "sku": "DCC1800264G1",
+            "wid": 1,
+            "price": "2.5000",
+            "quantity_real": 10
+          }
+        ],
+        "purchaser_id": 111,
+        "custom_order_sn": "SCM-PO-2"
+      },
+      "response": null,
+      "at": "2026-10-09T04:35:28.877349-04:00"
+    },
+    {
+      "call_id": 2,
+      "actor": "alice",
+      "endpoint": "purchase_order_list",
+      "host": "erp.invalid",
+      "path": "/erp/sc/routing/data/local_inventory/purchaseOrderList",
+      "idem_key": null,
+      "elapsed_ms": 3,
+      "outcome": "ok",
+      "http_status": 200,
+      "lx_code": "0",
+      "lx_msg": null,
+      "cause": null,
+      "retry_of": 1,
+      "request": {
+        "length": 500,
+        "offset": 0,
+        "end_date": "2026-10-10",
+        "start_date": "2026-10-08",
+        "search_field_time": "create_time"
+      },
+      "response": {
+        "code": 0,
+        "data": [],
+        "total": 0
+      },
+      "at": "2026-10-09T04:35:28.978651-04:00"
+    }
+  ],
+  "events": [
+    {
+      "from": "[*]",
+      "to": "草稿",
+      "actor": "alice",
+      "reason": null,
+      "src": "create",
+      "at": "2026-10-09T04:35:28.687302-04:00"
+    }
+  ],
+  "attention": [
+    {
+      "attention_id": 1,
+      "kind": "needs_verify",
+      "opened_at": "2026-10-09T04:35:28.901064-04:00",
+      "resolved_at": null,
+      "resolution": null,
+      "resolved_by": null,
+      "reason": null,
+      "detail": {
+        "opened_by": "place",
+        "create_cause": "double: TimeoutError: timed out (read)",
+        "create_call_id": 1,
+        "create_outcome": "unknown",
+        "custom_order_sn": "SCM-PO-2",
+        "request_confirmed_sent": true
+      }
+    }
+  ]
+}

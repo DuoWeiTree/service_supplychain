@@ -149,7 +149,7 @@ describe('http 数据源', () => {
       return { url, method: init.method, actor: new Headers(init.headers).get('x-actor'),
                body: init.body === undefined ? undefined : JSON.parse(init.body as string) };
     };
-    const body = { supplier_id: 'S-1001', purchaser_id: 'ops.zhang', opt_uid: 'u-501', qc_type: 1 as const, lines: [] };
+    const body = { supplier_id: 'S-1001', purchaser_id: 111, opt_uid: 10925905, qc_type: 1 as const, lines: [] };
 
     it.each([
       ['listPurchaseOrders()', (a: ReturnType<typeof mk>) => a.listPurchaseOrders(), 'GET', '/v1/purchase-orders', undefined],
