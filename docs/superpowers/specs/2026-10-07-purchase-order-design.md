@@ -150,7 +150,7 @@
 
 ### 6.1 结构（`erp/`）
 
-`endpoints.py`（★ 登记表：路径 → `read｜reversible｜irreversible` · 幂等键 · 回查；未登记即拒）· `auth.py` · `sign.py`（移植兄弟仓 `ecops/plugins/global-ecommerce-erp/src/client/lingxing-client.ts`，以其样例对照测试）· `gateway.py`（唯一出站口）· `drivers/{fake,live}.py` · `usecase/place_po.py`（G-2）。
+`endpoints.py`（★ 登记表：路径 → `read｜reversible｜irreversible` · 幂等键 · 回查；未登记即拒）· `auth.py` · `sign.py`（移植兄弟仓 `ecops/plugins/global-ecommerce-erp/src/client/lingxing-client.ts`，以其样例对照测试）· `gateway.py`（唯一出站口）· `drivers/live.py` · `usecase/place_po.py`（G-2）。
 
 ★ 用登记表不用前缀推断：`createPurchaseOrder` 在 `/erp/` 下却不可逆（文档矛盾，`07:351` vs `08:242`）。
 
@@ -191,7 +191,7 @@ POST /v1/purchase-orders/{id}/place {confirm_token}
 ### 6.4 单一路径与启动闸（PB-D14 / PB-D15）
 
 下单只有一条真路径：草稿 → ⛔ 下单打真领星 → 已下单；`erp/gateway` 永远用 `LiveDriver`，没有 `[erp] mode`。配置里残留 `[erp] mode` 键 → 启动失败。
-启动闸（`api/__init__.py`，配置类错误在启动钩子炸）：`app_id` / `app_secret` / `proxy_host` 缺失 → 失败；`confirm_salt` 为空或仍是开发默认值 → 失败；`[auth] mode=rbac` → 失败（M2 未实现，§13 #8）。
+启动闸（`api/__init__.py`，配置类错误在启动钩子炸；按此序检查，命中即停）：`[auth] mode` 不是 dev / rbac → 失败；残留 `[erp] mode` 键 → 失败；`app_id` / `app_secret` / `proxy_host` 缺失 → 失败；`confirm_salt` 为空或仍是开发默认值 → 失败；最后 `[auth] mode=rbac` → 失败（M2 未实现，§13 #8）。
 通过后启动日志首屏 WARN：`erp host= proxy= auth mode=`，注明下单打真领星、dev 身份可伪造。
 领星替身只在 `tests/`（`tests/lingxing_double.py`）：测试内注入，且禁止构造 `LiveDriver`、禁止取领星 token。
 
@@ -254,7 +254,7 @@ erp op= host= path= idem= ms= outcome= http= lx_code= lx_msg= cause=<__cause__ �
 
 | 只读能答 | 只有首张 live 单能答 |
 |---|---|
-| **已实测（刀0，2026-10-08，`jobs/probe_lingxing`，仅 `purchaseOrderList`）：** 经白名单代理 + token + 签名一次通过（http 200，`code`=0）· 响应顶层键 `code / data / error_details / message / request_id / response_time / total`，`data` 为订单数组、`total` 在顶层（形状 A）· 2026-09-01~10-07 查到 4 张单，`total`=4；2026-10-07 单日 0 张 · 订单层字段含 `order_sn / custom_order_sn / status / supplier_id / wid / item_list / quantity_real / quantity_receive / quantity_entry / create_time / update_time`（共 59 个键）· ★ 明细行键为 **`id`，不是 `item_id`**（已改 `repo.insert_item_obs` / `backfill_item_ids` 与 fake）；明细含 `sku / wid / quantity_real / quantity_receive / quantity_entry / quantity_qc / quantity_return / price / is_delete / plan_sn / msku` 等 · `custom_order_sn` 是订单上的字段；**能否按它过滤未测**（登记的过滤参数只有 `order_sns`，仍客户端筛） · 仍未测：CR/IB/QC 只读接口路径与字段、302 件待检去向 | `createPurchaseOrder` 自己的响应带不带明细行号（`purchaseOrderList` 的明细行键已实测为 `id`，2026-10-08 探针） · `custom_order_sn` 格式 / 长度是否被接受 · 领星是否校验其唯一 |
+| **已实测（刀0，2026-10-08，`jobs/probe_lingxing`，仅 `purchaseOrderList`）：** 经白名单代理 + token + 签名一次通过（http 200，`code`=0）· 响应顶层键 `code / data / error_details / message / request_id / response_time / total`，`data` 为订单数组、`total` 在顶层（形状 A）· 2026-09-01~10-07 查到 4 张单，`total`=4；2026-10-07 单日 0 张 · 订单层字段含 `order_sn / custom_order_sn / status / supplier_id / wid / item_list / quantity_real / quantity_receive / quantity_entry / create_time / update_time`（共 59 个键）· ★ 明细行键为 **`id`，不是 `item_id`**（已改 `repo.insert_item_obs` / `backfill_item_ids` 与 fake（fake 已随 PB-D14 删除））；明细含 `sku / wid / quantity_real / quantity_receive / quantity_entry / quantity_qc / quantity_return / price / is_delete / plan_sn / msku` 等 · `custom_order_sn` 是订单上的字段；**能否按它过滤未测**（登记的过滤参数只有 `order_sns`，仍客户端筛） · 仍未测：CR/IB/QC 只读接口路径与字段、302 件待检去向 | `createPurchaseOrder` 自己的响应带不带明细行号（`purchaseOrderList` 的明细行键已实测为 `id`，2026-10-08 探针） · `custom_order_sn` 格式 / 长度是否被接受 · 领星是否校验其唯一 |
 
 ---
 
@@ -310,7 +310,7 @@ erp op= host= path= idem= ms= outcome= http= lx_code= lx_msg= cause=<__cause__ �
 | D1 | 直接建领星采购单 PO，不经采购计划 PP |
 | D2 | 采购量记到店铺，分店上限按期望销量占比 |
 | D3 | Σ期望 = 0 或有店 unknown → 拒绝组单并点名 |
-| D4 | ~~真网关 + `fake｜live` 开关，默认 fake~~ ★ 已推翻（PB-D14，§13 #9） |
+| D4 | ~~真网关 + `fake｜live` 开关，默认 fake~~ ★ 已推翻（PB-D14，§13 #10） |
 | D5 | 领星作废 → 释放额度，记录按量退回 |
 | D6 | 采购阶段到入库为止；CR / IB 只读回 |
 | D7 | 可备货只算良品 |
@@ -449,7 +449,7 @@ erp op= host= path= idem= ms= outcome= http= lx_code= lx_msg= cause=<__cause__ �
 
 | 硬闸（启动钩子，全局规范第 4 条） |
 |---|
-| ~~`[erp] mode=live` 且 `[auth] mode=dev` → 启动失败~~ ★ **已推翻（PB-D15，§13 #9）**：RBAC（M2）之前下单照常打真领星，身份沿用 dev 下拉；★ 已知风险由负责人接受：**RBAC 之前内网任何人可以任意身份真下单**。启动闸见 §6.4（`[auth] mode=rbac` 仍拒绝） |
+| ~~`[erp] mode=live` 且 `[auth] mode=dev` → 启动失败~~ ★ **已推翻（PB-D15，§13 #10）**：RBAC（M2）之前下单照常打真领星，身份沿用 dev 下拉；★ 已知风险由负责人接受：**RBAC 之前内网任何人可以任意身份真下单**。启动闸见 §6.4（`[auth] mode=rbac` 仍拒绝） |
 | `rbac` 模式缺 `RBAC_API_URL` / Service Token → 启动失败；启动时探 `GET /health`，不通 → 首屏 WARN（不阻塞 /health，同 I-1） |
 
 ### 12.3 ★ 失败必须分得开（样板会把它们混成 401，我们不照搬）
@@ -519,6 +519,6 @@ erp op= host= path= idem= ms= outcome= http= lx_code= lx_msg= cause=<__cause__ �
 | 5 | **settle 原子化**：close_call 与「记已下单」/「开待核实」同一事务（§6.2）；`needs_verify.detail` 冻结为事实、时间线实时推导已知 / 未知（§6.6） | §6.2 §6.6 |
 | 6 | **手动推进拒绝推导态**：`已确认 / 已下单 / 准备排货` → 422 `derived_state`，`allowed[]` 过滤它们；错误码优先级 404 → `unknown_state` → `terminal_state` → `derived_state` → `illegal_transition`（对已撤销记录说「由量推导」不真实） | `04` §1.2 |
 | 7 | 试过下单（有 `erp_call`）的草稿被删 → **软作废**（`discarded_at`），单头留档、释放额度；对已作废草稿的 place / 登记 → 409 `po_discarded` | `03` §4.0 |
-| 8 | ★ **M1 `[auth] mode=rbac` 启动即拒**（「RBAC not implemented until M2」）：鉴权链路未实现，放行等于照收伪造的 `x-actor`（PB-D15 之后下单打真领星，此闸仍保留）。凭证检查排在此闸之前 | §12.2 · `api/__init__.py` |
+| 8 | ★ **M1 `[auth] mode=rbac` 启动即拒**（「RBAC not implemented until M2」）：鉴权链路未实现，放行等于照收伪造的 `x-actor`（PB-D15 之后下单打真领星，此闸仍保留）。检查顺序：`[auth] mode` 合法性 → 残留 `[erp] mode` → 凭证 / 代理 / 盐 → 本闸（凭证类排在此闸之前） | §12.2 · `api/__init__.py` |
 | 9 | 终审修复波：`recover_stuck` 由调度器每 V5 分钟周期跑；`/v1/attention` 读时列出 `stuck_call`；卡住的读调用由恢复收尾；查重命中须对得上才记账（同键多张 / 对不上 → `landed_mismatch`）；不可逆端点非明确拒绝一律 `unknown`；`landed_mismatch` 出口 `acknowledge-mismatch`；下单前检查加 `sources_orderable` | §6.2 §6.3 §6.6 · `07` §2 · `08` |
-| 9 | ★ **删除 fake 模式（PB-D14）· 现在就允许真下单（PB-D15）**（负责人 2026-10-08）：产品只剩一条真路径，无 `[erp] mode` / `placed_mode` / `erp_call.mode` / `source='sim'`，无模拟接口；领星替身只在 `tests/`。推翻 D4 与 §12.2「live + dev 拒绝启动」。★ 已知风险由负责人接受：RBAC（M2）之前，内网任何人可以任意身份真下单。残留 `[erp] mode` → 启动失败（PB-D14a） | §6.4 · §12.2 · `00` PB 组 |
+| 10 | ★ **删除 fake 模式（PB-D14）· 现在就允许真下单（PB-D15）**（负责人 2026-10-08）：产品只剩一条真路径，无 `[erp] mode` / `placed_mode` / `erp_call.mode` / `source='sim'`，无模拟接口；领星替身只在 `tests/`。推翻 D4 与 §12.2「live + dev 拒绝启动」。★ 已知风险由负责人接受：RBAC（M2）之前，内网任何人可以任意身份真下单。残留 `[erp] mode` → 启动失败（PB-D14a） | §6.4 · §12.2 · `00` PB 组 |
