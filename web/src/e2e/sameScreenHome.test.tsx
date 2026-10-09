@@ -44,6 +44,7 @@ function backendBody(url: string): unknown {
       never_submitted_excluded: neverSubmitted,
     } };
   }
+  if (url.includes('/attention')) return { count: 0, items: [] };
   if (url.includes('/dashboard/unsubmitted')) {
     return {
       never_submitted: live.filter((p) => p.state === null).map((p) => ({ plan_id: p.plan_id, title: p.title })),

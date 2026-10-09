@@ -36,6 +36,7 @@ function stubFetch(seen: string[]) {
     const body = url.includes('/lead-time')
         ? { route: 'oversea_sea', make_days: 30, ship_days: 60, anchor_day: 15,
             valid_from: { making: '2026-01-01', shipping: '2026-01-01' } }
+      : url.includes('/attention') ? { count: 0, items: [] }
       : url.includes('/grid') ? gridFixture
       : url.includes('/sellers') ? sellersFixture
       : url.includes('/plans')

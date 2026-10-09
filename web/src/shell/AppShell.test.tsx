@@ -31,4 +31,20 @@ describe('AppShell', () => {
       .filter((s) => s.length > 8);
     expect(longs).toEqual([]);
   });
+
+  it('顶栏两个入口：销售计划 / 采购，当前所在 aria-current', () => {
+    render(<MemoryRouter initialEntries={['/purchase/new']}><AppShell crumb="新建"><p>x</p></AppShell></MemoryRouter>);
+    const plan = screen.getByRole('link', { name: '销售计划' });
+    const buy = screen.getByRole('link', { name: '采购' });
+    expect(plan).toHaveAttribute('href', '/');
+    expect(buy).toHaveAttribute('href', '/purchase');
+    expect(buy).toHaveAttribute('aria-current', 'page');
+    expect(plan).not.toHaveAttribute('aria-current');
+  });
+
+  it('在销售计划下 → 销售计划高亮', () => {
+    render(<MemoryRouter initialEntries={['/plans/1']}><AppShell crumb="计划编辑"><p>x</p></AppShell></MemoryRouter>);
+    expect(screen.getByRole('link', { name: '销售计划' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('link', { name: '采购' })).not.toHaveAttribute('aria-current');
+  });
 });

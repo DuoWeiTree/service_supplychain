@@ -3,8 +3,8 @@ import { useEffect, useId, useRef, type ReactNode } from 'react';
 /** ★ 只留一套弹窗结构：.modal-backdrop > .modal（shell.css 里 dialog.modal 与 div 版并存，
  *  这里固定用 div 版，不用原生 <dialog>） */
 export function Modal({
-  title, danger = false, onClose, children,
-}: { title: string; danger?: boolean; onClose: () => void; children: ReactNode }) {
+  title, danger = false, warn, onClose, children,
+}: { title: string; danger?: boolean; warn?: string; onClose: () => void; children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   const headingId = useId();
 
@@ -29,7 +29,7 @@ export function Modal({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="modal__head" id={headingId}>{title}</div>
-        {danger && <div className="modal__warn irreversible">⛔ 这一步会撤销已提交的记录</div>}
+        {danger && <div className="modal__warn irreversible">{warn ?? '⛔ 这一步会撤销已提交的记录'}</div>}
         <div className="modal__body">{children}</div>
       </div>
     </div>

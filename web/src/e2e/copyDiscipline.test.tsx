@@ -20,6 +20,7 @@ async function app(entry: string) {
     import('../pages/OpsHome'), import('../pages/PlanGrid'),
     import('../pages/PlanAdd'), import('../pages/PlanRevs'),
   ]);
+  const { PurchasePlaceholder } = await import('../pages/PurchasePlaceholder');
   const utils = render(
     <MemoryRouter initialEntries={[entry]}>
       <Routes>
@@ -27,6 +28,9 @@ async function app(entry: string) {
         <Route path="/plans/:planId" element={<PlanGrid />} />
         <Route path="/plans/:planId/add" element={<PlanAdd />} />
         <Route path="/plans/:planId/revs" element={<PlanRevs />} />
+        <Route path="/purchase" element={<PurchasePlaceholder crumb="采购" />} />
+        <Route path="/purchase/new" element={<PurchasePlaceholder crumb="新建采购单" />} />
+        <Route path="/purchase/:poId" element={<PurchasePlaceholder crumb="采购单" />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -44,6 +48,9 @@ describe('文案纪律', () => {
     ['计划编辑', '/plans/1'],
     ['添加货品', '/plans/1/add'],
     ['版本', '/plans/2/revs'],
+    ['采购', '/purchase'],
+    ['新建采购单', '/purchase/new'],
+    ['采购单', '/purchase/7'],
   ];
 
   for (const [name, entry] of screens) {

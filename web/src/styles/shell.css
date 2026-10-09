@@ -66,6 +66,12 @@ code, .mono { font-family: var(--font-mono); font-size: 12px; }
   box-shadow: inset 6px -6px 0 0 var(--primary-hover);
 }
 .shell__brand:hover { text-decoration: none; }
+.shell__nav { font-size: 13px; color: var(--text-2); white-space: nowrap; }
+.shell__nav:hover { text-decoration: none; color: var(--text); }
+.shell__brand[aria-current="page"], .shell__nav[aria-current="page"] { color: var(--text); font-weight: 700; }
+.shell__nav[aria-current="page"] { box-shadow: inset 0 -2px 0 0 var(--primary); }
+.attention { display: block; font-weight: 600; }
+.attention:hover { text-decoration: none; }
 .shell__crumb { font-size: 13px; color: var(--text-2); }
 .shell__spacer { flex: 1 1 auto; }
 .sep { width: 1px; height: 16px; background: var(--border-strong); }

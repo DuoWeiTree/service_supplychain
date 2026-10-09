@@ -22,3 +22,20 @@ describe('Modal', () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 });
+
+describe('Modal warn 参数', () => {
+  it('danger 且未给 warn → 保持原文案（PlanRevs 依赖）', () => {
+    const { container } = render(<Modal title="撤销" danger onClose={() => undefined}><p>x</p></Modal>);
+    expect(container.querySelector('.modal__warn')?.textContent).toBe('⛔ 这一步会撤销已提交的记录');
+  });
+
+  it('给了 warn → 用 warn', () => {
+    const { container } = render(<Modal title="下单" danger warn="⛔ 下单后不可撤回" onClose={() => undefined}><p>x</p></Modal>);
+    expect(container.querySelector('.modal__warn')?.textContent).toBe('⛔ 下单后不可撤回');
+  });
+
+  it('没有 danger → 即使给了 warn 也不显示', () => {
+    const { container } = render(<Modal title="x" warn="⛔ y" onClose={() => undefined}><p>x</p></Modal>);
+    expect(container.querySelector('.modal__warn')).toBeNull();
+  });
+});
