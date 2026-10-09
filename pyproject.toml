@@ -30,8 +30,8 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["api", "api.ui", "dim", "erp", "forecast", "jobs",
-            "migrations", "migrations.pg", "rules", "shared"]
+packages = ["api", "api.ui", "dim", "erp", "erp.drivers", "forecast", "jobs",
+            "migrations", "migrations.pg", "repo", "rules", "shared", "usecase"]
 
 [tool.ruff]
 line-length = 100
