@@ -292,3 +292,141 @@ def test_submit_logs_the_four_counts_and_refusals_name_the_offenders(
         client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
     assert "op=submit outcome=lines_in_purchase" in scm_log.text
     assert f"line_id={lid}" in scm_log.text and f"po_ids=[{po_id}]" in scm_log.text
+
+
+# ── Fix round 1：裁定 A（已完结）· 裁定 B（分店拆分）────────────────────────
+
+DONE_PATH = ("已确认", "已下单", "准备排货", "已排货", "已完结")
+
+
+def _complete(pid, sku, actor):
+    lid = _live(pid)[sku][1]
+    with pg_conn() as c, c.cursor() as cur:
+        advance(cur, lid, *DONE_PATH, actor=actor)
+    return lid
+
+
+def test_a_completed_unchanged_cell_is_carried_not_reminted(client, seed, two_skus):
+    """★ 裁定 A：已完结 的格子再铸一条 = 同一批货再买一次。"""
+    pid = two_skus
+    lid = _complete(pid, seed.sku_a, seed.actor)
+    body = client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor)).json()
+    assert body["added"]["count"] == 0 and body["kept"]["count"] == 2
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT line_id, rev, state FROM plan_line WHERE plan_id = %s AND sku = %s",
+                    (pid, seed.sku_a))
+        assert cur.fetchall() == [(lid, 2, "已完结")]
+
+
+def test_a_completed_cell_that_changed_is_refused(client, seed, two_skus):
+    pid = two_skus
+    lid = _complete(pid, seed.sku_a, seed.actor)
+    client.put(f"/v1/plans/{pid}/purchase/{seed.sku_a}/{OCT}",
+               json={"planned_units": 600}, headers=H(seed.actor))
+    snap = _snapshot(pid)
+    r = client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
+    assert r.status_code == 409
+    assert r.json()["lines"] == [{"sku": seed.sku_a, "period": OCT, "line_id": lid,
+                                  "state": "已完结", "change": "replace", "po_ids": []}]
+    assert _snapshot(pid) == snap
+
+
+def test_a_completed_cell_no_longer_minted_is_left_in_place_and_reported(
+        client, seed, two_skus, scm_log):
+    """去掉的 已完结 不许拒（终态撤不掉，拒了就永远提交不了），原地留着并点名。"""
+    pid = two_skus
+    lid = _complete(pid, seed.sku_a, seed.actor)
+    client.put(f"/v1/plans/{pid}/purchase/{seed.sku_a}/{OCT}",
+               json={"planned_units": None}, headers=H(seed.actor))
+    r = client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["removed"]["count"] == 0
+    assert body["left_completed"] == {"count": 1, "lines": [
+        {"sku": seed.sku_a, "period": OCT, "line_id": lid, "rev": 1, "total_units": 500}]}
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT rev, state FROM plan_line WHERE line_id = %s", (lid,))
+        assert cur.fetchone() == (1, "已完结")
+    assert f"left_completed=[{lid}]" in scm_log.text
+    # 再提交一次：已经留在原地的那条不会被当成「新增」重铸
+    client.put(f"/v1/plans/{pid}/purchase/{seed.sku_a}/{OCT}",
+               json={"planned_units": 500}, headers=H(seed.actor))
+    again = client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor)).json()
+    assert again["added"]["count"] == 0 and lid in [x["line_id"] for x in again["kept"]["lines"]]
+
+
+def test_same_units_retyped_by_hand_over_a_system_value_is_kept(client, seed):
+    """★ 裁定 B(i)：rev1 用系统预估 120，rev2 人填同样的 120 —— 不算变。"""
+    pid = prepared(client, seed)
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("UPDATE plan_demand_cell SET system_units = 120"
+                    " WHERE plan_id = %s AND seller_sku = %s", (pid, seed.msku_a[0]))
+    client.put(f"/v1/plans/{pid}/demand/{seed.msku_a[0]}/{seed.msku_a[1]}/{OCT}",
+               json={"expected_units": None}, headers=H(seed.actor))
+    r1 = client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
+    assert r1.status_code == 200, r1.text
+    lid = _live(pid)[seed.sku_a][1]
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT demand_by_seller FROM plan_line WHERE line_id = %s", (lid,))
+        assert cur.fetchone()[0][seed.seller_a]["basis"] == "system", "靶子：rev1 真是系统依据"
+    client.put(f"/v1/plans/{pid}/demand/{seed.msku_a[0]}/{seed.msku_a[1]}/{OCT}",
+               json={"expected_units": 120}, headers=H(seed.actor))
+    body = client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor)).json()
+    assert body["kept"]["count"] == 1 and body["replaced"]["count"] == 0
+    assert _live(pid)[seed.sku_a][1] == lid
+
+
+def test_unreferenced_line_with_a_changed_split_is_replaced(client, seed, two_skus):
+    """B(ii)：没进采购的 已提交 记录，分店量变了照样替换（D2）。"""
+    pid = two_skus
+    client.put(f"/v1/plans/{pid}/demand/{seed.msku_a[0]}/{seed.msku_a[1]}/{OCT}",
+               json={"expected_units": 130}, headers=H(seed.actor))
+    body = client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor)).json()
+    assert body["replaced"]["count"] == 1 and body["split_frozen"]["count"] == 0
+
+
+@pytest.mark.parametrize("how", ["draft", "placed"])
+def test_line_in_purchase_with_same_total_and_changed_split_is_carried_frozen(
+        client, seed, two_skus, scm_log, how):
+    """★ 裁定 B(iii)：已按旧拆分采购了 —— 带走、冻结的拆分不动、点名 split_frozen。"""
+    pid = two_skus
+    lid = _live(pid)[seed.sku_a][1]
+    if how == "draft":
+        _draft(client, seed, lid, seed.sku_a)
+    else:
+        with pg_conn() as c, c.cursor() as cur:
+            advance(cur, lid, "已确认", "已下单", actor=seed.actor)
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT demand_by_seller FROM plan_line WHERE line_id = %s", (lid,))
+        frozen = cur.fetchone()[0]
+    client.put(f"/v1/plans/{pid}/demand/{seed.msku_a[0]}/{seed.msku_a[1]}/{OCT}",
+               json={"expected_units": 130}, headers=H(seed.actor))
+    r = client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["replaced"]["count"] == 0 and lid in [x["line_id"] for x in body["kept"]["lines"]]
+    sf = body["split_frozen"]
+    assert sf["count"] == 1
+    assert sf["lines"] == [{"sku": seed.sku_a, "period": OCT, "line_id": lid,
+                            "split": {"from": {seed.seller_a: 120, seed.seller_b: 120},
+                                      "to": {seed.seller_a: 130, seed.seller_b: 120}}}]
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT rev, demand_by_seller FROM plan_line WHERE line_id = %s", (lid,))
+        assert cur.fetchone() == (2, frozen)
+    assert f"split_frozen=[{lid}]" in scm_log.text
+    if how == "draft":
+        assert _checks() == []
+
+
+def test_line_in_purchase_with_changed_total_and_split_is_refused(client, seed, two_skus):
+    pid = two_skus
+    lid = _live(pid)[seed.sku_a][1]
+    _draft(client, seed, lid, seed.sku_a)
+    client.put(f"/v1/plans/{pid}/demand/{seed.msku_a[0]}/{seed.msku_a[1]}/{OCT}",
+               json={"expected_units": 130}, headers=H(seed.actor))
+    client.put(f"/v1/plans/{pid}/purchase/{seed.sku_a}/{OCT}",
+               json={"planned_units": 600}, headers=H(seed.actor))
+    snap = _snapshot(pid)
+    r = client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
+    assert r.status_code == 409 and r.json()["lines"][0]["line_id"] == lid
+    assert _snapshot(pid) == snap

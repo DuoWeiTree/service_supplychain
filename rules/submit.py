@@ -89,7 +89,7 @@ def select_submittable(
 
 
 class PrevLine(NamedTuple):
-    """上一版的一条活记录（非终态）。"""
+    """计划里一条未撤销的记录（含 已完结 —— 裁定 A）。"""
     line_id: int
     sku: str
     period: str
@@ -103,31 +103,66 @@ class Reconciled(NamedTuple):
     replaced: list[tuple[PrevLine, Line]]
     added: list[Line]
     removed: list[PrevLine]
+    #: 保留里「总量没变、分店拆分变了、但已进采购」的 —— 带走旧拆分（裁定 B(iii)）
+    split_frozen: list[tuple[PrevLine, Line]]
+    #: 这次铸不出、但已 已完结 的：终态撤不掉，原地留着（裁定 A）
+    left_completed: list[PrevLine]
+    #: D1：要替换 / 去掉、但已进采购或已过 已提交 的
+    blocked: list[tuple[PrevLine, str]]
 
 
-def reconcile(prev: list[PrevLine], lines: list[Line]) -> Reconciled:
-    """按 (货号, 月) 对比上一版活记录与这次能铸出的（spec §2）。
+DONE = "已完结"
 
-    ★ D2：demand_by_seller 整体相等才算没变 —— 分店占比决定采购上限，
-      带着旧上限的记录不能冒充新的。
+
+def seller_units(demand_by_seller: dict) -> dict:
+    """裁定 B(i)：「没变」只比各店的量 —— basis 与 msku 明细不算（重敲同一个数不是变）。"""
+    return {sid: (v or {}).get("units") for sid, v in demand_by_seller.items()}
+
+
+def reconcile(prev: list[PrevLine], lines: list[Line],
+              referenced: set[int] = frozenset()) -> Reconciled:
+    """按 (货号, 月) 对比计划里每格最新的未撤销记录与这次能铸出的（spec §2 + 裁定 A/B）。
+
+    `referenced` = 被任一未作废采购单（含草稿）引用的 line_id。
+    ★ 已进采购（被引用或已过 已提交）的记录只看总量：采购是按它冻结的拆分做的。
     """
     by_cell: dict[tuple[str, str], list[PrevLine]] = {}
     for p in prev:
         by_cell.setdefault((p.sku, p.period), []).append(p)
-    dup = {k: sorted(x.line_id for x in v) for k, v in by_cell.items() if len(v) > 1}
+    dup = {k: sorted(x.line_id for x in v if x.state != DONE)
+           for k, v in by_cell.items() if sum(x.state != DONE for x in v) > 1}
     if dup:
         raise ValueError(f"同一货号·月有多条活记录（违反 S-4）：{sorted(dup.items())}")
-    old = {k: v[0] for k, v in by_cell.items()}
+    # ★ 活记录优先：它不处置，旧版就让不出在流转位；没有活的才看最近那条 已完结
+    old = {k: max(v, key=lambda x: (x.state != DONE, x.line_id)) for k, v in by_cell.items()}
     new = {(m.sku, m.period): m for m in lines}
 
-    kept, replaced, added = [], [], []
+    def in_purchase(p: PrevLine) -> bool:
+        return p.state != "已提交" or p.line_id in referenced
+
+    kept, replaced, added, split_frozen, blocked = [], [], [], [], []
     for k in sorted(new):
         m, p = new[k], old.get(k)
         if p is None:
             added.append(m)
-        elif p.total_units == m.total_units and p.demand_by_seller == m.demand_by_seller:
+            continue
+        same_split = seller_units(p.demand_by_seller) == seller_units(m.demand_by_seller)
+        if p.total_units == m.total_units and (same_split or in_purchase(p)):
             kept.append(p)
-        else:
-            replaced.append((p, m))
-    removed = [old[k] for k in sorted(old.keys() - new.keys())]
-    return Reconciled(kept, replaced, added, removed)
+            if not same_split:
+                split_frozen.append((p, m))
+            continue
+        replaced.append((p, m))
+        if in_purchase(p):
+            blocked.append((p, "replace"))
+    removed, left_completed = [], []
+    for k in sorted(old.keys() - new.keys()):
+        p = old[k]
+        if p.state == DONE:
+            left_completed.append(p)
+            continue
+        removed.append(p)
+        if in_purchase(p):
+            blocked.append((p, "remove"))
+    blocked.sort(key=lambda x: (x[0].sku, x[0].period))
+    return Reconciled(kept, replaced, added, removed, split_frozen, left_completed, blocked)

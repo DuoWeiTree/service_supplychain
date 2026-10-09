@@ -66,14 +66,36 @@ def test_carry_must_start_from_the_lines_current_rev(seed):
     assert "换版不匹配" in str(ei.value)
 
 
-def test_a_terminal_line_cannot_be_carried(seed):
+def test_a_revoked_line_cannot_be_carried(seed):
     with pg_conn() as c, c.cursor() as cur:
         pid, lid = mint(cur, seed.actor, seed.sku_a)
         advance(cur, lid, "已撤销", actor=seed.actor)
         _rev2(cur, pid, seed.actor)
     with pytest.raises(psycopg2.errors.RaiseException) as ei, pg_conn() as c, c.cursor() as cur:
         _carry(cur, lid, pid, 1, 2, seed.actor)
-    assert "终态" in str(ei.value)
+    assert "已撤销" in str(ei.value)
+
+
+def test_a_completed_line_can_be_carried(seed):
+    """★ 裁定 A：已完结 要带进新版，不带就会被当成新增重铸。"""
+    with pg_conn() as c, c.cursor() as cur:
+        pid, lid = mint(cur, seed.actor, seed.sku_a)
+        advance(cur, lid, "已确认", "已下单", "准备排货", "已排货", "已完结", actor=seed.actor)
+        _rev2(cur, pid, seed.actor)
+        _carry(cur, lid, pid, 1, 2, seed.actor)
+        cur.execute("SELECT rev, state FROM plan_line WHERE line_id = %s", (lid,))
+        assert cur.fetchone() == (2, "已完结")
+
+
+def test_carry_only_into_the_newest_rev(seed):
+    with pg_conn() as c, c.cursor() as cur:
+        pid, lid = mint(cur, seed.actor, seed.sku_a)
+        _rev2(cur, pid, seed.actor)
+        cur.execute("INSERT INTO plan_rev (plan_id, rev, content_digest, submitted_by, in_flight)"
+                    " VALUES (%s, 3, 'd3', %s, false)", (pid, seed.actor))
+    with pytest.raises(psycopg2.errors.RaiseException) as ei, pg_conn() as c, c.cursor() as cur:
+        _carry(cur, lid, pid, 1, 2, seed.actor)
+    assert "最新版" in str(ei.value)
 
 
 def test_carry_is_append_only(seed):

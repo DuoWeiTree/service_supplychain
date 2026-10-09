@@ -183,11 +183,61 @@ def test_reconcile_counts_a_seller_split_change_as_a_change():
     assert r.kept == [] and [p.line_id for p, _ in r.replaced] == [1]
 
 
-def test_reconcile_counts_a_basis_change_as_a_change():
-    """同样的数、依据从人填变成系统预估 —— 冻结的是「当时为什么是这个数」，也算变。"""
-    prev = [_prev(1, "S1", OCT, 100, {"11072": {"units": 10, "basis": "human"}})]
-    now = [_line("S1", OCT, 100, {"11072": {"units": 10, "basis": "system"}})]
-    assert [p.line_id for p, _ in reconcile(prev, now).replaced] == [1]
+def test_reconcile_ignores_basis_and_msku_detail_when_units_per_seller_are_equal():
+    """★ 裁定 B(i)：同样的数、依据从系统变成人填（重敲一遍）不算变 —— 否则改不回去。"""
+    prev = [_prev(1, "S1", OCT, 100, {"11072": {"units": 10, "basis": "system",
+                                                "mskus": [{"seller_sku": "A", "units": 10}]}})]
+    now = [_line("S1", OCT, 100, {"11072": {"units": 10, "basis": "human",
+                                            "mskus": [{"seller_sku": "A", "units": 4},
+                                                      {"seller_sku": "B", "units": 6}]}})]
+    r = reconcile(prev, now)
+    assert [p.line_id for p in r.kept] == [1] and r.replaced == [] and r.split_frozen == []
+
+
+def test_a_line_in_purchase_with_the_same_total_keeps_its_frozen_split():
+    """★ 裁定 B(iii)：被采购单引用或已过 已提交 → 只看总量；拆分变了照样带走，冻结的拆分不动。"""
+    old_split = {"11072": {"units": 10, "basis": "human"}}
+    new_split = {"11072": {"units": 12, "basis": "human"}}
+    for prev, refs in (([_prev(1, "S1", OCT, 100, old_split)], {1}),
+                       ([_prev(1, "S1", OCT, 100, old_split, state="已下单")], set())):
+        r = reconcile(prev, [_line("S1", OCT, 100, new_split)], referenced=refs)
+        assert [p.line_id for p in r.kept] == [1] and r.replaced == [] and r.blocked == []
+        assert [(p.line_id, m.demand_by_seller) for p, m in r.split_frozen] == [(1, new_split)]
+
+
+def test_a_line_in_purchase_with_a_changed_total_is_blocked():
+    for prev, refs in (([_prev(1, "S1", OCT, 100)], {1}),
+                       ([_prev(1, "S1", OCT, 100, state="已确认")], set())):
+        r = reconcile(prev, [_line("S1", OCT, 120)], referenced=refs)
+        assert [(p.line_id, c) for p, c in r.blocked] == [(1, "replace")]
+
+
+def test_removing_a_line_in_purchase_is_blocked_but_unreferenced_is_not():
+    r = reconcile([_prev(1, "S1", OCT, 100), _prev(2, "S2", OCT, 100)], [], referenced={2})
+    assert [p.line_id for p in r.removed] == [1, 2]
+    assert [(p.line_id, c) for p, c in r.blocked] == [(2, "remove")]
+
+
+def test_completed_lines_are_kept_refused_or_left_but_never_reminted():
+    """★ 裁定 A：已完结 的格子再铸一条 = 同一批货再买一次。"""
+    done = "已完结"
+    r = reconcile([_prev(1, "S1", OCT, 100, state=done)], [_line("S1", OCT, 100)])
+    assert [p.line_id for p in r.kept] == [1] and r.added == []
+    r = reconcile([_prev(1, "S1", OCT, 100, state=done)], [_line("S1", OCT, 120)])
+    assert [(p.line_id, c) for p, c in r.blocked] == [(1, "replace")]
+    r = reconcile([_prev(1, "S1", OCT, 100, state=done)], [])
+    assert [p.line_id for p in r.left_completed] == [1]
+    assert r.removed == [] and r.blocked == []
+
+
+def test_reconcile_compares_against_the_latest_line_of_each_cell():
+    """更早的 已完结 被后来的记录接替时，只和最新那条比。"""
+    prev = [_prev(1, "S1", OCT, 100, state="已完结"), _prev(5, "S1", OCT, 100)]
+    r = reconcile(prev, [_line("S1", OCT, 100)])
+    assert [p.line_id for p in r.kept] == [5]
+    # 活记录优先：它不处置，旧版让不出在流转位
+    prev = [_prev(1, "S1", OCT, 100), _prev(5, "S1", OCT, 100, state="已完结")]
+    assert [p.line_id for p in reconcile(prev, [_line("S1", OCT, 100)]).kept] == [1]
 
 
 def test_reconcile_of_identical_content_keeps_everything():

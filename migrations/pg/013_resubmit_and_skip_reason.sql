@@ -37,9 +37,13 @@ BEGIN
         RAISE EXCEPTION '换版不匹配：记录 % 当前在 计划 % rev %，换版称 计划 % rev %',
               NEW.line_id, l.plan_id, l.rev, NEW.plan_id, NEW.from_rev;
     END IF;
-    -- ★ 终态的记录不属于任何一版的「活记录」，带它进新版会让新版看起来包含一条已撤销的货
-    IF l.state IN ('已完结','已撤销') THEN
-        RAISE EXCEPTION '记录 % 已在终态 %，不能带进新版', NEW.line_id, l.state;
+    -- ★ 已撤销的不属于任何一版；已完结 要带（裁定 A）—— 不带，没变的格子会被当成新增再铸一条、再买一次
+    IF l.state = '已撤销' THEN
+        RAISE EXCEPTION '记录 % 已撤销，不能带进新版', NEW.line_id;
+    END IF;
+    -- 只许带进这张计划最新的一版：带进中间某版，历史就解释不通
+    IF NEW.to_rev IS DISTINCT FROM (SELECT max(rev) FROM plan_rev WHERE plan_id = NEW.plan_id) THEN
+        RAISE EXCEPTION '换版目标 rev % 不是计划 % 的最新版', NEW.to_rev, NEW.plan_id;
     END IF;
     PERFORM set_config('app.in_rev_carry','on',true);
     UPDATE plan_line SET rev = NEW.to_rev WHERE line_id = NEW.line_id;

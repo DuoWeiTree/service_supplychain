@@ -17,7 +17,14 @@ from api.ui.deps import (
 )
 from api.ui.errors import ApiError
 from rules.digest import content_digest
-from rules.submit import DemandCell, PrevLine, PurchaseCell, reconcile, select_submittable
+from rules.submit import (
+    DemandCell,
+    PrevLine,
+    PurchaseCell,
+    reconcile,
+    select_submittable,
+    seller_units,
+)
 from shared.pg_client import pg_conn, timed
 
 log = logging.getLogger("scm.api")
@@ -57,39 +64,34 @@ def _cells(cur, plan_id: int):
     return purchase, demand, claimed
 
 
-def _lock_live_lines(cur, plan_id: int) -> tuple[list[PrevLine], dict[int, tuple[int, int]]]:
-    """上一版的活记录，按 line_id 升序 FOR UPDATE（与 repo.lock_plan_lines 同序取锁，不成环）。
+def _lock_prev_lines(cur, plan_id: int) -> tuple[list[PrevLine], dict[int, tuple[int, int]]]:
+    """计划里全部未撤销的记录（含 已完结，裁定 A），按 line_id 升序 FOR UPDATE。
 
+    ★ 升序：与 repo.lock_plan_lines、cancel_rev 同序取锁，不成环。
     ★ FOR UPDATE 而不是 NO KEY UPDATE：保留的记录要改 rev，而 rev 在
       plan_line_one_per_cell 这条唯一键里 —— 改键列本来就要这一档锁，
       且它挡住并发组单插映射时外键要的 KEY SHARE，D1 判完到提交之间不会有新来源挂上来。
     """
     cur.execute("SELECT line_id, sku, period_start, total_units, demand_by_seller, state,"
                 "       demand_at_submit, rev"
-                "  FROM plan_line WHERE plan_id = %s AND state NOT IN %s"
-                " ORDER BY line_id FOR UPDATE", (plan_id, TERMINAL))
+                "  FROM plan_line WHERE plan_id = %s AND state <> '已撤销'"
+                " ORDER BY line_id FOR UPDATE", (plan_id,))
     rows = cur.fetchall()
     prev = [PrevLine(r[0], r[1], r[2].strftime("%Y-%m"), r[3], r[4], r[5]) for r in rows]
     return prev, {r[0]: (r[6], r[7]) for r in rows}
 
 
-def _in_purchase(cur, rec) -> list[dict]:
-    """D1：要撤的旧记录若已过 已提交，或被任一未作废采购单（含草稿）引用 → 逐条点名。"""
-    doomed = [(p, "replace") for p, _ in rec.replaced] + [(p, "remove") for p in rec.removed]
-    if not doomed:
-        return []
-    # ★ 作废有两种：草稿作废（明细与映射已清，查不到）· 领星作废（is_void，映射留档）
+def _po_refs(cur, line_ids: list[int]) -> dict[int, list[int]]:
+    """被哪些未作废采购单（含草稿）引用。
+    ★ 作废有两种：草稿作废（明细与映射已清，查不到）· 领星作废（is_void，映射留档）"""
+    if not line_ids:
+        return {}
     cur.execute("SELECT m.line_id, array_agg(DISTINCT m.po_id ORDER BY m.po_id)"
                 "  FROM po_source_map m"
                 "  JOIN v_po_effective e ON e.po_id = m.po_id"
                 "   AND NOT e.is_void AND e.discarded_at IS NULL"
-                " WHERE m.line_id = ANY(%s) GROUP BY m.line_id",
-                ([p.line_id for p, _ in doomed],))
-    refs = dict(cur.fetchall())
-    return [{"sku": p.sku, "period": p.period, "line_id": p.line_id, "state": p.state,
-             "change": change, "po_ids": refs.get(p.line_id, [])}
-            for p, change in sorted(doomed, key=lambda x: (x[0].sku, x[0].period))
-            if p.state != "已提交" or p.line_id in refs]
+                " WHERE m.line_id = ANY(%s) GROUP BY m.line_id", (line_ids,))
+    return dict(cur.fetchall())
 
 
 def _mint(cur, plan_id: int, rev: int, m, who: str) -> int:
@@ -120,10 +122,17 @@ def submit(plan_id: int, request: Request, who: str = Depends(actor)):
         purchase, demand, claimed = _cells(cur, plan_id)
         lines, skipped = select_submittable(purchase, demand, claimed)
         digest = content_digest(purchase, demand)
-        prev, prev_extra = _lock_live_lines(cur, plan_id)
-        rec = reconcile(prev, lines)
-
-        blocked = _in_purchase(cur, rec)
+        prev, prev_extra = _lock_prev_lines(cur, plan_id)
+        refs = _po_refs(cur, [p.line_id for p in prev])
+        try:
+            rec = reconcile(prev, lines, set(refs))
+        except ValueError as e:
+            log.error("op=submit outcome=s4_violation plan_id=%s actor=%s detail=%s",
+                      plan_id, who, e)
+            raise
+        blocked = [{"sku": p.sku, "period": p.period, "line_id": p.line_id, "state": p.state,
+                    "change": change, "po_ids": refs.get(p.line_id, [])}
+                   for p, change in rec.blocked]
         if blocked:
             log.warning("op=submit outcome=lines_in_purchase plan_id=%s actor=%s offenders=%s",
                         plan_id, who, "; ".join(
@@ -168,6 +177,13 @@ def submit(plan_id: int, request: Request, who: str = Depends(actor)):
 
     counts = {"kept": len(rec.kept), "replaced": len(rec.replaced),
               "added": len(rec.added), "removed": len(rec.removed)}
+    if rec.split_frozen or rec.left_completed:
+        # ★ 两类「这次的格子与记录不一致、但照样放行」—— 不留痕，下次没人知道它们为什么对不上
+        log.info("op=submit plan_id=%s rev=%s split_frozen=%s left_completed=%s detail=%s",
+                 plan_id, rev, [p.line_id for p, _ in rec.split_frozen],
+                 [p.line_id for p in rec.left_completed],
+                 [{"line_id": p.line_id, "from": seller_units(p.demand_by_seller),
+                   "to": seller_units(m.demand_by_seller)} for p, m in rec.split_frozen])
     # ★ timed() 的 fields 在进入时就定死，塞不进事务算出来的 rev 与四个数 —— 补这一行事后日志
     log.info("op=submit plan_id=%s rev=%s kept=%d replaced=%d added=%d removed=%d"
              " lines=%d skipped=%d in_flight=%s prev_revs=%s",
@@ -195,7 +211,17 @@ def submit(plan_id: int, request: Request, who: str = Depends(actor)):
                                  "total_units": m.total_units} for m in rec.added]},
             "removed": {"count": counts["removed"],
                         "lines": [{"sku": p.sku, "period": p.period, "line_id": p.line_id,
-                                   "total_units": p.total_units} for p in rec.removed]}}
+                                   "total_units": p.total_units} for p in rec.removed]},
+            "split_frozen": {"count": len(rec.split_frozen),
+                             "lines": [{"sku": p.sku, "period": p.period, "line_id": p.line_id,
+                                        "split": {"from": seller_units(p.demand_by_seller),
+                                                  "to": seller_units(m.demand_by_seller)}}
+                                       for p, m in rec.split_frozen]},
+            "left_completed": {"count": len(rec.left_completed),
+                               "lines": [{"sku": p.sku, "period": p.period, "line_id": p.line_id,
+                                          "rev": prev_extra[p.line_id][1],
+                                          "total_units": p.total_units}
+                                         for p in rec.left_completed]}}
 
 
 @router.get("/plans/{plan_id}/revs")
@@ -277,7 +303,9 @@ def cancel_rev(plan_id: int, rev: int, body: dict, request: Request,
         ensure_writable(cur, plan_id)
         _ensure_rev(cur, plan_id, rev)
         cur.execute("SELECT line_id, state FROM plan_line"
-                    " WHERE plan_id = %s AND rev = %s AND state NOT IN %s FOR UPDATE",
+                    " WHERE plan_id = %s AND rev = %s AND state NOT IN %s"
+                    # ★ 与再提交同序（line_id 升序）取锁：两边都 FOR UPDATE 同一批行，乱序会死锁
+                    " ORDER BY line_id FOR UPDATE",
                     (plan_id, rev, TERMINAL))
         lines = cur.fetchall()
         # ★ 统计被丢掉的那一侧：候选集就是这一版的全部记录。只报 cancelled[]，
