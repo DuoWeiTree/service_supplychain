@@ -112,6 +112,14 @@ describe('契约样本 · 页面', () => {
     expect(within(p).getAllByTestId('attempt')).toHaveLength(typed.timelineNv.attempts.length);
   });
 
+  it('★ 真后端的待采购记录带进编辑器：说出来自哪张计划哪一版，来源链带计划名', async () => {
+    const l = typed.planLines.lines[0]!;
+    await mountPurchase(`/purchase/new?lines=${l.line_id}`, routes());
+    expect(await screen.findByTestId('source-summary'))
+      .toHaveTextContent(`来自 销售计划「${l.plan_title}」rev${l.rev} 的 1 条记录`);
+    expect(screen.getByTestId(`cand-${l.line_id}`)).toHaveTextContent(`${l.plan_title} rev${l.rev} ${l.period}`);
+  });
+
   it('已下单的单：详情两轴、领星单号', async () => {
     await mountPurchase(`/purchase/${placed.po_id}`, routes());
     expect(await screen.findByTestId('po-axes')).toHaveTextContent('已下单');

@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import type { AttentionQueue, PoList, PurchaseChecks } from '../../api/types';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
+import type { AttentionQueue, CandidateLines, PoList, PurchaseChecks } from '../../api/types';
 
 beforeEach(() => { vi.resetModules(); });
+function NewPage() { const loc = useLocation(); return <div>NEW-PAGE {loc.search}</div>; }
 afterEach(() => { vi.doUnmock('../../api'); });
 
 const PO_LIST: PoList = { purchase_orders: [
@@ -22,12 +23,35 @@ const ATTN: AttentionQueue = { count: 3, items: [
   { attention_id: null, po_id: 3, kind: 'stuck_call', opened_at: 'x', custom_order_sn: 'SCM-PO-3', supplier_id: 'S-2', timeline: '' },
 ] };
 
+const NO_EXCL = { state: 0, sku: 0, category: 0, period: 0, fully_confirmed: 0 };
+const CANDS: CandidateLines = {
+  lines: [
+    { line_id: 11, plan_id: 1, plan_title: '10 月计划', rev: 5, sku: 'DCC1045014AI', period: '2026-10', total_units: 200,
+      demand_at_submit: 100, demand_by_seller: {}, state: '已提交', confirmed_units: 0, ordered_units: 0, remaining: 200,
+      blocked: null,
+      sellers: { '11072': { expected: 75, cap: 150, used: 0, remaining: 150 },
+                 '11094': { expected: 25, cap: 50, used: 0, remaining: 50 } } },
+    { line_id: 12, plan_id: 1, plan_title: '10 月计划', rev: 5, sku: 'DCC1041294BW', period: '2026-10', total_units: 150,
+      demand_at_submit: 0, demand_by_seller: {}, state: '已提交', confirmed_units: 0, ordered_units: 0, remaining: 150,
+      blocked: { reason: 'no_seller_basis', sellers: ['11072'] },
+      sellers: { '11072': { expected: null, cap: null, used: 0, remaining: null } } },
+    { line_id: 14, plan_id: 1, plan_title: '10 月计划', rev: 5, sku: 'DCC1045014AI', period: '2026-11', total_units: 80,
+      demand_at_submit: 40, demand_by_seller: {}, state: '已确认', confirmed_units: 30, ordered_units: 0, remaining: 50,
+      blocked: null, sellers: { '11072': { expected: 40, cap: 80, used: 30, remaining: 50 } } },
+  ],
+  groups: {},
+  excluded: { ...NO_EXCL, state: 3, fully_confirmed: 2 },
+};
+const SELLERS = [{ seller_id: '11072', name: 'A4Pet-BS-US-US', market: 'US', has_fba: true, platform: 'amazon' }];
+
 async function mount(over: Record<string, () => Promise<unknown>>) {
   const { ApiError } = await import('../../api/client');
   const base = {
     listAttention: async () => ({ count: 0, items: [] }),
     listPurchaseOrders: async () => PO_LIST,
     getPurchaseChecks: async () => OK_CHECKS,
+    listCandidateLines: async () => CANDS,
+    listSellers: async () => SELLERS,
   };
   vi.doMock('../../api', () => ({ api: { ...base, ...over }, ApiError }));
   const { PurchaseHome } = await import('./PurchaseHome');
@@ -35,7 +59,9 @@ async function mount(over: Record<string, () => Promise<unknown>>) {
     <MemoryRouter initialEntries={['/purchase']}>
       <Routes>
         <Route path="/purchase" element={<PurchaseHome />} />
-        <Route path="/purchase/new" element={<div>NEW-PAGE</div>} />
+        <Route path="/purchase/new" element={<NewPage />} />
+        <Route path="/" element={<div>PLANS-PAGE</div>} />
+        <Route path="/plans/:planId" element={<div>PLAN-PAGE</div>} />
         <Route path="/purchase/:poId" element={<div>DETAIL-PAGE</div>} />
       </Routes>
     </MemoryRouter>,
@@ -167,5 +193,106 @@ describe('采购首页', () => {
     await mount({});
     await userEvent.click(await screen.findByRole('button', { name: '新建采购单' }));
     expect(await screen.findByText('NEW-PAGE')).toBeInTheDocument();
+  });
+});
+
+describe('采购首页：待采购（R3）', () => {
+  it('★ 第一屏是待采购：列计划、rev、货号、月份、总量、还可组、各店期望占比上限', async () => {
+    await mount({});
+    const t = await screen.findByTestId('todo-list');
+    const heads = Array.from(t.querySelectorAll('th')).map((h) => h.textContent);
+    expect(heads).toEqual(['', '计划', 'rev', '货号', '月份', '总量', '还可组', '各店']);
+    const row = screen.getByTestId('todo-11');
+    expect(within(row).getByRole('link', { name: '10 月计划' })).toHaveAttribute('href', '/plans/1');
+    expect(row).toHaveTextContent('rev5');
+    expect(row).toHaveTextContent('DCC1045014AI');
+    expect(row).toHaveTextContent('2026-10');
+    expect(row).toHaveTextContent('200');
+    const shops = within(row).getByTestId('todo-shops');
+    // 店名取得到就写店名；取不到店名的那家写店编号
+    expect(shops).toHaveTextContent('A4Pet-BS-US-US 期望 75（占比 75%）上限 150');
+    expect(shops).toHaveTextContent('11094 期望 25（占比 25%）上限 50');
+    // ★ 待采购在采购单列表之前（第一屏）
+    const po = await screen.findByTestId('po-list');
+    expect(t.compareDocumentPosition(po) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole('heading', { name: '采购单' })).toBeInTheDocument();
+  });
+
+  it('还可组 ≠ 总量时两个数都在', async () => {
+    await mount({});
+    const row = await screen.findByTestId('todo-14');
+    expect(row).toHaveTextContent('80');
+    expect(within(row).getByTestId('todo-remaining')).toHaveTextContent('50');
+  });
+
+  it('★ 无分店依据：不隐藏，灰显点名原因，勾不了', async () => {
+    await mount({});
+    const row = await screen.findByTestId('todo-12');
+    expect(row).toHaveClass('muted');
+    expect(row).toHaveTextContent('无分店依据：店铺期望销量待填');
+    expect(row).toHaveTextContent('A4Pet-BS-US-US');
+    expect(within(row).getByRole('checkbox')).toBeDisabled();
+  });
+
+  it('后端给了没见过的原因：原样点名，照样勾不了', async () => {
+    const odd = { ...CANDS, lines: [{ ...CANDS.lines[1]!, blocked: { reason: 'weird' as 'no_seller_basis', sellers: [] } }] };
+    await mount({ listCandidateLines: async () => odd });
+    const row = await screen.findByTestId('todo-12');
+    expect(row).toHaveTextContent('weird');
+    expect(within(row).getByRole('checkbox')).toBeDisabled();
+  });
+
+  it('★ 勾选 → 按钮写 N；点了进 /purchase/new?lines=…', async () => {
+    await mount({});
+    const btn = await screen.findByRole('button', { name: '用选中的 0 条建采购单' });
+    expect(btn).toBeDisabled();
+    await userEvent.click(within(screen.getByTestId('todo-11')).getByRole('checkbox'));
+    await userEvent.click(within(screen.getByTestId('todo-14')).getByRole('checkbox'));
+    const go = screen.getByRole('button', { name: '用选中的 2 条建采购单' });
+    expect(go).toBeEnabled();
+    await userEvent.click(go);
+    expect(await screen.findByText('NEW-PAGE ?lines=11,14')).toBeInTheDocument();
+  });
+
+  it('被滤掉的一侧要说：已组满 N 条、状态不可组单 N 条', async () => {
+    await mount({});
+    const t = await screen.findByTestId('todo');
+    expect(t).toHaveTextContent('已组满 2 条');
+    expect(t).toHaveTextContent('状态不可组单 3 条');
+  });
+
+  it('★ 没有待采购：写「没有待采购的记录」并给去销售计划的链接', async () => {
+    await mount({ listCandidateLines: async () => ({ lines: [], groups: {}, excluded: NO_EXCL }) });
+    expect(await screen.findByText('没有待采购的记录')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('link', { name: '去销售计划' }));
+    expect(await screen.findByText('PLANS-PAGE')).toBeInTheDocument();
+  });
+
+  it('★ 加载、失败、空 三种说法各不相同；失败不当空', async () => {
+    await mount({ listCandidateLines: () => new Promise(() => {}) });
+    expect(await screen.findByText('正在取待采购记录…')).toBeInTheDocument();
+    expect(screen.queryByText('没有待采购的记录')).toBeNull();
+  });
+
+  it('★ 待采购读失败：ErrorDetail 点名，不写「没有待采购的记录」，采购单列表照出', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { ApiError } = await import('../../api/client');
+    await mount({ listCandidateLines: async () => { throw new ApiError(503, 'mirror_stale', '镜像过期', {}); } });
+    expect(await screen.findByText('镜像过期')).toBeInTheDocument();
+    expect(screen.queryByText('没有待采购的记录')).toBeNull();
+    expect(screen.queryByRole('button', { name: /用选中的/ })).toBeNull();
+    expect(await screen.findByTestId('po-list')).toBeInTheDocument();
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('listCandidateLines'))).toBe(true);
+    warn.mockRestore();
+  });
+
+  it('店名取不到：按店编号显示，且明说', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { ApiError } = await import('../../api/client');
+    await mount({ listSellers: async () => { throw new ApiError(500, 'boom', '店取不到', {}); } });
+    const shops = within(await screen.findByTestId('todo-11')).getByTestId('todo-shops');
+    expect(shops).toHaveTextContent('11072 期望 75');
+    expect(screen.getByText('店名取不到，按店编号显示')).toBeInTheDocument();
+    warn.mockRestore();
   });
 });

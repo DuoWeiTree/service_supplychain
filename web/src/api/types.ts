@@ -668,6 +668,8 @@ export interface CandidateSeller { expected: number | null; cap: number | null; 
 export interface CandidateLine {
   line_id: number;
   plan_id: PlanId;
+  /** plan.title：采购侧要说出「来自哪张计划」，编号人认不出 */
+  plan_title: string;
   rev: number;
   sku: string;
   period: Period;

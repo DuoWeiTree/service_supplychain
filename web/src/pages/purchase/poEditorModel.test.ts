@@ -2,12 +2,13 @@ import { describe, expect, it } from 'vitest';
 import {
   addSource, available, baselineOf, emptyDraft, fromPo, gateText, groupCandidates, lineUnits,
   ownOnlyRecords, recordRemaining, removeSource, setHeader, setLineWid, toBody, unplannedUnits, updateLine, validate,
+  chainText, parseLineIds, planName, preselect, sellerShares, sourceSummary,
   type Draft,
 } from './poEditorModel';
 import type { CandidateLine, PurchaseOrder } from '../../api/types';
 
 const cand = (over: Partial<CandidateLine> = {}): CandidateLine => ({
-  line_id: 101, plan_id: 1, rev: 1, sku: 'SKU-A', period: '2026-10', total_units: 100,
+  line_id: 101, plan_id: 1, plan_title: '10 月计划', rev: 1, sku: 'SKU-A', period: '2026-10', total_units: 100,
   demand_at_submit: 60, demand_by_seller: {}, state: '已提交', confirmed_units: 0, ordered_units: 0,
   remaining: 100, blocked: null,
   sellers: {
@@ -265,5 +266,44 @@ describe('本单原有来源（候选已滤掉的记录）', () => {
     const d = fromPo(po);
     expect(recordRemaining({ line_id: 200, remaining: 0 }, d, base)).toBe(0);
     expect(recordRemaining({ line_id: 200, remaining: 0 }, removeSource(d, 0, 1), base)).toBe(20);
+  });
+});
+
+describe('来源：从哪张销售计划来（R3）', () => {
+  it('计划名：有标题用标题，没有写「计划 N」', () => {
+    expect(planName(cand())).toBe('10 月计划');
+    expect(planName(cand({ plan_title: '' }))).toBe('计划 1');
+  });
+
+  it('来源链：计划 rev 货号 月份 → 店名 件数', () => {
+    expect(chainText(cand({ rev: 5, sku: 'DCC1045014AI' }), 'A4Pet-BS-US-US', 100))
+      .toBe('10 月计划 rev5 DCC1045014AI 2026-10 → A4Pet-BS-US-US 100 件');
+  });
+
+  it('来源摘要：同一计划同一版合在一句；多份逐份说', () => {
+    expect(sourceSummary([cand({ rev: 5 }), cand({ line_id: 102, rev: 5 })]))
+      .toBe('来自 销售计划「10 月计划」rev5 的 2 条记录');
+    expect(sourceSummary([cand({ rev: 5 }), cand({ line_id: 102, plan_id: 2, plan_title: '11 月计划', rev: 2 })]))
+      .toBe('来自 销售计划「10 月计划」rev5 的 1 条记录，销售计划「11 月计划」rev2 的 1 条记录');
+    expect(sourceSummary([])).toBeNull();
+  });
+
+  it('?lines= 解析：null = 没带参数；不是记录号的原样点名，不丢', () => {
+    expect(parseLineIds(null)).toBeNull();
+    expect(parseLineIds('11,12')).toEqual({ ids: [11, 12], bad: [] });
+    expect(parseLineIds('11,abc,,0,11')).toEqual({ ids: [11], bad: ['abc', '0'] });
+  });
+
+  it('预选：列得出的给出来，列不出的逐条交回去点名', () => {
+    const all = [cand(), cand({ line_id: 102 })];
+    const r = preselect([102, 13], all);
+    expect(r.shown.map((c) => c.line_id)).toEqual([102]);
+    expect(r.missing).toEqual([13]);
+  });
+
+  it('分店占比：按期望销量算；无分店依据时不给（不是 0%）', () => {
+    expect(sellerShares(cand())).toEqual({ '11072': 67, '11094': 33 });
+    expect(sellerShares(cand({ blocked: { reason: 'no_seller_basis', sellers: ['11072'] } }))).toBeNull();
+    expect(sellerShares(cand({ sellers: { a: { expected: 0, cap: null, used: 0, remaining: null } } }))).toBeNull();
   });
 });

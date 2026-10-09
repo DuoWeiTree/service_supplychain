@@ -75,12 +75,15 @@ def list_lines(request: Request, who: str | None = Depends(actor_optional)):
             where.append("l.plan_id = ANY(%s)")
             args.append(plan_ids)
         cur.execute("SELECT l.line_id, l.plan_id, l.rev, l.sku, l.period_start, l.total_units,"
-                    " l.demand_at_submit, l.demand_by_seller, l.state"
-                    f" FROM plan_line l WHERE {' AND '.join(where)}"
+                    " l.demand_at_submit, l.demand_by_seller, l.state, p.title"
+                    f" FROM plan_line l JOIN plan p USING (plan_id) WHERE {' AND '.join(where)}"
                     " ORDER BY l.plan_id, l.rev, l.sku, l.period_start", args)
         candidates = [{"line_id": r[0], "plan_id": r[1], "rev": r[2], "sku": r[3],
                       "period": r[4].strftime("%Y-%m"), "total_units": r[5],
-                      "demand_at_submit": r[6], "demand_by_seller": r[7], "state": r[8]}
+                      "demand_at_submit": r[6], "demand_by_seller": r[7], "state": r[8],
+                      # R3：采购侧要能说出「来自哪张计划」，编号人认不出。
+                      # JOIN 不丢行：plan_line → plan_rev → plan 两道外键
+                      "plan_title": r[9]}
                      for r in cur.fetchall()]
         ids = [r["line_id"] for r in candidates]
         cur.execute("SELECT line_id, confirmed_units, ordered_units FROM v_plan_line_po_qty"

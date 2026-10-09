@@ -16,11 +16,11 @@ const OPTIONS: PurchaseOptions = {
 };
 const CANDS: CandidateLines = {
   lines: [
-    { line_id: 101, plan_id: 3, rev: 1, sku: 'SKU-A', period: '2026-10', total_units: 500, demand_at_submit: 60,
+    { line_id: 101, plan_id: 3, plan_title: '春季计划', rev: 1, sku: 'SKU-A', period: '2026-10', total_units: 500, demand_at_submit: 60,
       demand_by_seller: {}, state: '已提交', confirmed_units: 0, ordered_units: 0, remaining: 120, blocked: null,
       sellers: { '11072': { expected: 40, cap: 80, used: 0, remaining: 80 },
                  '11094': { expected: 20, cap: 40, used: 40, remaining: 0 } } },
-    { line_id: 103, plan_id: 3, rev: 1, sku: 'SKU-B', period: '2026-11', total_units: 80, demand_at_submit: 0,
+    { line_id: 103, plan_id: 3, plan_title: '春季计划', rev: 1, sku: 'SKU-B', period: '2026-11', total_units: 80, demand_at_submit: 0,
       demand_by_seller: {}, state: '已提交', confirmed_units: 0, ordered_units: 0, remaining: 80,
       blocked: { reason: 'no_seller_basis', sellers: ['11072'] },
       sellers: { '11072': { expected: null, cap: null, used: 0, remaining: null } } },
@@ -85,8 +85,7 @@ describe('采购单编辑器：新建', () => {
     await userEvent.click(within(row).getByRole('button', { name: '加入' }));
     const line = await screen.findByTestId('po-line-1');
     expect(line).toHaveTextContent('SKU-A');
-    expect(within(line).getByTestId('sources')).toHaveTextContent('11072');
-    expect(within(line).getByTestId('sources')).toHaveTextContent('30');
+    expect(within(line).getByTestId('sources')).toHaveTextContent('A4Pet-US 30 件');
     expect(within(line).getByLabelText('数量')).toHaveValue(30);
     // 本稿已加的量从剩余里扣掉
     expect(within(await sellerRow(101, '11072')).getByTestId('avail')).toHaveTextContent('50');
@@ -422,5 +421,88 @@ describe('★ 写动作的处理函数自己抛了：不许静默', () => {
     expect(alert).toHaveTextContent('client_exception');
     expect(api.updatePurchaseOrder).not.toHaveBeenCalled();
     expect(err.mock.calls.some((c) => String(c[0]).includes('[po-editor] save threw'))).toBe(true);
+  });
+});
+
+describe('★ 从待采购带过来（?lines=，R3）', () => {
+  const trace = (state: string, over: Record<string, unknown> = {}) => ({ line_id: 13, sku: 'SKU-X', period: '2026-10',
+    total_units: 50, state, confirmed_units: 0, ordered_units: 0, purchase_orders: [], ...over });
+
+  it('左栏只列带来的记录；顶部写明来自哪张计划哪一版几条', async () => {
+    await mount('/purchase/new?lines=101');
+    expect(await screen.findByTestId('cand-101')).toBeInTheDocument();
+    expect(screen.queryByTestId('cand-103')).toBeNull();
+    expect(screen.getByTestId('source-summary')).toHaveTextContent('来自 销售计划「春季计划」rev1 的 1 条记录');
+    // 带来的记录默认展开：分店表就在眼前
+    expect(within(screen.getByTestId('cand-101')).getByTestId('seller-11072')).toBeVisible();
+  });
+
+  it('「加入其他待采购记录」恢复全部候选', async () => {
+    await mount('/purchase/new?lines=101');
+    await screen.findByTestId('cand-101');
+    await userEvent.click(screen.getByRole('button', { name: '加入其他待采购记录' }));
+    expect(await screen.findByTestId('cand-103')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '加入其他待采购记录' })).toBeNull();
+  });
+
+  it('★ 带来的记录已不可组单 / 不存在 / 不是记录号：逐条点名，不静默丢', async () => {
+    const { ApiError } = await import('../../api/client');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { api } = await mount('/purchase/new?lines=101,13,15,abc', {
+      getLineTrace: vi.fn(async (id: number) => {
+        if (id === 13) return trace('已撤销');
+        throw new ApiError(404, 'line_not_found', '没有这条记录', { line_id: id });
+      }),
+    });
+    const box = await screen.findByTestId('preselect-missing');
+    expect(await within(box).findByText('记录 13 已不可组单（状态 已撤销）')).toBeInTheDocument();
+    expect(await within(box).findByText('记录 15 不存在')).toBeInTheDocument();
+    expect(within(box).getByText('「abc」不是记录号')).toBeInTheDocument();
+    expect(api.getLineTrace).not.toHaveBeenCalledWith(101);
+    // 摘要只数列得出的
+    expect(screen.getByTestId('source-summary')).toHaveTextContent('的 1 条记录');
+    warn.mockRestore();
+  });
+
+  it('带来的记录组满了：说「已组满」，不说「已不可组单（状态 已确认）」', async () => {
+    await mount('/purchase/new?lines=13', {
+      getLineTrace: vi.fn(async () => trace('已确认', { confirmed_units: 50 })),
+    });
+    expect(await screen.findByText('记录 13 已组满（共 50 件）')).toBeInTheDocument();
+  });
+
+  it('反查状态失败：点名取不到，ErrorDetail 给原因', async () => {
+    const { ApiError } = await import('../../api/client');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await mount('/purchase/new?lines=13', {
+      getLineTrace: vi.fn(async () => { throw new ApiError(500, 'boom', '后端炸了', {}); }),
+    });
+    expect(await screen.findByText('记录 13 状态取不到')).toBeInTheDocument();
+    expect(screen.getByText('后端炸了')).toBeInTheDocument();
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('getLineTrace'))).toBe(true);
+    warn.mockRestore();
+  });
+
+  it('没带 ?lines=：列全部，不出摘要', async () => {
+    await mount('/purchase/new');
+    expect(await screen.findByTestId('cand-103')).toBeInTheDocument();
+    expect(screen.queryByTestId('source-summary')).toBeNull();
+  });
+});
+
+describe('★ 明细里的来源链：不展开就看得到', () => {
+  it('新加的来源：计划 rev 货号 月份 → 店名 件数', async () => {
+    await mount('/purchase/new?lines=101');
+    const row = await sellerRow(101, '11072');
+    await userEvent.type(within(row).getByRole('spinbutton'), '30');
+    await userEvent.click(within(row).getByRole('button', { name: '加入' }));
+    const src = within(await screen.findByTestId('po-line-1')).getByTestId('sources');
+    expect(src).toHaveTextContent('春季计划 rev1 SKU-A 2026-10 → A4Pet-US 30 件');
+  });
+
+  it('已保存草稿的来源同样给链', async () => {
+    await mount('/purchase/1');
+    const src = within(await screen.findByTestId('po-line-1')).getByTestId('sources');
+    expect(src).toHaveTextContent('春季计划 rev1 SKU-A 2026-10 → A4Pet-US 30 件');
   });
 });

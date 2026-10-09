@@ -53,6 +53,7 @@ describe('文案纪律', () => {
     ['版本', '/plans/2/revs'],
     ['采购', '/purchase'],
     ['新建采购单', '/purchase/new'],
+    ['新建采购单（从待采购带来）', '/purchase/new?lines=101,999'],
     ['采购单（不存在）', '/purchase/7'],
     ['草稿', '/purchase/1'],
     ['采购单详情', '/purchase/2'],
@@ -62,8 +63,9 @@ describe('文案纪律', () => {
     it(`★ ${name}：整屏一个 \` · \` 元串都不许有`, async () => {
       const { unmount } = await app(entry);
       // 等这一屏真的出了内容再扫 —— 空屏上扫不出元串，那是假绿
-      await screen.findByRole('heading');
-      if (entry === '/purchase') await screen.findByTestId('po-list');
+      await screen.findAllByRole('heading');   // 采购首页有 h1 + 待采购 / 采购单两个 h2
+      if (entry === '/purchase') { await screen.findByTestId('po-list'); await screen.findByTestId('todo-list'); }
+      if (entry.startsWith('/purchase/new?')) { await screen.findByTestId('source-summary'); await screen.findByText('记录 999 不存在'); }
       if (entry === '/purchase/new' || entry === '/purchase/1') await screen.findByTestId('cand-sku-A4P-TOY-002');
       if (entry === '/purchase/1') await screen.findByTestId('po-line-1');
       if (entry === '/purchase/2') await screen.findAllByTestId('detail-line');

@@ -88,6 +88,8 @@ export function createMemoryBackend(): SupplyChainApi {
     const caps = sellerCaps(l.total_units, l.demand_by_seller);
     return {
       ...l,
+      // 同后端 JOIN plan：替身里计划表就是 list.plans
+      plan_title: list.plans.find((p) => p.plan_id === l.plan_id)?.title ?? '',
       remaining: l.total_units - l.confirmed_units,
       blocked: caps ? null : { reason: 'no_seller_basis', sellers: Object.keys(l.demand_by_seller) },
       sellers: Object.fromEntries(Object.entries(l.demand_by_seller).map(([sid, v]) => {

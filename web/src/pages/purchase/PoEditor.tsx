@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { AppShell } from '../../shell/AppShell';
 import { useInFlight } from '../../shell/useInFlight';
 import { useActionError } from '../../shell/useActionError';
@@ -13,9 +13,10 @@ import { PlaceDialog } from './PlaceDialog';
 import { PoDetail } from './PoDetail';
 import { isEditable } from './poStatus';
 import { api, ApiError } from '../../api';
-import type { CandidateLines, PoId, PreflightGate, PurchaseOptions, PurchaseOrder, Seller } from '../../api/types';
+import type { CandidateLines, LineTrace, PoId, PreflightGate, PurchaseOptions, PurchaseOrder, Seller } from '../../api/types';
 import {
-  addSource, available, baselineOf, emptyDraft, fromPo, gateText, groupCandidates, lineUnits, ownOnlyRecords, QC_LABEL,
+  addSource, available, baselineOf, chainText, emptyDraft, fromPo, gateText, groupCandidates, lineUnits, ownOnlyRecords,
+  parseLineIds, planName, preselect, QC_LABEL, sourceSummary,
   recordRemaining, removeSource, setHeader, setLineWid, sourcesUnits, toBody, unplannedUnits, updateLine, validate,
   type AddRefusal, type Baseline, type Draft, type DraftHeader, type QcType, type SourceTarget,
 } from './poEditorModel';
@@ -41,6 +42,19 @@ const MISSING_LABEL: Record<string, string> = {
 const REFUSAL_TEXT: Record<Exclude<AddRefusal, 'over_remaining'>, string> = {
   blocked: '无分店依据', no_seller: '这家店不在该记录里', bad_units: '加入数量要是正整数',
 };
+
+/** 带来的记录列不出时反查到的样子：组满了 / 状态走了 / 不存在 / 查不到 */
+type Missing = { kind: 'pending' } | { kind: 'trace'; t: LineTrace } | { kind: 'gone' } | { kind: 'err'; err: ApiError };
+const ORDERABLE_STATES: readonly string[] = ['已提交', '已确认'];
+function missingText(id: number, m: Missing): string {
+  if (m.kind === 'pending') return `记录 ${id} 正在查状态…`;
+  if (m.kind === 'gone') return `记录 ${id} 不存在`;
+  if (m.kind === 'err') return `记录 ${id} 状态取不到`;
+  // 状态还可组单却没列出 = 被 fully_confirmed 滤掉了：说「组满」，不拿一个可组单的状态说「不可组单」
+  return ORDERABLE_STATES.includes(m.t.state) && m.t.confirmed_units >= m.t.total_units
+    ? `记录 ${id} 已组满（共 ${m.t.total_units} 件）`
+    : `记录 ${id} 已不可组单（状态 ${m.t.state}）`;
+}
 
 const MANUAL = '__manual__';
 const STATE_MOVED = new Set(['po_placing', 'needs_verify', 'mismatch_open', 'po_frozen', 'po_discarded']);
@@ -157,6 +171,7 @@ export function PoRoute() {
 
 export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: () => void }) {
   const navigate = useNavigate();
+  const [search] = useSearchParams();
   const { pending, run } = useInFlight();
   const { err: actErr, fail, succeed, dismiss } = useActionError();
 
@@ -180,6 +195,8 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
   const [invalid, setInvalid] = useState<string[]>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [placing, setPlacing] = useState(false);
+  const [showAll, setShowAll] = useState(false);
+  const [missingInfo, setMissingInfo] = useState<Record<number, Missing>>({});
 
   // 稿一变，旧的拒绝理由（按旧可用量算的）就不再成立
   const edit = (next: Draft) => { setDraft(next); setDirty(true); setRefusal({}); };
@@ -236,13 +253,37 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
     if (poId !== null) loadPo(poId).catch((e: unknown) => setPoErr(e as ApiError));
   }, [poId, loadCands, loadPo]);
 
-  const groups = useMemo(() => groupCandidates(cands?.lines ?? []), [cands]);
+  // R3：从待采购带过来的记录（只对新建有意义；已保存的单以单里的来源为准）
+  const wanted = useMemo(() => (poId === null ? parseLineIds(search.get('lines')) : null), [poId, search]);
+  const sel = useMemo(() => (wanted && cands ? preselect(wanted.ids, cands.lines) : null), [wanted, cands]);
+  const missingKey = sel?.missing.join(',') ?? '';
+  useEffect(() => {
+    if (!sel || sel.missing.length === 0) return;
+    let alive = true;
+    setMissingInfo(Object.fromEntries(sel.missing.map((id) => [id, { kind: 'pending' } as Missing])));
+    for (const id of sel.missing) {
+      const t0 = performance.now();
+      Promise.resolve().then(() => api.getLineTrace(id)).then(
+        (t) => { if (alive) setMissingInfo((m) => ({ ...m, [id]: { kind: 'trace', t } })); },
+        (e: unknown) => {
+          const err = asApiError(e);
+          logFail(`getLineTrace(${id})`, err, t0);
+          if (alive) setMissingInfo((m) => ({ ...m, [id]: err.status === 404 ? { kind: 'gone' } : { kind: 'err', err } }));
+        },
+      );
+    }
+    console.warn('[po-editor] preselected lines not orderable', JSON.stringify({ wanted: wanted?.ids, missing: sel.missing }));
+    return () => { alive = false; };
+  }, [missingKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const narrowed = sel !== null && !showAll;
+  const groups = useMemo(() => groupCandidates(narrowed ? sel.shown : cands?.lines ?? []), [cands, sel, narrowed]);
   const candById = useMemo(() => new Map((cands?.lines ?? []).map((l) => [l.line_id, l])), [cands]);
   const localGates = useMemo(() => validate(draft), [draft]);
   const ownOnly = useMemo(() => (cands !== null || candsErr !== null ? ownOnlyRecords(po, cands?.lines ?? []) : []),
     [po, cands, candsErr]);
   const sellerName = useMemo(() => new Map((sellers ?? []).map((x) => [x.seller_id, x.name])), [sellers]);
   const shop = (sid: string) => { const n = sellerName.get(sid); return n ? `${n}（${sid}）` : sid; };
+  const shopName = (sid: string) => sellerName.get(sid) ?? sid;
   const useLocal = poId === null || dirty;
 
   const doAdd = (c: SourceTarget, sid: string) => {
@@ -457,6 +498,32 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
         </span>
       </div>
 
+      {wanted && (
+        <div className="sec" data-testid="preselect">
+          {cands !== null && sel !== null && (() => {
+            const summary = sourceSummary(sel.shown);
+            return summary && <div data-testid="source-summary"><strong>{summary}</strong></div>;
+          })()}
+          {(wanted.bad.length > 0 || (sel?.missing.length ?? 0) > 0) && (
+            <ul className="i-red" data-testid="preselect-missing">
+              {wanted.bad.map((t) => <li key={`bad-${t}`}>「{t}」不是记录号</li>)}
+              {(sel?.missing ?? []).map((id) => {
+                const m = missingInfo[id] ?? { kind: 'pending' };
+                return (
+                  <li key={id}>
+                    <span>{missingText(id, m)}</span>
+                    {m.kind === 'err' && <ErrorDetail err={m.err} />}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {narrowed && (
+            <button type="button" className="btn btn--sm btn--ghost" onClick={() => setShowAll(true)}>加入其他待采购记录</button>
+          )}
+        </div>
+      )}
+
       <div className="sec twocol">
         {/* ─── 左：可组单记录 ─── */}
         <div className="panel" data-testid="candidates">
@@ -473,13 +540,13 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
               .filter((k) => (cands.excluded[k] ?? 0) > 0)
               .map((k) => <div className="dropline" key={k}>{EXCLUDED_LABEL[k]} {cands.excluded[k]} 条</div>)}
             {cands === null ? (!candsErr && <div className="empty">正在取可组单记录…</div>)
-              : groups.length === 0 ? <div className="empty">没有可组单的记录</div>
+              : groups.length === 0 ? <div className="empty">{narrowed ? '带来的记录没有一条可组单' : '没有可组单的记录'}</div>
               : groups.map((g) => (
                 <div className="sec" key={g.sku} data-testid={`cand-sku-${g.sku}`}>
                   <div className="sec__title"><span className="num">{g.sku}</span></div>
                   {g.records.map((r) => (
                     <div key={r.line_id} data-testid={`cand-${r.line_id}`} className={r.blocked ? 'muted' : undefined}>
-                      <div>计划 #{r.plan_id} {r.period} 剩 <span className="num">{recordRemaining(r, draft, baseline)}/{r.total_units}</span></div>
+                      <div>{planName(r)} rev{r.rev} {r.period} 剩 <span className="num">{recordRemaining(r, draft, baseline)}/{r.total_units}</span></div>
                       {r.blocked ? (
                         <div>无分店依据：{r.blocked.sellers.map(shop).join('、')}</div>
                       ) : sellerTable(r)}
@@ -533,8 +600,9 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
                       const c = candById.get(s.line_id);
                       return (
                         <li key={`${s.line_id}|${s.seller_id}`}>
-                          店 {shop(s.seller_id)} 量 <span className="num">{s.units}</span>
-                          {' '}<span className="muted">{c ? `计划 #${c.plan_id} ${c.period}` : `记录 #${s.line_id}`}</span>
+                          {/* R3：一眼看出这件货是哪张计划哪一版哪条记录、哪家店的量 */}
+                          {c ? chainText(c, shopName(s.seller_id), s.units)
+                            : `记录 ${s.line_id} ${l.sku} → ${shopName(s.seller_id)} ${s.units} 件`}
                           {' '}<button type="button" className="btn btn--sm btn--ghost"
                             onClick={() => edit(removeSource(draft, i, j))}>移除</button>
                         </li>

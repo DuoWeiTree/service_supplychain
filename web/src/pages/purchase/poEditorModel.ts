@@ -271,3 +271,56 @@ export function ownOnlyRecords(po: Pick<PurchaseOrder, 'lines'> | null, listed: 
   }
   return [...m.values()].sort((a, b) => a.target.sku.localeCompare(b.target.sku) || a.target.line_id - b.target.line_id);
 }
+
+// ─── 来源：从哪张销售计划来（R3） ───
+
+type PlanRef = Pick<CandidateLine, 'plan_id' | 'plan_title'>;
+export const planName = (c: PlanRef): string => c.plan_title.trim() || `计划 ${c.plan_id}`;
+
+/** 「10 月计划 rev5 DCC1045014AI 2026-10 → A4Pet-US 100 件」 */
+export function chainText(c: Pick<CandidateLine, 'plan_id' | 'plan_title' | 'rev' | 'sku' | 'period'>, shop: string, units: number): string {
+  return `${planName(c)} rev${c.rev} ${c.sku} ${c.period} → ${shop} ${units} 件`;
+}
+
+/** null = 没有可说的来源（空选择），不是「来自 0 条」 */
+export function sourceSummary(lines: readonly Pick<CandidateLine, 'plan_id' | 'plan_title' | 'rev'>[]): string | null {
+  if (lines.length === 0) return null;
+  const m = new Map<string, { c: PlanRef & { rev: number }; n: number }>();
+  for (const l of lines) {
+    const k = `${l.plan_id}#${l.rev}`;
+    const hit = m.get(k);
+    if (hit) hit.n += 1; else m.set(k, { c: l, n: 1 });
+  }
+  return `来自 ${[...m.values()].map(({ c, n }) => `销售计划「${planName(c)}」rev${c.rev} 的 ${n} 条记录`).join('，')}`;
+}
+
+/** `?lines=` → 记录号。null = 没带这个参数；不是正整数的片段原样交回去点名，不丢 */
+export function parseLineIds(raw: string | null): { ids: number[]; bad: string[] } | null {
+  if (raw === null) return null;
+  const ids: number[] = [];
+  const bad: string[] = [];
+  for (const t of raw.split(',').map((x) => x.trim()).filter((x) => x !== '')) {
+    const n = intOf(t);
+    if (n === null || n <= 0) { if (!bad.includes(t)) bad.push(t); continue; }
+    if (!ids.includes(n)) ids.push(n);
+  }
+  return { ids, bad };
+}
+
+/** 候选里列得出的给出来；列不出的逐条交回去，由页面反查状态后点名 */
+export function preselect<T extends { line_id: number }>(ids: readonly number[], all: readonly T[]): { shown: T[]; missing: number[] } {
+  const want = new Set(ids);
+  const have = new Set(all.map((c) => c.line_id));
+  return { shown: all.filter((c) => want.has(c.line_id)), missing: ids.filter((id) => !have.has(id)) };
+}
+
+/** 各店期望占比（%，取整）。★ 同 rules/purchase.py::seller_caps 的分母：期望合计；
+ *  无分店依据或合计为 0 时不给 —— 不是 0% */
+export function sellerShares(c: Pick<CandidateLine, 'blocked' | 'sellers'>): Record<string, number> | null {
+  if (c.blocked) return null;
+  const ex = Object.entries(c.sellers).map(([sid, v]) => [sid, v.expected] as const);
+  if (ex.some(([, e]) => e === null)) return null;
+  const sum = ex.reduce((a, [, e]) => a + (e ?? 0), 0);
+  if (sum <= 0) return null;
+  return Object.fromEntries(ex.map(([sid, e]) => [sid, Math.round(((e ?? 0) * 100) / sum)]));
+}

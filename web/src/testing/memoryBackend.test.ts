@@ -368,6 +368,8 @@ describe('★ Task 22（业主裁定 2026-09-27）：货号没有 msku 了，货
       const c = await api.listCandidateLines({});
       expect(c.lines.map((l) => l.line_id)).toEqual([101, 103]);   // 102 已全确认；被丢的一侧要有数
       expect(c.excluded.fully_confirmed).toBe(1);
+      // 同后端 JOIN plan：采购侧靠它说出「来自哪张计划」
+      expect(c.lines[0]!.plan_title).toBe('2026 Q4 销售计划');
     });
 
     it('草稿增删改：创建 → draft_version 递增 → 删除', async () => {

@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import purchaseFixture from '../testing/fixtures/purchase.json';
+import plansFixture from '../testing/fixtures/plans.json';
+import sellersFixture from '../testing/fixtures/sellers.json';
 
 /** 判据⑥ 的采购屏：mock 与 http 打桩渲染同一屏。
  *
@@ -20,9 +22,55 @@ type Fx = { po_id: number; custom_order_sn: string; supplier_id: string; state: 
   discarded_at: string | null; lines: { units: number }[]; created_by: string; created_at: string };
 const POS = purchaseFixture.purchase_orders as unknown as Fx[];
 
+type Dbs = Record<string, { units: number | null; basis?: string } | null>;
+/** 照 rules/purchase.py::seller_caps：basis unknown 或 units 非整数 → 点名这些店；期望合计 0 → 全部点名 */
+function sellerCaps(total: number, dbs: Dbs): { caps: Record<string, number> } | { bad: string[] } {
+  const bad = Object.keys(dbs).filter((s) => dbs[s]?.basis === 'unknown' || !Number.isInteger(dbs[s]?.units)).sort();
+  if (bad.length) return { bad };
+  const ex = Object.fromEntries(Object.entries(dbs).map(([s, v]) => [s, v!.units!]));
+  const sum = Object.values(ex).reduce((a, b) => a + b, 0);
+  if (sum === 0) return { bad: Object.keys(ex).sort() };
+  const caps = Object.fromEntries(Object.entries(ex).map(([s, e]) => [s, Math.floor((total * e) / sum)]));
+  const extra = total - Object.values(caps).reduce((a, b) => a + b, 0);
+  const order = Object.keys(ex).sort((a, b) => (total * ex[b]!) % sum - (total * ex[a]!) % sum || a.localeCompare(b));
+  for (const s of order.slice(0, extra)) caps[s]! += 1;
+  return { caps };
+}
+
+/** 照 api/ui/lines.py::list_lines（orderable=1）：JOIN plan 取标题；used 数未作废单的来源 */
+function planLines(): unknown {
+  type Ln = { line_id: number; plan_id: number; total_units: number; confirmed_units: number; state: string; demand_by_seller: Dbs };
+  const used = new Map<string, number>();
+  for (const p of POS) if (p.discarded_at === null) {
+    for (const l of p.lines as unknown as { sources: { line_id: number; seller_id: string; units: number }[] }[]) {
+      for (const s of l.sources) used.set(`${s.line_id}|${s.seller_id}`, (used.get(`${s.line_id}|${s.seller_id}`) ?? 0) + s.units);
+    }
+  }
+  const all = (purchaseFixture.lines as unknown as Ln[]).map((l) => {
+    const r = sellerCaps(l.total_units, l.demand_by_seller);
+    const caps = 'caps' in r ? r.caps : {};
+    return {
+      ...l, plan_title: plansFixture.plans.find((p) => p.plan_id === l.plan_id)!.title,
+      remaining: l.total_units - l.confirmed_units,
+      blocked: 'bad' in r ? { reason: 'no_seller_basis', sellers: r.bad } : null,
+      sellers: Object.fromEntries(Object.entries(l.demand_by_seller).map(([sid, v]) => {
+        const u = used.get(`${l.line_id}|${sid}`) ?? 0;
+        return [sid, { expected: v?.units ?? null, cap: caps[sid] ?? null, used: u,
+                       remaining: sid in caps ? caps[sid]! - u : null }];
+      })),
+    };
+  });
+  const st = all.filter((l) => ['已提交', '已确认'].includes(l.state));
+  const lines = st.filter((l) => l.remaining > 0);
+  return { lines, groups: {}, excluded: { state: all.length - st.length, sku: 0, category: 0, period: 0,
+                                          fully_confirmed: st.length - lines.length } };
+}
+
 function backendBody(url: string): unknown {
   if (url.includes('/attention')) return { count: 0, items: [] };
   if (url.includes('/checks/purchase')) return purchaseFixture.checks;
+  if (url.includes('/plan-lines')) return planLines();
+  if (url.includes('/sellers')) return sellersFixture;
   if (url.includes('/purchase-orders')) {
     const state = new URL(url, 'http://x').searchParams.get('state');
     return { purchase_orders: POS
@@ -55,6 +103,8 @@ async function screenText(source: 'mock' | 'api'): Promise<string> {
   const { unmount } = render(<MemoryRouter><PurchaseHome /></MemoryRouter>);
   await screen.findByTestId('po-list');
   await screen.findByText('核对全部通过');
+  await screen.findByTestId('todo-list');
+  await screen.findByText(/A4Pet-US 期望/);
   const text = (document.body.textContent ?? '').replace(/\s+/g, ' ').trim();
   unmount();
   return text;

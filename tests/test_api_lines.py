@@ -171,3 +171,12 @@ def test_unknown_state_value_is_400(client, seed):
     r = client.post(f"/v1/plan-lines/{line}/transition", json={"to_state": "飞了"},
                     headers=H(seed.actor))
     assert r.status_code == 400 and r.json()["error"] == "unknown_state"
+
+
+def test_lines_carry_plan_title_so_purchase_can_name_the_source(client, seed):
+    """R3：采购首页 / 编辑器要说「来自 销售计划 X rev N」—— 没有标题就只能写个编号，人认不出是哪张。"""
+    p1, _ = submitted(client, seed)
+    body = client.get("/v1/plan-lines", params={"plan_ids": p1, "orderable": "1"},
+                      headers=H(seed.actor)).json()
+    assert body["lines"], "候选为空，标题这条测不出东西"
+    assert {(r["plan_id"], r["plan_title"], r["rev"]) for r in body["lines"]} == {(p1, "10 月计划", 1)}
