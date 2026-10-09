@@ -32,6 +32,7 @@ def test_registry_lists_the_four_stage_a_sources():
     assert len(TABLES) == 5, f"非 pending 的 CH 源应为 5 张（阶段 A 四张 + supplier，spec §3.1），实得 {TABLES}"
 
 
+@pytest.mark.integration   # 模块夹具 q 连真 ClickHouse
 def test_each_source_table_has_at_least_one_column(q):
     for table in TABLES:
         db, name = table.split(".", 1)

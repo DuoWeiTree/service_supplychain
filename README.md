@@ -97,7 +97,13 @@ live 门禁都必须绿（它们要能连内网 CH）：
 
 ## 测试
 
-    uv run pytest -q                       # 全部（需要能连到 PG 192.168.66.210）
+    JXD_SCM_CONFIG=/nonexistent uv run pytest -q -m pure   # 快速层：不连网络，约 9 秒
+    uv run pytest -q                                       # 全量：要连 PG 192.168.66.210 与 CH，约 6.5 分钟
+
+两层由 `tests/conftest.py` 按夹具自动归类：用到 `business_db`（连 PG）的是 `integration`，
+其余是 `pure`；不经夹具却要连 CH / 真 PM / 读 `config.toml` 的测试在文件里显式标
+`integration`。`pure` 测试一开网络连接（非本机）或调 `psycopg2.connect` 就当场报错——
+归错了会红，不会安静地变慢或去连库（自检：`tests/test_test_tiers.py`）。
 
 测试跑在 schema `scm_test` 上，跑完整个 `DROP SCHEMA`；`scm` 与 `inv` 被夹具硬拦
 （`tests/conftest.py` 的 `assert_not_production_schema`）——写错 schema 不会安静地

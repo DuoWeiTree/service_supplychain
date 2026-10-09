@@ -24,6 +24,10 @@ python_files = ["test_*.py"]
 #   根目录可见，`tests/` 没有 __init__.py 时 pytest 默认只把 tests/ 自己
 #   插进 sys.path，够不到它的父目录。
 pythonpath = ["."]
+markers = [
+    "pure: 不连 PG / CH / 领星，离线可跑（tests/conftest.py 按夹具自动归类）",
+    "integration: 要连 PG / CH / 领星（用到 business_db，或文件里显式标注）",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

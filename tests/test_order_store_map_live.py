@@ -24,6 +24,9 @@ from dim import order_store_map as m
 from shared.ch_client import ch_client, ch_query, describe_failure
 from shared.config import clickhouse
 
+# 连真 ClickHouse（不经 business_db 夹具，自动归类认不出）
+pytestmark = pytest.mark.integration
+
 WINDOW_DAYS = 90
 
 

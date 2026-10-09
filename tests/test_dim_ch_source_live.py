@@ -27,6 +27,9 @@ from dim.registry import by_name
 from shared.ch_client import ch_client, ch_query, describe_failure
 from shared.config import clickhouse
 
+# 连真 ClickHouse（不经 business_db 夹具，自动归类认不出）
+pytestmark = pytest.mark.integration
+
 #: 四张镜像各自的 fetch_* —— ★ 每条都真跑，不是挑着跑一条就收工。
 _TARGETS = [
     ("sku_catalog", cs.fetch_sku_catalog),

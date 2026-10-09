@@ -3,8 +3,10 @@
 ★ 测试 schema 是 scm_test。禁止 scm（本服务生产）与 inv（同库另一个在跑的系统）——
   往它们任何一个里写一行都是事故，而这类事故没有任何回声。
 """
+import ipaddress
 import logging
 import os
+import socket
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlsplit
@@ -20,6 +22,53 @@ from erp.drivers.live import LiveDriver
 from erp.transport import host_safe_in_tests
 
 ROOT = Path(__file__).resolve().parents[1]
+
+#: ★ 测试分两层（T0.2）：`pure` 不连 PG / CH / 领星，`-m pure` 一条命令离线跑完；
+#: `integration` 要连。按夹具闭包自动归类（用到 business_db 即连 PG）；不经夹具却要连网的
+#: 测试（live CH / 真 PM / 真领星）在文件里写 `pytestmark = pytest.mark.integration`。
+#: 归错了不会安静：`pure` 测试一开网络连接就被 `_pure_tests_stay_offline` 当场打红。
+DB_FIXTURES = frozenset({"business_db"})
+
+
+def pytest_collection_modifyitems(config, items):
+    for item in items:
+        if item.get_closest_marker("integration") is None and not DB_FIXTURES & set(item.fixturenames):
+            item.add_marker(pytest.mark.pure)
+        else:
+            item.add_marker(pytest.mark.integration)
+
+
+def _loopback(address) -> bool:
+    host = address[0] if isinstance(address, tuple) else address
+    if not isinstance(host, str):
+        return True                                  # AF_UNIX 等本机套接字
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+@pytest.fixture(autouse=True)
+def _pure_tests_stay_offline(request, monkeypatch):
+    if request.node.get_closest_marker("pure") is None:
+        return
+    nodeid = request.node.nodeid
+    real_connect = socket.socket.connect
+
+    def guarded_connect(self, address):
+        if not _loopback(address):
+            raise RuntimeError(f"纯层测试 {nodeid} 试图连 {address} —— 它该标 integration")
+        return real_connect(self, address)
+
+    def guarded_pg(*args, **kwargs):
+        raise RuntimeError(f"纯层测试 {nodeid} 试图连 PG —— 它该用 business_db 夹具或标 integration")
+
+    import psycopg2
+    monkeypatch.setattr(socket.socket, "connect", guarded_connect)
+    monkeypatch.setattr(psycopg2, "connect", guarded_pg)
+
 CONFIG_TOML = ROOT / "config.toml"
 
 TEST_SCHEMA = "scm_test"

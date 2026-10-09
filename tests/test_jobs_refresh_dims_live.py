@@ -4,6 +4,9 @@ import pytest
 from dim import ch_source as cs
 from shared.ch_client import ch_client, ch_query, describe_failure
 
+# 连真 ClickHouse；连不上时会 skip —— skip 是「没测」不是「通过」，不许混进纯层
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture(scope="module")
 def live_query():

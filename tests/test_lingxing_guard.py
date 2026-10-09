@@ -22,6 +22,7 @@ def test_live_driver_cannot_be_constructed_in_tests():
         LiveDriver({"base_url": "https://lingxing.invalid"})
 
 
+@pytest.mark.integration   # 要读 config.toml 的 [erp] 段才走得到闸
 def test_real_driver_factory_fails_even_if_injection_is_bypassed():
     with pytest.raises(RuntimeError, match="测试禁止实例化真领星 driver"):
         ct.REAL_DRIVER_FACTORY()
