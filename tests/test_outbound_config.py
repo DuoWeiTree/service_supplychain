@@ -72,9 +72,10 @@ def test_unknown_auth_mode_refuses_to_start(monkeypatch):
         check_outbound_config()
 
 
-def test_leftover_erp_mode_is_loud(monkeypatch, scm_log):
-    """旧 config.toml 里残留的 [erp] mode 不再控制任何东西 —— 不出声就会有人以为下单不打领星。"""
+@pytest.mark.parametrize("value", ["fake", "live", ""])
+def test_leftover_erp_mode_refuses_to_start(monkeypatch, value):
+    """旧 config.toml 残留 [erp] mode（任何值）→ 拒启动：留着 fake 的人以为下单不打领星，下一次却是真单、不可逆。"""
     from api import check_outbound_config
-    _cfg(monkeypatch, {**_FULL, "mode": "fake"}, {"mode": "dev"})
-    check_outbound_config()
-    assert "[erp] mode='fake' 已不再生效" in scm_log.text
+    _cfg(monkeypatch, {**_FULL, "mode": value}, {"mode": "dev"})
+    with pytest.raises(RuntimeError, match=r"\[erp\] mode 已删除（PB-D14"):
+        check_outbound_config()

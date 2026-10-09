@@ -206,6 +206,10 @@ def check_outbound_config() -> None:
     e, a = config_module.erp(), config_module.auth()
     if a["mode"] not in ("dev", "rbac"):
         raise RuntimeError(f"[auth] mode 只能是 dev|rbac，得到 {a['mode']!r}")
+    if "mode" in e:
+        # 留着旧 mode 的人以为下单不打领星，而下一次就是真单、不可逆 —— 只警告不够，且排在最前
+        raise RuntimeError(f"[erp] mode 已删除（PB-D14：取消旧的模式开关），当前写着 {e['mode']!r}。"
+                           "删掉这一行再启动；注意此后下单将打真领星")
     missing = [k for k in ("app_id", "app_secret", "proxy_host") if not e[k]]   # ★ 无代理 = 被 IP 白名单拒
     if e["confirm_salt"] in ("", config_module._ERP_DEFAULTS["confirm_salt"]):
         missing.append("confirm_salt（空或仍是开发默认值）")
@@ -215,10 +219,6 @@ def check_outbound_config() -> None:
         # ★ 放在凭证检查之后：M2 摘掉这道闸时，上面那几条仍按原序生效。
         #   rbac 鉴权链路（spec §12）M1 没有实现 —— 放行等于照收伪造的 x-actor。
         raise RuntimeError("[auth] mode=rbac：RBAC not implemented until M2（M1 只能 dev）")
-    if "mode" in e:
-        # 旧配置里残留的 [erp] mode 已经什么都不控制：不出声的话，留着旧值的人会以为下单不会打到领星
-        log.warning("startup [erp] mode=%r 已不再生效（PB-D14）：下单一律打真领星，请从 config.toml 删掉这一行",
-                    e["mode"])
     log.warning("startup erp host=%s proxy=%s:%s auth mode=%s -- 下单打真领星；dev 身份可伪造（PB-D15，RBAC 在 M2）",
                 e["base_url"], e["proxy_host"], e["proxy_port"], a["mode"])
 

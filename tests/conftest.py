@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 from lingxing_double import LingxingDouble
 
+from erp import auth as erp_auth
 from erp import gateway
 from erp.drivers.live import LiveDriver
 
@@ -140,32 +141,29 @@ def _pin_erp_auth(text: str) -> str:
 
 #: ★ 测试永远打不到真领星（PB-D14）。conftest 一被导入就装上，早于任何测试模块与夹具：
 #: ① `lingxing` autouse 夹具把网关的 driver 工厂换成替身；
-#: ② 绕过 ① 也没用 —— 测试进程里实例化 LiveDriver 直接抛。
-#: 确需真 driver 的测试必须显式打 `@pytest.mark.live_lingxing_driver`（当前没有任何测试这样做）。
+#: ② 绕过 ① 也没用 —— 测试进程里实例化 LiveDriver、向领星取 access_token 都直接抛。
+#: ★ 故意不留开口：领星背后是不可逆的建单。
 LIVE_DRIVER_FORBIDDEN = "测试禁止实例化真领星 driver"
+TOKEN_FORBIDDEN = "测试禁止向真领星取 access_token"
 REAL_DRIVER_FACTORY = gateway._driver
-# ★ conftest 可能被以两个模块名导入（`conftest` / `tests.conftest`）：真 __init__ 只认第一次见到的
-_REAL_LIVE_INIT = LiveDriver.__dict__.get("_real_init_for_tests", LiveDriver.__init__)
-LiveDriver._real_init_for_tests = _REAL_LIVE_INIT
 
 
 def _forbidden_live_init(self, *args, **kwargs):
-    raise RuntimeError(f"{LIVE_DRIVER_FORBIDDEN}（需要时显式标 @pytest.mark.live_lingxing_driver）")
+    raise RuntimeError(LIVE_DRIVER_FORBIDDEN)
+
+
+def _forbidden_token(*args, **kwargs):
+    raise RuntimeError(TOKEN_FORBIDDEN)
 
 
 LiveDriver.__init__ = _forbidden_live_init
+erp_auth.token = _forbidden_token
 DOUBLE = LingxingDouble()
 
 
-def pytest_configure(config):
-    config.addinivalue_line("markers", "live_lingxing_driver: 允许本测试实例化真领星 LiveDriver（默认禁止）")
-
-
 @pytest.fixture(autouse=True)
-def lingxing(request, monkeypatch):
+def lingxing(monkeypatch):
     """领星替身。每个测试一份干净的脚本与单据。"""
-    if request.node.get_closest_marker("live_lingxing_driver"):
-        monkeypatch.setattr(LiveDriver, "__init__", _REAL_LIVE_INIT)
     DOUBLE.reset()
     monkeypatch.setattr(gateway, "_driver", lambda: DOUBLE)
     yield DOUBLE

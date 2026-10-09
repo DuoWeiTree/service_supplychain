@@ -8,7 +8,7 @@ from pathlib import Path
 from tests.test_layering import PACKAGES
 
 ROOT = Path(__file__).resolve().parents[1]
-FORBIDDEN = re.compile(r"fake|simulat|placed_mode|'sim'", re.IGNORECASE)
+FORBIDDEN = re.compile(r"fake|simulat|placed_mode|[\"']sim[\"']|gateway\.mode", re.IGNORECASE)
 
 
 def _product_sources() -> list[Path]:
@@ -22,7 +22,7 @@ def test_product_code_has_no_fake_mode():
             for p in _product_sources()
             for n, line in enumerate(p.read_text("utf-8").splitlines(), start=1)
             if FORBIDDEN.search(line)]
-    assert hits == [], "产品代码里出现 fake / 模拟 / placed_mode / 'sim'：\n" + "\n".join(hits)
+    assert hits == [], "产品代码里出现 fake / 模拟 / placed_mode / 'sim' / gateway.mode：\n" + "\n".join(hits)
 
 
 def test_simulate_routes_are_gone(client):

@@ -7,7 +7,7 @@ import conftest as ct
 import pytest
 from lingxing_double import LingxingDouble
 
-from erp import gateway
+from erp import auth, gateway
 from erp.drivers.live import LiveDriver
 
 
@@ -24,6 +24,11 @@ def test_live_driver_cannot_be_constructed_in_tests():
 def test_real_driver_factory_fails_even_if_injection_is_bypassed():
     with pytest.raises(RuntimeError, match="测试禁止实例化真领星 driver"):
         ct.REAL_DRIVER_FACTORY()
+
+
+def test_lingxing_token_cannot_be_fetched_in_tests():
+    with pytest.raises(RuntimeError, match="测试禁止向真领星取 access_token"):
+        auth.token({"base_url": "https://lingxing.invalid", "app_id": "x", "app_secret": "y"})
 
 
 def test_test_config_carries_no_real_lingxing_target(business_db):
