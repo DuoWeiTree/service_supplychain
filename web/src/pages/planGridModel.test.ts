@@ -6,8 +6,8 @@ import {
 import type {
   DemandCell, ForecastState, GridResponse, MskuForecast, Seller, SkuForecast, StoreForecast,
 } from '../api/types';
-import realGrid from '../api/fixtures/grid-1.json';
-import realSellersFixture from '../api/fixtures/sellers.json';
+import realGrid from '../testing/fixtures/grid-1.json';
+import realSellersFixture from '../testing/fixtures/sellers.json';
 
 const P = ['2026-10', '2026-11', '2026-12'];
 
@@ -249,15 +249,6 @@ describe('在途读 forecast_sku（货号级，只展示不分摊）', () => {
     expect(m.transit.map((t) => t.sku)).toContain('GHOST-SKU');
   });
 
-  it('★ OP-17：在途为 null（mock 改采购后未重算）→ 该格未知，不报组成对不上', () => {
-    const g = makeGrid();
-    g.forecast_sku[0] = { ...g.forecast_sku[0]!, reason: 'not_recomputed_in_mock', in_transit: null,
-      pipeline: { ...g.forecast_sku[0]!.pipeline, making: null, shipping: null } };
-    const m = buildGridModel(g, sellers);
-    expect(m.transit[0]!.cells[0]!.units).toBeNull();
-    expect(m.orphans.filter((o) => o.kind === 'in_transit_disagrees')).toEqual([]);
-  });
-
   it('★ 块 / 采购里有、forecast_sku 里一行都没有的货号：在途行照铺（全未知）并点名，不静默丢', () => {
     const g = makeGrid();
     g.purchase.push({ sku: 'SKU-P', period: P[0]!, planned_units: 1 });
@@ -322,15 +313,6 @@ describe('库存改从 forecast* 取（spec §4.6）', () => {
     const m = buildGridModel(g, sellers);
     expect(systemAt(m.blocks[0]!, P[0]!)).toEqual({ kind: 'num', value: 230 });
     expect(systemAt(m.blocks[0]!, P[1]!)).toEqual({ kind: 'unknown' });
-  });
-
-  it('★ OP-17：mock 标了「未重算」的行不当证人 —— 不报 demand_disagrees，库存是未知不是旧数', () => {
-    const g = makeGrid();
-    g.forecast_store[0] = { ...g.forecast_store[0]!, state: 'unknown', reason: 'not_recomputed_in_mock',
-                            opening: null, demand: null, inbound_planned: null, closing: null };
-    const m = buildGridModel(g, sellers);
-    expect(m.orphans.filter((o) => o.key === 'SKU-1/11072/2026-10')).toEqual([]);
-    expect(stockAt(m.blocks[0]!, P[0]!)).toEqual({ kind: 'unknown' });
   });
 
   it('totalsAt 给货号合计行；params / beyond / unallocated 原样带出', () => {

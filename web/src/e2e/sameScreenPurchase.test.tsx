@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import purchaseFixture from '../api/fixtures/purchase.json';
+import purchaseFixture from '../testing/fixtures/purchase.json';
 
 /** 判据⑥ 的采购屏：mock 与 http 打桩渲染同一屏。
  *
@@ -48,8 +48,8 @@ async function screenText(source: 'mock' | 'api'): Promise<string> {
     const { createHttpApi } = await import('../api/http');
     vi.doMock('../api', () => ({ api: createHttpApi({ base: '/v1', timeoutMs: 1000 }), ApiError }));
   } else {
-    const { createMockApi } = await import('../api/mock');
-    vi.doMock('../api', () => ({ api: createMockApi(), ApiError }));
+    const { createMemoryBackend } = await import('../testing/memoryBackend');
+    vi.doMock('../api', () => ({ api: createMemoryBackend(), ApiError }));
   }
   const { PurchaseHome } = await import('../pages/purchase/PurchaseHome');
   const { unmount } = render(<MemoryRouter><PurchaseHome /></MemoryRouter>);

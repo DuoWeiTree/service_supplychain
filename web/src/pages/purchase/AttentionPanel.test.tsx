@@ -182,13 +182,13 @@ describe('待核实的动作', () => {
     await vi.waitFor(() => expect(calls.filter((c) => c.path.endsWith('/timeline')).length).toBeGreaterThan(before));
   });
 
-  it('mock 数据源 501 not_in_mock：动作的错误点名显示', async () => {
+  it('后端明确拒绝（409 nothing_to_resolve）：动作的错误点名显示，不算结果未知', async () => {
     await mountPurchase('/purchase/1', purchaseRoutes(nvState(), {
-      'POST /v1/purchase-orders/1/recheck': () => fail(501, 'not_in_mock', 'mock 数据源不下单'),
+      'POST /v1/purchase-orders/1/recheck': () => fail(409, 'nothing_to_resolve', '这张单没有待处理的项'),
     }));
     const p = await panel();
     await userEvent.click(within(p).getByRole('button', { name: '重新核对' }));
-    expect(await within(p).findByText('mock 数据源不下单')).toBeInTheDocument();
+    expect(await within(p).findByText('这张单没有待处理的项')).toBeInTheDocument();
     expect(within(p).queryByTestId('attn-unknown')).toBeNull();
     expect(p).not.toHaveTextContent('结果未知：');
     expect(within(p).getByRole('button', { name: '重新核对' })).toBeEnabled();

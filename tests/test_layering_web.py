@@ -222,11 +222,85 @@ def test_l10_scanner_actually_catches_a_violation(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_grid_fixture_byte_identical_on_both_sides():
-    """★ 前端 web/src/api/fixtures/grid-1.json 是 tests/fixtures/grid_response.json
+    """★ 前端 web/src/testing/fixtures/grid-1.json 是 tests/fixtures/grid_response.json
     的原样拷贝（Task 2 报告已记）——这里补 Python 侧的守卫：任一侧单独重新生成，
     这条测试必须红，不能只靠前端 fixtures.test.ts 单方面守着。"""
     backend = ROOT / "tests" / "fixtures" / "grid_response.json"
-    frontend = WEB_SRC / "api" / "fixtures" / "grid-1.json"
+    frontend = WEB_SRC / "testing" / "fixtures" / "grid-1.json"
     assert backend.exists() and frontend.exists()
     assert backend.read_bytes() == frontend.read_bytes(), (
-        "grid fixture 前后端字节不同源 —— 前端 mock 全绿、切 api 才发现字段不一样")
+        "grid fixture 前后端字节不同源 —— 前端替身全绿、真后端才发现字段不一样")
+
+
+# ---------------------------------------------------------------------------
+# L11 · PB-D17：产品前端没有假模式 —— 替身只活在 src/testing/ 与测试文件里
+# ---------------------------------------------------------------------------
+
+#: 区分大小写：这些是标识符 / 错误码，不是散文
+L11_FORBIDDEN = ("VITE_DATA_SOURCE", "createMockApi", "memoryBackend", "not_in_mock",
+                 "not_recomputed_in_mock")
+#: Global Constraints 点名的假模式字样；大小写不敏感（`MockApi` 与 `mock` 一样是假模式）
+_FAKE_WORD = re.compile(r"mock|fake|simulat", re.IGNORECASE)
+#: `from '../testing/x'` · `import '../testing/x'` · `import('../testing/x')`
+_TESTING_IMPORT = re.compile(r"""(?:\bfrom|\bimport)\s*\(?\s*['"][^'"]*(?:^|/)testing/""")
+#: ★ 拒绝旧开关必须点它的名（PB-D17「启动即拒并点名」）—— 只有这两处可以提，且不许是赋值
+L11_MAY_NAME_RETIRED = {"web/src/api/index.ts", "web/.env.example"}
+_RETIRED_ASSIGN = re.compile(r"^\s*VITE_DATA_SOURCE\s*=", re.MULTILINE)
+
+
+def is_web_test_source(p: Path) -> bool:
+    rel = p.relative_to(ROOT / "web").as_posix()
+    return (".test." in p.name or rel.startswith("src/testing/") or rel.startswith("src/e2e/")
+            or rel == "vitest.setup.ts")
+
+
+def product_web_sources() -> list[Path]:
+    """L8 的扫描范围去掉测试侧，再加上 `.env.example`（留着旧开关的样例会被人照抄进 .env）。"""
+    out = [p for p in web_sources() if not is_web_test_source(p)]
+    env = ROOT / "web" / ".env.example"
+    if env.exists():
+        out.append(env)
+    assert out, "产品前端源码一个都没扫到 —— 这条规则是空转的"
+    return out
+
+
+def scan_l11(text: str, rel: str = "") -> list[str]:
+    hits = [tok for tok in L11_FORBIDDEN if tok in text]
+    if rel in L11_MAY_NAME_RETIRED and "PB-D17" in text and not _RETIRED_ASSIGN.search(text):
+        hits = [h for h in hits if h != "VITE_DATA_SOURCE"]
+    hits += sorted({m.group(0).lower() for m in _FAKE_WORD.finditer(text)})
+    hits += [m.group(0) for m in _TESTING_IMPORT.finditer(text)]
+    return hits
+
+
+def test_l11_product_web_has_no_fake_mode():
+    files = product_web_sources()
+    assert any(p.name == "index.ts" and p.parent.name == "api" for p in files), \
+        "src/api/index.ts 不在扫描范围里 —— 数据源装配点没被守着"
+    bad = {}
+    for p in files:
+        rel = p.relative_to(ROOT).as_posix()
+        hits = scan_l11(p.read_text("utf-8"), rel)
+        if hits:
+            bad[rel] = hits
+    assert not bad, f"L11 违规（PB-D17：产品前端只打真后端，替身只许测试 import）：{bad}"
+
+
+def test_l11_scanner_actually_catches_a_violation():
+    assert scan_l11("const s = import.meta.env.VITE_DATA_SOURCE")
+    assert scan_l11("import { createMemoryBackend } from '../testing/memoryBackend';")
+    assert scan_l11("import { stubBackend } from '../../testing/backendStub';")
+    assert scan_l11("const m = await import('./testing/x')")
+    assert scan_l11("if (e.error === 'not_in_mock') return false;")
+    assert scan_l11("// 假数据：Fake rows for the demo")
+    assert scan_l11("const api = createMockApi()")
+    # 点名旧开关：只在登记的两处、带 PB-D17、且不是赋值时放行
+    refusal = "throw new Error('VITE_DATA_SOURCE 已废除（PB-D17）')"
+    assert not scan_l11(refusal, "web/src/api/index.ts")
+    assert scan_l11(refusal, "web/src/pages/OpsHome.tsx")
+    assert scan_l11("# PB-D17\nVITE_DATA_SOURCE=api\n", "web/.env.example")
+    assert not scan_l11("import { createHttpApi } from './http';")
+    assert not scan_l11("// 结果未知（testing 不是这里的事）")
+    assert is_web_test_source(WEB_SRC / "testing" / "backendStub.ts")
+    assert is_web_test_source(WEB_SRC / "e2e" / "planFlow.test.tsx")
+    assert not is_web_test_source(WEB_SRC / "api" / "index.ts")

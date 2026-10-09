@@ -59,7 +59,7 @@ const fmt = (n: number | null) => (n === null ? '—' : n.toLocaleString('en-US'
 const blockKey = (b: SkuBlock) => `${b.sid}-${b.sku}`;
 const SHORT_LABEL = { 预测: '预', 库存: '存', 在途: '途' } as const;
 
-/** 库存为什么是 — 。★ 光秃秃一根 — 分不出「没在仓数」「销量待填」「mock 没重算」 */
+/** 库存为什么是 — 。★ 光秃秃一根 — 分不出「没在仓数」「销量待填」「到货数未知」 */
 function unknownWhy(reason: ForecastReason | undefined): string {
   return reason == null ? '无数据' : FORECAST_WHY[reason];
 }

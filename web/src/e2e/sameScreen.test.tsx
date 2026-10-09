@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import gridFixture from '../api/fixtures/grid-1.json';
-import plansFixture from '../api/fixtures/plans.json';
-import sellersFixture from '../api/fixtures/sellers.json';
+import gridFixture from '../testing/fixtures/grid-1.json';
+import plansFixture from '../testing/fixtures/plans.json';
+import sellersFixture from '../testing/fixtures/sellers.json';
 
 beforeEach(() => { vi.resetModules(); });
 afterEach(() => { vi.restoreAllMocks(); vi.doUnmock('../api'); });
@@ -35,8 +35,8 @@ async function screenText(source: 'mock' | 'api'): Promise<string> {
     const { createHttpApi } = await import('../api/http');
     vi.doMock('../api', () => ({ api: createHttpApi({ base: '/v1', timeoutMs: 1000 }), ApiError }));
   } else {
-    const { createMockApi } = await import('../api/mock');
-    vi.doMock('../api', () => ({ api: createMockApi(), ApiError }));
+    const { createMemoryBackend } = await import('../testing/memoryBackend');
+    vi.doMock('../api', () => ({ api: createMemoryBackend(), ApiError }));
   }
   const { PlanGrid } = await import('../pages/PlanGrid');
   const { unmount } = render(

@@ -40,7 +40,7 @@ export function PlanAdd() {
   const key = (m: { seller_sku: string; sid: string }) => `${m.seller_sku}/${m.sid}`;
 
   // ★ 契约只有一种形状（api/ui/plans.py:156-160，经 http.ts 的 {error,hint,...fields} 展开）：
-  //   fields.claimed_by 是嵌套对象或 null。不再兼容打平字段 —— 两个真相会把错的 mock 永远养着
+  //   fields.claimed_by 是嵌套对象或 null。不再兼容打平字段 —— 两个真相会把错的那个永远养着
   function holderFrom(ae: ApiError): ClaimHolder | null {
     const claimedBy = ae.fields['claimed_by'];
     return claimedBy && typeof claimedBy === 'object' ? (claimedBy as ClaimHolder) : null;

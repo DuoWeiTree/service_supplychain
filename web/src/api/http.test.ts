@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHttpApi } from './http';
 import { ApiError } from './client';
 import { setActor } from '../shell/actorStore';
-import gridFixture from './fixtures/grid-1.json';
+import gridFixture from '../testing/fixtures/grid-1.json';
 import type { DemandCell } from './types';
 
 afterEach(() => { vi.restoreAllMocks(); });

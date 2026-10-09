@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import gridFixture from '../api/fixtures/grid-1.json';
-import plansFixture from '../api/fixtures/plans.json';
-import sellersFixture from '../api/fixtures/sellers.json';
+import gridFixture from '../testing/fixtures/grid-1.json';
+import plansFixture from '../testing/fixtures/plans.json';
+import sellersFixture from '../testing/fixtures/sellers.json';
 
 /** ★ I1（终审）：`getPlan` 从前走 `plans({})`，后端按默认值 `archived=false` 排除已归档
  *  （`api/ui/plans.py:69`），于是 find 落空、前端抛 404「没有这张计划」——

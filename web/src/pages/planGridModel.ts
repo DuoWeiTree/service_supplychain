@@ -159,10 +159,9 @@ export function buildGridModel(grid: GridResponse, sellers: Seller[]): GridModel
       }
       if (row.state !== 'not_applicable') {
         // ★ 这一格用掉的需求有两处来源（后端的 demand 与前端自己算的 Σ）；不一致要点名
-        //   OP-17：mock 标了「未重算」的行自己声明没有现时的数，不是证人
         const mine = demandAt(block, period);
         const theirs: QtyValue = row.demand === null ? { kind: 'unknown' } : { kind: 'num', value: row.demand };
-        if (row.reason !== 'not_recomputed_in_mock' && JSON.stringify(mine) !== JSON.stringify(theirs)) {
+        if (JSON.stringify(mine) !== JSON.stringify(theirs)) {
           orphans.push({ kind: 'demand_disagrees', key: k });
         }
         // ★ spec §4.6：店铺 = Σ msku。后端算了一遍，这里再加一遍互为证人 —— 对不上就是两个真相
@@ -207,14 +206,12 @@ export function buildGridModel(grid: GridResponse, sellers: Seller[]): GridModel
     sku,
     cells: grid.periods.map((p) => skuRow.get(`${sku}/${p}`)).filter((r): r is SkuForecast => r !== undefined),
   }));
-  // ★ 在途总数与它的组成是两个证人：对不上要点名，不挑一个信。
-  //   任一为 null（OP-17 mock 改采购后未重算）⇒ 未知，没有两个证人可比
+  // ★ 在途总数与它的组成是两个证人：对不上要点名，不挑一个信
   const transit: TransitRow[] = totals.map((t) => ({
     sku: t.sku,
     cells: grid.periods.map((period) => {
       const c = skuRow.get(`${t.sku}/${period}`);
-      if (c && c.in_transit !== null && c.pipeline.making !== null && c.pipeline.shipping !== null
-          && c.in_transit !== c.pipeline.making + c.pipeline.shipping + c.pipeline.ordered_open) {
+      if (c && c.in_transit !== c.pipeline.making + c.pipeline.shipping + c.pipeline.ordered_open) {
         orphans.push({ kind: 'in_transit_disagrees', key: `${t.sku}/${period}` });
       }
       return { period, units: c ? c.in_transit : null };

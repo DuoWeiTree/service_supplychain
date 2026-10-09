@@ -37,9 +37,8 @@ export function asApiError(e: unknown): ApiError {
 
 /** ★ sku-image 计划 Task 4：`<img src>` 必须指向**本仓**的代理端点，不是 PM 的地址——
  *  PM 凭证不出后端，界面拿到的图片 URL 只能是我们自己的 `/v1/skus/{sku}/image`。
- *  与 `src/api/index.ts` 读同一个 `VITE_API_BASE`（默认 `/v1`）：`mock` 数据源下这个端点
- *  实际不存在，但字符串本身按同一条规则拼——组 URL 与「这条路能不能真的连上」是两件事，
- *  后者是 Step 5（加载失败态）要处理的，不是这个函数的职责。 */
+ *  与 `src/api/index.ts` 读同一个 `VITE_API_BASE`（默认 `/v1`）。组 URL 与「这条路能不能真的连上」
+ *  是两件事，后者是 Step 5（加载失败态）要处理的，不是这个函数的职责。 */
 export function skuImageUrl(sku: string): string {
   const base = import.meta.env.VITE_API_BASE ?? '/v1';
   return `${base}/skus/${encodeURIComponent(sku)}/image`;

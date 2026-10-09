@@ -16,8 +16,8 @@ afterEach(() => { vi.restoreAllMocks(); vi.doUnmock('../api'); });
 
 async function app(entry: string) {
   const { ApiError } = await import('../api/client');
-  const { createMockApi } = await import('../api/mock');
-  vi.doMock('../api', () => ({ api: createMockApi(), ApiError }));
+  const { createMemoryBackend } = await import('../testing/memoryBackend');
+  vi.doMock('../api', () => ({ api: createMemoryBackend(), ApiError }));
   const [{ OpsHome }, { PlanGrid }, { PlanAdd }, { PlanRevs }] = await Promise.all([
     import('../pages/OpsHome'), import('../pages/PlanGrid'),
     import('../pages/PlanAdd'), import('../pages/PlanRevs'),
@@ -139,7 +139,7 @@ describe('文案纪律', () => {
   });
 });
 
-// ★ 下单与转人工：mock 一律 501，这几屏与动词只能用 http 打桩看（spec §8.1 前端数据源）
+// ★ 下单与转人工：内存替身不模拟领星，这几屏与动词只能用 http 打桩看
 describe('文案纪律：下单与转人工', () => {
   const NV = { attention_id: 3, kind: 'needs_verify' as const, opened_at: '2026-10-09T10:01:33+08:00' };
   const LM = { attention_id: 5, kind: 'landed_mismatch' as const, opened_at: '2026-10-09T11:00:00+08:00' };
@@ -218,11 +218,11 @@ describe('文案纪律：下单与转人工', () => {
 
   it('写动作失败不出 toast（只有成功才用「已」字）', async () => {
     await mountPurchase('/purchase/1', purchaseRoutes(pending(), {
-      'POST /v1/purchase-orders/1/recheck': () => fail(501, 'not_in_mock', 'mock 数据源不下单'),
+      'POST /v1/purchase-orders/1/recheck': () => fail(409, 'nothing_to_resolve', '这张单没有待处理的项'),
     }));
     const panel = await screen.findByTestId('attention-panel');
     await userEvent.click(within(panel).getByRole('button', { name: '重新核对' }));
-    expect(await within(panel).findByText('mock 数据源不下单')).toBeInTheDocument();
+    expect(await within(panel).findByText('这张单没有待处理的项')).toBeInTheDocument();
     expect(screen.queryByRole('status')).toBeNull();
   });
 });

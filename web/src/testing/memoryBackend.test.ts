@@ -1,18 +1,18 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { createMockApi, markForecastStale } from './mock';
-import { ApiError } from './client';
-import type { CountKey, GridResponse, Seller } from './types';
+import { createMemoryBackend } from './memoryBackend';
+import { ApiError } from '../api/client';
+import type { CountKey, GridResponse, Seller } from '../api/types';
 import gridFixture from './fixtures/grid-1.json';
 import sellersFixture from './fixtures/sellers.json';
 import { buildGridModel } from '../pages/planGridModel';
 
-let api = createMockApi();
-beforeEach(() => { api = createMockApi(); });
+let api = createMemoryBackend();
+beforeEach(() => { api = createMemoryBackend(); });
 
 const firstMsku = async () => (await api.getGrid(1)).demand[0]!;
 
-describe('mock 数据源', () => {
+describe('memoryBackend（测试替身）', () => {
   it('月份一律 "YYYY-MM"，不是月初日期', async () => {
     const g = await api.getGrid(1);
     expect(g.periods.every((p) => /^\d{4}-\d{2}$/.test(p))).toBe(true);
@@ -28,15 +28,6 @@ describe('mock 数据源', () => {
     expect(back.expected_units).toBeNull();
   });
 
-  // ★ Task 21：inventory[]/sku_pipeline[] 与 recompute() 一起退役（spec §6，阶段 A 的
-  //   「在仓 − 期望」口径已被预测块取代）。recompute() 曾经专门保留 unknown_onhand 不被
-  //   demand 编辑顺手覆盖成 unknown_demand —— 那条精细区分现在没有等价物了：
-  //   markForecastStale()（OP-17，Task 9 引入）对同一 sku 的任何相关编辑一律改判成
-  //   通用的 'not_recomputed_in_mock'（demand/onhand 都清空），不再区分「原本是哪种未知」。
-  //   这不是本任务引入的回退 —— 是 mock 早就选择的「不重跑台账」简化（见上面 OP-17 注释），
-  //   真正的成因区分（unknown_onhand ≠ unknown_demand）只在后端算，已由
-  //   tests/test_api_grid.py 覆盖。故原 09-23 专项测试随 recompute() 一起删，不强行造等价物。
-
   it('★ forecast_store 的身份是「店铺 × 货号」—— 一格对应多个 msku，不是每个 msku 一格', async () => {
     const g = await api.getGrid(1);
     expect(g.forecast_store.every((r) => 'sku' in r && 'sid' in r && !('seller_sku' in r))).toBe(true);
@@ -47,7 +38,7 @@ describe('mock 数据源', () => {
   it('★ 任何一个 msku 未知 → 整格未知（不是把它当 0 再把别的 msku 加进来）', async () => {
     // ★ fixture 本身就种了这一形态（tests/test_grid_fixture.py 的 _build）：
     //   DCC1800264G1/11072 挂两个 msku —— MSKU-A（人填 130）与 MSKU-B（system_units
-    //   被清空、demand 本就未知）。后端已经把整格算成未知，mock 原样透传，不必自己重算；
+    //   被清空、demand 本就未知）。后端已经把整格算成未知，替身原样透传，不必自己重算；
     //   若实现把 MSKU-B 的 null 当 0 跳过、只算 MSKU-A 的 130，这条断言会抓到。
     const g = await api.getGrid(1);
     const row = g.forecast_store.find(
@@ -95,45 +86,12 @@ describe('mock 数据源', () => {
     }
   });
 
-  it('★ OP-17：mock 不重跑台账 —— 改了期望销量，该货号的预测库存变「未知」，不留旧数', async () => {
-    const api = createMockApi();
+  it('★ 预测块是固定样本：编辑期望 / 采购不改它（重算是后端 forecast/ 的活，替身不照抄）', async () => {
+    const before = (await api.getGrid(1)).forecast_store;
     await api.putDemand(1, 'MSKU-A', '11072', '2026-10', 999);
-    const g = await api.getGrid(1);
-    const sku = g.demand.find((d) => d.seller_sku === 'MSKU-A')!.sku;
-    for (const key of ['forecast', 'forecast_store', 'forecast_sku'] as const) {
-      const rows = (g[key] as { sku: string; state: string; reason: string | null; closing: number | null }[])
-        .filter((r) => r.sku === sku);
-      expect(rows.length).toBeGreaterThan(0);
-      expect(rows.every((r) => r.state === 'unknown' && r.reason === 'not_recomputed_in_mock' && r.closing === null)).toBe(true);
-    }
-    const other = g.forecast_store.filter((r) => r.sku !== sku);
-    expect(other.some((r) => r.reason !== 'not_recomputed_in_mock')).toBe(true);
-  });
-
-  it('★ OP-17：改计划采购同样让该货号的预测库存变「未知」；期初也不留旧数', async () => {
     const g0 = await api.getGrid(1);
-    const pc = g0.purchase[0]!;
-    await api.putPurchase(1, pc.sku, pc.period, 123);
-    const g = await api.getGrid(1);
-    const rows = g.forecast_store.filter((r) => r.sku === pc.sku && r.state !== 'not_applicable');
-    expect(rows.length).toBeGreaterThan(0);
-    expect(rows.every((r) => r.reason === 'not_recomputed_in_mock' && r.opening === null)).toBe(true);
-    const sku = g.forecast_sku.filter((r) => r.sku === pc.sku);
-    expect(sku.length).toBeGreaterThan(0);
-    expect(sku.every((r) => r.reason === 'not_recomputed_in_mock' && r.closing === null)).toBe(true);
-  });
-
-  it('★ OP-17：「不适用」不随编辑变「未知」—— 它与输入无关，不适用 ≠ 未知', async () => {
-    const g0 = await api.getGrid(1);
-    const na = g0.forecast_store.find((r) => r.state === 'not_applicable')!;
-    const edited = g0.demand.find((d) => d.sku === na.sku && d.sid !== na.sid)!;
-    await api.putDemand(1, edited.seller_sku, edited.sid, edited.period, 5);
-    const g = await api.getGrid(1);
-    const rows = g.forecast_store.filter((r) => r.sku === na.sku);
-    expect(rows.filter((r) => r.sid === na.sid).every((r) => r.state === 'not_applicable')).toBe(true);
-    expect(rows.filter((r) => r.sid !== na.sid).every((r) => r.reason === 'not_recomputed_in_mock')).toBe(true);
-    expect(g.forecast.filter((r) => r.sid === na.sid && r.sku === na.sku)
-      .every((r) => r.state === 'not_applicable')).toBe(true);
+    await api.putPurchase(1, g0.purchase[0]!.sku, g0.purchase[0]!.period, 123);
+    expect((await api.getGrid(1)).forecast_store).toEqual(before);
   });
 
   it('新建计划的空网格也带预测块（params + 空数组），不缺键', async () => {
@@ -198,7 +156,7 @@ describe('mock 数据源', () => {
   });
 
   it('★ 认领成功要带 seeded 与 no_history（team-lead 09-22 裁定，找到 2）', async () => {
-    // plan 1 是唯一带着真实 grid-1.json 网格的 mock 计划，no_history 就从这张网格现查。
+    // plan 1 是唯一带着真实 grid-1.json 网格的替身计划，no_history 就从这张网格现查。
     // MSKU-A@11072：grid-1.json 里三个月 system_units 都有数（135/130/135，
     // base_rate × 天数重固化后的真数——F16），有历史可估 ⇒ no_history 必须是空数组，不是随手塞一条
     const withHistory = await api.claim(1, { seller_sku: 'MSKU-A', sid: '11072' });
@@ -220,7 +178,7 @@ describe('mock 数据源', () => {
     ]);
   });
 
-  // ★ I2（终审）：mock 与真 API 在「归档」这件事上语义相反，而唯一那条门禁看不见 ——
+  // ★ I2（终审）：替身与真 API 在「归档」这件事上语义相反，而唯一那条门禁看不见 ——
   //   plans.json 四张计划的 archived_at 全是 null，两种数据源在这条分叉上永远同答案。
   //   现在 fixture 里有一张归档计划（plan 5），下面四条各钉一侧。
   describe('归档：与 api/ui 同口径', () => {
@@ -289,95 +247,13 @@ describe('mock 数据源', () => {
   });
 });
 
-describe('★ OP-17 复核 R1：依赖计划采购 / 期望销量的每一项都如实标「未重算」，不留旧数、不静默丢', () => {
-  const base = (): GridResponse => JSON.parse(JSON.stringify(gridFixture)) as GridResponse;
-  const SKU = 'DCC1800264G1';
-  /** fixture 里没有到货与未分配 —— 这里合成一份，检验标记本身 */
-  const withArrivals = (): GridResponse => {
-    const g = base();
-    const row = g.forecast.find((r) => r.sku === SKU && r.state === 'ok')!;
-    row.basis.arrivals = [{ date: '2026-12-10', units: 40, order_period: '2026-10', pool: 500,
-                            rule: 'x', gap_part: 40, weight_part: 0 }];
-    g.unallocated = [
-      { scope: 'batch', sku: SKU, order_period: '2026-11', arrive: '2027-01-13', units: 300,
-        reason: 'gap_unknown', unknown: [['MSKU-B', '11072']] },
-      { scope: 'batch', sku: 'A4P-TOY-002', order_period: '2026-11', arrive: '2027-01-13', units: 9,
-        reason: 'gap_unknown', unknown: [] },
-    ];
-    return g;
-  };
-
-  it('改采购后：在途 / 在制 / 在船 / 未填采购 → null（未知），不是旧数', () => {
-    const g = withArrivals();
-    markForecastStale(g, SKU, 'purchase');
-    const rows = g.forecast_sku.filter((r) => r.sku === SKU);
-    expect(rows.length).toBeGreaterThan(0);
-    for (const r of rows) {
-      expect(r.in_transit).toBeNull();
-      expect(r.pipeline.making).toBeNull();
-      expect(r.pipeline.shipping).toBeNull();
-      expect(r.unfilled_purchase).toBeNull();
-      expect(r.reason).toBe('not_recomputed_in_mock');
-    }
-    // 别的货号不动
-    expect(g.forecast_sku.filter((r) => r.sku !== SKU).every((r) => r.in_transit !== null)).toBe(true);
-  });
-
-  it('改采购后：超出推演窗 / 未分配 / 到货依据 都留着但标「未重算」、件数未知', () => {
-    const g = withArrivals();
-    const beyondBefore = g.beyond_horizon.filter((b) => b.sku === SKU).length;
-    expect(beyondBefore).toBeGreaterThan(0);
-    markForecastStale(g, SKU, 'purchase');
-    const beyond = g.beyond_horizon.filter((b) => b.sku === SKU);
-    expect(beyond).toHaveLength(beyondBefore);                       // ★ 不静默丢
-    expect(beyond.every((b) => b.reason === 'not_recomputed_in_mock' && b.units === null)).toBe(true);
-    const un = g.unallocated.filter((u) => u.sku === SKU);
-    expect(un).toHaveLength(1);
-    expect(un.every((u) => u.reason === 'not_recomputed_in_mock' && u.units === null)).toBe(true);
-    expect(g.unallocated.find((u) => u.sku !== SKU)!.reason).toBe('gap_unknown');
-    const arr = g.forecast.filter((r) => r.sku === SKU).flatMap((r) => r.basis.arrivals);
-    expect(arr).toHaveLength(1);
-    expect(arr.every((a) => a.reason === 'not_recomputed_in_mock' && a.units === null && a.pool === null)).toBe(true);
-    for (const r of g.forecast.filter((x) => x.sku === SKU && x.basis.bridge)) {
-      expect(r.basis.bridge!.arrival_units).toBeNull();
-      expect(r.basis.bridge!.stockout_date).toBeNull();
-    }
-  });
-
-  it('改期望销量：分配（到货 / 未分配）跟着失效；在途与超窗只看采购，照旧是当前数', () => {
-    const g = withArrivals();
-    const transit = g.forecast_sku.filter((r) => r.sku === SKU).map((r) => r.in_transit);
-    markForecastStale(g, SKU, 'demand');
-    expect(g.forecast_sku.filter((r) => r.sku === SKU).map((r) => r.in_transit)).toEqual(transit);
-    expect(g.beyond_horizon.filter((b) => b.sku === SKU).every((b) => b.reason === 'arrives_after_horizon')).toBe(true);
-    expect(g.unallocated.find((u) => u.sku === SKU)!.reason).toBe('not_recomputed_in_mock');
-    expect(g.forecast.filter((r) => r.sku === SKU).flatMap((r) => r.basis.arrivals)
-      .every((a) => a.reason === 'not_recomputed_in_mock')).toBe(true);
-  });
-
-  it('标了未知的行不留旧的 unknown_since', () => {
-    const g = base();
-    markForecastStale(g, SKU, 'demand');
-    const rows = g.forecast.filter((r) => r.sku === SKU && r.reason === 'not_recomputed_in_mock');
-    expect(rows.length).toBeGreaterThan(0);
-    expect(rows.every((r) => r.unknown_since === null)).toBe(true);
-  });
-
-  it('createMockApi.putPurchase 走的是采购那条路径', async () => {
-    const api = createMockApi();
-    await api.putPurchase(1, SKU, '2026-10', 1);
-    const g = await api.getGrid(1);
-    expect(g.forecast_sku.filter((r) => r.sku === SKU).every((r) => r.in_transit === null)).toBe(true);
-  });
-
-  it('mock 提前期：可读可改；改了之后所有预测库存如实变「未知」（OP-17）', async () => {
-    const api = createMockApi();
+describe('提前期', () => {
+  it('可读可改；改了之后每张网格的 params 同步（界面靠它显示图注）', async () => {
+    const api = createMemoryBackend();
     expect(await api.getLeadTime()).toMatchObject({ make_days: 30, ship_days: 60, anchor_day: 15 });
     const r = await api.putLeadTime({ make_days: 10 });
     expect(r.changed).toEqual([{ segment: 'making', from: 30, to: 10 }]);
-    const g = await api.getGrid(1);
-    expect(g.params.make_days).toBe(10);
-    expect(g.forecast_store.every((x) => x.reason === 'not_recomputed_in_mock' || x.state === 'not_applicable')).toBe(true);
+    expect((await api.getGrid(1)).params.make_days).toBe(10);
   });
 });
 
@@ -492,14 +368,16 @@ describe('★ Task 22（业主裁定 2026-09-27）：货号没有 msku 了，货
       expect((await code(api.deletePurchaseOrder(2))).error).toBe('po_frozen');
     });
 
-    it('★ 下单与四个转人工动作一律 501 not_in_mock —— mock 不编造领星的结果', async () => {
+    it('★ 下单与四个转人工动作不模拟领星：调用即抛测试错误（不是 ApiError，不冒充后端答复）', async () => {
       const calls = [
         () => api.placePurchaseOrder(1, 't'), () => api.recheck(1), () => api.registerExisting(1, 'PO1'),
         () => api.confirmAbsent(1, 'r'), () => api.acknowledgeMismatch(1, 'r'),
       ];
       for (const c of calls) {
-        const e = await code(c());
-        expect([e.status, e.error, e.hint]).toEqual([501, 'not_in_mock', 'mock 数据源不下单']);
+        const e: unknown = await c().then(() => null, (x: unknown) => x);
+        expect(e).toBeInstanceOf(Error);
+        expect(e).not.toBeInstanceOf(ApiError);
+        expect((e as Error).message).toMatch(/memoryBackend 不模拟领星.*stubBackend/);
       }
       expect((await api.getPurchaseOrder(1)).state).toBe('草稿');   // 没有半截状态
     });

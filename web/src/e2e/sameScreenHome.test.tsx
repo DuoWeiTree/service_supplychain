@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import plansFixture from '../api/fixtures/plans.json';
+import plansFixture from '../testing/fixtures/plans.json';
 import type { CountKey, PlanSummary } from '../api/types';
 
 /** 判据⑥ 的第二屏（终审建议 2）。
@@ -75,8 +75,8 @@ async function homeRegions(source: 'mock' | 'api'): Promise<Record<string, strin
     const { createHttpApi } = await import('../api/http');
     vi.doMock('../api', () => ({ api: createHttpApi({ base: '/v1', timeoutMs: 1000 }), ApiError }));
   } else {
-    const { createMockApi } = await import('../api/mock');
-    vi.doMock('../api', () => ({ api: createMockApi(), ApiError }));
+    const { createMemoryBackend } = await import('../testing/memoryBackend');
+    vi.doMock('../api', () => ({ api: createMemoryBackend(), ApiError }));
   }
   const { OpsHome } = await import('../pages/OpsHome');
   const { unmount } = render(<MemoryRouter><OpsHome /></MemoryRouter>);

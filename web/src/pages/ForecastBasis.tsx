@@ -22,7 +22,6 @@ export const FORECAST_WHY: Record<Exclude<ForecastReason, null>, string> = {
   not_applicable: '无 FBA',
   elapsed: '月份已过去',
   no_msku: '无 msku',
-  not_recomputed_in_mock: '改后未重算（mock）',
 };
 
 const CAUSE: Record<NoSalesSourceCause, string> = {
@@ -69,15 +68,14 @@ export function basisTitle(t: BasisTarget): string {
   return `货号 ${t.sku} / ${t.period}`;
 }
 
-/** 没有期末时说为什么。★ 只说原因，不给任何数（mock 未重算的行尤其：旧数就是错数） */
+/** 没有期末时说为什么。★ 只说原因，不给任何数 */
 function noClosing(state: ForecastState, reason: ForecastReason, since: Period | null = null): string {
   if (state === 'not_applicable') return '无 FBA，不推演库存';
-  if (reason === 'not_recomputed_in_mock' || state !== 'unknown') return reason ? FORECAST_WHY[reason] : '无数据';
+  if (state !== 'unknown') return reason ? FORECAST_WHY[reason] : '无数据';
   return `未知：${since ? `${since} 起` : ''}${reason ? FORECAST_WHY[reason] : '原因未给'}`;
 }
 
 function arrivalLine(a: ForecastArrival): string {
-  if (a.reason === 'not_recomputed_in_mock') return `${md(a.date)} 到货 —（${a.order_period} 下单，改后未重算）`;
   if (a.units === null) return `${md(a.date)} 到货 —（${a.order_period} 下单，有店缺口未知，分不出去）`;
   return `${md(a.date)} 到货 ${a.units}（${a.order_period} 下单，${a.rule ?? '分法未给'}，这批 ${n(a.pool)}）`;
 }
@@ -138,15 +136,14 @@ function MskuChain({ f, periods, asOf, firstStockout, monthExpected }: {
 }): ReactNode {
   if (!f) return <p>没有这一月的推演行</p>;
   const b = f.basis.bridge;
-  const stale = f.reason === 'not_recomputed_in_mock';
   const nxt = periods[periods.indexOf(f.period) + 1];
   return (
     <div className="fb-chain" data-testid="fb-chain">
       {f.closing === null ? (
         <>
           {/* 期末未知时起点照给：as_of 可售是事实，与后面哪一环未知无关 */}
-          {!stale && (f.opening !== null || f.basis.as_of_start) && <div>{openingLine(f, periods, asOf)}</div>}
-          {!stale && f.opening !== null && b && <BridgeDetail b={b} />}
+          {(f.opening !== null || f.basis.as_of_start) && <div>{openingLine(f, periods, asOf)}</div>}
+          {f.opening !== null && b && <BridgeDetail b={b} />}
           <div data-testid="fb-no-closing">{noClosing(f.state, f.reason, f.unknown_since)}</div>
         </>
       ) : (
@@ -167,8 +164,8 @@ function MskuChain({ f, periods, asOf, firstStockout, monthExpected }: {
           <div>= 期末 {f.closing}{nxt ? `　→ ${nxt} 期初` : ''}</div>
         </>
       )}
-      {!stale && f.stockout_date && <div>本月断货 {f.stockout_date}</div>}
-      {!stale && firstStockout && <div>首次断货 {firstStockout}</div>}
+      {f.stockout_date && <div>本月断货 {f.stockout_date}</div>}
+      {firstStockout && <div>首次断货 {firstStockout}</div>}
     </div>
   );
 }
@@ -278,7 +275,7 @@ function StoreBody({ model, block, period }: { model: GridModel; block: SkuBlock
 
 const UNALLOCATED_WHY: Record<string, string> = {
   gap_unknown: '有店缺口未知', no_fba_msku: '没有 FBA 店', not_applicable: '无 FBA',
-  unknown_onhand: '无在仓数', not_recomputed_in_mock: '改后未重算',
+  unknown_onhand: '无在仓数',
 };
 
 function SkuBody({ model, sku, period }: { model: GridModel; sku: string; period: Period }) {
@@ -288,7 +285,7 @@ function SkuBody({ model, sku, period }: { model: GridModel; sku: string; period
   const nxt = model.periods[model.periods.indexOf(period) + 1];
   const fba = model.blocks.filter((b) => b.sku === sku && b.has_fba);   // 只有它们进库存求和
   const chain = t.closing === null
-    ? (t.reason_from && t.reason !== 'not_recomputed_in_mock'
+    ? (t.reason_from
       ? `${t.reason_from.seller_sku}：${noClosing(t.state, t.reason)}` : noClosing(t.state, t.reason))
     : t.state === 'partial'
       ? partialChain(fba.flatMap((b) => b.mskus.map((r) => r.forecast.find((f) => f.period === period))),
@@ -317,15 +314,12 @@ function SkuBody({ model, sku, period }: { model: GridModel; sku: string; period
         ))}
         <div className="fb-sub">FBA 货件 未取</div>
       </div>
-      {t.unfilled_purchase === null
-        ? <div>采购未填：改后未重算</div>
-        : t.unfilled_purchase.length > 0 && <div>采购未填：{t.unfilled_purchase.join('、')}</div>}
+      {t.unfilled_purchase.length > 0 && <div>采购未填：{t.unfilled_purchase.join('、')}</div>}
       {(beyond.length > 0 || unalloc.length > 0) && (
         <ul className="fb-list">
           {beyond.map((b) => (
             <li key={`bh${b.order_period}`}>
-              {b.order_period} 下单 {n(b.units)} 件 → {b.arrive} 到货（{
-                b.reason === 'arrives_after_horizon' ? '周期外' : b.reason === 'arrives_before_as_of' ? '早于 as_of' : '改后未重算'}）
+              {b.order_period} 下单 {b.units} 件 → {b.arrive} 到货（{b.reason === 'arrives_after_horizon' ? '周期外' : '早于 as_of'}）
             </li>
           ))}
           {unalloc.map((u) => (

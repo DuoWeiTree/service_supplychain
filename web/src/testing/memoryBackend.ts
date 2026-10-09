@@ -1,10 +1,14 @@
-import { ApiError, type SupplyChainApi } from './client';
+/** 测试专用的内存后端（PB-D17：产品前端没有假数据源，只有测试 import 它）。
+ *  ★ 预测块是 fixture 里的固定样本，编辑后不重算 —— 重算是后端 forecast/ 的活，照抄一份迟早分叉；
+ *    要测编辑之后的屏，用 stubBackend 给出后端的新 grid。
+ *  ★ 下单与「转人工」不模拟领星，调用即抛（见 notSimulated）。 */
+import { ApiError, type SupplyChainApi } from '../api/client';
 import type {
-  CatalogResult, CountKey, DroppedPurchaseCell, ForecastArrival, ForecastState, GridResponse, LeadTime,
+  CatalogResult, CountKey, DroppedPurchaseCell, GridResponse, LeadTime,
   LeadTimeResult, NoHistoryEntry, PlanSummary, RevList, Seller, Sid, SkippedCell, SystemBasisNoSource,
   CandidateLine, LineState, PoBody, PoId, PoLine, PoSummary, PurchaseOptions, PurchaseOrder,
   PurchaseChecks, PreflightGate,
-} from './types';
+} from '../api/types';
 import plansFixture from './fixtures/plans.json';
 import gridFixture from './fixtures/grid-1.json';
 import catalogFixture from './fixtures/catalog.json';
@@ -13,51 +17,6 @@ import sellersFixture from './fixtures/sellers.json';
 import purchaseFixture from './fixtures/purchase.json';
 
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
-
-const STALE = 'not_recomputed_in_mock' as const;
-
-/** ★ OP-17：mock 不重跑逐日台账（那是后端 forecast/ 的活，照抄一份迟早分叉；docs/05 前端不承载判据）。
- *  改了之后该货号**依赖这次输入**的每一项如实标「未重算」、数变未知 —— 不留旧数，也不删条目
- *  （删了就把「没算进来」说成了「没有」）。
- *  - 两条路径都失效：库存链、断货日、分配（到货 / 未分配 —— 分配按缺口与期望销量比例，14 §3.1）
- *  - 只有采购路径失效：在制 / 在船 / 在途、未填采购月、超出推演窗（`forecast/plan_forecast.py` 由采购批次推出）
- *  ★ 不适用 / 已过去 / 没有 msku 的行，状态与输入无关，原样保留 —— 改成「未知」就是把不适用说成未知。 */
-export function markForecastStale(g: GridResponse, sku: string, cause: 'demand' | 'purchase'): void {
-  const hit = (r: { sku: string; state: ForecastState }) =>
-    r.sku === sku && r.state !== 'not_applicable' && r.state !== 'elapsed' && r.state !== 'no_msku';
-  const stale = { state: 'unknown' as const, reason: STALE,
-                  opening: null, demand: null, inbound_planned: null, closing: null };
-  const staleArrival = (x: ForecastArrival): ForecastArrival => ({
-    date: x.date, order_period: x.order_period, units: null, pool: null, reason: STALE,
-  });
-  for (const r of g.forecast) {
-    if (r.sku !== sku) continue;
-    r.basis.arrivals = r.basis.arrivals.map(staleArrival);
-    if (r.basis.bridge) {
-      const b = r.basis.bridge;
-      Object.assign(b, { arrivals: b.arrivals.map(staleArrival), arrival_units: null, stockout_date: null });
-    }
-    if (hit(r)) Object.assign(r, stale, { stockout_date: null, unknown_since: null });
-  }
-  for (const r of g.forecast_msku) if (r.sku === sku) r.first_stockout_date = null;
-  for (const r of g.forecast_store) if (hit(r)) Object.assign(r, stale);
-  for (const r of g.forecast_sku) {
-    if (r.sku !== sku) continue;
-    if (hit(r)) Object.assign(r, stale, { reason_from: null, stock_demand: null });
-    if (cause === 'purchase') {
-      Object.assign(r, { in_transit: null, unfilled_purchase: null });
-      Object.assign(r.pipeline, { making: null, shipping: null });
-    }
-  }
-  for (const u of g.unallocated) {
-    if (u.sku !== sku) continue;
-    Object.assign(u, { reason: STALE, units: null });
-    if (u.scope === 'msku') { u.pool = null; delete u.rule; delete u.gap_part; delete u.weight_part; }
-  }
-  if (cause === 'purchase') {
-    for (const b of g.beyond_horizon) if (b.sku === sku) Object.assign(b, { reason: STALE, units: null });
-  }
-}
 
 /** 同 rules/purchase.py::seller_caps：最大余数法，余数同分按 seller_id 升序。
  *  返回 null = 无法定上限（任一店 unknown / 总期望为 0），对应后端 NoSellerBasis */
@@ -81,7 +40,7 @@ function sellerCaps(total: number, dbs: CandidateLine['demand_by_seller']): Reco
 
 const ORDERABLE: LineState[] = ['已提交', '已确认'];
 
-export function createMockApi(): SupplyChainApi {
+export function createMemoryBackend(): SupplyChainApi {
   // ★ fixture 里只有 plans：`excluded.archived` 是**按这次查询现算**的（见 listPlans），
   //   冻一个常量进去就会在加了归档计划之后继续报旧数，而那正是它要挡的事
   const list = { plans: clone(plansFixture.plans) as PlanSummary[] };
@@ -96,7 +55,7 @@ export function createMockApi(): SupplyChainApi {
     valid_from: { making: '2026-01-01', shipping: '2026-01-01' },
   };
 
-  // ★ 采购单：只读 + 草稿增删改。下单与「转人工」处理动作一律 501（见下方 notInMock 的注释）
+  // ★ 采购单：只读 + 草稿增删改。下单与「转人工」处理动作调用即抛（见下方 notSimulated）
   type PoRow = PurchaseOrder & { created_at: string };
   const pos = new Map<PoId, PoRow>(
     (clone(purchaseFixture.purchase_orders) as unknown as PoRow[]).map((p) => {
@@ -171,7 +130,7 @@ export function createMockApi(): SupplyChainApi {
     if (p.state !== '草稿') throw poErr(409, 'po_frozen', '采购单已下单，不可改', { po_id: id, order_sn: p.order_sn });
     return p;
   };
-  /** 同 usecase/draft_po.py::_normalize + _check_quantities 里 mock 能复刻的闸 */
+  /** 同 usecase/draft_po.py::_normalize + _check_quantities 里替身能复刻的闸 */
   const applyBody = (p: PoRow, body: PoBody): void => {
     const missing = (['supplier_id', 'purchaser_id', 'opt_uid', 'qc_type'] as const)
       .filter((k) => body[k] === undefined || body[k] === null || (body[k] as unknown) === '');
@@ -220,9 +179,11 @@ export function createMockApi(): SupplyChainApi {
     Object.assign(p, { supplier_id: body.supplier_id, purchaser_id: body.purchaser_id, opt_uid: body.opt_uid,
                        qc_type: body.qc_type, wid: lines[0]?.wid ?? null, lines });
   };
-  /** ★ 下单与四个「转人工」动作在 mock 里一律 501：它们的结果由领星决定（建单 / 查重 / 登记要对领星核对），
-   *  mock 编一个「成功」就是编造外部事实 —— spec §8.1 裁定 mock 不模拟领星下单。 */
-  const notInMock = (): never => { throw new ApiError(501, 'not_in_mock', 'mock 数据源不下单'); };
+  /** ★ 下单与四个「转人工」动作的结果由领星决定（建单 / 查重 / 登记要对领星核对），替身编一个结果就是编造外部事实。
+   *  抛的不是 ApiError：它不冒充任何后端答复，用到它的测试应当直接挂掉，改用 stubBackend。 */
+  const notSimulated = (what: string): never => {
+    throw new Error(`memoryBackend 不模拟领星：${what} —— 要测这一屏，用 testing/backendStub 的 stubBackend 给出后端答复`);
+  };
 
   const plan = (id: number): PlanSummary => {
     const p = list.plans.find((x) => x.plan_id === id);
@@ -230,8 +191,7 @@ export function createMockApi(): SupplyChainApi {
     return p;
   };
   /** ★ 归档后一律拒写（`api/ui/deps.py:82-95` 的 `ensure_writable`，后端每个写端点都挂着它）。
-   *  mock 从前一处都没有：归档计划上的认领/填数/提交在 mock 下全成功、在真 API 下全 409，
-   *  而两种数据源的唯一门禁读的是同一份 fixture，这条分叉永远照不到。
+   *  替身没有它的话，归档计划上的认领/填数/提交在替身下全成功、在真 API 下全 409。
    *  ★ 与「计划不存在」分得开：404 是没有这张计划，409 是有、但它已经封存了。 */
   const writable = (id: number): PlanSummary => {
     const p = plan(id);
@@ -266,15 +226,14 @@ export function createMockApi(): SupplyChainApi {
     return cells;
   };
   /** ★ Task 22（业主裁定 2026-09-27）：与 api/ui/plans.py 同口径 —— 店里没 msku 了店铺行走；
-   *  货号没 msku 了，采购格与该货号的每一个预测块一起走（OP-17：走掉的货号不标「未重算」，是没了），
-   *  删掉的采购格逐格回报。货号还有 msku → 照 OP-17 标「未重算」。 */
+   *  货号没 msku 了，采购格与该货号的每一个预测块一起走，删掉的采购格逐格回报。 */
   const settleSku = (g: GridResponse, sku: string, sids: Iterable<Sid>): DroppedPurchaseCell[] => {
     for (const sid of sids) {
       if (!g.demand.some((d) => d.sku === sku && d.sid === sid)) {
         g.forecast_store = g.forecast_store.filter((r) => !(r.sku === sku && r.sid === sid));
       }
     }
-    if (g.demand.some((d) => d.sku === sku)) { markForecastStale(g, sku, 'demand'); return []; }
+    if (g.demand.some((d) => d.sku === sku)) return [];
     const gone = g.purchase.filter((p) => p.sku === sku)
       .map((p) => ({ sku, period: p.period, planned_units: p.planned_units }))
       .sort((a, b) => a.period.localeCompare(b.period));
@@ -293,7 +252,6 @@ export function createMockApi(): SupplyChainApi {
     async listPlans(q) {
       // ★ `archived` 不给时后端**排除**已归档（`api/ui/plans.py:69` 的默认值 false），
       //   不是「不过滤」；给 true 时是**全给**（含未归档），不是「只给归档的」。
-      //   这两处 mock 从前都反着来，而归档语义的分叉恰好落在唯一那条门禁的视野之外。
       const want = q.archived === true;
       const pool = candidates(q);
       const plans = clone(want ? pool : pool.filter((p) => p.archived_at === null));
@@ -351,9 +309,7 @@ export function createMockApi(): SupplyChainApi {
     async getGrid(planId) { return clone(grid(planId)); },
 
     async getLeadTime() { return clone(lead); },
-    // ★ OP-17：mock 不重跑逐日台账 —— 改完把每张网格的 params 同步（界面靠它显示图注），
-    //   再对网格里出现过的每个货号调 markForecastStale('purchase')（提前期只影响到货日，
-    //   与改采购量同一条失效路径：在制/在船/在途、未填采购月、超出推演窗）
+    // 改完把每张网格的 params 同步（界面靠它显示图注）；预测块不重算（见文件头）
     async putLeadTime(input) {
       const changed: LeadTimeResult['changed'] = [];
       const today = new Date().toISOString().slice(0, 10);
@@ -367,8 +323,6 @@ export function createMockApi(): SupplyChainApi {
       }
       for (const g of grids.values()) {
         g.params = { ...g.params, make_days: lead.make_days, ship_days: lead.ship_days };
-        const skus = new Set(g.purchase.map((p) => p.sku));
-        for (const sku of skus) markForecastStale(g, sku, 'purchase');
       }
       return { ...clone(lead), changed };
     },
@@ -388,7 +342,6 @@ export function createMockApi(): SupplyChainApi {
       cell.expected_units = units;
       cell.effective_units = units ?? cell.system_units;
       cell.basis = units !== null ? 'human' : cell.system_units !== null ? 'system' : 'unknown';
-      markForecastStale(g, cell.sku, 'demand');
       return clone(cell);
     },
 
@@ -405,7 +358,6 @@ export function createMockApi(): SupplyChainApi {
           { field: 'planned_units', got: units });
       }
       cell.planned_units = units;
-      markForecastStale(g, sku, 'purchase');
       return clone(cell);
     },
 
@@ -441,7 +393,7 @@ export function createMockApi(): SupplyChainApi {
       msku.selectable = false;
       msku.claimed_by = { plan_id: planId, title: plan(planId).title, actor: 'ops.zhang' };
       // ★ team-lead 09-22 裁定：种出的格子数与「没有销售历史」都要点名（api/ui/plans.py:163-186）。
-      //   mock 没有真的重新播种格子，用 plan 的 months 代表种出的月份数（与真实播种的行数一致）；
+      //   替身没有真的重新播种格子，用 plan 的 months 代表种出的月份数（与真实播种的行数一致）；
       //   no_history 从这张计划已有的 grid 里现查 —— 这个 msku 名下各月 system_units
       //   全为 null 才算「没历史」，不是拍脑袋写死的固定名单。
       const g = grids.get(planId);
@@ -492,8 +444,7 @@ export function createMockApi(): SupplyChainApi {
       return { sku, released, dropped_cells, dropped_purchase_cells: settleSku(g, sku, released.map((m) => m.sid)) };
     },
 
-    // ★ task-23：与 claim() 同一个理由（OP-17）——mock 不重跑逐日台账，那是后端
-    //   forecast/ 的活，照抄一份迟早分叉。这里如实报「没有一格变了」（unchanged 全数），
+    // ★ task-23：替身不重跑逐日台账（见文件头）。这里如实报「没有一格变了」（unchanged 全数），
     //   只把「算不出速率」的 msku 按 claim() 同一个判据挑出来，不假装重算过。
     async recomputeForecast(planId) {
       writable(planId);
@@ -589,7 +540,7 @@ export function createMockApi(): SupplyChainApi {
       plan(planId).state = '已撤销';
       // ★ team-lead 09-22 裁定：skipped_terminal 是保证字段（api/ui/submit.py:213-214）——
       //   「这一版本来就只有 1 条」与「另外 3 条早已在终态」长得一模一样，必须给这个数。
-      //   mock 不追踪逐条记录的状态，固定给 0（fixture 里 revs-1 的记录都当作非终态在流转）。
+      //   替身不追踪逐条记录的状态，固定给 0（fixture 里 revs-1 的记录都当作非终态在流转）。
       return { cancelled: Array.from({ length: target.lines }, (_, i) => i + 1), skipped_terminal: 0, reason };
     },
 
@@ -634,7 +585,7 @@ export function createMockApi(): SupplyChainApi {
       const gates = withDerived(po(poId)).preflight;
       return { po_id: poId, ok: gates.every((g) => g.ok), gates };
     },
-    async placePurchaseOrder(_poId, _token) { return notInMock(); },
+    async placePurchaseOrder(_poId, _token) { return notSimulated('placePurchaseOrder'); },
     async getTimeline(poId) {
       const p = po(poId);
       return { po_id: poId, conclusion: null, attempts: [], attention: [],
@@ -642,10 +593,10 @@ export function createMockApi(): SupplyChainApi {
                  ? [{ from: '草稿', to: '已下单', actor: p.created_by, reason: null, src: 'mock', at: p.placed_at ?? p.created_at }]
                  : [] };
     },
-    async recheck(_poId) { return notInMock(); },
-    async registerExisting(_poId, _orderSn) { return notInMock(); },
-    async confirmAbsent(_poId, _reason) { return notInMock(); },
-    async acknowledgeMismatch(_poId, _reason) { return notInMock(); },
+    async recheck(_poId) { return notSimulated('recheck'); },
+    async registerExisting(_poId, _orderSn) { return notSimulated('registerExisting'); },
+    async confirmAbsent(_poId, _reason) { return notSimulated('confirmAbsent'); },
+    async acknowledgeMismatch(_poId, _reason) { return notSimulated('acknowledgeMismatch'); },
     async listAttention() { return { count: 0, items: [] }; },
     async getPurchaseOptions() { return clone(purchaseFixture.options) as PurchaseOptions; },
     async getPurchaseChecks() { return clone(purchaseFixture.checks) as PurchaseChecks; },

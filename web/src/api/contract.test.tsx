@@ -4,16 +4,16 @@ import userEvent from '@testing-library/user-event';
 import type {
   AttentionQueue, CandidateLines, LineTrace, PoList, PoTimeline, PreflightResult, PurchaseOptions, PurchaseOrder,
 } from './types';
-import poDraft from './fixtures/contract/po-draft.json';
-import poNeedsVerify from './fixtures/contract/po-needs-verify.json';
-import poPlaced from './fixtures/contract/po-placed.json';
-import poList from './fixtures/contract/po-list.json';
-import preflight from './fixtures/contract/preflight.json';
-import timelineNv from './fixtures/contract/timeline-needs-verify.json';
-import attention from './fixtures/contract/attention.json';
-import options from './fixtures/contract/purchase-options.json';
-import planLines from './fixtures/contract/plan-lines.json';
-import lineTrace from './fixtures/contract/line-trace.json';
+import poDraft from '../testing/fixtures/contract/po-draft.json';
+import poNeedsVerify from '../testing/fixtures/contract/po-needs-verify.json';
+import poPlaced from '../testing/fixtures/contract/po-placed.json';
+import poList from '../testing/fixtures/contract/po-list.json';
+import preflight from '../testing/fixtures/contract/preflight.json';
+import timelineNv from '../testing/fixtures/contract/timeline-needs-verify.json';
+import attention from '../testing/fixtures/contract/attention.json';
+import options from '../testing/fixtures/contract/purchase-options.json';
+import planLines from '../testing/fixtures/contract/plan-lines.json';
+import lineTrace from '../testing/fixtures/contract/line-trace.json';
 import { fromPo, toBody, updateLine } from '../pages/purchase/poEditorModel';
 import { ok, type Handler } from '../testing/backendStub';
 import { mountPurchase } from '../testing/purchaseBackend';

@@ -1,5 +1,5 @@
 // ★ 逐条对应后端计划的返回体。字段名、类型、null 语义都不许自己改 ——
-//   mock 与真 API 对不上，判据⑥ 直接挂，而界面是照这份形状先写完的。
+//   测试替身与真 API 对不上，判据⑥ 直接挂，而界面是照这份形状先写完的。
 // 来源：docs/superpowers/plans/2026-09-22-stage-a-backend.md §「接口形状」
 
 /** ★ 对外一律 "YYYY-MM"（如 "2026-10"）。库里是月初 date —— 前端永远不碰那个形态 */
@@ -150,16 +150,15 @@ export interface GridResponse {
 // ─── 预测块（spec §6 · `api/ui/grid_forecast.py::_serialize`） ───
 
 export type ForecastState = 'ok' | 'partial' | 'unknown' | 'not_applicable' | 'elapsed' | 'no_msku';
-/** ★ null 只在 ok 时出现。`not_recomputed_in_mock`：mock 不重跑台账（OP-17），改过的货号如实变未知 */
+/** ★ null 只在 ok 时出现 */
 export type ForecastReason = null | 'as_of_inside_month' | 'unknown_onhand' | 'unknown_demand'
-  | 'bridge_rate_unknown' | 'inbound_unknown' | 'not_applicable' | 'elapsed' | 'no_msku'
-  | 'not_recomputed_in_mock';
+  | 'bridge_rate_unknown' | 'inbound_unknown' | 'not_applicable' | 'elapsed' | 'no_msku';
 
-/** 一次到货。★ `units` 为 null = 这批分不出去（OP-12）或 mock 未重算（OP-17），不是 0 */
+/** 一次到货。★ `units` 为 null = 这批分不出去（OP-12），不是 0 */
 export interface ForecastArrival {
   date: string; units: number | null; order_period: Period; pool: number | null;
   rule?: string; gap_part?: number; weight_part?: number;
-  reason?: 'gap_unknown' | 'not_recomputed_in_mock';
+  reason?: 'gap_unknown';
 }
 /** 一段扣减的每一步（`forecast/calendar.py::segment_detail`，终审 I-4）：
  *  month_total × (前半月天数 ÷ first_half_divisor + 后半月天数 ÷ second_half_divisor) = raw → 向上取整 units。
@@ -208,9 +207,9 @@ export interface StoreForecast {
   system_not_applicable: boolean;
   opening: number | null; inbound_planned: number | null; closing: number | null;
 }
-/** ★ making / shipping 由计划采购推出；null = mock 改了采购没重算（OP-17）。后端恒给数 */
+/** ★ making / shipping 由计划采购推出，恒有数（`forecast/plan_forecast.py::SkuMonth`） */
 export interface SkuPipeline {
-  making: number | null; shipping: number | null; ordered_open: number;
+  making: number; shipping: number; ordered_open: number;
   /** ordered_open 里已逾期的那部分（OQ-6，终审 I-2） */
   ordered_open_overdue: number;
   /** ★ `period` 是**预计到货月**（采购单 ETA 所在月），不是下单月；
@@ -230,32 +229,30 @@ export interface SkuForecast {
   /** ★ 只含进库存求和的 msku —— 恒等式用这个，不是 demand */
   stock_demand: number | null; inbound_planned: number | null;
   closing: number | null; excluded_not_applicable: number;
-  /** ★ null = 未知（OP-17 mock 未重算），不是 0 */
-  pipeline: SkuPipeline; in_transit: number | null; in_transit_excludes: 'fba_inbound'[];
-  unfilled_purchase: Period[] | null;
+  pipeline: SkuPipeline; in_transit: number; in_transit_excludes: 'fba_inbound'[];
+  unfilled_purchase: Period[];
   /** ★ 三态收敛成一个布尔（sku-image 计划 Task 3）：有真图 true；只有占位图
    *  false；`sku_category` 里没有这个货号也 false —— 从不是 null、从不缺字段。
    *  界面据它决定出不出图片入口（Task 4，负责人裁定 I-A：按需预览）。 */
   has_image: boolean;
 }
-/** ★ 日期只由采购月 + 提前期定；`units` 与「这条还在不在」随采购量变 ——
- *  mock 改了采购后整条标 `not_recomputed_in_mock`、件数未知，留着不删（OP-17） */
+/** ★ 日期只由采购月 + 提前期定；`units` 与「这条还在不在」随采购量变 */
 export interface BeyondHorizon {
-  sku: string; order_period: Period; units: number | null; placed: string; made: string; arrive: string;
-  reason: 'arrives_after_horizon' | 'arrives_before_as_of' | 'not_recomputed_in_mock';
+  sku: string; order_period: Period; units: number; placed: string; made: string; arrive: string;
+  reason: 'arrives_after_horizon' | 'arrives_before_as_of';
 }
 /** 整批分不出去（`forecast/allocate.py`） */
 export interface UnallocatedBatch {
   scope: 'batch';
   sku: string; order_period: Period; arrive: string; units: number | null;
-  reason: 'gap_unknown' | 'no_fba_msku' | 'not_recomputed_in_mock';
+  reason: 'gap_unknown' | 'no_fba_msku';
   unknown: [string, Sid][];
 }
 /** 分到了、但这个 msku 推演不了（不适用 / 在仓未知） */
 export interface UnallocatedMsku {
   scope: 'msku';
   sku: string; order_period: Period; arrive: string; units: number | null;
-  reason: 'not_applicable' | 'unknown_onhand' | 'not_recomputed_in_mock';
+  reason: 'not_applicable' | 'unknown_onhand';
   seller_sku: string; sid: Sid; date: string; pool: number | null;
   rule?: string; gap_part?: number; weight_part?: number;
 }
@@ -448,7 +445,7 @@ export interface PoSource { line_id: number; seller_id: SellerId; units: number 
 
 /** 请求体里的一行：price 为字符串（后端 Decimal，库里 numeric::text） */
 /** ★ purchaser_id / opt_uid / wid 后端是整数列（010_po.sql：int / bigint / int），JSON 里是数；
- *  界面输入框里是文本，在 poEditorModel 的 fromPo / toBody 边界上转换。契约样本：api/fixtures/contract/ */
+ *  界面输入框里是文本，在 poEditorModel 的 fromPo / toBody 边界上转换。契约样本：testing/fixtures/contract/ */
 export interface PoLineInput {
   sku: string;
   wid: number;

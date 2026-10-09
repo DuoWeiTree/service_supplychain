@@ -271,28 +271,3 @@ describe('结果未知：每 3 秒查调用记录，等真实结果', () => {
     expect(calls.filter((c) => c.path.endsWith('/timeline')).length).toBe(n);
   });
 });
-
-describe('mock 数据源', () => {
-  it('确认下单 → 显示 not_in_mock 错误，不编造结果', async () => {
-    const { ApiError } = await import('../../api/client');
-    const { createMockApi } = await import('../../api/mock');
-    vi.doMock('../../api', () => ({ api: createMockApi(), ApiError }));
-    const { PoRoute } = await import('./PoEditor');
-    render(
-      <MemoryRouter initialEntries={['/purchase/1']}>
-        <Routes><Route path="/purchase/:poId" element={<PoRoute />} /></Routes>
-      </MemoryRouter>,
-    );
-    await vi.waitFor(async () => expect(await placeBtn()).toBeEnabled());
-    const dlg = await openDialog();
-    await userEvent.click(confirmIn(dlg));
-    const res = await within(dlg).findByTestId('place-result');
-    expect(res).toHaveTextContent('not_in_mock');
-    expect(res).toHaveTextContent('mock 数据源不下单');
-    // ★ 501 是确定的「没做」，不是「结果未知」：不锁、不轮询、能关
-    expect(dlg).not.toHaveTextContent('结果未知');
-    expect(within(dlg).queryByTestId('place-poll')).toBeNull();
-    await userEvent.click(within(dlg).getByRole('button', { name: '取消' }));
-    expect(screen.queryByRole('dialog')).toBeNull();
-  });
-});

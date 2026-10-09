@@ -101,23 +101,23 @@ describe('spec §5：三种行各显示什么', () => {
   it('★ 库存未知不是一根光秃秃的 —：说出为什么', () => {
     const g = structuredClone(LABEL_GRID);
     for (const s of g.forecast_store) if (s.sid === '11072') {
-      s.state = 'unknown'; s.reason = 'not_recomputed_in_mock'; s.closing = null; s.opening = null; s.demand = null;
+      s.state = 'unknown'; s.reason = 'unknown_onhand'; s.closing = null; s.opening = null;
     }
     for (const f of g.forecast) if (f.sid === '11072') {
-      f.state = 'unknown'; f.reason = 'not_recomputed_in_mock'; f.closing = null; f.opening = null; f.demand = null;
+      f.state = 'unknown'; f.reason = 'unknown_onhand'; f.closing = null; f.opening = null;
     }
     for (const k of g.forecast_sku) {
-      k.state = 'unknown'; k.reason = 'not_recomputed_in_mock'; k.closing = null;
+      k.state = 'unknown'; k.reason = 'unknown_onhand'; k.closing = null;
       k.reason_from = { seller_sku: 'MSKU-A', sid: '11072' };
     }
     renderSheet(g);
     const store = within(within(screen.getByTestId('block-11072-SKU-1')).getByTestId('sku-cell-2026-10')).getByTestId('closing-sku');
     expect(store).toHaveTextContent('—');
-    expect(store.closest('[title]')!.getAttribute('title')).toBe('改后未重算（mock）');
+    expect(store.closest('[title]')!.getAttribute('title')).toBe('无在仓数');
     const msku = screen.getByTestId('msku-stock-MSKU-A-11072-2026-10');
-    expect(msku.closest('[title]')!.getAttribute('title')).toBe('改后未重算（mock）');
+    expect(msku.closest('[title]')!.getAttribute('title')).toBe('无在仓数');
     const sku = screen.getByTestId('sku-stock-SKU-1-2026-10');
-    expect(sku.closest('[title]')!.getAttribute('title')).toBe('MSKU-A：改后未重算（mock）');
+    expect(sku.closest('[title]')!.getAttribute('title')).toBe('MSKU-A：无在仓数');
   });
 
   it('★ 图例：库存含计划采购到货，并回显提前期（不再说「未计本计划采购」）', () => {

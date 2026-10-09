@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import gridFixture from '../api/fixtures/grid-1.json';
+import gridFixture from '../testing/fixtures/grid-1.json';
 import type { GridResponse } from '../api/types';
 
 const G = gridFixture as GridResponse;
@@ -17,8 +17,8 @@ beforeEach(() => { vi.resetModules(); });
 
 async function app(entry: string) {
   const { ApiError } = await import('../api/client');
-  const { createMockApi } = await import('../api/mock');
-  vi.doMock('../api', () => ({ api: createMockApi(), ApiError }));
+  const { createMemoryBackend } = await import('../testing/memoryBackend');
+  vi.doMock('../api', () => ({ api: createMemoryBackend(), ApiError }));
   const [{ OpsHome }, { PlanGrid }, { PlanAdd }, { PlanRevs }] = await Promise.all([
     import('../pages/OpsHome'), import('../pages/PlanGrid'),
     import('../pages/PlanAdd'), import('../pages/PlanRevs'),
@@ -87,9 +87,8 @@ describe('判据① · 建 → 加货品 → 填两种量 → 提交 → 铸出 
     await userEvent.click(cell);
     await userEvent.keyboard('10{Enter}');
 
-    // ★ OP-17：mock 不重跑台账 —— 改完这一格，库存如实变「—」，不留改之前的旧数
-    await waitFor(() => expect(within(within(block).getByTestId(`sku-cell-${FIRST_INV.period}`))
-      .getByTestId('closing-sku')).toHaveTextContent('—'));
+    await waitFor(() => expect(within(screen.getByTestId(`block-${FIRST_INV.sid}-${FIRST_INV.sku}`))
+      .getByTestId(`cell-${EDITED.seller_sku}-${EDITED.sid}-${FIRST_INV.period}`)).toHaveTextContent('10'));
 
     // 计划采购量（货号 × 月，不带店铺）
     const purchase = within(screen.getByTestId(`purchase-row-${FIRST_SKU}`))
@@ -122,7 +121,7 @@ describe('判据① · 建 → 加货品 → 填两种量 → 提交 → 铸出 
   });
 });
 
-describe('★ Task 22（业主裁定 2026-09-27）：mock 数据源下移走货号的最后一个 msku，货号也消失', () => {
+describe('★ Task 22（业主裁定 2026-09-27）：内存替身下移走货号的最后一个 msku，货号也消失', () => {
   it('单店单 msku 的货号「移出该店」→ 卡片消失，丢弃的计划采购点名', async () => {
     const lone = G.demand.map((d) => d.sku)
       .find((sku) => new Set(G.demand.filter((d) => d.sku === sku).map((d) => `${d.seller_sku}/${d.sid}`)).size === 1)!;

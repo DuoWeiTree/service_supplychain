@@ -2,13 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
-import { repoRoot, webRoot } from '../testing/paths';
+import { repoRoot, webRoot } from './paths';
 
 // ★ 路径解析交给 testing/paths.ts 的 repoRoot() / webRoot() 统一做（Task 1 修过的那处）——
 //   不用 import.meta.url，也不用 process.cwd() 内联；vitest 必须从 web/ 下跑，
 //   跑错目录会在 webRoot() 那一处点名报错，不是这里散落 ENOENT。
 const BACKEND = () => resolve(repoRoot(), 'tests/fixtures/grid_response.json');
-const MINE = () => resolve(webRoot(), 'src/api/fixtures/grid-1.json');
+const MINE = () => resolve(webRoot(), 'src/testing/fixtures/grid-1.json');
 
 describe('grid fixture 与后端同源', () => {
   it('★ 逐字节相同 —— 两份各自维护的话，前端跑 mock 全绿、切 api 才发现字段名不一样', () => {

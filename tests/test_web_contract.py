@@ -1,4 +1,4 @@
-"""前端契约样本：真后端响应 ↔ web/src/api/fixtures/contract/*.json。
+"""前端契约样本：真后端响应 ↔ web/src/testing/fixtures/contract/*.json。
 
 ★ 为什么有它：前端的桩与夹具都是手写的，写错的类型会与界面「互相印证」地一起绿 ——
   purchaser_id / opt_uid / wid 后端是整数、前端一直按字符串写，编辑器 .trim() 一个数就炸（final review C1）。
@@ -20,7 +20,7 @@ from api.ui.purchase_options import history_query_dep
 from shared.pg_client import pg_conn
 from tests.helpers import H, mint
 
-DIR = Path(__file__).resolve().parents[1] / "web" / "src" / "api" / "fixtures" / "contract"
+DIR = Path(__file__).resolve().parents[1] / "web" / "src" / "testing" / "fixtures" / "contract"
 WRITE = os.environ.get("SCM_WRITE_CONTRACT") == "1"
 
 

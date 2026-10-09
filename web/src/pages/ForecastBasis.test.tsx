@@ -2,7 +2,6 @@ import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { GridResponse } from '../api/types';
-import { markForecastStale } from '../api/mock';
 import { PlanSheet } from './PlanSheet';
 import { buildGridModel } from './planGridModel';
 import { LABEL_GRID, LABEL_GRID_LONG, LABEL_GRID_PARTIAL, LABEL_SELLERS } from './__fixtures__/labelGrid';
@@ -116,19 +115,6 @@ describe('spec §5：点开一格看依据', () => {
     expect(data(d)).not.toHaveTextContent('= 期末');   // 期初照给（它有数），期末不编
   });
 
-  it('★ mock 改后未重算：说出来，旧数一个都不显示', async () => {
-    const g = structuredClone(LABEL_GRID);
-    markForecastStale(g, 'SKU-1', 'purchase');
-    renderSheet(g, true);
-    const d = await open('依据 MSKU-A 2026-10');
-    expect(d).toHaveTextContent('改后未重算（mock）');
-    expect(data(d)).not.toHaveTextContent(/期初|期末|261|161|300/);
-    await userEvent.keyboard('{Escape}');
-    const s = await open('依据 SKU-1 2026-10');
-    expect(s).toHaveTextContent('生产中 —');
-    expect(s).toHaveTextContent('2026-10 下单 — 件 → 2027-01-13 到货（改后未重算）');
-  });
-
   it('预测：旧认领没有依据 / 窗口内没有销量 —— 说原因，不编数', async () => {
     const g = structuredClone(LABEL_GRID);
     g.demand.find((c) => c.seller_sku === 'MSKU-A' && c.period === '2026-10')!.system_basis = null;
@@ -155,9 +141,10 @@ describe('spec §5：点开一格看依据', () => {
     const { rerender } = render(<PlanSheet model={buildGridModel(LABEL_GRID, LABEL_SELLERS)} {...props} />);
     await open('依据 MSKU-A 2026-11');
     const g = structuredClone(LABEL_GRID);
-    markForecastStale(g, 'SKU-1', 'demand');
+    const r = g.forecast.find((f) => f.seller_sku === 'MSKU-A' && f.period === '2026-11')!;
+    Object.assign(r, { state: 'unknown', reason: 'unknown_demand', unknown_since: '2026-11', closing: null });
     rerender(<PlanSheet model={buildGridModel(g, LABEL_SELLERS)} {...props} />);
-    expect(screen.getByRole('dialog')).toHaveTextContent('改后未重算（mock）');
+    expect(screen.getByRole('dialog')).toHaveTextContent('未知：2026-11 起期望销量待填');
   });
 
   it('★ as_of 落在本月里：起点是 as_of 可售，期望只扣 as_of 后那一段并标明，链对得上', async () => {

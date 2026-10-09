@@ -13,6 +13,13 @@ describe('结果未知的判定', () => {
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
     expect(isUnknownOutcome(handlerThrew('po-place', 'place', new TypeError('x')))).toBe(false);
   });
+  it('★ 501 不是后端的明确答复（api/ui 没有路由回 501）→ 与其他 5xx 一样算「不知道」', () => {
+    expect(isUnknownOutcome(new ApiError(501, 'not_implemented', '代理不支持'))).toBe(true);
+  });
+  it('后端的 4xx 明确拒绝与 502 lookup_failed 是确定的「没做」', () => {
+    expect(isUnknownOutcome(new ApiError(409, 'nothing_to_resolve', '这张单没有待处理的项'))).toBe(false);
+    expect(isUnknownOutcome(new ApiError(502, 'lookup_failed', '查询领星本身失败'))).toBe(false);
+  });
 });
 
 describe('http：响应体读到一半失败', () => {

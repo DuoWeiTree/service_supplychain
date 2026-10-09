@@ -2,6 +2,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
+
+// ★ 产品的 api 只打真后端（PB-D17）；这一文件的默认后端是测试替身，单条用例再 doMock 覆盖
+vi.mock('../api', async () => {
+  const { ApiError } = await import('../api/client');
+  const { createMemoryBackend } = await import('../testing/memoryBackend');
+  return { ApiError, api: createMemoryBackend() };
+});
 import { OpsHome } from './OpsHome';
 import type { CreatePlanInput } from '../api/types';
 
@@ -41,7 +48,7 @@ describe('运营首页', () => {
     const table = await screen.findByTestId('plan-list');
     expect(within(table).queryByText('2026 Q1 首发计划')).toBeNull();
     expect(screen.getByTestId('hidden-rows')).toHaveTextContent('已完结 1 张');
-    // ★ I2：这个数由 mock 按本次查询现算（fixture 里 1 张归档），不再是冻死的常量 2
+    // ★ I2：这个数由替身按本次查询现算（fixture 里 1 张归档），不再是冻死的常量 2
     expect(screen.getByTestId('hidden-rows')).toHaveTextContent('已归档 1 张');
     expect(within(table).queryByText('2025 Q4 封存计划')).toBeNull();
   });
@@ -88,8 +95,8 @@ describe('运营首页', () => {
   it('★ 看板计数挂了，计划列表与两栏待办照常出数（I6）', async () => {
     vi.resetModules();
     const { ApiError } = await import('../api/client');
-    const { createMockApi } = await import('../api/mock');
-    const real = createMockApi();
+    const { createMemoryBackend } = await import('../testing/memoryBackend');
+    const real = createMemoryBackend();
     vi.doMock('../api', () => ({
       ApiError,
       api: {
