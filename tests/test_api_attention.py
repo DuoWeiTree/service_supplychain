@@ -380,3 +380,17 @@ def test_confirm_absent_allowed_after_genuine_not_found(client, seed, stuck):
     r = client.post(f"/v1/purchase-orders/{po_id}/confirm-absent", json={"reason": "后台按幂等键搜过，无"},
                     headers=H(seed.actor))
     assert r.status_code == 200, r.text
+
+
+def test_mismatch_exit_fix_in_lingxing_then_recheck_adopts(client, seed, single_hit_mismatch, lingxing):
+    """PB-D16 出口 ①：在领星把单改成与我方所发一致，再重新核对 —— 单命中且对得上，走正常路径记账。"""
+    po_id, _ = single_hit_mismatch
+    lingxing.mutate_item("FAKE-PO000001", seed.sku_a, quantity_real=10)
+    res = client.post(f"/v1/purchase-orders/{po_id}/recheck", headers=H(seed.actor)).json()
+    assert res["outcome"] == "placed" and res["order_sn"] == "FAKE-PO000001" and res["found_by"] == "lookup"
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT state, order_sn FROM po WHERE po_id=%s", (po_id,))
+        assert cur.fetchone() == ("已下单", "FAKE-PO000001")
+        cur.execute("SELECT resolution FROM po_attention WHERE po_id=%s AND kind='needs_verify'", (po_id,))
+        assert cur.fetchone()[0] == "rechecked_found"
+    assert _creates(po_id) == 1

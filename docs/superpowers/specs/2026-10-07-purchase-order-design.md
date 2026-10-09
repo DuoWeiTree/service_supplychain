@@ -244,13 +244,17 @@ erp op= host= path= idem= ms= outcome= http= lx_code= lx_msg= cause=<__cause__ �
 | 重新核对 | — | 再查一次 `PurchaseOrderList`，结果追加进时间线 |
 | 去领星查 | — | 给出照着搜的条件：幂等键 · 供应商 · 货号清单 · 时间窗 |
 | 登记「领星已有此单」 | 填 `order_sn` | ★ 系统先用只读接口读回该单，核对 幂等键 / 供应商 / 明细（同 `v_check_po_landed`），**对上才接受** → 转已下单 |
-| 确认「领星无此单」 | 必填理由；无调用在途（否则 409 `lookup_in_progress`）；★ 不得与系统证据相反 —— 本次 create 之后查单见过本单幂等键、或查重开出的 `landed_mismatch` 未处理 → 409 `contradicts_evidence`（PB-U8） | 记 `confirmed_absent`，解锁「重新下单」（新 `erp_call`，`retry_of` 串起）或「删除草稿」。★ 这是 `ok/unknown` 之后重下单的**唯一**放行条件 |
+| 确认「领星无此单」 | 必填理由；无调用在途（否则 409 `lookup_in_progress`）；★ 不得与系统证据相反 —— 本次 create 之后查单见过本单幂等键、或查重开出的 `landed_mismatch` 未处理 → 409 `contradicts_evidence`（PB-D16） | 记 `confirmed_absent`，解锁「重新下单」（新 `erp_call`，`retry_of` 串起）或「删除草稿」。★ 这是 `ok/unknown` 之后重下单的**唯一**放行条件 |
 
 处理中的单：改 / 删 / 下单 → 409 `needs_verify`（回显时间线链接）。
+
+★ 查重单命中但明细不符（PB-D16，负责人 2026-10-08「只能去领星处理」）：系统不提供「接受差异」出口 —— 在领星改成与我方所发一致后「重新核对」，或在领星作废该单、草稿阻塞至作废回读（M3）放行。
 
 **同一个队列也收**：`void_with_inbound`（§4）· `v_check_po_landed` 不符（§11 G1）· 某源水位停滞（§4）。类型不同、展示同构：结论 → 时间线 → 可做的动作。
 
 ### 6.7 刀0 实调（零副作用）与首单才能回答的
+
+★ PB-D15 之后任何人现在就能下真单。首张真单当作一次有意的操作：一个仓、小数量、盯着日志 —— 它回答下表右列的问题，之后 `v_check_po_landed` 应为空。
 
 | 只读能答 | 只有首张 live 单能答 |
 |---|---|
@@ -394,7 +398,7 @@ erp op= host= path= idem= ms= outcome= http= lx_code= lx_msg= cause=<__cause__ �
 | 里程碑 | 含 | ★ 验收（全部可复现） |
 |---|---|---|
 | **M1 计划→订单正确**（测试替身（`tests/` 内）） | 刀0 · 1 · 2 · 3 · G1~G6 | 建计划 → 提交 → 组单（含分店上限、超计划量）→ 下单四种结果 → `v_check_*` 全空 → trace 能反查 |
-| **M2 首张真单** | M1 + RBAC 接入（PB-D15 之后下单已可打真领星，M2 补身份） | 负责人亲手下一张 → `v_check_po_landed` 空 → 回答 §6.7 右列三问 |
+| **M2 RBAC 接入** | M1 + RBAC 接入（补身份；首张真单不等 M2） | 按 §12 验收（`[auth] mode=rbac` 可启动，身份经 RBAC 判定） |
 | **M3 入库闭环** | 刀4 · 作废 / 撤销 | 测试替身：改量到货 → 准备排货；作废 → 退回；真领星：首次回读 + API 复核 → `recon_run` 留痕 |
 | **M4 交互完善** | 刀5 余项 · V10 / V11 预填 | 采购员独立完成一轮：从首页工作队列到下单 |
 
