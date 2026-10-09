@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { screen, within } from '@testing-library/react';
+import { act, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { PoAttempt, PoTimeline, PurchaseOrder } from '../../api/types';
 import { fail, ok } from '../../testing/backendStub';
-import { DRAFT, PLACED, mountPurchase, purchaseRoutes, type BackendState } from '../../testing/purchaseBackend';
+import { DRAFT, PLACED, createAttempt, mountPurchase, purchaseRoutes, type BackendState } from '../../testing/purchaseBackend';
 
 beforeEach(() => { vi.resetModules(); });
 afterEach(() => { vi.doUnmock('../../api'); vi.restoreAllMocks(); });
@@ -192,66 +192,145 @@ describe('待核实的动作', () => {
   });
 });
 
-describe('领星明细不一致', () => {
-  const lmState = (): BackendState => {
-    const detail = {
-      known: '领星里按幂等键查到的单与本单对不上', unknown: '它是不是本单下出去的', custom_order_sn: 'SCM-PO-1',
-      order_sn: 'PO261009777', lookup_call_id: 11,
-      differences: {
-        supplier_id: { ours: 'S-1001', [THEIRS]: 'S-2002' },
-        items: { ours: [['SKU-A', 'W-SZ', 30, '12.5'], ['SKU-B', 'W-SZ', 12, '0.3333']],
-                 [THEIRS]: [['SKU-A', 'W-SZ', 25, '12.5'], ['SKU-B', 'W-SZ', 12, '0.3333']] },
-      },
-    };
-    const po = { ...PLACED, attention: [{ attention_id: 5, kind: 'landed_mismatch' as const, opened_at: '2026-10-09T11:00:00+08:00' }] };
-    return { po, queue: [], timeline: {
-      po_id: 1, conclusion: { kind: 'landed_mismatch', known: detail.known, unknown: detail.unknown, facts: detail },
-      attempts: [LOOKUP], events: [],
-      attention: [{ attention_id: 5, kind: 'landed_mismatch', opened_at: '2026-10-09T11:00:00+08:00', resolved_at: null,
-        resolution: null, resolved_by: null, reason: null, detail }] } };
-  };
+describe('查单类动作结果未知', () => {
+  beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); });
+  afterEach(() => { vi.useRealTimers(); });
 
-  it('问题行表：只列对不上的项，两侧并排', async () => {
-    await mountPurchase('/purchase/1', purchaseRoutes(lmState()));
-    const p = await panel();
-    const t = within(p).getByTestId('mismatch-rows');
-    const rows = within(t).getAllByTestId('mismatch-row');
-    expect(rows).toHaveLength(2);
-    expect(rows[0]).toHaveTextContent('供应商');
-    expect(rows[0]).toHaveTextContent('S-1001');
-    expect(rows[0]).toHaveTextContent('S-2002');
-    expect(rows[1]).toHaveTextContent('SKU-A');
-    expect(rows[1]).toHaveTextContent('30');
-    expect(rows[1]).toHaveTextContent('25');
-    expect(t).not.toHaveTextContent('SKU-B');
-    expect(within(p).getByTestId('attn-landed_mismatch')).toHaveTextContent('PO261009777');
-  });
-
-  it('确认知悉：理由必填；成功 → toast「已确认知悉」', async () => {
-    const st = lmState();
+  it.each([
+    ['重新核对', 'recheck', null],
+    ['登记已有单', 'register-existing', 'PO261009001'],
+  ])('%s 超时 / 5xx → 按钮全关，等调用记录里没有在途的再放开并重取', async (verb, path, sn) => {
+    const st = nvState();
     await mountPurchase('/purchase/1', purchaseRoutes(st, {
-      'POST /v1/purchase-orders/1/acknowledge-mismatch': () => {
-        st.po = PLACED;
-        return ok({ po_id: 1, resolution: 'mismatch_acknowledged' });
-      },
+      [`POST /v1/purchase-orders/1/${path}`]: () => fail(504, 'gateway_timeout', '网关超时'),
     }));
     const p = await panel();
-    const btn = within(p).getByRole('button', { name: '确认知悉' });
-    expect(btn).toBeDisabled();
-    await userEvent.type(within(p).getByLabelText('确认知悉的理由'), '领星已改对');
-    await userEvent.click(btn);
-    expect(await screen.findByRole('status')).toHaveTextContent('已确认知悉');
+    if (sn) await userEvent.type(within(p).getByLabelText('领星单号'), sn);
+    st.timeline = { ...st.timeline, attempts: [...st.timeline.attempts,
+      createAttempt({ call_id: 30, endpoint: 'purchase_order_list', idem_key: null })] };
+    await userEvent.click(within(p).getByRole('button', { name: verb }));
+    expect(await within(p).findByTestId('attn-unknown')).toHaveTextContent('结果未知');
+    expect(within(p).getByRole('button', { name: '重新核对' })).toBeDisabled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    expect(within(p).getByTestId('attn-unknown')).toBeInTheDocument();     // 还在途
+    st.timeline = { ...st.timeline, attempts: st.timeline.attempts.map((a) => (a.call_id === 30 ? { ...a, outcome: 'ok' } : a)) };
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    await vi.waitFor(() => expect(screen.queryByTestId('attn-unknown')).toBeNull());
+    expect(within(await panel()).getByRole('button', { name: '重新核对' })).toBeEnabled();
   });
 
-  it('与待核实同时开着时，给「去领星改对后点重新核对」', async () => {
-    const st = lmState();
-    st.po = { ...DRAFT, attention: [NV_OPEN, st.po.attention[0]!] };
-    st.timeline = { ...st.timeline, attention: [...nvTimeline(true).attention, ...st.timeline.attention],
-      conclusion: nvTimeline(true).conclusion };
-    await mountPurchase('/purchase/1', purchaseRoutes(st));
+  it('502 lookup_failed 是后端的明确结论，不进「结果未知」', async () => {
+    await mountPurchase('/purchase/1', purchaseRoutes(nvState(), {
+      'POST /v1/purchase-orders/1/register-existing': () => fail(502, 'lookup_failed', '查询领星本身失败，无法判断有无此单号；稍后重试',
+        { order_sn: 'X', lookup_call: 31, lookup_outcome: 'unknown', cause: 'TimeoutError' }),
+    }));
     const p = await panel();
-    expect(within(p).getByTestId('attn-landed_mismatch')).toHaveTextContent('去领星改对后点重新核对');
+    await userEvent.type(within(p).getByLabelText('领星单号'), 'X');
+    await userEvent.click(within(p).getByRole('button', { name: '登记已有单' }));
+    expect(await within(p).findByText(/查询领星本身失败/)).toBeInTheDocument();
+    expect(within(p).queryByTestId('attn-unknown')).toBeNull();
+  });
+});
+
+describe('领星明细不一致（按后端四种开立路径的真实形状）', () => {
+  const lmRow = (detail: Record<string, unknown>) => ({ attention_id: 5, kind: 'landed_mismatch' as const,
+    opened_at: '2026-10-09T11:00:00+08:00', resolved_at: null, resolution: null, resolved_by: null, reason: null, detail });
+  const LM_BRIEF = { attention_id: 5, kind: 'landed_mismatch' as const, opened_at: '2026-10-09T11:00:00+08:00' };
+
+  /** place_po._adoptable：单张命中但对不上（草稿，待核实通常同时开着） */
+  const draftDiff = (): BackendState => {
+    const detail = { known: '领星里按幂等键查到的单与本单对不上', unknown: '它是不是本单下出去的', custom_order_sn: 'SCM-PO-1',
+      order_sn: 'PO261009777', lookup_call_id: 11, differences: {
+        supplier_id: { ours: 'S-1001', [THEIRS]: 'S-2002' },
+        items: { ours: [['SKU-A', 'W-SZ', 30, '12.5'], ['SKU-B', 'W-SZ', 12, '0.3333']],
+                 [THEIRS]: [['SKU-A', 'W-SZ', 25, '12.5'], ['SKU-B', 'W-SZ', 12, '0.3333']] } } };
+    const nv = nvTimeline(true);
+    return { po: { ...DRAFT, attention: [NV_OPEN, LM_BRIEF] }, queue: [],
+      timeline: { ...nv, attempts: [CREATE, LOOKUP], attention: [...nv.attention, lmRow(detail)] } };
+  };
+  /** place_po._adoptable：同键多张（草稿）；竞态后 needs_verify 已被确认无此单收掉 */
+  const draftMultiRace = (): BackendState => {
+    const detail = { known: '领星里有多张单用了本单的幂等键', unknown: '哪一张是本单下出去的', custom_order_sn: 'SCM-PO-1',
+      order_sns: ['PO261009001', 'PO261009002'], lookup_call_id: 11 };
+    return { po: { ...DRAFT, attention: [LM_BRIEF] }, queue: [], timeline: { po_id: 1,
+      conclusion: { kind: 'landed_mismatch', known: detail.known, unknown: detail.unknown, facts: detail },
+      attempts: [CREATE, LOOKUP], events: [], attention: [lmRow(detail)] } };
+  };
+  /** place_po.lookup_and_settle：已记账后又查到另一张同键单 */
+  const placedAlso = (): BackendState => {
+    const detail = { recorded_order_sn: 'PO261009001', also_found_order_sn: 'PO261009002', custom_order_sn: 'SCM-PO-1',
+      lookup_call_id: 11 };
+    return { po: { ...PLACED, attention: [LM_BRIEF] }, queue: [], timeline: { po_id: 1,
+      conclusion: { kind: 'landed_mismatch', known: '领星里查到与本单同幂等键的另一张单', unknown: '该以哪一张为准', facts: detail },
+      attempts: [LOOKUP], events: [], attention: [lmRow(detail)] } };
+  };
+  /** usecase/landed.verify（G1 首检）：problems 是 v_check_po_landed 的行，价格是 numeric 的字符串 */
+  const placedProblems = (): BackendState => {
+    const detail = { known: '领星里的采购单明细与本单不一致', unknown: '是谁、为何改的', order_sn: 'PO261009001',
+      read_back_call: 12, read_outcome: 'ok', problems: [
+        { problem: 'qty_or_price_differs', po_id: 1, order_sn: 'PO261009001', line_no: 1, sku: 'SKU-A', wid: 'W-SZ',
+          ours_units: 30, lx_units: 7, ours_price: '12.5000', lx_price: '12.5000' },
+        { problem: 'unexpected_item', po_id: 1, order_sn: 'PO261009001', line_no: null, sku: 'SKU-Z', wid: 'W-SZ',
+          ours_units: null, lx_units: 3, ours_price: null, lx_price: '1.0000' }] };
+    return { po: { ...PLACED, attention: [LM_BRIEF] }, queue: [], timeline: { po_id: 1,
+      conclusion: { kind: 'landed_mismatch', known: detail.known, unknown: detail.unknown, facts: detail },
+      attempts: [LOOKUP], events: [], attention: [lmRow(detail)] } };
+  };
+
+  it('草稿 + differences：问题行表只列对不上的项；★ 没有「确认知悉」，给 PB-D16 出路', async () => {
+    await mountPurchase('/purchase/1', purchaseRoutes(draftDiff()));
+    const p = await panel();
+    const rows = within(within(p).getByTestId('mismatch-rows')).getAllByTestId('mismatch-row');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toHaveTextContent('供应商');
+    expect(rows[0]).toHaveTextContent('S-2002');
+    expect(rows[1]).toHaveTextContent('SKU-A');
+    expect(rows[1]).toHaveTextContent('30 件');
+    expect(rows[1]).toHaveTextContent('25 件');
+    expect(within(p).getByTestId('mismatch-rows')).not.toHaveTextContent('SKU-B');
+    const lm = within(p).getByTestId('attn-landed_mismatch');
+    expect(lm).toHaveTextContent('PO261009777');
+    expect(within(lm).getByTestId('pbd16')).toHaveTextContent('去领星改对后点重新核对，或在领星作废该单');
+    expect(within(p).queryByRole('button', { name: '确认知悉' })).toBeNull();
     expect(within(p).getByRole('button', { name: '重新核对' })).toBeInTheDocument();
+    expect(within(p).getByTestId('conclusion')).toHaveTextContent('查到的单对不上');
+  });
+
+  it('★ 竞态：草稿上只剩 landed_mismatch（同键多张）→ 列出单号，仍没有「确认知悉」', async () => {
+    await mountPurchase('/purchase/1', purchaseRoutes(draftMultiRace()));
+    const lm = within(await panel()).getByTestId('attn-landed_mismatch');
+    expect(lm).toHaveTextContent('PO261009001、PO261009002');
+    expect(within(lm).getByTestId('pbd16')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '确认知悉' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '保存草稿' })).toBeNull();
+  });
+
+  it('已下单 + 另查到同键单：点名两张；可确认知悉', async () => {
+    await mountPurchase('/purchase/1', purchaseRoutes(placedAlso()));
+    const lm = within(await panel()).getByTestId('attn-landed_mismatch');
+    expect(lm).toHaveTextContent('已记账 PO261009001，另查到 PO261009002');
+    expect(within(lm).getByRole('button', { name: '确认知悉' })).toBeInTheDocument();
+    expect(within(lm).queryByTestId('pbd16')).toBeNull();
+  });
+
+  it('已下单 + G1 problems：问题行表逐行；确认知悉理由必填，成功 toast', async () => {
+    const st = placedProblems();
+    await mountPurchase('/purchase/1', purchaseRoutes(st, {
+      'POST /v1/purchase-orders/1/acknowledge-mismatch': () => { st.po = PLACED; return ok({ po_id: 1, resolution: 'mismatch_acknowledged' }); },
+    }));
+    const p = await panel();
+    const rows = within(within(p).getByTestId('mismatch-rows')).getAllByTestId('mismatch-row');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toHaveTextContent('第 1 行 SKU-A W-SZ：数量或单价不同');
+    expect(rows[0]).toHaveTextContent('30 件，单价 12.5000');
+    expect(rows[0]).toHaveTextContent('7 件，单价 12.5000');
+    expect(rows[1]).toHaveTextContent('SKU-Z W-SZ：领星多出这一行');
+    expect(rows[1]).toHaveTextContent('无');
+    const btn = within(p).getByRole('button', { name: '确认知悉' });
+    expect(btn).toBeDisabled();
+    await userEvent.type(within(p).getByLabelText('确认知悉的理由'), '供应商确认改为 7 件');
+    await userEvent.click(btn);
+    expect(await screen.findByRole('status')).toHaveTextContent('已确认知悉');
   });
 });
 

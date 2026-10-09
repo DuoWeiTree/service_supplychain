@@ -1,7 +1,7 @@
 import { vi } from 'vitest';
 import { act, render } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import type { PoTimeline, PurchaseOptions, PurchaseOrder } from '../api/types';
+import type { PoAttempt, PoTimeline, PurchaseOptions, PurchaseOrder } from '../api/types';
 import { ok, stubBackend, type Handler } from './backendStub';
 
 /** 采购单页的 http 打桩：形状照后端（usecase/draft_po.py::load_po、usecase/attention.py::timeline）。 */
@@ -35,6 +35,13 @@ export const PLACED: PurchaseOrder = {
   ...DRAFT, state: '已下单', order_sn: 'PO261009001', placed_at: '2026-10-09T10:01:33+08:00',
   lines: DRAFT.lines.map((l, i) => ({ ...l, lx_item_id: i === 0 ? '88001' : null })),
 };
+
+/** erp_call 一行（usecase/attention.py::_ATTEMPT_COLS） */
+export const createAttempt = (over: Partial<PoAttempt> = {}): PoAttempt => ({
+  call_id: 20, at: '2026-10-09T10:01:03+08:00', actor: 'ops.zhang', endpoint: 'create_purchase_order',
+  host: 'erp.example', path: '/erp/x/createPurchaseOrder', idem_key: 'SCM-PO-1', elapsed_ms: null, outcome: 'in_flight',
+  http_status: null, lx_code: null, lx_msg: null, cause: null, retry_of: null, request: {}, response: null, ...over,
+});
 
 export const EMPTY_TIMELINE: PoTimeline = { po_id: 1, conclusion: null, attempts: [], events: [], attention: [] };
 

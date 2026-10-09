@@ -10,7 +10,8 @@ import { Fold } from '../../components/Fold';
 import { Modal } from '../../components/Modal';
 import { Qty } from '../../components/Qty';
 import { PlaceDialog } from './PlaceDialog';
-import { PoDetail, isEditable } from './PoDetail';
+import { PoDetail } from './PoDetail';
+import { isEditable } from './poStatus';
 import { api, ApiError } from '../../api';
 import type { CandidateLines, PoId, PreflightGate, PurchaseOptions, PurchaseOrder, Seller } from '../../api/types';
 import {
@@ -37,6 +38,7 @@ const REFUSAL_TEXT: Record<Exclude<AddRefusal, 'over_remaining'>, string> = {
 };
 
 const MANUAL = '__manual__';
+const STATE_MOVED = new Set(['po_placing', 'needs_verify', 'mismatch_open', 'po_frozen', 'po_discarded']);
 
 interface ActorOption { value: string; text: string; history: boolean }
 
@@ -102,8 +104,9 @@ const countText = (source: string, count: number | null) => `（${source}${count
 
 type RouteView = { kind: 'loading' } | { kind: 'fail'; err: ApiError } | { kind: 'editor' } | { kind: 'detail' };
 
-/** ★ 按状态分发：只有「草稿 · 未作废 · 无未处理项 · 无卡住的下单调用」进编辑器，其余进详情。
- *  待核实开着时后端拒改 / 删 / 下单（409 needs_verify），编辑器在那时只会是一屏点了必错的按钮。 */
+/** ★ 按状态分发：只有「草稿 · 未作废 · 无未处理项 · 无卡住 / 在途的下单调用」进编辑器，其余进详情。
+ *  待核实 / 在途时后端拒改 / 删 / 下单（409），编辑器在那时只会是一屏点了必错的按钮。
+ *  ★ 失败即关闭：队列或调用记录取不到 → 进详情（那里会点名取不到什么），不赌它是可编辑的。 */
 export function PoRoute() {
   const { poId } = useParams();
   const parsed = Number(poId);
@@ -117,12 +120,21 @@ export function PoRoute() {
     setView({ kind: 'loading' });
     const t0 = performance.now();
     const po = Promise.resolve().then(() => api.getPurchaseOrder(id));
-    // 卡住的调用不在 po.attention 里，只在队列里；队列取不到就只按 PO 判（有声：记 warn）
+    // 卡住的调用不在 po.attention 里，只在队列里；在途（未卡住）的下单调用只在调用记录里
     const stuck = Promise.resolve().then(() => api.listAttention()).then(
       (q) => q.items.filter((i) => i.po_id === id && i.kind === 'stuck_call').length,
-      (e: unknown) => { logFail('listAttention (route)', asApiError(e), t0); return 0; });
-    Promise.all([po, stuck]).then(
-      ([p, n]) => { if (alive) setView({ kind: isEditable(p, n) ? 'editor' : 'detail' }); },
+      (e: unknown) => { logFail('listAttention (route)', asApiError(e), t0); return null; });
+    const tl = Promise.resolve().then(() => api.getTimeline(id)).then(
+      (t) => t,
+      (e: unknown) => { logFail('getTimeline (route)', asApiError(e), t0); return null; });
+    Promise.all([po, stuck, tl]).then(
+      ([p, n, t]) => {
+        const editor = n !== null && t !== null && isEditable(p, n, t);
+        if (!editor && p.state === '草稿' && (n === null || t === null)) {
+          console.warn('[po-route] fail closed -> detail', JSON.stringify({ po_id: id, queue: n !== null, timeline: t !== null }));
+        }
+        if (alive) setView({ kind: editor ? 'editor' : 'detail' });
+      },
       (e: unknown) => { const err = asApiError(e); logFail('getPurchaseOrder (route)', err, t0); if (alive) setView({ kind: 'fail', err }); },
     );
     return () => { alive = false; };
@@ -240,6 +252,15 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
     edit(r.draft);
   };
 
+  /** 单的状态在别处变了（在途 / 待核实 / 不一致 / 已下单）：不当普通错误摆着，交回路由按状态重新分发 */
+  const movedOn = (err: ApiError): boolean => {
+    if (!onReroute || !STATE_MOVED.has(err.error)) return false;
+    pushToast({ kind: 'warn', text: err.hint });
+    refreshAttention();
+    onReroute();
+    return true;
+  };
+
   const save = () => run('save', async () => {
     const r = toBody(draft);
     if (!r.ok) { setMissing(r.missing); return; }
@@ -268,6 +289,7 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
     } catch (e) {
       const err = asApiError(e);
       logFail(poId === null ? 'createPurchaseOrder' : 'updatePurchaseOrder', err, t0);
+      if (movedOn(err)) return;
       fail('save', err);
     }
   });
@@ -297,6 +319,7 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
       const err = asApiError(e);
       logFail('deletePurchaseOrder', err, t0);
       setConfirmDelete(false);
+      if (movedOn(err)) return;
       fail('delete', err);
     }
   });

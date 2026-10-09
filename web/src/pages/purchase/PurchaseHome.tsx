@@ -5,14 +5,10 @@ import { ErrorDetail } from '../../components/ErrorDetail';
 import { Fold } from '../../components/Fold';
 import { Qty, type QtyValue } from '../../components/Qty';
 import { api, ApiError } from '../../api';
-import type { AttentionKind, AttentionQueue, PoList, PurchaseChecks } from '../../api/types';
+import type { AttentionQueue, PoList, PurchaseChecks } from '../../api/types';
 import { asApiError } from '../../api/client';
+import { KIND_LABEL } from './poStatus';
 
-export const KIND_LABEL: Record<AttentionKind, string> = {
-  needs_verify: '下单结果待核实',
-  landed_mismatch: '领星明细不一致',
-  stuck_call: '下单请求卡住',
-};
 
 
 export function PurchaseHome() {

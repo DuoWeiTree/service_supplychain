@@ -46,6 +46,10 @@ async function mount(entry: string, over: Record<string, unknown> = {}) {
     getPurchaseOptions: vi.fn(async () => OPTIONS),
     listCandidateLines: vi.fn(async () => CANDS),
     getPurchaseOrder: vi.fn(async () => DRAFT),
+    // 路由判可编辑要看调用记录（在途下单）；详情页要反查来源
+    getTimeline: vi.fn(async () => ({ po_id: 1, conclusion: null, attempts: [], events: [], attention: [] })),
+    getLineTrace: vi.fn(async (id: number) => ({ line_id: id, sku: 'SKU-A', period: '2026-10', total_units: 500,
+      state: '已下单', confirmed_units: 30, ordered_units: 30, purchase_orders: [] })),
     getPreflight: vi.fn(async () => ({ po_id: 1, ok: false, gates: [
       { gate: 'supplier', ok: true, detail: {} },
       { gate: 'sources_orderable', ok: false, detail: { offenders: [{ line_id: 101, state: '已撤销' }] } },
@@ -291,7 +295,8 @@ describe('采购单编辑器：已保存草稿', () => {
 
   it('已下单的单不进编辑器', async () => {
     await mount('/purchase/1', { getPurchaseOrder: vi.fn(async () => ({ ...DRAFT, state: '已下单', order_sn: 'PO1' })) });
-    await screen.findByRole('heading');
+    expect(await screen.findByTestId('po-axes')).toHaveTextContent('已下单');
+    expect(await screen.findByTestId('trace-101')).toHaveTextContent('已下单 30');
     expect(screen.queryByRole('button', { name: '保存草稿' })).toBeNull();
   });
 

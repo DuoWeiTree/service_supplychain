@@ -201,7 +201,10 @@ describe('文案纪律：下单与转人工', () => {
   };
   for (const [verb, path, said, input] of actions) {
     it(`★ ${verb}：toast 说「${said}」`, async () => {
-      await mountPurchase('/purchase/1', purchaseRoutes(pending(), {
+      const st = pending();
+      // ★ PB-D16：确认知悉只在已下单的单上有
+      if (path === 'acknowledge-mismatch') st.po = { ...PLACED, attention: [LM] };
+      await mountPurchase('/purchase/1', purchaseRoutes(st, {
         [`POST /v1/purchase-orders/1/${path}`]: () => ok(replies[path]),
       }));
       const panel = await screen.findByTestId('attention-panel');

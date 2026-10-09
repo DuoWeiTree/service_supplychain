@@ -8,7 +8,7 @@ import { refreshAttention } from '../../shell/AttentionBanner';
 import { api, ApiError } from '../../api';
 import { asApiError } from '../../api/client';
 import type { AttentionItem, AttentionKind, PoAttempt, PoTimeline, PurchaseOrder, TimelineConclusion } from '../../api/types';
-import { KIND_LABEL } from './PurchaseHome';
+import { KIND_LABEL, isUnknownOutcome, usePoll } from './poStatus';
 import { fmtAt, logWrite, logWriteFail } from './fmt';
 
 const OUTCOME_LABEL: Record<string, string> = {
@@ -59,10 +59,11 @@ export function AttemptTable({ attempts }: { attempts: PoAttempt[] }) {
 }
 
 type Lookup = NonNullable<TimelineConclusion['last_lookup']>;
-function lookupText(l: Lookup | null | undefined): string {
+function lookupText(l: Lookup | null | undefined, mismatch: boolean): string {
   // ★ 空≠0：从没查过 与 查过没找到 是两件事
   if (!l) return '还没查过';
-  const what = l.outcome === 'ok' ? '查询成功，没有可认定为本单的单'
+  const what = l.outcome === 'ok'
+    ? (mismatch ? '查询成功，查到的单对不上，见下方领星明细不一致' : '查询成功，没有可认定为本单的单')
     : l.outcome === 'in_flight' ? '查询进行中' : `查询失败（${l.outcome}）`;
   return `${fmtAt(l.at)} ${what}${l.truncated ? '，结果被截断，不算查无' : ''}`;
 }
@@ -107,6 +108,24 @@ function mismatchRows(diff: unknown): DiffRow[] {
   return rows;
 }
 
+const PROBLEM_LABEL: Record<string, string> = {
+  not_observed: '领星明细未读到', missing_item: '领星缺这一行', qty_or_price_differs: '数量或单价不同',
+  unexpected_item: '领星多出这一行',
+};
+const side = (units: unknown, price: unknown) =>
+  units === null || units === undefined ? '无' : `${String(units)} 件，单价 ${String(price ?? '—')}`;
+
+/** G1 落地首检（usecase/landed.py → v_check_po_landed）的问题行 */
+function problemRows(problems: unknown): DiffRow[] {
+  return (Array.isArray(problems) ? problems : []).map((x) => {
+    const p = x as Record<string, unknown>;
+    const at = p['line_no'] === null || p['line_no'] === undefined ? '' : `第 ${String(p['line_no'])} 行 `;
+    const what = PROBLEM_LABEL[String(p['problem'])] ?? String(p['problem']);
+    return { label: `${at}${String(p['sku'] ?? '')} ${p['wid'] === null ? '无仓' : String(p['wid'] ?? '')}：${what}`,
+      ours: side(p['ours_units'], p['ours_price']), theirs: side(p['lx_units'], p['lx_price']) };
+  });
+}
+
 function ActionError({ err, onDismiss }: { err: ApiError; onDismiss: () => void }) {
   if (err.error === 'contradicts_evidence') {
     const sns = Array.isArray(err.fields['found_order_sns']) ? (err.fields['found_order_sns'] as unknown[]).map(String) : [];
@@ -140,12 +159,14 @@ function ActionError({ err, onDismiss }: { err: ApiError; onDismiss: () => void 
 interface Done { toast: Omit<Toast, 'id'>; log: Record<string, unknown> }
 
 /** 有未处理项时置顶的红框：结论 → 时间线 → 能做的动作（spec §6.6）。 */
-export function AttentionPanel({ po, timeline, timelineErr, stuck, onChanged }: {
+export function AttentionPanel({ po, timeline, timelineErr, stuck, placing, onChanged }: {
   po: PurchaseOrder;
   timeline: PoTimeline | null;
   timelineErr: ApiError | null;
   /** 读时推导，不在 po.attention 里，只在 /attention 队列里 */
   stuck: AttentionItem[];
+  /** 在途（任何年龄）的下单调用 */
+  placing: PoAttempt | null;
   onChanged: () => Promise<void>;
 }) {
   const { pending, run } = useInFlight();
@@ -154,7 +175,18 @@ export function AttentionPanel({ po, timeline, timelineErr, stuck, onChanged }: 
   const [orderSn, setOrderSn] = useState('');
   const [absentReason, setAbsentReason] = useState('');
   const [ackReason, setAckReason] = useState('');
-  const busy = pending.size > 0;
+  // 查单类动作没拿到明确答复：调用可能还在跑，等调用记录里没有在途的再重取、再放开按钮
+  const [unknownKey, setUnknownKey] = useState<string | null>(null);
+  const busy = pending.size > 0 || unknownKey !== null;
+  usePoll(unknownKey !== null, async () => {
+    const t = await api.getTimeline(po.po_id);
+    if (t.attempts.some((a) => a.outcome === 'in_flight')) return false;
+    console.info('[po-attention] unknown outcome settled', JSON.stringify({ po_id: po.po_id, action: unknownKey }));
+    setUnknownKey(null);
+    refreshAttention();
+    await onChanged();
+    return true;
+  }, 'po-attention');
 
   const kinds = new Set<AttentionKind>(po.attention.map((a) => a.kind));
   if (stuck.length > 0) kinds.add('stuck_call');
@@ -175,6 +207,7 @@ export function AttentionPanel({ po, timeline, timelineErr, stuck, onChanged }: 
         const err = asApiError(e);
         logWriteFail('po-attention', call, t0, err);
         errs.fail(key, err);
+        if ((key === 'recheck' || key === 'register') && isUnknownOutcome(err)) { setUnknownKey(key); return; }
       }
       // 失败也重取：409 nothing_to_resolve 之类说明状态在别处变了
       refreshAttention();
@@ -216,7 +249,7 @@ export function AttentionPanel({ po, timeline, timelineErr, stuck, onChanged }: 
     : typeof lmFacts['known'] === 'string' ? lmFacts['known'] : null;
   const lmUnknown = conclusion?.kind === 'landed_mismatch' ? conclusion.unknown
     : typeof lmFacts['unknown'] === 'string' ? lmFacts['unknown'] : null;
-  const diffRows = mismatchRows(lmFacts['differences']);
+  const diffRows = [...mismatchRows(lmFacts['differences']), ...problemRows(lmFacts['problems'])];
   const sameKeySns = Array.isArray(lmFacts['order_sns']) ? (lmFacts['order_sns'] as unknown[]).map(String) : [];
 
   return (
@@ -224,6 +257,7 @@ export function AttentionPanel({ po, timeline, timelineErr, stuck, onChanged }: 
       <div className="panel__head i-red">⛔ 需要人工处理</div>
       <div className="panel__body">
         <div className="bar">
+          {placing && <span className="chip chip--bad">下单进行中</span>}
           {[...kinds].map((k) => <span key={k} className="chip chip--bad">{KIND_LABEL[k]}</span>)}
         </div>
 
@@ -234,7 +268,7 @@ export function AttentionPanel({ po, timeline, timelineErr, stuck, onChanged }: 
           <div className="sec" data-testid="conclusion">
             <div>已知：{conclusion.known}</div>
             <div>未知：{conclusion.unknown}</div>
-            <div>最近一次查重：{lookupText(conclusion.last_lookup)}</div>
+            <div>最近一次查重：{lookupText(conclusion.last_lookup, kinds.has('landed_mismatch'))}</div>
             {conclusion.how_to_search && (
               <div className="muted">
                 去领星照此搜：幂等键 {conclusion.how_to_search.custom_order_sn ?? '—'}
@@ -242,6 +276,18 @@ export function AttentionPanel({ po, timeline, timelineErr, stuck, onChanged }: 
                 {String(conclusion.how_to_search.window['start_date'] ?? '—')} 至 {String(conclusion.how_to_search.window['end_date'] ?? '—')}
               </div>
             )}
+          </div>
+        )}
+
+        {placing && (
+          <div className="sec" data-testid="attn-placing">
+            <div className="sec__title">下单进行中</div>
+            <div className="muted">开始于 {fmtAt(placing.at)}，{placing.actor} 发起；落地后自动刷新</div>
+          </div>
+        )}
+        {unknownKey && (
+          <div className="flash flash--bad" role="alert" data-testid="attn-unknown">
+            结果未知：正在每 3 秒查一次调用记录，查完自动刷新
           </div>
         )}
 
@@ -289,14 +335,17 @@ export function AttentionPanel({ po, timeline, timelineErr, stuck, onChanged }: 
                 </tbody>
               </table>
             )}
-            {/* PB-D16：只能去领星改；重新核对只在待核实开着时有（后端 recheck 要求 needs_verify） */}
-            {nvOpen && <div className="mt">去领星改对后点重新核对</div>}
-            <div className="btn-row mt">
-              <input className="inp inp--text" aria-label="确认知悉的理由" value={ackReason} disabled={busy}
-                onChange={(e) => setAckReason(e.target.value)} />
-              <button type="button" className="btn" disabled={busy || ackReason.trim() === ''}
-                onClick={() => void acknowledge()}>确认知悉</button>
-            </div>
+            {/* ★ PB-D16：草稿上没有「接受差异」出口（后端 409 mismatch_on_draft），只能去领星处理 */}
+            {po.state === '已下单' ? (
+              <div className="btn-row mt">
+                <input className="inp inp--text" aria-label="确认知悉的理由" value={ackReason} disabled={busy}
+                  onChange={(e) => setAckReason(e.target.value)} />
+                <button type="button" className="btn" disabled={busy || ackReason.trim() === ''}
+                  onClick={() => void acknowledge()}>确认知悉</button>
+              </div>
+            ) : (
+              <div className="mt" data-testid="pbd16">去领星改对后点重新核对，或在领星作废该单（草稿阻塞至作废回读）</div>
+            )}
             {lmErr.err && <div className="mt"><ActionError err={lmErr.err} onDismiss={lmErr.dismiss} /></div>}
           </div>
         )}

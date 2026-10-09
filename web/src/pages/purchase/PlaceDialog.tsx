@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Modal } from '../../components/Modal';
 import { ErrorDetail } from '../../components/ErrorDetail';
 import { Fold } from '../../components/Fold';
@@ -8,15 +8,16 @@ import { pushToast } from '../../shell/toastStore';
 import { refreshAttention } from '../../shell/AttentionBanner';
 import { api, ApiError } from '../../api';
 import { asApiError } from '../../api/client';
-import type { PlaceResult, PurchaseOptions, PurchaseOrder } from '../../api/types';
+import type { PlaceResult, PoTimeline, PurchaseOptions, PurchaseOrder } from '../../api/types';
 import { QC_LABEL } from './poEditorModel';
-import { exactTotal, logWrite, logWriteFail } from './fmt';
+import { exactTotal, fmtAt, logWrite, logWriteFail } from './fmt';
+import { isCreate, isUnknownOutcome, lastCreateId, usePoll } from './poStatus';
 
 type Res =
   | { kind: 'rejected'; code: string | number | null; msg: string | null }
   | { kind: 'not_sent'; cause: string | null }
   | { kind: 'stale' }
-  | { kind: 'uncertain'; err: ApiError }
+  | { kind: 'unknown'; err: ApiError | null; note: string }
   | { kind: 'error'; err: ApiError };
 
 /** ⛔ 下单确认。★ 打开时把单冻结成快照：屏上看到的就是发出去的，token 也是这一份的 ——
@@ -32,9 +33,13 @@ export function PlaceDialog({ po, options, onClose, onSettled, onStale }: {
   const [snap] = useState(po);
   const { pending, run } = useInFlight();
   const [res, setRes] = useState<Res | null>(null);
+  // 打开时记下已有的最后一次下单调用：结果未知后只认它之后的那次，不把上一轮的结果当成这一轮的
+  const [baseline, setBaseline] = useState<number | null>(null);
+  const [baselineErr, setBaselineErr] = useState<ApiError | null>(null);
   const busy = pending.has('place');
+  const unknown = res?.kind === 'unknown';
 
-  const supplier = options?.suppliers.find((s) => s.supplier_id === snap.supplier_id);
+  const supplier = options?.suppliers.find((x) => x.supplier_id === snap.supplier_id);
   const optUid = options?.opt_uids.find((o) => o.opt_uid === snap.opt_uid);
   const wh = (wid: string) => {
     const w = options?.warehouses.find((x) => x.wid === wid);
@@ -42,6 +47,34 @@ export function PlaceDialog({ po, options, onClose, onSettled, onStale }: {
   };
   const units = snap.lines.reduce((a, l) => a + l.units, 0);
   const amount = exactTotal(snap.lines);
+
+  useEffect(() => {
+    const t0 = performance.now();
+    Promise.resolve().then(() => api.getTimeline(snap.po_id)).then(
+      (t) => setBaseline(lastCreateId(t)),
+      (e: unknown) => { const err = asApiError(e); logWriteFail('po-place', `GET /purchase-orders/${snap.po_id}/timeline`, t0, err); setBaselineErr(err); },
+    );
+  }, [snap.po_id]);
+
+  const settleFrom = async (t: PoTimeline): Promise<boolean> => {
+    const mine = t.attempts.filter((a) => isCreate(a) && a.call_id > (baseline ?? 0)).at(-1);
+    if (!mine) { setRes((r) => (r?.kind === 'unknown' ? { ...r, note: '后端还没有这次下单的记录' } : r)); return false; }
+    if (mine.outcome === 'in_flight') {
+      setRes((r) => (r?.kind === 'unknown' ? { ...r, note: `下单进行中，开始于 ${fmtAt(mine.at)}` } : r));
+      return false;
+    }
+    console.info('[po-place] settled by timeline', JSON.stringify({ po_id: snap.po_id, call_id: mine.call_id,
+      outcome: mine.outcome, http: mine.http_status, lx_code: mine.lx_code, cause: mine.cause }));
+    refreshAttention();
+    if (mine.outcome === 'rejected') { setRes({ kind: 'rejected', code: mine.lx_code, msg: mine.lx_msg }); return true; }
+    if (mine.outcome === 'not_sent') { setRes({ kind: 'not_sent', cause: mine.cause }); return true; }
+    const p = await api.getPurchaseOrder(snap.po_id);
+    if (p.state === '已下单') pushToast({ kind: 'ok', text: `已下单，领星单号 ${p.order_sn ?? '未知'}` });
+    else pushToast({ kind: 'warn', text: '下单结果未知，待核实' });
+    onSettled();
+    return true;
+  };
+  usePoll(unknown && baseline !== null, async () => settleFrom(await api.getTimeline(snap.po_id)), 'po-place');
 
   const confirm = () => run('place', async () => {
     const call = `POST /purchase-orders/${snap.po_id}/place`;
@@ -54,14 +87,17 @@ export function PlaceDialog({ po, options, onClose, onSettled, onStale }: {
       logWriteFail('po-place', call, t0, err);
       refreshAttention();
       if (err.error === 'stale_confirm_token') { setRes({ kind: 'stale' }); onStale(); return; }
-      // 已有待核实 / 已被下单：状态在别处变了，回到按状态分发
-      if (err.error === 'needs_verify' || err.error === 'po_frozen') {
+      // 状态在别处变了：回到按状态分发
+      if (err.error === 'needs_verify' || err.error === 'po_frozen' || err.error === 'mismatch_open') {
         pushToast({ kind: 'warn', text: err.hint });
         onSettled();
         return;
       }
-      // 没收到回音：请求可能已到后端并在下单 —— 只能去看结果，不能当成失败再点
-      if (err.status === 0) { setRes({ kind: 'uncertain', err }); return; }
+      // 没拿到明确答复 / 已有下单在途：请求可能已在建单 —— 关掉确认，按调用记录等真实结果
+      if (isUnknownOutcome(err) || err.error === 'po_placing') {
+        setRes({ kind: 'unknown', err, note: '正在查调用记录' });
+        return;
+      }
       setRes({ kind: 'error', err });
       return;
     }
@@ -85,7 +121,7 @@ export function PlaceDialog({ po, options, onClose, onSettled, onStale }: {
 
   return (
     <Modal danger warn="这一步会在领星建出真实采购单，不可撤销" title="⛔ 下单到领星"
-      onClose={busy ? () => {} : onClose}>
+      onClose={busy || unknown ? () => {} : onClose}>
       <table className="table table--dense" data-testid="place-header">
         <tbody>
           <tr><th>供应商</th><td>{supplier ? `${supplier.name}（${snap.supplier_id}）` : snap.supplier_id}</td></tr>
@@ -119,7 +155,7 @@ export function PlaceDialog({ po, options, onClose, onSettled, onStale }: {
         <div className="mt" data-testid="place-result">
           {res.kind === 'rejected' && (
             <div className="flash flash--bad" role="alert">
-              <div>领星拒绝了这张单，仍是草稿</div>
+              <div>领星拒绝了这张单，仍是草稿；改草稿后再下单</div>
               <div className="gate__code">code {res.code ?? '无'}</div>
               <div>{res.msg ?? '领星没有给出说明'}</div>
             </div>
@@ -133,20 +169,31 @@ export function PlaceDialog({ po, options, onClose, onSettled, onStale }: {
           {res.kind === 'stale' && (
             <div className="flash flash--bad" role="alert">草稿已变，请重新打开下单</div>
           )}
-          {res.kind === 'uncertain' && (
+          {res.kind === 'unknown' && (
             <>
-              <div className="flash flash--bad" role="alert">没等到结果，下单可能仍在进行；不要再点，重新载入看结果</div>
-              <ErrorDetail err={res.err} />
+              <div className="flash flash--bad" role="alert">
+                <div>结果未知：不要再点，正在每 3 秒查一次调用记录</div>
+                <div data-testid="place-poll">{res.note}</div>
+              </div>
+              {res.err && <ErrorDetail err={res.err} />}
             </>
           )}
           {res.kind === 'error' && <ErrorDetail err={res.err} />}
         </div>
       )}
 
+      {baselineErr && (
+        <div className="mt">
+          <div className="flash flash--bad" role="alert">调用记录取不到，下单后核对不了结果，先不下单</div>
+          <ErrorDetail err={baselineErr} />
+        </div>
+      )}
+
       <div className="btn-row mt">
-        <button type="button" className="btn btn--danger" disabled={busy || res?.kind === 'stale' || res?.kind === 'uncertain'}
+        <button type="button" className="btn btn--danger"
+          disabled={busy || baseline === null || res?.kind === 'stale' || unknown}
           onClick={() => void confirm()}>确认下单</button>
-        {res?.kind === 'uncertain'
+        {unknown
           ? <button type="button" className="btn" onClick={onSettled}>重新载入</button>
           : <button type="button" className="btn btn--ghost" disabled={busy} onClick={onClose}>取消</button>}
       </div>

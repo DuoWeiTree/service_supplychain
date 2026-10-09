@@ -5,7 +5,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import type { PurchaseOrder } from '../../api/types';
 import { fail, ok, type Reply } from '../../testing/backendStub';
 import {
-  DRAFT, EMPTY_TIMELINE, PLACED, mountPurchase, purchaseRoutes, type BackendState,
+  DRAFT, EMPTY_TIMELINE, PLACED, createAttempt, mountPurchase, purchaseRoutes, type BackendState,
 } from '../../testing/purchaseBackend';
 
 beforeEach(() => { vi.resetModules(); });
@@ -168,7 +168,7 @@ describe('⛔ 下单确认弹窗', () => {
     expect(calls.filter((c) => c.method === 'POST')).toHaveLength(1);
   });
 
-  it('前端等不到回音（status 0）：不当成失败，叫人别再点、重新载入看结果', async () => {
+  it('前端等不到回音（status 0）：不当成失败，叫人别再点；只给「重新载入」', async () => {
     await mountPurchase('/purchase/1', purchaseRoutes(fresh(), {
       'POST /v1/purchase-orders/1/place': () => { throw new TypeError('fetch failed', { cause: { code: 'ECONNRESET' } }); },
     }));
@@ -180,6 +180,84 @@ describe('⛔ 下单确认弹窗', () => {
     expect(res).toHaveTextContent('ECONNRESET');
     expect(confirmIn(dlg)).toBeDisabled();
     expect(within(dlg).getByRole('button', { name: '重新载入' })).toBeInTheDocument();
+    expect(within(dlg).queryByRole('button', { name: '取消' })).toBeNull();
+    await userEvent.keyboard('{Escape}');
+    expect(screen.getByRole('dialog')).toBeInTheDocument();   // 结果未知时关不掉
+  });
+
+  it('调用记录取不到：不让下（下单后核对不了结果）', async () => {
+    await mountPurchase('/purchase/1', purchaseRoutes(fresh()));
+    await vi.waitFor(async () => expect(await placeBtn()).toBeEnabled());
+    vi.restoreAllMocks();
+    const { stubBackend } = await import('../../testing/backendStub');
+    stubBackend(purchaseRoutes(fresh(), { 'GET /v1/purchase-orders/1/timeline': () => fail(500, 'internal', '服务端错误') }));
+    const dlg = await openDialog();
+    expect(await within(dlg).findByText('调用记录取不到，下单后核对不了结果，先不下单')).toBeInTheDocument();
+    expect(confirmIn(dlg)).toBeDisabled();
+  });
+});
+
+describe('结果未知：每 3 秒查调用记录，等真实结果', () => {
+  beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); });
+  afterEach(() => { vi.useRealTimers(); });
+  const tick = () => act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+
+  async function toUnknown(st: BackendState, place: () => Reply | Promise<Reply>) {
+    const r = await mountPurchase('/purchase/1', purchaseRoutes(st, { 'POST /v1/purchase-orders/1/place': place }));
+    await vi.waitFor(async () => expect(await placeBtn()).toBeEnabled());
+    const dlg = await openDialog();
+    await vi.waitFor(() => expect(confirmIn(dlg)).toBeEnabled());
+    await userEvent.click(confirmIn(dlg));
+    await within(dlg).findByText(/结果未知/);
+    return { ...r, dlg };
+  }
+
+  it('504 → 确认关掉；在途时说「下单进行中」；落成 rejected 后原样显示', async () => {
+    const st = fresh();
+    const { dlg } = await toUnknown(st, () => fail(504, 'gateway_timeout', '网关超时'));
+    expect(confirmIn(dlg)).toBeDisabled();
+    st.timeline = { ...EMPTY_TIMELINE, attempts: [createAttempt()] };
+    await tick();
+    expect(within(dlg).getByTestId('place-poll')).toHaveTextContent('下单进行中，开始于 2026-10-09 10:01:03');
+    st.timeline = { ...EMPTY_TIMELINE, attempts: [createAttempt({ outcome: 'rejected', http_status: 200, lx_code: '1001', lx_msg: '供应商停用' })] };
+    await tick();
+    const res = within(dlg).getByTestId('place-result');
+    expect(res).toHaveTextContent('领星拒绝了这张单');
+    expect(res).toHaveTextContent('供应商停用');
+  });
+
+  it('回的不是 JSON（代理错误页）→ 轮询到 ok → toast「已下单」并进详情', async () => {
+    const st = fresh();
+    await toUnknown(st, () => ({ status: 502, json: undefined, raw: '<html>502 Bad Gateway</html>' }));
+    expect(screen.getByRole('dialog')).toHaveTextContent('bad_response');
+    st.timeline = { ...EMPTY_TIMELINE, attempts: [createAttempt({ outcome: 'ok', http_status: 200, lx_code: '0' })] };
+    st.po = PLACED;
+    await tick();
+    expect(await screen.findByRole('status')).toHaveTextContent('已下单，领星单号 PO261009001');
+    expect(await screen.findByTestId('po-axes')).toHaveTextContent('已下单');
+  });
+
+  it('409 po_placing 也是「结果未知」，不是普通错误', async () => {
+    const { dlg } = await toUnknown(fresh(), () => fail(409, 'po_placing', '下单请求进行中', { po_id: 1 }));
+    expect(confirmIn(dlg)).toBeDisabled();
+    expect(within(dlg).getByTestId('place-poll')).toBeInTheDocument();
+  });
+
+  it('只认打开之后的那次下单：上一轮的 not_sent 不冒充这一轮的结果', async () => {
+    const st = fresh();
+    st.timeline = { ...EMPTY_TIMELINE, attempts: [createAttempt({ call_id: 5, outcome: 'not_sent', cause: 'old' })] };
+    const { dlg } = await toUnknown(st, () => fail(504, 'gateway_timeout', '网关超时'));
+    await tick();
+    expect(within(dlg).getByTestId('place-poll')).toHaveTextContent('后端还没有这次下单的记录');
+  });
+
+  it('卸载即停止轮询', async () => {
+    const { calls, unmount } = await toUnknown(fresh(), () => fail(504, 'gateway_timeout', '网关超时'));
+    await tick();
+    unmount();
+    const n = calls.filter((c) => c.path.endsWith('/timeline')).length;
+    await tick(); await tick();
+    expect(calls.filter((c) => c.path.endsWith('/timeline')).length).toBe(n);
   });
 });
 

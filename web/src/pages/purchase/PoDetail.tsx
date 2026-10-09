@@ -8,6 +8,9 @@ import { asApiError } from '../../api/client';
 import type { AttentionItem, LineTrace, PoId, PoTimeline, PurchaseOrder } from '../../api/types';
 import { AttemptTable, AttentionPanel } from './AttentionPanel';
 import { fmtAt } from './fmt';
+import { KIND_LABEL, inFlightCreate, isEditable, usePoll } from './poStatus';
+import { pushToast } from '../../shell/toastStore';
+import { refreshAttention } from '../../shell/AttentionBanner';
 
 type TraceState = { kind: 'loading' } | { kind: 'ok'; t: LineTrace } | { kind: 'fail'; err: ApiError };
 
@@ -22,9 +25,6 @@ function read<T>(name: string, f: () => Promise<T>, ok: (v: T) => void, bad: (e:
     bad(err);
   });
 }
-
-export const isEditable = (p: PurchaseOrder, stuck: number) =>
-  p.state === '草稿' && !p.discarded_at && p.attention.length === 0 && stuck === 0;
 
 /** 已下单 / 待处理 / 已作废 的采购单。`onEditable`：处理完（如确认领星无此单）草稿解锁时交回路由 */
 export function PoDetail({ poId, onEditable }: { poId: PoId; onEditable?: () => void }) {
@@ -50,8 +50,27 @@ export function PoDetail({ poId, onEditable }: { poId: PoId; onEditable?: () => 
 
   useEffect(() => {
     // 队列没取到时不判可编辑：卡住的调用只在队列里，判了就可能把人送回一张正在下单的草稿
-    if (po && queue !== null && onEditable && isEditable(po, stuck.length)) onEditable();
-  }, [po, queue]);   // eslint-disable-line react-hooks/exhaustive-deps
+    if (po && queue !== null && tl !== null && onEditable && isEditable(po, stuck.length, tl)) onEditable();
+  }, [po, queue, tl]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  const placing = tl ? inFlightCreate(tl) : null;
+  // 下单在途：等它落地再按结果重取。被拒 / 没发出的结果编辑器上看不到，这里用 toast 说出来
+  usePoll(placing !== null, async () => {
+    const t = await api.getTimeline(poId);
+    setTl(t);
+    if (inFlightCreate(t)) return false;
+    const done = t.attempts.find((a) => a.call_id === placing?.call_id);
+    console.info('[po-detail] in-flight create settled', JSON.stringify({ po_id: poId, call_id: done?.call_id,
+      outcome: done?.outcome, lx_code: done?.lx_code, cause: done?.cause }));
+    if (done?.outcome === 'rejected') {
+      pushToast({ kind: 'fail', text: `领星拒绝了这张单（code ${done.lx_code ?? '无'}）：${done.lx_msg ?? '没有说明'}` });
+    } else if (done?.outcome === 'not_sent') {
+      pushToast({ kind: 'warn', text: '没有发到领星，可以再次下单' });
+    }
+    refreshAttention();
+    await load();
+    return true;
+  }, 'po-detail');
 
   const lineIds = po ? [...new Set(po.lines.flatMap((l) => l.sources.map((s) => s.line_id)))] : [];
   const lineKey = lineIds.join(',');
@@ -73,7 +92,7 @@ export function PoDetail({ poId, onEditable }: { poId: PoId; onEditable?: () => 
     );
   }
 
-  const hasAttention = po.attention.length > 0 || stuck.length > 0;
+  const hasAttention = po.attention.length > 0 || stuck.length > 0 || placing !== null;
   const localState = po.discarded_at ? `${po.state}（已作废）` : po.state;
 
   return (
@@ -91,7 +110,7 @@ export function PoDetail({ poId, onEditable }: { poId: PoId; onEditable?: () => 
       )}
 
       {hasAttention && (
-        <AttentionPanel po={po} timeline={tl} timelineErr={tlErr} stuck={stuck} onChanged={load} />
+        <AttentionPanel po={po} timeline={tl} timelineErr={tlErr} stuck={stuck} placing={placing} onChanged={load} />
       )}
 
       <div className="sec bar" data-testid="po-detail-head">
@@ -154,16 +173,31 @@ export function PoDetail({ poId, onEditable }: { poId: PoId; onEditable?: () => 
         </table>
       </div>
 
-      {!hasAttention && (
-        <div className="sec">
-          {tlErr && <ErrorDetail err={tlErr} />}
-          {tl && (
-            <Fold summary={`调用记录 ${tl.attempts.length} 次`}>
-              <AttemptTable attempts={tl.attempts} />
-            </Fold>
-          )}
-        </div>
-      )}
+      <div className="sec">
+        {!hasAttention && tlErr && <ErrorDetail err={tlErr} />}
+        {tl && !hasAttention && (
+          <Fold summary={`调用记录 ${tl.attempts.length} 次`}>
+            <AttemptTable attempts={tl.attempts} />
+          </Fold>
+        )}
+        {tl && (
+          <Fold summary={`状态记录 ${tl.events.length + tl.attention.filter((a) => a.resolved_at).length} 条`}>
+            <table className="table table--dense" data-testid="events">
+              <thead><tr><th>时间</th><th>人</th><th>事</th><th>理由</th></tr></thead>
+              <tbody>
+                {tl.events.map((e, i) => (
+                  <tr key={`e${i}`}><td className="num">{fmtAt(e.at)}</td><td>{e.actor}</td>
+                    <td>{e.from} → {e.to}{e.src ? <span className="muted"> {e.src}</span> : null}</td><td>{e.reason ?? '—'}</td></tr>
+                ))}
+                {tl.attention.filter((a) => a.resolved_at).map((a) => (
+                  <tr key={`a${a.attention_id}`}><td className="num">{fmtAt(a.resolved_at)}</td><td>{a.resolved_by ?? '—'}</td>
+                    <td>{KIND_LABEL[a.kind]}：{a.resolution ?? '—'}</td><td>{a.reason ?? '—'}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </Fold>
+        )}
+      </div>
     </AppShell>
   );
 }
