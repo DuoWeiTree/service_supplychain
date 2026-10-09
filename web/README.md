@@ -28,8 +28,8 @@
 `vite.config.ts` 里的 `server.proxy` 把 `/v1` 转发到 `127.0.0.1:8091`。
 端口抄 `config.example.toml` 的 `[api] port`，别再写死第二份。
 
-后端没起时前端报的是 `ApiError(error='bad_response')`「返回的不是 JSON」——
-那是 Vite 的 SPA 回退把 `index.html` 当成了响应，不是接口本身出错。
+后端没起时，代理回 502 `backend_unreachable`，页面显示「连不上后端 http://127.0.0.1:8091（ECONNREFUSED）」，
+起 vite 的终端同时打一行 `[proxy] … cause_code=…`（`vite.config.ts` 的 `configure`）。
 
 ## 测试替身与 grid fixture
 

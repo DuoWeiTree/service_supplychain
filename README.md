@@ -120,11 +120,11 @@ live 门禁都必须绿（它们要能连内网 CH）：
 挂 `-k "not ..."`，是因为 `-k` 是一句会被人抄漏的话，抄漏之后命令照样「能跑」，
 只是又开始连库；文件边界抄不漏。
 
-### 前端 mock 用的 fixture
+### 前端测试替身对核的 grid 响应
 
 `tests/fixtures/grid_response.json` 是 `GET /v1/plans/{id}/grid` 的固化响应，
-`web/` 的 mock 层直接读它，保证 mock 与真 API 是同一份数据。改了 grid 的响应
-形状后，重新固化：
+`web/src/testing/fixtures.test.ts` 拿它核对前端测试替身的数据形状（替身只在测试里，
+产品前端只打真后端，PB-D17）。改了 grid 的响应形状后，重新固化：
 
     UPDATE_GRID_FIXTURE=1 uv run pytest -q tests/test_grid_fixture.py
 
