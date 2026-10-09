@@ -15,8 +15,8 @@ def draft(seed):
 
 def _call(cur, po_id, actor, outcome="in_flight"):
     cur.execute(
-        "INSERT INTO erp_call (endpoint, side_effect, mode, po_id, idem_key, actor, request, outcome)"
-        " VALUES ('create_purchase_order','irreversible','fake',%s,'SCM-PO-1',%s,'{}',%s)"
+        "INSERT INTO erp_call (endpoint, side_effect, po_id, idem_key, actor, request, outcome)"
+        " VALUES ('create_purchase_order','irreversible',%s,'SCM-PO-1',%s,'{}',%s)"
         " RETURNING call_id", (po_id, actor, outcome))
     return cur.fetchone()[0]
 
@@ -46,7 +46,7 @@ def test_erp_call_request_is_immutable(draft, seed):
 def test_observations_are_append_only(business_db, wipe):
     with pg_conn() as c, c.cursor() as cur:
         cur.execute("INSERT INTO po_item_obs (order_sn, lx_item_id, sku, wid, quantity_real, price,"
-                    " source, source_captured_at) VALUES ('PO1','1','S',1,10,1,'sim',now())"
+                    " source, source_captured_at) VALUES ('PO1','1','S',1,10,1,'api',now())"
                     " RETURNING obs_id")
         oid = cur.fetchone()[0]
     with pytest.raises(psycopg2.Error, match="只追加"), pg_conn() as c, c.cursor() as cur:
@@ -139,7 +139,7 @@ def test_attention_resolve_freezes_identity_columns(draft, seed, col_set):
 def test_po_snapshot_is_append_only(business_db, wipe):
     with pg_conn() as c, c.cursor() as cur:
         cur.execute("INSERT INTO po_snapshot (order_sn, status, source, source_captured_at)"
-                    " VALUES ('PO1',2,'sim',now()) RETURNING snap_id")
+                    " VALUES ('PO1',2,'api',now()) RETURNING snap_id")
         sid = cur.fetchone()[0]
     with pytest.raises(psycopg2.Error, match="只追加"), pg_conn() as c, c.cursor() as cur:
         cur.execute("UPDATE po_snapshot SET status=9 WHERE snap_id=%s", (sid,))
@@ -147,15 +147,25 @@ def test_po_snapshot_is_append_only(business_db, wipe):
         cur.execute("DELETE FROM po_snapshot WHERE snap_id=%s", (sid,))
 
 
-def test_observation_source_check(business_db, wipe):
+@pytest.mark.parametrize("source", ["bogus", "sim"])   # ★ PB-D14：没有模拟来源了
+def test_observation_source_check(business_db, wipe, source):
     with pytest.raises(psycopg2.Error) as e, pg_conn() as c, c.cursor() as cur:
         cur.execute("INSERT INTO po_snapshot (order_sn, status, source, source_captured_at)"
-                    " VALUES ('PO1',2,'bogus',now())")
+                    " VALUES ('PO1',2,%s,now())", (source,))
     assert e.value.diag.constraint_name == "po_snapshot_source_known"
     with pytest.raises(psycopg2.Error) as e, pg_conn() as c, c.cursor() as cur:
         cur.execute("INSERT INTO po_item_obs (order_sn, sku, quantity_real, source, source_captured_at)"
-                    " VALUES ('PO1','S',1,'bogus',now())")
+                    " VALUES ('PO1','S',1,%s,now())", (source,))
     assert e.value.diag.constraint_name == "po_item_obs_source_known"
+
+
+def test_no_mode_columns(business_db):
+    """PB-D14：只有一条真路径，库里不再记「哪种模式下的」。"""
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT table_name, column_name FROM information_schema.columns"
+                    " WHERE table_schema = current_schema() AND (table_name, column_name) IN"
+                    " (('erp_call','mode'), ('po','placed_mode'))")
+        assert cur.fetchall() == []
 
 
 # ---- 终审修复波 #6 / #3 ----

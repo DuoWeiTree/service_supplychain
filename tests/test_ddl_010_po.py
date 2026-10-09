@@ -60,7 +60,7 @@ def test_placed_po_is_frozen(po_world, seed):
         po_id, _ = _po(cur, seed.actor, seed.wid)
         cur.execute("INSERT INTO po_line (po_id, line_no, sku, wid, units, price, unplanned_reason)"
                     " VALUES (%s, 1, %s, %s, 10, 1, 't')", (po_id, seed.sku_a, seed.wid))
-        cur.execute("UPDATE po SET order_sn='FAKE-1', placed_mode='fake', placed_at=now()"
+        cur.execute("UPDATE po SET order_sn='FAKE-1', placed_at=now()"
                     " WHERE po_id=%s", (po_id,))
         cur.execute("INSERT INTO po_event (po_id, from_state, to_state, actor, src)"
                     " VALUES (%s, '草稿', '已下单', %s, 't')", (po_id, seed.actor))
@@ -96,7 +96,7 @@ def _placed_po(cur, actor, sku, wid):
     po_id, _ = _po(cur, actor, wid)
     cur.execute("INSERT INTO po_line (po_id, line_no, sku, wid, units, price, unplanned_reason)"
                 " VALUES (%s, 1, %s, %s, 10, 1, 't')", (po_id, sku, wid))
-    cur.execute("UPDATE po SET order_sn='FAKE-2', placed_mode='fake', placed_at=now()"
+    cur.execute("UPDATE po SET order_sn='FAKE-2', placed_at=now()"
                 " WHERE po_id=%s", (po_id,))
     cur.execute("INSERT INTO po_event (po_id, from_state, to_state, actor, src)"
                 " VALUES (%s, '草稿', '已下单', %s, 't')", (po_id, actor))

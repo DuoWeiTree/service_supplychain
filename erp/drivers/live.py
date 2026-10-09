@@ -10,8 +10,6 @@ from erp.transport import CallResult, post_json, proxy_from
 
 
 class LiveDriver:
-    mode = "live"
-
     def __init__(self, cfg: dict):
         self.cfg = cfg
 

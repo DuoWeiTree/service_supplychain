@@ -162,14 +162,14 @@ def sql(q, *a):
 
 
 def place(po_id):
-    sql("UPDATE po SET order_sn='FAKE-1', placed_mode='fake', placed_at=now() WHERE po_id=%s", po_id)
+    sql("UPDATE po SET order_sn='FAKE-1', placed_at=now() WHERE po_id=%s", po_id)
     sql("INSERT INTO po_event (po_id, from_state, to_state, actor, src)"
         " VALUES (%s,'草稿','已下单','alice','test')", po_id)
 
 
 def mk_call(po_id, outcome, side="irreversible"):
-    sql("INSERT INTO erp_call (endpoint, side_effect, mode, po_id, actor, request, outcome)"
-        " VALUES ('x', %s, 'fake', %s, 'alice', '{}'::jsonb, %s)", side, po_id, outcome)
+    sql("INSERT INTO erp_call (endpoint, side_effect, po_id, actor, request, outcome)"
+        " VALUES ('x', %s, %s, 'alice', '{}'::jsonb, %s)", side, po_id, outcome)
 
 
 def test_delete_after_erp_call_is_soft_discard(client, seed, world):

@@ -63,14 +63,10 @@ def _classify(name: str, r: CallResult) -> CallResult:
                                      + (f"; {r.cause}" if r.cause else ""))
 
 
-def _obs_source() -> str:
-    return "api" if gateway.mode() == "live" else "sim"
-
-
 def read_back(cur, po_id: int, order: dict, call_id: int | None) -> None:
     """落地首检的数据源（spec §11 G1）：领星明细进 po_item_obs，行号回填 po_line。"""
     items = order.get("item_list") or []
-    n = repo.insert_item_obs(cur, order["order_sn"], items, _obs_source(), call_id)
+    n = repo.insert_item_obs(cur, order["order_sn"], items, "api", call_id)
     m = repo.backfill_item_ids(cur, po_id, items)
     log.info("op=po_read_back po_id=%s order_sn=%s items_obs=%s item_ids_backfilled=%s",
              po_id, order["order_sn"], n, m)
@@ -81,9 +77,8 @@ def call_logged(name: str, params: dict, *, po_id: int, actor: str,
     """读调用：落 erp_call → 调 → 收尾。一个连接一个事务，失败也留痕（Task 12 / 13 复用）。"""
     with pg_conn() as c, c.cursor() as cur:
         ep = get_endpoint(name)
-        cid = repo.insert_call(cur, endpoint=name, side_effect=ep.side_effect, mode=gateway.mode(),
-                               po_id=po_id, idem_key=None, actor=actor, request=gateway.redact(params),
-                               retry_of=retry_of)
+        cid = repo.insert_call(cur, endpoint=name, side_effect=ep.side_effect, po_id=po_id, idem_key=None,
+                               actor=actor, request=gateway.redact(params), retry_of=retry_of)
     try:
         _, r = gateway.call(name, params)
     except Exception as e:  # noqa: BLE001 —— 同 place()：驱动抛了也要收尾留痕，调用方按 unknown 处理
@@ -114,7 +109,7 @@ def _settle_placed(cur, po_id: int, order_sn: str, actor: str, src: str, resolve
     repo.lock_po(cur, po_id)
     line_ids = repo.source_line_ids(cur, po_id)
     repo.lock_plan_lines(cur, line_ids)
-    repo.mark_placed(cur, po_id, order_sn, gateway.mode(), actor, src)
+    repo.mark_placed(cur, po_id, order_sn, actor, src)
     if resolve_attention:
         repo.resolve_attention(cur, po_id, "needs_verify", "rechecked_found", actor, reason)
     return reevaluate(cur, line_ids, actor, f"po:{po_id}:{src}")
@@ -257,7 +252,7 @@ def place(po_id: int, token: str, actor: str) -> dict:
             if locked["draft_version"] != po["draft_version"]:
                 raise Conflict(409, "stale_confirm_token", "采购单内容已变，请刷新后重新确认", po_id=po_id)
             call_id = repo.insert_call(cur, endpoint="create_purchase_order", side_effect="irreversible",
-                                       mode=gateway.mode(), po_id=po_id, idem_key=po["custom_order_sn"],
+                                       po_id=po_id, idem_key=po["custom_order_sn"],
                                        actor=actor, request=gateway.redact(payload),
                                        retry_of=repo.last_create_call(cur, po_id))   # ★ 重下单串成一条链
     if blocked:

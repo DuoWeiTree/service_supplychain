@@ -1,14 +1,6 @@
 import pytest
 
 from erp import endpoints, gateway
-from erp.drivers.fake import FAKE
-
-
-@pytest.fixture(autouse=True)
-def clean_fake():
-    FAKE.reset()
-    yield
-    FAKE.reset()
 
 
 def _p():
@@ -26,16 +18,16 @@ def test_create_is_registered_irreversible_with_lookup():
     assert (ep.side_effect, ep.idem_param, ep.lookup) == ("irreversible", "custom_order_sn", "purchase_order_list")
 
 
-def test_fake_unknown_created_is_findable_by_lookup():
-    FAKE.enqueue("create_purchase_order", "unknown_created")
+def test_double_unknown_created_is_findable_by_lookup(lingxing):
+    lingxing.enqueue("create_purchase_order", "unknown_created")
     _, r = gateway.call("create_purchase_order", _p())
     assert r.outcome == "unknown"
     _, lst = gateway.call("purchase_order_list", {"search_field_time": "create_time"})
     assert [o["custom_order_sn"] for o in lst.body["data"]] == ["SCM-PO-1"]
 
 
-def test_fake_unknown_absent_is_not_findable():
-    FAKE.enqueue("create_purchase_order", "unknown_absent")
+def test_double_unknown_absent_is_not_findable(lingxing):
+    lingxing.enqueue("create_purchase_order", "unknown_absent")
     gateway.call("create_purchase_order", _p())
     _, lst = gateway.call("purchase_order_list", {})
     assert lst.body["data"] == []
@@ -46,10 +38,10 @@ def test_redact_hides_secrets():
         {"access_token": "***", "sign": "***", "sku": "S1"}
 
 
-def test_fake_list_honours_scripted_outcomes():
+def test_double_list_honours_scripted_outcomes(lingxing):
     for scripted, want in [("not_sent", "not_sent"), ("rejected", "rejected"),
                            ("unknown_created", "unknown"), ("unknown_absent", "unknown")]:
-        FAKE.enqueue("purchase_order_list", scripted)
+        lingxing.enqueue("purchase_order_list", scripted)
         _, r = gateway.call("purchase_order_list", {})
         assert r.outcome == want, scripted
     _, r = gateway.call("purchase_order_list", {})

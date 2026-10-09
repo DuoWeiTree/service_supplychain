@@ -31,7 +31,7 @@ def _line_id(po_id):
 
 def test_item_obs_takes_lx_item_id_from_real_id_field(business_db, wipe, seed):
     with pg_conn() as c, c.cursor() as cur:
-        assert repo.insert_item_obs(cur, "PO-REAL", [real_item(seed)], "sim", None) == 1
+        assert repo.insert_item_obs(cur, "PO-REAL", [real_item(seed)], "api", None) == 1
         cur.execute("SELECT lx_item_id FROM po_item_obs WHERE order_sn='PO-REAL'")
         assert cur.fetchone()[0] == "4242"
 
@@ -53,7 +53,7 @@ def test_missing_id_neither_raises_nor_writes_none_string(po_line, seed, caplog)
     it = {k: v for k, v in real_item(seed).items() if k != "id"}
     with caplog.at_level(logging.WARNING), pg_conn() as c, c.cursor() as cur:
         assert repo.backfill_item_ids(cur, po_line, [it]) == 0
-        assert repo.insert_item_obs(cur, "PO-NOID", [it], "sim", None) == 1
+        assert repo.insert_item_obs(cur, "PO-NOID", [it], "api", None) == 1
         cur.execute("SELECT lx_item_id FROM po_item_obs WHERE order_sn='PO-NOID'")
         assert cur.fetchone()[0] is None
     assert _line_id(po_line) is None

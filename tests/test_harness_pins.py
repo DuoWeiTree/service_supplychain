@@ -100,30 +100,38 @@ def test_the_config_the_fixture_actually_wrote_says_fixture(business_db):
     assert config_module.forecast()["source"] == "fixture"
 
 
-_LIVE_SRC = """
+_REAL_SRC = """
 [erp]
-mode = "live"
-base_url = "https://x.invalid"
+base_url = "https://openapi.lingxing.com"
+app_id = "REAL-ID"
+app_secret = "REAL-SECRET"
+confirm_salt = "REAL-SALT"
+proxy_host = "203.0.113.7"
+timeout_s = 7
 
 [auth]
 mode = "rbac"
 """
 
 
-def test_erp_and_auth_are_pinned_to_fake_and_dev_even_if_source_says_live():
-    """★ 测试配置从真实 config.toml 生成：live 漏进来 = 测试带真凭证打领星（含不可逆建单）。"""
-    out = _parse(ct._pin_erp_auth(_LIVE_SRC))
-    assert out["erp"]["mode"] == "fake" and out["auth"]["mode"] == "dev"
-    assert out["erp"]["base_url"] == "https://x.invalid", "不该改动别的键"
+def _assert_pinned(out: dict) -> None:
+    for k, v in ct.ERP_TEST_PINS.items():
+        assert out["erp"][k] == tomllib.loads(f"x = {v}")["x"], k
+    assert out["auth"]["mode"] == "dev"
+
+
+def test_erp_target_and_credentials_are_pinned_even_if_source_has_real_ones():
+    """★ 测试配置从真实 config.toml 生成：真领星地址与凭证不许跟进测试进程（PB-D14 第三道闸）。"""
+    out = _parse(ct._pin_erp_auth(_REAL_SRC))
+    _assert_pinned(out)
+    assert out["erp"]["timeout_s"] == 7, "不该改动别的键"
 
 
 def test_erp_and_auth_pins_cover_missing_sections():
-    out = _parse(ct._pin_erp_auth('[business_pg]\nschema = "scm"\n'))
-    assert out["erp"]["mode"] == "fake" and out["auth"]["mode"] == "dev"
+    _assert_pinned(_parse(ct._pin_erp_auth('[business_pg]\nschema = "scm"\n')))
 
 
 def test_the_written_config_pins_erp_and_auth(business_db):
     import os
 
-    written = tomllib.loads(Path(os.environ["JXD_SCM_CONFIG"]).read_text("utf-8"))
-    assert written["erp"]["mode"] == "fake" and written["auth"]["mode"] == "dev"
+    _assert_pinned(tomllib.loads(Path(os.environ["JXD_SCM_CONFIG"]).read_text("utf-8")))

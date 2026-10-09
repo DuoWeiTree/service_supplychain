@@ -9,6 +9,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from lingxing_double import LingxingDouble
+
+from erp import gateway
+from erp.drivers.live import LiveDriver
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_TOML = ROOT / "config.toml"
@@ -114,10 +118,58 @@ def _pin_forecast_source(text: str) -> str:
     return _pin_section_keys(text, "[forecast]", _FORECAST_TEST_PINS)
 
 
-#: ★ 同理：领星网关与鉴权也钉死。live 漏进测试 = 带真凭证打领星（含不可逆建单）。
+#: ★ 领星目标与凭证一律钉成不可达的测试值：真凭证根本不进测试进程。
+#: 网关只有真 driver（PB-D14），挡住它的是下面两道闸；这里是第三道 ——
+#: 即便两道都被绕过，请求也只会打到 `.invalid`。盐非默认值：启动闸要它。
+ERP_TEST_PINS = {
+    "base_url": '"https://lingxing.invalid"',
+    "app_id": '"test-app-id"',
+    "app_secret": '"test-app-secret"',
+    "confirm_salt": '"test-confirm-salt"',
+    "proxy_host": '"proxy.invalid"',
+    "proxy_port": "3128",
+    "proxy_user": '"test"',
+    "proxy_password": '"test"',
+}
+
+
 def _pin_erp_auth(text: str) -> str:
-    text = _pin_section_keys(text, "[erp]", {"mode": '"fake"'})
+    text = _pin_section_keys(text, "[erp]", ERP_TEST_PINS)
     return _pin_section_keys(text, "[auth]", {"mode": '"dev"'})
+
+
+#: ★ 测试永远打不到真领星（PB-D14）。conftest 一被导入就装上，早于任何测试模块与夹具：
+#: ① `lingxing` autouse 夹具把网关的 driver 工厂换成替身；
+#: ② 绕过 ① 也没用 —— 测试进程里实例化 LiveDriver 直接抛。
+#: 确需真 driver 的测试必须显式打 `@pytest.mark.live_lingxing_driver`（当前没有任何测试这样做）。
+LIVE_DRIVER_FORBIDDEN = "测试禁止实例化真领星 driver"
+REAL_DRIVER_FACTORY = gateway._driver
+# ★ conftest 可能被以两个模块名导入（`conftest` / `tests.conftest`）：真 __init__ 只认第一次见到的
+_REAL_LIVE_INIT = LiveDriver.__dict__.get("_real_init_for_tests", LiveDriver.__init__)
+LiveDriver._real_init_for_tests = _REAL_LIVE_INIT
+
+
+def _forbidden_live_init(self, *args, **kwargs):
+    raise RuntimeError(f"{LIVE_DRIVER_FORBIDDEN}（需要时显式标 @pytest.mark.live_lingxing_driver）")
+
+
+LiveDriver.__init__ = _forbidden_live_init
+DOUBLE = LingxingDouble()
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "live_lingxing_driver: 允许本测试实例化真领星 LiveDriver（默认禁止）")
+
+
+@pytest.fixture(autouse=True)
+def lingxing(request, monkeypatch):
+    """领星替身。每个测试一份干净的脚本与单据。"""
+    if request.node.get_closest_marker("live_lingxing_driver"):
+        monkeypatch.setattr(LiveDriver, "__init__", _REAL_LIVE_INIT)
+    DOUBLE.reset()
+    monkeypatch.setattr(gateway, "_driver", lambda: DOUBLE)
+    yield DOUBLE
+    DOUBLE.reset()
 
 
 def _disable_scheduler(text: str) -> str:

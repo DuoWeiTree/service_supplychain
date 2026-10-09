@@ -2,16 +2,8 @@ import json
 
 import pytest
 
-from erp.drivers.fake import FAKE
 from shared.pg_client import pg_conn
 from tests.helpers import H, mint
-
-
-@pytest.fixture(autouse=True)
-def clean_fake():
-    FAKE.reset()
-    yield
-    FAKE.reset()
 
 
 @pytest.fixture
@@ -52,7 +44,7 @@ def test_ok_freezes_po_and_moves_line_to_ordered(client, seed, draft):
     r = _place(client, seed, po_id)
     assert r.status_code == 200 and r.json()["outcome"] == "placed"
     po = client.get(f"/v1/purchase-orders/{po_id}").json()
-    assert po["state"] == "已下单" and po["order_sn"].startswith("FAKE-PO") and po["placed_mode"] == "fake"
+    assert po["state"] == "已下单" and po["order_sn"].startswith("FAKE-PO") and "placed_mode" not in po
     assert po["lines"][0]["lx_item_id"]                     # 读回首检回填了行号
     assert _line_state(lid) == "已下单"
     assert _calls(po_id) == [("create_purchase_order", "ok", False), ("purchase_order_list", "ok", False)]
@@ -64,19 +56,19 @@ def test_stale_token_refused(client, seed, draft):
     assert r.status_code == 409 and r.json()["error"] == "stale_confirm_token"
 
 
-def test_rejected_keeps_draft_and_echoes_lingxing(client, seed, draft):
+def test_rejected_keeps_draft_and_echoes_lingxing(client, seed, draft, lingxing):
     po_id, lid = draft
-    FAKE.enqueue("create_purchase_order", "rejected")
+    lingxing.enqueue("create_purchase_order", "rejected")
     r = _place(client, seed, po_id)
     assert r.json() | {"erp_call_id": None} == {"outcome": "rejected", "po_id": po_id, "lx_code": "1001",
-                                                "lx_msg": "fake: 供应商不存在", "erp_call_id": None}
+                                                "lx_msg": "double: 供应商不存在", "erp_call_id": None}
     assert client.get(f"/v1/purchase-orders/{po_id}").json()["state"] == "草稿"
     assert _line_state(lid) == "已确认"
 
 
-def test_delete_after_attempt_discards_and_keeps_evidence(client, seed, draft):
+def test_delete_after_attempt_discards_and_keeps_evidence(client, seed, draft, lingxing):
     po_id, lid = draft
-    FAKE.enqueue("create_purchase_order", "rejected")
+    lingxing.enqueue("create_purchase_order", "rejected")
     _place(client, seed, po_id)
     assert client.delete(f"/v1/purchase-orders/{po_id}", headers=H(seed.actor)).status_code == 204
     po = client.get(f"/v1/purchase-orders/{po_id}").json()
@@ -85,36 +77,36 @@ def test_delete_after_attempt_discards_and_keeps_evidence(client, seed, draft):
     assert _calls(po_id) == [("create_purchase_order", "rejected", False)]   # 证据还在
 
 
-def test_retry_after_not_sent_is_chained(client, seed, draft):
+def test_retry_after_not_sent_is_chained(client, seed, draft, lingxing):
     po_id, _ = draft
-    FAKE.enqueue("create_purchase_order", "not_sent")
+    lingxing.enqueue("create_purchase_order", "not_sent")
     _place(client, seed, po_id)
     _place(client, seed, po_id)
     creates = [c for c in _calls(po_id) if c[0] == "create_purchase_order"]
     assert creates == [("create_purchase_order", "not_sent", False), ("create_purchase_order", "ok", True)]
 
 
-def test_not_sent_is_safe_to_retry(client, seed, draft):
+def test_not_sent_is_safe_to_retry(client, seed, draft, lingxing):
     po_id, _ = draft
-    FAKE.enqueue("create_purchase_order", "not_sent")
+    lingxing.enqueue("create_purchase_order", "not_sent")
     assert _place(client, seed, po_id).json()["outcome"] == "not_sent"
     assert _place(client, seed, po_id).json()["outcome"] == "placed"
 
 
-def test_unknown_but_created_is_found_by_lookup(client, seed, draft):
+def test_unknown_but_created_is_found_by_lookup(client, seed, draft, lingxing):
     """Review Focus #2：发出去了没回音，但领星建了单 —— 查重找回，不重下。"""
     po_id, lid = draft
-    FAKE.enqueue("create_purchase_order", "unknown_created")
+    lingxing.enqueue("create_purchase_order", "unknown_created")
     r = _place(client, seed, po_id)
     assert r.json()["outcome"] == "placed" and r.json()["found_by"] == "lookup"
     assert _line_state(lid) == "已下单"
     assert [c[0] for c in _calls(po_id)].count("create_purchase_order") == 1
 
 
-def test_unknown_absent_goes_to_needs_verify_and_blocks_everything(client, seed, draft):
+def test_unknown_absent_goes_to_needs_verify_and_blocks_everything(client, seed, draft, lingxing):
     """Review Focus #2 / #4：查不到 → 转人工；此后改 / 删 / 再下单一律 409 needs_verify。"""
     po_id, _ = draft
-    FAKE.enqueue("create_purchase_order", "unknown_absent")
+    lingxing.enqueue("create_purchase_order", "unknown_absent")
     r = _place(client, seed, po_id)
     assert r.json()["outcome"] == "needs_verify"
     po = client.get(f"/v1/purchase-orders/{po_id}").json()
@@ -125,20 +117,20 @@ def test_unknown_absent_goes_to_needs_verify_and_blocks_everything(client, seed,
     assert [c[0] for c in _calls(po_id)].count("create_purchase_order") == 1
 
 
-def test_stuck_in_flight_is_recovered_by_lookup(client, seed, draft):
+def test_stuck_in_flight_is_recovered_by_lookup(client, seed, draft, lingxing):
     """Review Focus #3：领星成功、本地还没记账就被杀 —— 启动恢复按幂等键找回。"""
     from usecase import place_po
     po_id, lid = draft
     # 造现场：领星侧已有单，本地只有一条 in_flight
-    FAKE.enqueue("create_purchase_order", "unknown_created")
+    lingxing.enqueue("create_purchase_order", "unknown_created")
     from erp import gateway
     gateway.call("create_purchase_order", {"custom_order_sn": f"SCM-PO-{po_id}", "supplier_id": 8085,
                                            "purchaser_id": 111, "opt_uid": 1, "qc_type": 2, "wid": seed.wid,
                                            "product_list": [{"sku": seed.sku_a, "wid": seed.wid,
                                                              "quantity_real": 10, "price": "2"}]})
     with pg_conn() as c, c.cursor() as cur:
-        cur.execute("INSERT INTO erp_call (endpoint, side_effect, mode, po_id, idem_key, actor, request,"
-                    " started_at) VALUES ('create_purchase_order','irreversible','fake',%s,%s,%s,'{}',"
+        cur.execute("INSERT INTO erp_call (endpoint, side_effect, po_id, idem_key, actor, request,"
+                    " started_at) VALUES ('create_purchase_order','irreversible',%s,%s,%s,'{}',"
                     " now() - interval '1 hour')", (po_id, f"SCM-PO-{po_id}", seed.actor))
     out = place_po.recover_stuck()
     assert [o["po_id"] for o in out] == [po_id]
@@ -146,10 +138,10 @@ def test_stuck_in_flight_is_recovered_by_lookup(client, seed, draft):
     assert _line_state(lid) == "已下单"
 
 
-def test_placing_a_discarded_draft_is_po_discarded(client, seed, draft):
+def test_placing_a_discarded_draft_is_po_discarded(client, seed, draft, lingxing):
     """控制者裁定 1：作废草稿（明细已清）不能落到 preflight_failed 之类的次生错误上。"""
     po_id, _ = draft
-    FAKE.enqueue("create_purchase_order", "rejected")
+    lingxing.enqueue("create_purchase_order", "rejected")
     _place(client, seed, po_id)
     client.delete(f"/v1/purchase-orders/{po_id}", headers=H(seed.actor))
     r = _place(client, seed, po_id)
@@ -178,20 +170,20 @@ def _insert_call_row(po_id, actor, outcome, age="1 hour"):
     """直接造一条 create 调用现场。in_flight 以外的带 finished_at。"""
     fin = "NULL" if outcome == "in_flight" else f"now() - interval '{age}' + interval '1 second'"
     with pg_conn() as c, c.cursor() as cur:
-        cur.execute("INSERT INTO erp_call (endpoint, side_effect, mode, po_id, idem_key, actor, request,"
-                    f" outcome, started_at, finished_at) VALUES ('create_purchase_order','irreversible','fake',"
+        cur.execute("INSERT INTO erp_call (endpoint, side_effect, po_id, idem_key, actor, request,"
+                    f" outcome, started_at, finished_at) VALUES ('create_purchase_order','irreversible',"
                     f" %s, %s, %s, '{{}}', %s, now() - interval '{age}', {fin}) RETURNING call_id",
                     (po_id, f"SCM-PO-{po_id}", actor, outcome))
         return cur.fetchone()[0]
 
 
-def test_second_click_during_lookup_is_refused(client, seed, draft, monkeypatch):
+def test_second_click_during_lookup_is_refused(client, seed, draft, monkeypatch, lingxing):
     from erp import gateway
     from usecase import place_po
     from usecase.draft_po import Conflict
     po_id, _ = draft
     token = _token(client, po_id)
-    FAKE.enqueue("create_purchase_order", "unknown_absent")
+    lingxing.enqueue("create_purchase_order", "unknown_absent")
     real, inner = gateway.call, {}
 
     def spy(name, params):
@@ -215,10 +207,12 @@ def test_ok_txn_failure_leaves_in_flight_and_recovery_finds_order(client, seed, 
 
     def boom(*a, **k):
         raise RuntimeError("die in settle txn")
+    real_mark_placed = place_po.repo.mark_placed
     monkeypatch.setattr(place_po.repo, "mark_placed", boom)
     with pytest.raises(RuntimeError):
         place_po.place(po_id, token, seed.actor)
-    monkeypatch.undo()
+    # ★ 不用 monkeypatch.undo()：它会连 conftest 注入的领星替身一起撤掉
+    monkeypatch.setattr(place_po.repo, "mark_placed", real_mark_placed)
     with pytest.raises(Exception) as ei:
         place_po.place(po_id, token, seed.actor)
     assert ei.value.error == "po_placing"
@@ -227,19 +221,20 @@ def test_ok_txn_failure_leaves_in_flight_and_recovery_finds_order(client, seed, 
     assert len(_creates(po_id)) == 1 and _line_state(lid) == "已下单"
 
 
-def test_crash_after_close_unknown_is_covered_by_attention(client, seed, draft, monkeypatch):
+def test_crash_after_close_unknown_is_covered_by_attention(client, seed, draft, monkeypatch, lingxing):
     """close_call 与待核实同事务：之后查重阶段崩溃，也不会留下可重下的窗口。"""
     from usecase import place_po
     po_id, _ = draft
     token = _token(client, po_id)
-    FAKE.enqueue("create_purchase_order", "unknown_absent")
+    lingxing.enqueue("create_purchase_order", "unknown_absent")
 
     def boom(*a, **k):
         raise RuntimeError("die in lookup")
+    real_lookup = place_po.lookup_and_settle
     monkeypatch.setattr(place_po, "lookup_and_settle", boom)
     with pytest.raises(RuntimeError):
         place_po.place(po_id, token, seed.actor)
-    monkeypatch.undo()
+    monkeypatch.setattr(place_po, "lookup_and_settle", real_lookup)   # 同上：不 undo 替身
     assert [a[0] for a in _attentions(po_id)] == ["needs_verify"]
     r = _place(client, seed, po_id)
     assert r.status_code == 409 and r.json()["error"] == "needs_verify"
@@ -280,10 +275,10 @@ def test_recover_scans_unsettled_drafts(client, seed, draft):
 
 
 @pytest.mark.parametrize("lookup_outcome", ["not_sent", "rejected", "unknown_absent"])
-def test_failed_lookup_is_not_absence(client, seed, draft, lookup_outcome):
+def test_failed_lookup_is_not_absence(client, seed, draft, lookup_outcome, lingxing):
     po_id, lid = draft
-    FAKE.enqueue("create_purchase_order", "unknown_created")     # 领星其实建了单
-    FAKE.enqueue("purchase_order_list", lookup_outcome)          # 但查重本身失败
+    lingxing.enqueue("create_purchase_order", "unknown_created")     # 领星其实建了单
+    lingxing.enqueue("purchase_order_list", lookup_outcome)          # 但查重本身失败
     r = _place(client, seed, po_id)
     assert r.json()["outcome"] == "needs_verify" and r.json()["lookup_outcome"] != "ok"
     assert _line_state(lid) == "已确认"
@@ -291,12 +286,12 @@ def test_failed_lookup_is_not_absence(client, seed, draft, lookup_outcome):
     assert len(_creates(po_id)) == 1
 
 
-def test_truncated_lookup_keeps_needs_verify(client, seed, draft, monkeypatch):
+def test_truncated_lookup_keeps_needs_verify(client, seed, draft, monkeypatch, lingxing):
     import dataclasses
 
     from erp import gateway
     po_id, _ = draft
-    FAKE.enqueue("create_purchase_order", "unknown_absent")
+    lingxing.enqueue("create_purchase_order", "unknown_absent")
     real = gateway.call
 
     def spy(name, params):
@@ -326,9 +321,9 @@ def test_concurrent_click_is_po_placing(client, seed, draft):
     assert r.status_code == 409 and r.json()["error"] == "po_placing"
 
 
-def test_lookup_call_points_at_the_create_call(client, seed, draft):
+def test_lookup_call_points_at_the_create_call(client, seed, draft, lingxing):
     po_id, _ = draft
-    FAKE.enqueue("create_purchase_order", "unknown_created")
+    lingxing.enqueue("create_purchase_order", "unknown_created")
     _place(client, seed, po_id)
     with pg_conn() as c, c.cursor() as cur:
         cur.execute("SELECT call_id FROM erp_call WHERE po_id=%s AND endpoint='create_purchase_order'", (po_id,))
@@ -355,9 +350,9 @@ def test_fresh_in_flight_is_left_alone(client, seed, draft):
     assert _calls(po_id)[-1][1] == "in_flight"
 
 
-def test_attention_detail_is_facts_only(client, seed, draft):
+def test_attention_detail_is_facts_only(client, seed, draft, lingxing):
     po_id, _ = draft
-    FAKE.enqueue("create_purchase_order", "unknown_absent")
+    lingxing.enqueue("create_purchase_order", "unknown_absent")
     _place(client, seed, po_id)
     d = _attentions(po_id)[0][2]
     assert set(d) == {"create_call_id", "create_outcome", "create_cause", "request_confirmed_sent",
@@ -366,11 +361,11 @@ def test_attention_detail_is_facts_only(client, seed, draft):
     assert d["custom_order_sn"] == f"SCM-PO-{po_id}"
 
 
-def test_lookup_on_discarded_po_does_not_mark_placed(client, seed, draft):
+def test_lookup_on_discarded_po_does_not_mark_placed(client, seed, draft, lingxing):
     from usecase import place_po
     po_id, _ = draft
-    FAKE.enqueue("create_purchase_order", "unknown_created")
-    FAKE.enqueue("purchase_order_list", "not_sent")
+    lingxing.enqueue("create_purchase_order", "unknown_created")
+    lingxing.enqueue("purchase_order_list", "not_sent")
     _place(client, seed, po_id)
     with pg_conn() as c, c.cursor() as cur:
         cur.execute("UPDATE po SET discarded_at=now(), discarded_by=%s WHERE po_id=%s", (seed.actor, po_id))
@@ -417,7 +412,7 @@ def test_settle_after_recovery_closed_the_call_is_honest(client, seed, draft, mo
     assert [c[1] for c in _creates(po_id)] == ["unknown"]
 
 
-def test_settle_after_recovery_found_nothing_reports_needs_verify(client, seed, draft, monkeypatch):
+def test_settle_after_recovery_found_nothing_reports_needs_verify(client, seed, draft, monkeypatch, lingxing):
     from erp import gateway
     from usecase import place_po
     po_id, _ = draft
@@ -427,7 +422,7 @@ def test_settle_after_recovery_found_nothing_reports_needs_verify(client, seed, 
     def spy(name, params):
         ep, r = real(name, params)
         if name == "create_purchase_order":
-            FAKE.enqueue("purchase_order_list", "not_sent")
+            lingxing.enqueue("purchase_order_list", "not_sent")
             place_po.recover_stuck(0)
         return ep, r
     monkeypatch.setattr(gateway, "call", spy)
@@ -452,8 +447,8 @@ def test_fresh_in_flight_is_not_listed_as_stuck(client, seed, draft):
 
 def _insert_read_call(po_id, actor, age):
     with pg_conn() as c, c.cursor() as cur:
-        cur.execute("INSERT INTO erp_call (endpoint, side_effect, mode, po_id, actor, request, started_at)"
-                    " VALUES ('purchase_order_list','read','fake',%s,%s,'{\"search_field_time\":\"create_time\"}',"
+        cur.execute("INSERT INTO erp_call (endpoint, side_effect, po_id, actor, request, started_at)"
+                    " VALUES ('purchase_order_list','read',%s,%s,'{\"search_field_time\":\"create_time\"}',"
                     f" now() - interval '{age}') RETURNING call_id", (po_id, actor))
         return cur.fetchone()[0]
 
@@ -531,10 +526,10 @@ def _created_order(seed, po_id, **over):
     gateway.call("create_purchase_order", p)
 
 
-def test_lookup_hit_that_does_not_match_is_not_adopted(client, seed, draft):
+def test_lookup_hit_that_does_not_match_is_not_adopted(client, seed, draft, lingxing):
     """#7：只凭 custom_order_sn 认单 —— 供应商 / 明细对不上就不记账，开 landed_mismatch 点名差异。"""
     po_id, lid = draft
-    FAKE.enqueue("create_purchase_order", "unknown_absent")
+    lingxing.enqueue("create_purchase_order", "unknown_absent")
     _place(client, seed, po_id)
     _created_order(seed, po_id, supplier_id=9999)
     from usecase import place_po
@@ -549,9 +544,9 @@ def test_lookup_hit_that_does_not_match_is_not_adopted(client, seed, draft):
         assert cur.fetchone() == ("草稿", None)
 
 
-def test_lookup_with_two_orders_on_one_key_is_not_adopted(client, seed, draft):
+def test_lookup_with_two_orders_on_one_key_is_not_adopted(client, seed, draft, lingxing):
     po_id, lid = draft
-    FAKE.enqueue("create_purchase_order", "unknown_absent")
+    lingxing.enqueue("create_purchase_order", "unknown_absent")
     _place(client, seed, po_id)
     _created_order(seed, po_id)
     _created_order(seed, po_id)

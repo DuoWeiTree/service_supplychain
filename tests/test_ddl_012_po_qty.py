@@ -76,14 +76,14 @@ def test_void_po_releases_quantity(seed):
         lid = _line(cur, seed, 24, {seed.seller_a: {"units": 10, "basis": "human"}})
         po_id = _draft(cur, seed, 24)
         cur.execute("INSERT INTO po_source_map VALUES (%s,1,%s,%s,24)", (po_id, lid, seed.seller_a))
-        cur.execute("UPDATE po SET order_sn='FAKE-9', placed_mode='fake', placed_at=now() WHERE po_id=%s",
+        cur.execute("UPDATE po SET order_sn='FAKE-9', placed_at=now() WHERE po_id=%s",
                     (po_id,))
         cur.execute("INSERT INTO po_event (po_id, from_state, to_state, actor, src)"
                     " VALUES (%s,'草稿','已下单',%s,'t')", (po_id, seed.actor))
         cur.execute("SELECT confirmed_units, ordered_units FROM v_plan_line_po_qty WHERE line_id=%s", (lid,))
         assert cur.fetchone() == (24, 24)
         cur.execute("INSERT INTO po_snapshot (order_sn, status, source, source_captured_at)"
-                    " VALUES ('FAKE-9', -1, 'sim', now())")
+                    " VALUES ('FAKE-9', -1, 'api', now())")
         cur.execute("SELECT confirmed_units, ordered_units FROM v_plan_line_po_qty WHERE line_id=%s", (lid,))
         assert cur.fetchone() == (0, 0)
 
@@ -101,14 +101,14 @@ def test_check_po_landed_flags_quantity_drift(seed):
         lid = _line(cur, seed, 24, {seed.seller_a: {"units": 10, "basis": "human"}})
         po_id = _draft(cur, seed, 24)
         cur.execute("INSERT INTO po_source_map VALUES (%s,1,%s,%s,24)", (po_id, lid, seed.seller_a))
-        cur.execute("UPDATE po SET order_sn='FAKE-7', placed_mode='fake', placed_at=now() WHERE po_id=%s",
+        cur.execute("UPDATE po SET order_sn='FAKE-7', placed_at=now() WHERE po_id=%s",
                     (po_id,))
         cur.execute("INSERT INTO po_event (po_id, from_state, to_state, actor, src)"
                     " VALUES (%s,'草稿','已下单',%s,'t')", (po_id, seed.actor))
         cur.execute("SELECT problem FROM v_check_po_landed WHERE po_id=%s", (po_id,))
         assert cur.fetchall() == [("not_observed",)]
         cur.execute("INSERT INTO po_item_obs (order_sn, sku, wid, quantity_real, price, source,"
-                    " source_captured_at) VALUES ('FAKE-7', %s, %s, 20, 1, 'sim', now())",
+                    " source_captured_at) VALUES ('FAKE-7', %s, %s, 20, 1, 'api', now())",
                     (seed.sku_a, seed.wid))
         cur.execute("SELECT problem, ours_units, lx_units FROM v_check_po_landed WHERE po_id=%s", (po_id,))
         assert cur.fetchall() == [("qty_or_price_differs", 24, 20)]

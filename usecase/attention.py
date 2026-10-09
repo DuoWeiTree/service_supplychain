@@ -13,7 +13,7 @@ from usecase.draft_po import Conflict, load_po
 
 log = logging.getLogger("scm.usecase")
 
-_ATTEMPT_COLS = ("call_id", "started_at", "actor", "endpoint", "mode", "host", "path", "idem_key",
+_ATTEMPT_COLS = ("call_id", "started_at", "actor", "endpoint", "host", "path", "idem_key",
                  "elapsed_ms", "outcome", "http_status", "lx_code", "lx_msg", "cause", "retry_of",
                  "request", "response")
 

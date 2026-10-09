@@ -3,20 +3,12 @@ import json
 import pytest
 
 from erp import gateway
-from erp.drivers.fake import FAKE
 from shared.pg_client import pg_conn
 from tests.helpers import H, mint
 
 
-@pytest.fixture(autouse=True)
-def clean_fake():
-    FAKE.reset()
-    yield
-    FAKE.reset()
-
-
 @pytest.fixture
-def stuck(client, seed):
+def stuck(client, seed, lingxing):
     """一张进了「待人工核实」的单。"""
     with pg_conn() as c, c.cursor() as cur:
         cur.execute("INSERT INTO supplier VALUES ('8085','01',now())")
@@ -28,7 +20,7 @@ def stuck(client, seed):
                        "sources": [{"line_id": lid, "seller_id": seed.seller_a, "units": 10}]}]}
     po_id = client.post("/v1/purchase-orders", json=body, headers=H(seed.actor)).json()["po_id"]
     tok = client.get(f"/v1/purchase-orders/{po_id}").json()["confirm_token"]
-    FAKE.enqueue("create_purchase_order", "unknown_absent")
+    lingxing.enqueue("create_purchase_order", "unknown_absent")
     assert client.post(f"/v1/purchase-orders/{po_id}/place", json={"confirm_token": tok},
                        headers=H(seed.actor)).json()["outcome"] == "needs_verify"
     return po_id, lid
@@ -52,7 +44,7 @@ def test_timeline_says_what_is_known_and_unknown(client, stuck):
     ll = cc["last_lookup"]
     assert ll["outcome"] == "ok" and ll["truncated"] is False and ll["call_id"] == t["attempts"][1]["call_id"]
     a = t["attempts"][0]
-    assert (a["endpoint"], a["outcome"], a["mode"]) == ("create_purchase_order", "unknown", "fake")
+    assert (a["endpoint"], a["outcome"]) == ("create_purchase_order", "unknown") and "mode" not in a
     assert "TimeoutError" in a["cause"] and a["idem_key"] == f"SCM-PO-{po_id}"
     assert t["attempts"][1]["endpoint"] == "purchase_order_list"
 
@@ -173,7 +165,7 @@ def test_confirm_absent_refused_while_lookup_in_flight(client, seed, stuck):
     from repo import purchase as repo
     with pg_conn() as c, c.cursor() as cur:
         cur.execute("SELECT 1")
-        repo.insert_call(cur, endpoint="purchase_order_list", side_effect="read", mode="fake", po_id=po_id,
+        repo.insert_call(cur, endpoint="purchase_order_list", side_effect="read", po_id=po_id,
                          idem_key=None, actor=seed.actor, request={"search_field_time": "create_time"})
     r = client.post(f"/v1/purchase-orders/{po_id}/confirm-absent", json={"reason": "x"}, headers=H(seed.actor))
     assert r.status_code == 409 and r.json()["error"] == "lookup_in_progress"
@@ -209,38 +201,38 @@ def test_lookup_after_confirm_absent_does_not_reopen(client, seed, stuck):
     assert client.get("/v1/attention").json()["items"] == []
 
 
-def test_register_compares_wid_and_price(client, seed, stuck):
+def test_register_compares_wid_and_price(client, seed, stuck, lingxing):
     po_id, _ = stuck
     _late_order(seed, po_id)
-    FAKE.mutate_item("FAKE-PO000001", seed.sku_a, price="3")
+    lingxing.mutate_item("FAKE-PO000001", seed.sku_a, price="3")
     r = _register(client, seed, po_id)
     assert r.status_code == 409 and r.json()["error"] == "order_mismatch" and "items" in r.json()["mismatch"]
-    FAKE.mutate_item("FAKE-PO000001", seed.sku_a, price="2")
-    FAKE._orders["FAKE-PO000001"]["item_list"][0]["wid"] = "99999"
+    lingxing.mutate_item("FAKE-PO000001", seed.sku_a, price="2")
+    lingxing._orders["FAKE-PO000001"]["item_list"][0]["wid"] = "99999"
     r = _register(client, seed, po_id)
     assert r.status_code == 409 and "items" in r.json()["mismatch"]
 
 
-def test_register_non_integer_quantity_is_mismatch_not_500(client, seed, stuck):
+def test_register_non_integer_quantity_is_mismatch_not_500(client, seed, stuck, lingxing):
     po_id, _ = stuck
     _late_order(seed, po_id)
-    FAKE.mutate_item("FAKE-PO000001", seed.sku_a, quantity_real="abc")
+    lingxing.mutate_item("FAKE-PO000001", seed.sku_a, quantity_real="abc")
     r = _register(client, seed, po_id)
     assert r.status_code == 409 and r.json()["error"] == "order_mismatch"
 
 
-def test_register_refuses_voided_order(client, seed, stuck):
+def test_register_refuses_voided_order(client, seed, stuck, lingxing):
     po_id, _ = stuck
     _late_order(seed, po_id)
-    FAKE._orders["FAKE-PO000001"]["status"] = -1
+    lingxing._orders["FAKE-PO000001"]["status"] = -1
     r = _register(client, seed, po_id)
     assert r.status_code == 409 and r.json()["error"] == "order_voided"
     assert len(client.get("/v1/attention").json()["items"]) == 1
 
 
-def test_register_lookup_failure_is_not_order_not_found(client, seed, stuck):
+def test_register_lookup_failure_is_not_order_not_found(client, seed, stuck, lingxing):
     po_id, _ = stuck
-    FAKE.enqueue("purchase_order_list", "not_sent")
+    lingxing.enqueue("purchase_order_list", "not_sent")
     r = _register(client, seed, po_id)
     assert r.status_code == 502 and r.json()["error"] == "lookup_failed"
     assert r.json()["lookup_outcome"] == "not_sent" and "ConnectionRefusedError" in r.json()["cause"]
@@ -259,15 +251,15 @@ def test_confirm_absent_not_blocked_by_stale_read_call(client, seed, stuck):
     """#2：卡了超过 V5 的读调用不算「查询进行中」。"""
     po_id, _ = stuck
     with pg_conn() as c, c.cursor() as cur:
-        cur.execute("INSERT INTO erp_call (endpoint, side_effect, mode, po_id, actor, request, started_at)"
-                    " VALUES ('purchase_order_list','read','fake',%s,%s,'{}', now() - interval '1 hour')",
+        cur.execute("INSERT INTO erp_call (endpoint, side_effect, po_id, actor, request, started_at)"
+                    " VALUES ('purchase_order_list','read',%s,%s,'{}', now() - interval '1 hour')",
                     (po_id, seed.actor))
     r = client.post(f"/v1/purchase-orders/{po_id}/confirm-absent", json={"reason": "x"}, headers=H(seed.actor))
     assert r.status_code == 200, r.text
 
 
 @pytest.fixture
-def mismatched(client, seed):
+def mismatched(client, seed, lingxing):
     """一张已下单、领星侧被改了数量、落地核对开了 landed_mismatch 的单。"""
     from usecase import landed
     with pg_conn() as c, c.cursor() as cur:
@@ -282,7 +274,7 @@ def mismatched(client, seed):
     tok = client.get(f"/v1/purchase-orders/{po_id}").json()["confirm_token"]
     sn = client.post(f"/v1/purchase-orders/{po_id}/place", json={"confirm_token": tok},
                      headers=H(seed.actor)).json()["order_sn"]
-    FAKE.mutate_item(sn, seed.sku_a, quantity_real=7)
+    lingxing.mutate_item(sn, seed.sku_a, quantity_real=7)
     assert landed.verify(po_id, seed.actor)["problems"]
     return po_id
 

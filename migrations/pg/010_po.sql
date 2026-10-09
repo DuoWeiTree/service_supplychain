@@ -21,7 +21,6 @@ CREATE TABLE IF NOT EXISTS po (
     custom_order_sn text GENERATED ALWAYS AS ('SCM-PO-' || po_id::text) STORED UNIQUE,
     order_sn        text UNIQUE,
     state           text     NOT NULL DEFAULT '草稿',
-    placed_mode     text     CONSTRAINT po_placed_mode_known CHECK (placed_mode IN ('fake','live')),
     placed_at       timestamptz,
     draft_version   int      NOT NULL DEFAULT 1,
     -- ★ 试过下单（有 erp_call）的草稿不能硬删 —— 出站证据要留着；只能「作废草稿」：
@@ -91,7 +90,7 @@ BEGIN
 END $$;
 
 CREATE OR REPLACE FUNCTION sync_po_state() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE cur text; sn text; mode text;
+DECLARE cur text; sn text;
 BEGIN
     IF NEW.from_state = '[*]' THEN
         -- 出生事件只认第一条，否则已下单的单也能被追加一条 [*]→草稿
@@ -101,13 +100,13 @@ BEGIN
         END IF;
         RETURN NEW;
     END IF;
-    SELECT state, order_sn, placed_mode INTO cur, sn, mode FROM po WHERE po_id = NEW.po_id FOR UPDATE;
+    SELECT state, order_sn INTO cur, sn FROM po WHERE po_id = NEW.po_id FOR UPDATE;
     IF cur IS DISTINCT FROM NEW.from_state THEN
         RAISE EXCEPTION 'po % from_state 不匹配：当前 %，事件称 %', NEW.po_id, cur, NEW.from_state;
     END IF;
-    IF NEW.to_state = '已下单' AND (sn IS NULL OR mode IS NULL) THEN
+    IF NEW.to_state = '已下单' AND sn IS NULL THEN
         RAISE EXCEPTION USING ERRCODE = '23514', CONSTRAINT = 'po_placed_needs_order_sn',
-              MESSAGE = format('po %s 转已下单前必须已记 order_sn 与 placed_mode', NEW.po_id);
+              MESSAGE = format('po %s 转已下单前必须已记 order_sn', NEW.po_id);
     END IF;
     PERFORM set_config('app.in_po_state_sync','on',true);
     UPDATE po SET state = NEW.to_state, updated_at = now() WHERE po_id = NEW.po_id;

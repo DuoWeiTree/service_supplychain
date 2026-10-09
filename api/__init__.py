@@ -23,7 +23,6 @@ from api.ui import (
     plans,
     purchase_options,
     purchase_orders,
-    simulate,
     source_factory,
     submit,
     system,
@@ -202,25 +201,26 @@ def _database_unavailable(exc: psycopg2.Error) -> ApiError | None:
 
 
 def check_outbound_config() -> None:
-    """★ 配置类错误往启动钩子放（全局规范第 4 条）。故意不兜异常：配错就起不来。"""
+    """★ 配置类错误往启动钩子放（全局规范第 4 条）。故意不兜异常：配错就起不来。
+    ⛔ 下单一律打真领星（PB-D14 / PB-D15），所以凭证、代理、盐缺一个都不许起。"""
     e, a = config_module.erp(), config_module.auth()
-    if e["mode"] not in ("fake", "live"):
-        raise RuntimeError(f"[erp] mode 只能是 fake|live，得到 {e['mode']!r}")
     if a["mode"] not in ("dev", "rbac"):
         raise RuntimeError(f"[auth] mode 只能是 dev|rbac，得到 {a['mode']!r}")
-    if e["mode"] == "live":
-        if a["mode"] == "dev":
-            raise RuntimeError("[erp] mode=live 而 [auth] mode=dev：不可逆操作必须有主（spec §12.2）")
-        missing = [k for k in ("app_id", "app_secret", "proxy_host") if not e[k]]   # ★ 无代理 = 被 IP 白名单拒
-        if e["confirm_salt"] in ("", config_module._ERP_DEFAULTS["confirm_salt"]):
-            missing.append("confirm_salt（空或仍是开发默认值）")
-        if missing:
-            raise RuntimeError(f"[erp] mode=live 缺配置：{missing}")
+    missing = [k for k in ("app_id", "app_secret", "proxy_host") if not e[k]]   # ★ 无代理 = 被 IP 白名单拒
+    if e["confirm_salt"] in ("", config_module._ERP_DEFAULTS["confirm_salt"]):
+        missing.append("confirm_salt（空或仍是开发默认值）")
+    if missing:
+        raise RuntimeError(f"[erp] 缺配置：{missing}")
     if a["mode"] == "rbac":
-        # ★ 放在 live 凭证检查之后：M2 摘掉这道闸时，上面那几条仍按原序生效。
-        #   rbac 鉴权链路（spec §12）M1 没有实现 —— 放行等于在 live 下照收伪造的 x-actor。
-        raise RuntimeError("[auth] mode=rbac：RBAC not implemented until M2（M1 只能 dev，因而也不能 live）")
-    log.warning("startup erp mode=%s host=%s auth mode=%s", e["mode"], e["base_url"], a["mode"])
+        # ★ 放在凭证检查之后：M2 摘掉这道闸时，上面那几条仍按原序生效。
+        #   rbac 鉴权链路（spec §12）M1 没有实现 —— 放行等于照收伪造的 x-actor。
+        raise RuntimeError("[auth] mode=rbac：RBAC not implemented until M2（M1 只能 dev）")
+    if "mode" in e:
+        # 旧配置里残留的 [erp] mode 已经什么都不控制：不出声的话，留着旧值的人会以为下单不会打到领星
+        log.warning("startup [erp] mode=%r 已不再生效（PB-D14）：下单一律打真领星，请从 config.toml 删掉这一行",
+                    e["mode"])
+    log.warning("startup erp host=%s proxy=%s:%s auth mode=%s -- 下单打真领星；dev 身份可伪造（PB-D15，RBAC 在 M2）",
+                e["base_url"], e["proxy_host"], e["proxy_port"], a["mode"])
 
 
 @contextlib.asynccontextmanager
@@ -285,5 +285,4 @@ def create_app() -> FastAPI:
     app.include_router(ops.router, prefix="/v1")
     app.include_router(lead_time.router, prefix="/v1")
     app.include_router(checks.router, prefix="/v1")
-    app.include_router(simulate.router, prefix="/v1")
     return app

@@ -9,7 +9,6 @@ CREATE TABLE IF NOT EXISTS erp_call (
     endpoint    text  NOT NULL,                  -- erp/endpoints.py 的登记名
     side_effect text  NOT NULL CONSTRAINT erp_call_side_effect_known
                       CHECK (side_effect IN ('read','reversible','irreversible')),
-    mode        text  NOT NULL CONSTRAINT erp_call_mode_known CHECK (mode IN ('fake','live')),
     po_id       bigint REFERENCES po(po_id),   -- ★ 不级联：试过下单的草稿只能「作废」不能删（证据要留）
     idem_key    text,
     retry_of    bigint REFERENCES erp_call(call_id),
@@ -41,10 +40,10 @@ BEGIN
     IF OLD.outcome <> 'in_flight' THEN
         RAISE EXCEPTION 'erp_call % 只能收尾一次（已是 %）', OLD.call_id, OLD.outcome;
     END IF;
-    IF (NEW.endpoint, NEW.side_effect, NEW.mode, NEW.po_id, NEW.idem_key, NEW.retry_of,
+    IF (NEW.endpoint, NEW.side_effect, NEW.po_id, NEW.idem_key, NEW.retry_of,
         NEW.actor, NEW.request, NEW.started_at)
        IS DISTINCT FROM
-       (OLD.endpoint, OLD.side_effect, OLD.mode, OLD.po_id, OLD.idem_key, OLD.retry_of,
+       (OLD.endpoint, OLD.side_effect, OLD.po_id, OLD.idem_key, OLD.retry_of,
         OLD.actor, OLD.request, OLD.started_at) THEN
         RAISE EXCEPTION 'erp_call % 只能收尾结果列，请求侧不可改', OLD.call_id;
     END IF;
@@ -126,7 +125,7 @@ CREATE TABLE IF NOT EXISTS po_snapshot (
     quantity_real      int,
     quantity_entry     int,
     quantity_receive   int,
-    source             text NOT NULL CONSTRAINT po_snapshot_source_known CHECK (source IN ('ch','api','sim')),
+    source             text NOT NULL CONSTRAINT po_snapshot_source_known CHECK (source IN ('ch','api')),
     source_captured_at timestamptz NOT NULL,
     observed_at        timestamptz NOT NULL DEFAULT now(),
     call_id            bigint REFERENCES erp_call(call_id)
@@ -141,7 +140,7 @@ CREATE TABLE IF NOT EXISTS po_item_obs (
     wid                int,
     quantity_real      int  NOT NULL,
     price              numeric(18,4),
-    source             text NOT NULL CONSTRAINT po_item_obs_source_known CHECK (source IN ('ch','api','sim')),
+    source             text NOT NULL CONSTRAINT po_item_obs_source_known CHECK (source IN ('ch','api')),
     source_captured_at timestamptz NOT NULL,
     observed_at        timestamptz NOT NULL DEFAULT now(),
     call_id            bigint REFERENCES erp_call(call_id)

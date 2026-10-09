@@ -114,10 +114,8 @@ def pm_zestrade() -> dict:
     return {k: section[k] for k in _PM_ZESTRADE_FIELDS}
 
 
-#: ★ 默认 fake：任何一次漏配都不能变成「对领星建真单」（spec §6.4）。
 #: ★ 设计取值（spec §10.2）：timeout_s=30（V6）· stale_in_flight_minutes=10（V5）。
 _ERP_DEFAULTS = {
-    "mode": "fake",
     "base_url": "https://openapi.lingxing.com",
     "app_id": "",
     "app_secret": "",

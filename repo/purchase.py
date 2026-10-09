@@ -123,13 +123,13 @@ def delete_po(cur, po_id: int) -> None:
 
 def read_po(cur, po_id: int) -> dict | None:
     cur.execute("SELECT po_id, supplier_id, purchaser_id, opt_uid, qc_type, wid, custom_order_sn,"
-                " order_sn, state, placed_mode, placed_at, draft_version, created_by, is_void, discarded_at"
+                " order_sn, state, placed_at, draft_version, created_by, is_void, discarded_at"
                 " FROM v_po_effective WHERE po_id = %s", (po_id,))
     r = cur.fetchone()
     if r is None:
         return None
     keys = ("po_id", "supplier_id", "purchaser_id", "opt_uid", "qc_type", "wid", "custom_order_sn",
-            "order_sn", "state", "placed_mode", "placed_at", "draft_version", "created_by", "is_void",
+            "order_sn", "state", "placed_at", "draft_version", "created_by", "is_void",
             "discarded_at")
     po = dict(zip(keys, r))
     for k in ("placed_at", "discarded_at"):
@@ -160,7 +160,7 @@ def supplier_exists(cur, supplier_id: str) -> bool:
 
 
 def list_pos(cur, state: str | None) -> list[dict]:
-    cur.execute("SELECT e.po_id, e.supplier_id, s.name, e.state, e.order_sn, e.placed_mode, e.is_void,"
+    cur.execute("SELECT e.po_id, e.supplier_id, s.name, e.state, e.order_sn, e.is_void,"
                 " (SELECT count(*) FROM po_line l WHERE l.po_id = e.po_id),"
                 " (SELECT coalesce(sum(units), 0) FROM po_line l WHERE l.po_id = e.po_id),"
                 " (SELECT count(*) FROM po_attention a WHERE a.po_id = e.po_id AND a.resolved_at IS NULL),"
@@ -168,7 +168,7 @@ def list_pos(cur, state: str | None) -> list[dict]:
                 " FROM v_po_effective e JOIN supplier s USING (supplier_id)"
                 " WHERE e.discarded_at IS NULL AND (%s::text IS NULL OR e.state = %s)"
                 " ORDER BY e.po_id DESC", (state, state))
-    keys = ("po_id", "supplier_id", "supplier_name", "state", "order_sn", "placed_mode", "is_void",
+    keys = ("po_id", "supplier_id", "supplier_name", "state", "order_sn", "is_void",
             "lines", "units", "open_attention", "created_by", "created_at")
     out = [dict(zip(keys, r)) for r in cur.fetchall()]
     for o in out:
@@ -176,18 +176,17 @@ def list_pos(cur, state: str | None) -> list[dict]:
     return out
 
 
-def insert_call(cur, *, endpoint: str, side_effect: str, mode: str, po_id: int | None, idem_key: str | None,
+def insert_call(cur, *, endpoint: str, side_effect: str, po_id: int | None, idem_key: str | None,
                 actor: str, request: dict, retry_of: int | None = None) -> int:
-    cur.execute("INSERT INTO erp_call (endpoint, side_effect, mode, po_id, idem_key, actor, request, retry_of)"
-                " VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s) RETURNING call_id",
-                (endpoint, side_effect, mode, po_id, idem_key, actor,
+    cur.execute("INSERT INTO erp_call (endpoint, side_effect, po_id, idem_key, actor, request, retry_of)"
+                " VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s) RETURNING call_id",
+                (endpoint, side_effect, po_id, idem_key, actor,
                  json.dumps(request, ensure_ascii=False, default=str), retry_of))
     return cur.fetchone()[0]
 
 
-def mark_placed(cur, po_id: int, order_sn: str, mode: str, actor: str, src: str) -> None:
-    cur.execute("UPDATE po SET order_sn=%s, placed_mode=%s, placed_at=now() WHERE po_id=%s",
-                (order_sn, mode, po_id))
+def mark_placed(cur, po_id: int, order_sn: str, actor: str, src: str) -> None:
+    cur.execute("UPDATE po SET order_sn=%s, placed_at=now() WHERE po_id=%s", (order_sn, po_id))
     cur.execute("INSERT INTO po_event (po_id, from_state, to_state, actor, src)"
                 " VALUES (%s, '草稿', '已下单', %s, %s)", (po_id, actor, src))
 

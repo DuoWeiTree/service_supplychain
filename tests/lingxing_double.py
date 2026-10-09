@@ -1,5 +1,5 @@
-"""fake driver：扮演领星。★ 进程内存储，重启即失（仅开发 / 测试）。
-脚本化结果让「结果未知」「业务拒绝」「没发出去」都能在本机复现（spec §11 G2）。"""
+"""领星替身（仅测试）：conftest 的 autouse 夹具把网关的 driver 换成它。
+脚本化结果让「结果未知」「业务拒绝」「没发出去」都能在本机复现，不打真领星。"""
 from __future__ import annotations
 
 import datetime as dt
@@ -9,11 +9,11 @@ from collections import defaultdict, deque
 from erp.endpoints import Endpoint
 from erp.transport import CallResult
 
+HOST = "lingxing.invalid"
 OUTCOMES = ("ok", "rejected", "not_sent", "unknown_created", "unknown_absent")
 
 
-class FakeDriver:
-    mode = "fake"
+class LingxingDouble:
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -26,14 +26,14 @@ class FakeDriver:
 
     def enqueue(self, endpoint: str, outcome: str) -> None:
         if outcome not in OUTCOMES:
-            raise ValueError(f"fake outcome 只能是 {OUTCOMES}，得到 {outcome!r}")
+            raise ValueError(f"替身 outcome 只能是 {OUTCOMES}，得到 {outcome!r}")
         self._script[endpoint].append(outcome)
 
     def mutate_item(self, order_sn: str, sku: str, quantity_real=None, price=None) -> None:
-        """模拟领星侧变更单（实测 3 张）改了落下的数 —— 喂 G1 核对。"""
+        """领星侧变更单（实测 3 张）改了落下的数 —— 喂 G1 核对。"""
         order = self._orders.get(order_sn)
         if order is None:
-            raise KeyError(f"fake 里没有 order_sn={order_sn!r}")
+            raise KeyError(f"替身里没有 order_sn={order_sn!r}")
         hit = [it for it in order["item_list"] if it["sku"] == sku]
         if not hit:
             raise KeyError(f"order_sn={order_sn!r} 里没有 sku={sku!r}")
@@ -50,14 +50,14 @@ class FakeDriver:
                 return self._create(ep, params, outcome)
             if ep.name == "purchase_order_list":
                 return self._list(ep, params, outcome)
-        raise NotImplementedError(f"fake driver 未实现 {ep.name}")
+        raise NotImplementedError(f"替身未实现 {ep.name}")
 
     def _create(self, ep: Endpoint, p: dict, outcome: str) -> CallResult:
         if outcome == "not_sent":
-            return CallResult("not_sent", "fake", ep.path, 1, cause="fake: ConnectionRefusedError[errno=111]")
+            return CallResult("not_sent", HOST, ep.path, 1, cause="double: ConnectionRefusedError[errno=111]")
         if outcome == "rejected":
-            return CallResult("rejected", "fake", ep.path, 1, http_status=200, lx_code="1001",
-                              lx_msg="fake: 供应商不存在", body={"code": 1001, "message": "fake: 供应商不存在"})
+            return CallResult("rejected", HOST, ep.path, 1, http_status=200, lx_code="1001",
+                              lx_msg="double: 供应商不存在", body={"code": 1001, "message": "double: 供应商不存在"})
         order_sn = None
         if outcome in ("ok", "unknown_created"):
             self._seq += 1
@@ -70,24 +70,22 @@ class FakeDriver:
                                "quantity_real": it["quantity_real"], "price": it["price"], "is_delete": 0}
                               for n, it in enumerate(p["product_list"], start=1)]}
         if outcome.startswith("unknown"):
-            return CallResult("unknown", "fake", ep.path, 30000, cause="fake: TimeoutError: timed out (read)")
-        return CallResult("ok", "fake", ep.path, 5, http_status=200, lx_code="0",
+            return CallResult("unknown", HOST, ep.path, 30000, cause="double: TimeoutError: timed out (read)")
+        return CallResult("ok", HOST, ep.path, 5, http_status=200, lx_code="0",
                           body={"code": 0, "data": {"order_sn": order_sn}})
 
     def _list(self, ep: Endpoint, p: dict, outcome: str) -> CallResult:
         if outcome == "not_sent":
-            return CallResult("not_sent", "fake", ep.path, 1, cause="fake: ConnectionRefusedError[errno=111]")
+            return CallResult("not_sent", HOST, ep.path, 1, cause="double: ConnectionRefusedError[errno=111]")
         if outcome == "rejected":
-            return CallResult("rejected", "fake", ep.path, 1, http_status=200, lx_code="1001",
-                              lx_msg="fake: 查询被拒", body={"code": 1001, "message": "fake: 查询被拒"})
+            return CallResult("rejected", HOST, ep.path, 1, http_status=200, lx_code="1001",
+                              lx_msg="double: 查询被拒", body={"code": 1001, "message": "double: 查询被拒"})
         if outcome.startswith("unknown"):
-            return CallResult("unknown", "fake", ep.path, 30000, cause="fake: TimeoutError: timed out (read)")
+            return CallResult("unknown", HOST, ep.path, 30000, cause="double: TimeoutError: timed out (read)")
         rows = list(self._orders.values())
         if p.get("order_sns"):
             wanted = set(str(p["order_sns"]).split(","))
             rows = [r for r in rows if r["order_sn"] in wanted]
-        return CallResult("ok", "fake", ep.path, 3, http_status=200, lx_code="0",
+        return CallResult("ok", HOST, ep.path, 3, http_status=200, lx_code="0",
                           body={"code": 0, "data": rows, "total": len(rows)})
 
-
-FAKE = FakeDriver()
