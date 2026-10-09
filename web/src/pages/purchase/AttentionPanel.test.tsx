@@ -300,7 +300,10 @@ describe('领星明细不一致（按后端四种开立路径的真实形状）'
     await mountPurchase('/purchase/1', purchaseRoutes(draftMultiRace()));
     const lm = within(await panel()).getByTestId('attn-landed_mismatch');
     expect(lm).toHaveTextContent('PO261009001、PO261009002');
-    expect(within(lm).getByTestId('pbd16')).toBeInTheDocument();
+    // ★ 没有 needs_verify 就没有「重新核对」—— 提示不能指向一个不存在的按钮
+    expect(within(lm).getByTestId('pbd16')).toHaveTextContent('在领星作废该单');
+    expect(within(lm).getByTestId('pbd16')).not.toHaveTextContent('重新核对');
+    expect(screen.queryByRole('button', { name: '重新核对' })).toBeNull();
     expect(screen.queryByRole('button', { name: '确认知悉' })).toBeNull();
     expect(screen.queryByRole('button', { name: '保存草稿' })).toBeNull();
   });

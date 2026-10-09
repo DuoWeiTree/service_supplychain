@@ -344,7 +344,9 @@ export function AttentionPanel({ po, timeline, timelineErr, stuck, placing, onCh
                   onClick={() => void acknowledge()}>确认知悉</button>
               </div>
             ) : (
-              <div className="mt" data-testid="pbd16">去领星改对后点重新核对，或在领星作废该单（草稿阻塞至作废回读）</div>
+              <div className="mt" data-testid="pbd16">
+                {nvOpen ? '去领星改对后点重新核对，或在领星作废该单（草稿阻塞至作废回读）' : '在领星作废该单；草稿阻塞至作废回读'}
+              </div>
             )}
             {lmErr.err && <div className="mt"><ActionError err={lmErr.err} onDismiss={lmErr.dismiss} /></div>}
           </div>
