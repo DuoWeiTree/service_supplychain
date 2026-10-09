@@ -9,7 +9,8 @@ import { ErrorDetail } from '../../components/ErrorDetail';
 import { Fold } from '../../components/Fold';
 import { Modal } from '../../components/Modal';
 import { Qty } from '../../components/Qty';
-import { PurchasePlaceholder } from '../PurchasePlaceholder';
+import { PlaceDialog } from './PlaceDialog';
+import { PoDetail, isEditable } from './PoDetail';
 import { api, ApiError } from '../../api';
 import type { CandidateLines, PoId, PreflightGate, PurchaseOptions, PurchaseOrder, Seller } from '../../api/types';
 import {
@@ -99,14 +100,45 @@ function UnitsInput({ value, onChange }: { value: number; onChange: (v: number |
 
 const countText = (source: string, count: number | null) => `（${source}${count === null ? '' : ` ${count} 单`}）`;
 
+type RouteView = { kind: 'loading' } | { kind: 'fail'; err: ApiError } | { kind: 'editor' } | { kind: 'detail' };
+
+/** ★ 按状态分发：只有「草稿 · 未作废 · 无未处理项 · 无卡住的下单调用」进编辑器，其余进详情。
+ *  待核实开着时后端拒改 / 删 / 下单（409 needs_verify），编辑器在那时只会是一屏点了必错的按钮。 */
 export function PoRoute() {
   const { poId } = useParams();
-  const id = Number(poId);
-  // key：/purchase/new 保存后跳到 /purchase/:id，必须换一个实例，不能带着新建态的本地状态
-  return <PoEditor key={poId} poId={Number.isInteger(id) && id > 0 ? id : -1} />;
+  const parsed = Number(poId);
+  const id = Number.isInteger(parsed) && parsed > 0 ? parsed : -1;
+  const [gen, setGen] = useState(0);
+  const [view, setView] = useState<RouteView>({ kind: 'loading' });
+  const reroute = useCallback(() => setGen((g) => g + 1), []);
+
+  useEffect(() => {
+    let alive = true;
+    setView({ kind: 'loading' });
+    const t0 = performance.now();
+    const po = Promise.resolve().then(() => api.getPurchaseOrder(id));
+    // 卡住的调用不在 po.attention 里，只在队列里；队列取不到就只按 PO 判（有声：记 warn）
+    const stuck = Promise.resolve().then(() => api.listAttention()).then(
+      (q) => q.items.filter((i) => i.po_id === id && i.kind === 'stuck_call').length,
+      (e: unknown) => { logFail('listAttention (route)', asApiError(e), t0); return 0; });
+    Promise.all([po, stuck]).then(
+      ([p, n]) => { if (alive) setView({ kind: isEditable(p, n) ? 'editor' : 'detail' }); },
+      (e: unknown) => { const err = asApiError(e); logFail('getPurchaseOrder (route)', err, t0); if (alive) setView({ kind: 'fail', err }); },
+    );
+    return () => { alive = false; };
+  }, [id, gen]);
+
+  if (view.kind === 'editor') return <PoEditor key={`${poId}-${gen}`} poId={id} onReroute={reroute} />;
+  if (view.kind === 'detail') return <PoDetail key={`${poId}-${gen}`} poId={id} onEditable={reroute} />;
+  return (
+    <AppShell crumb="采购单">
+      <div className="head"><div className="head__main"><h1>采购单 {poId}</h1></div></div>
+      {view.kind === 'fail' ? <ErrorDetail err={view.err} /> : <div className="empty">正在取采购单…</div>}
+    </AppShell>
+  );
 }
 
-export function PoEditor({ poId }: { poId: PoId | null }) {
+export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: () => void }) {
   const navigate = useNavigate();
   const { pending, run } = useInFlight();
   const { err: actErr, fail, succeed, dismiss } = useActionError();
@@ -129,6 +161,7 @@ export function PoEditor({ poId }: { poId: PoId | null }) {
   const [refusal, setRefusal] = useState<Record<string, string>>({});
   const [missing, setMissing] = useState<string[] | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [placing, setPlacing] = useState(false);
 
   // 稿一变，旧的拒绝理由（按旧可用量算的）就不再成立
   const edit = (next: Draft) => { setDraft(next); setDirty(true); setRefusal({}); };
@@ -286,7 +319,10 @@ export function PoEditor({ poId }: { poId: PoId | null }) {
         </AppShell>
       );
     }
-    if (po.state !== '草稿' || po.discarded_at) return <PurchasePlaceholder crumb="采购单" />;
+    // 路由判过之后状态又变了（别处下了单 / 开了待核实）：不给编辑器
+    if (po.state !== '草稿' || po.discarded_at || po.attention.length > 0) {
+      return onReroute ? <PoDetail poId={poId} onEditable={onReroute} /> : <PoDetail poId={poId} />;
+    }
   }
 
   const title = po ? `采购单 ${po.custom_order_sn}` : '新建采购单';
@@ -301,6 +337,18 @@ export function PoEditor({ poId }: { poId: PoId | null }) {
   const warehouses = options?.warehouses ?? [];
   const shownGates = useLocal ? localGates : gates;
   const failing = shownGates?.filter((g) => !g.ok).length ?? 0;
+  // ⛔ 只认后端对已保存内容的检查：本地校验判不了 sources_orderable，也不是将要发出去的那一份
+  const failingNames = (gates ?? []).filter((g) => !g.ok).map(gateText);
+  const placeBlock: string | null = poId === null || dirty ? '先保存草稿'
+    : po === null ? '正在取采购单…'
+    : gatesErr ? '下单前检查取不到'
+    : gates === null ? '正在检查…'
+    : failingNames.length > 0 ? `${failingNames.join('、')} 未过` : null;
+  const afterPlace = () => {
+    setPlacing(false);
+    if (onReroute) onReroute();
+    else if (poId !== null) loadPo(poId).catch((e: unknown) => fail('reload', e as ApiError));
+  };
 
   const sellerTable = (r: SourceTarget, saved?: Record<string, number>) => (
     <table className="table table--dense">
@@ -522,7 +570,17 @@ export function PoEditor({ poId }: { poId: PoId | null }) {
         {poId !== null && (
           <button type="button" className="btn" disabled={pending.has('delete')} onClick={() => setConfirmDelete(true)}>删除草稿</button>
         )}
+        <div className="btn-row btn-row__end">
+          {placeBlock && <span className="muted" data-testid="place-blocked">{placeBlock}</span>}
+          <button type="button" className="btn btn--danger" disabled={placeBlock !== null}
+            onClick={() => setPlacing(true)}>⛔ 下单</button>
+        </div>
       </div>
+
+      {placing && po && (
+        <PlaceDialog po={po} options={options} onClose={() => setPlacing(false)} onSettled={afterPlace}
+          onStale={() => { if (poId !== null) loadPo(poId).catch((e: unknown) => fail('reload', e as ApiError)); }} />
+      )}
 
       {confirmDelete && po && (
         <Modal title={`删除草稿 ${po.custom_order_sn}`} onClose={() => setConfirmDelete(false)}>

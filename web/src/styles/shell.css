@@ -107,6 +107,8 @@ code, .mono { font-family: var(--font-mono); font-size: 12px; }
 .btn--ghost:hover { background: var(--surface-2); color: var(--text); }
 .btn--sm { height: var(--control-h-sm); padding: 0 var(--space-2); font-size: 12px; border-radius: var(--radius-sm); }
 .btn-row { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
+/* 不可逆按钮与其余按钮分开、靠右（spec §8.1） */
+.btn-row__end { margin-left: auto; }
 
 .field { display: flex; flex-direction: column; gap: var(--space-1); }
 .lbl { font-size: 12px; font-weight: 500; color: var(--text-2); }
@@ -221,6 +223,9 @@ select.inp { padding-right: var(--space-6); }
 .sec__act { margin-left: auto; }
 
 .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-card); overflow: hidden; }
+/* 有未处理项时详情页顶部的红框（spec §6.6） */
+.panel--alert { border: 2px solid var(--danger); }
+.panel--alert .panel__head { background: var(--danger-soft); }
 .panel__head { padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--border); font-size: 14px; font-weight: 600; }
 .panel__body { padding: var(--space-3) var(--space-4); }
 

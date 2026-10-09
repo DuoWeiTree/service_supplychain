@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { fail, ok } from '../testing/backendStub';
+import { DRAFT, EMPTY_TIMELINE, PLACED, mountPurchase, purchaseRoutes, type BackendState } from '../testing/purchaseBackend';
 
 /** 两条已被裁定过的文案纪律的守卫（终审 I7 + 建议 4）。
  *
@@ -53,6 +55,7 @@ describe('文案纪律', () => {
     ['新建采购单', '/purchase/new'],
     ['采购单（不存在）', '/purchase/7'],
     ['草稿', '/purchase/1'],
+    ['采购单详情', '/purchase/2'],
   ];
 
   for (const [name, entry] of screens) {
@@ -63,6 +66,7 @@ describe('文案纪律', () => {
       if (entry === '/purchase') await screen.findByTestId('po-list');
       if (entry === '/purchase/new' || entry === '/purchase/1') await screen.findByTestId('cand-sku-A4P-TOY-002');
       if (entry === '/purchase/1') await screen.findByTestId('po-line-1');
+      if (entry === '/purchase/2') await screen.findAllByTestId('detail-line');
       const text = document.body.textContent ?? '';
       expect(text.length).toBeGreaterThan(50);
       expect(text).not.toContain(' · ');
@@ -132,5 +136,90 @@ describe('文案纪律', () => {
     await userEvent.click(screen.getByRole('button', { name: '新建销售计划' }));
     expect(screen.getByRole('button', { name: '新建' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '创建' })).toBeNull();
+  });
+});
+
+// ★ 下单与转人工：mock 一律 501，这几屏与动词只能用 http 打桩看（spec §8.1 前端数据源）
+describe('文案纪律：下单与转人工', () => {
+  const NV = { attention_id: 3, kind: 'needs_verify' as const, opened_at: '2026-10-09T10:01:33+08:00' };
+  const LM = { attention_id: 5, kind: 'landed_mismatch' as const, opened_at: '2026-10-09T11:00:00+08:00' };
+  const pending = (): BackendState => ({
+    po: { ...DRAFT, attention: [NV, LM] }, queue: [{ attention_id: null, kind: 'stuck_call', po_id: 1, call_id: 10,
+      endpoint: 'create_purchase_order', actor: 'ops.zhang', started_at: '2026-10-09T10:01:03+08:00',
+      opened_at: '2026-10-09T10:01:03+08:00', stale_after_minutes: 10, custom_order_sn: 'SCM-PO-1', supplier_id: 'S-1001',
+      timeline: '/v1/purchase-orders/1/timeline' }],
+    timeline: {
+      po_id: 1,
+      conclusion: { kind: 'needs_verify', known: '请求已发到领星，未收到可确认的结果', unknown: '领星是否已建单',
+        last_lookup: { call_id: 11, at: '2026-10-09T10:01:34+08:00', outcome: 'ok', truncated: true, window: {} },
+        how_to_search: { custom_order_sn: 'SCM-PO-1', window: { search_field_time: 'create_time', start_date: '2026-10-08', end_date: '2026-10-10' } } },
+      attempts: [{ call_id: 10, at: '2026-10-09T10:01:03+08:00', actor: 'ops.zhang', endpoint: 'create_purchase_order',
+        host: 'erp.example', path: '/x', idem_key: 'SCM-PO-1', elapsed_ms: 30012, outcome: 'unknown', http_status: 502,
+        lx_code: null, lx_msg: null, cause: 'http_502', retry_of: null, request: {}, response: null }],
+      events: [],
+      attention: [{ ...LM, resolved_at: null, resolution: null, resolved_by: null, reason: null,
+        detail: { order_sns: ['PO1', 'PO2'], known: '领星里有多张单用了本单的幂等键', unknown: '哪一张是本单下出去的' } }],
+    },
+  });
+
+  it('★ 红框（三类齐开）与下单弹窗：整屏一个 ` · ` 都不许有', async () => {
+    const { unmount } = await mountPurchase('/purchase/1', purchaseRoutes(pending()));
+    await screen.findByTestId('attn-stuck_call');
+    expect(document.body.textContent).not.toContain(' · ');
+    unmount();
+    vi.restoreAllMocks();
+    await mountPurchase('/purchase/1', purchaseRoutes({ po: DRAFT, timeline: EMPTY_TIMELINE, queue: [] }));
+    await vi.waitFor(async () => expect(await screen.findByRole('button', { name: '⛔ 下单' })).toBeEnabled());
+    await userEvent.click(screen.getByRole('button', { name: '⛔ 下单' }));
+    expect(screen.getByRole('dialog').textContent).not.toContain(' · ');
+  });
+
+  it('★ 确认下单：toast 说「已下单」', async () => {
+    const st: BackendState = { po: DRAFT, timeline: EMPTY_TIMELINE, queue: [] };
+    await mountPurchase('/purchase/1', purchaseRoutes(st, {
+      'POST /v1/purchase-orders/1/place': () => { st.po = PLACED; return ok({ outcome: 'placed', po_id: 1, order_sn: 'PO9', erp_call_id: 1 }); },
+    }));
+    await vi.waitFor(async () => expect(await screen.findByRole('button', { name: '⛔ 下单' })).toBeEnabled());
+    await userEvent.click(screen.getByRole('button', { name: '⛔ 下单' }));
+    await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '确认下单' }));
+    const toast = await screen.findByRole('status');
+    expect(toast).toHaveTextContent('已下单');
+    expect(toast.textContent).not.toContain(' · ');
+  });
+
+  const actions: [string, string, string, string | null][] = [
+    ['重新核对', 'recheck', '已重新核对', null],
+    ['登记已有单', 'register-existing', '已登记', '领星单号'],
+    ['确认领星无此单', 'confirm-absent', '已确认领星无此单', '确认无此单的理由'],
+    ['确认知悉', 'acknowledge-mismatch', '已确认知悉', '确认知悉的理由'],
+  ];
+  const replies: Record<string, unknown> = {
+    recheck: { outcome: 'placed', po_id: 1, order_sn: 'PO9', found_by: 'lookup' },
+    'register-existing': { outcome: 'placed', po_id: 1, order_sn: 'PO9', found_by: 'manual' },
+    'confirm-absent': { po_id: 1, unlocked: ['place', 'update', 'delete'] },
+    'acknowledge-mismatch': { po_id: 1, resolution: 'mismatch_acknowledged' },
+  };
+  for (const [verb, path, said, input] of actions) {
+    it(`★ ${verb}：toast 说「${said}」`, async () => {
+      await mountPurchase('/purchase/1', purchaseRoutes(pending(), {
+        [`POST /v1/purchase-orders/1/${path}`]: () => ok(replies[path]),
+      }));
+      const panel = await screen.findByTestId('attention-panel');
+      if (input) await userEvent.type(within(panel).getByLabelText(input), 'PO9');
+      await userEvent.click(within(panel).getByRole('button', { name: verb }));
+      const toast = await screen.findByRole('status');
+      expect(toast).toHaveTextContent(said);
+      expect(toast.textContent).not.toContain(' · ');
+    });
+  }
+
+  it('写动作失败不出 toast（只有成功才用「已」字）', async () => {
+    await mountPurchase('/purchase/1', purchaseRoutes(pending(), {
+      'POST /v1/purchase-orders/1/recheck': () => fail(501, 'not_in_mock', 'mock 数据源不下单'),
+    }));
+    const panel = await screen.findByTestId('attention-panel');
+    await userEvent.click(within(panel).getByRole('button', { name: '重新核对' }));
+    expect(await within(panel).findByText('mock 数据源不下单')).toBeInTheDocument();
+    expect(screen.queryByRole('status')).toBeNull();
   });
 });
