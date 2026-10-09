@@ -1247,3 +1247,42 @@ def fetch_supplier(query: Query) -> Fetched:
             continue
         rows.append((sid, _coerce_empty(reasons, "name", name)))
     return Fetched(rows, dropped, reasons, max(r[2] for r in raw))
+
+
+#: 采购单头上的 purchaser_id / opt_uid 是领星里已出现过的真值（spec §2）。覆盖型表：
+#: 必须先按 order_sn 取最新一行再计数，否则每次抓取都重复计一遍。
+SQL_PURCHASE_ACTORS = """
+SELECT purchaser_id, opt_uid, opt_realname, count() AS n, max(cap) AS cap
+  FROM (SELECT order_sn,
+               toString(argMax(purchaser_id, _captured_at)) AS purchaser_id,
+               toString(argMax(opt_uid, _captured_at)) AS opt_uid,
+               argMax(opt_realname, _captured_at) AS opt_realname,
+               max(_captured_date) AS cap
+          FROM jxd_raw.lingxing_purchase_order_list
+         GROUP BY order_sn)
+ GROUP BY purchaser_id, opt_uid, opt_realname
+"""
+
+
+class PurchaseActors(NamedTuple):
+    purchasers: list[tuple[int, int]]            # (purchaser_id, 单数)，降序
+    opt_uids: list[tuple[int, str | None, int]]  # (opt_uid, 姓名, 单数)，降序
+    as_of: dt.date | None
+
+
+def fetch_purchase_actors(query: Query) -> PurchaseActors:
+    """★ 历史为空不是错误（与 `_nonempty` 相反）：这里是候选来源之一，不是镜像。
+    空 / '0' / 非数字 id 不是候选，丢弃（po 表里这两列是整数）。"""
+    raw = query(SQL_PURCHASE_ACTORS)
+    purchasers: dict[int, int] = {}
+    opt: dict[tuple[int, str | None], int] = {}
+    for pid, uid, name, n, _cap in raw:
+        if str(pid).isdigit() and int(pid) != 0:
+            purchasers[int(pid)] = purchasers.get(int(pid), 0) + int(n)
+        if str(uid).isdigit() and int(uid) != 0:
+            key = (int(uid), (name or "").strip() or None)
+            opt[key] = opt.get(key, 0) + int(n)
+    return PurchaseActors(
+        sorted(purchasers.items(), key=lambda kv: (-kv[1], kv[0])),
+        [(u, nm, n) for (u, nm), n in sorted(opt.items(), key=lambda kv: (-kv[1], kv[0][0]))],
+        max((r[4] for r in raw), default=None))

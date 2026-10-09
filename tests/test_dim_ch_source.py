@@ -192,3 +192,16 @@ def test_fetch_supplier_dedups_and_counts_drops():
     assert got.dropped == 1
     assert got.drop_reasons == {"empty_supplier_id": 1, "coerced_empty_name": 1}
     assert got.source_max_captured == day
+
+
+def test_fetch_purchase_actors_groups_and_drops_bad_ids():
+    import datetime as dt
+
+    from dim.ch_source import fetch_purchase_actors
+    day = dt.date(2026, 10, 7)
+    raw = [("111", "10925905", "陈彩凤", 100, day), ("111", "10925905", "陈彩凤", 35, day),
+           ("185", "0", "", 8, day), ("", "abc", "x", 1, day)]
+    got = fetch_purchase_actors(lambda sql, params=None: raw)
+    assert got.purchasers == [(111, 135), (185, 8)]
+    assert got.opt_uids == [(10925905, "陈彩凤", 135)]
+    assert got.as_of == day
