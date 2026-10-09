@@ -91,14 +91,13 @@ api_url       = "https://rbac.bogoo.ai"
 client_id     = ""             # CF Access Service Token，向 RBAC 维护者申请
 client_secret = ""
 
-[erp]                          # ★ 领星网关（spec §6）。默认 fake；live 需 [auth] mode = "rbac"
-mode         = "fake"          # fake | live
+[erp]                          # ★ 领星网关（spec §6）。⛔ 下单打真领星；app_id / app_secret / proxy_host / confirm_salt 缺一个就起不来
 base_url     = "https://openapi.lingxing.com"
 app_id       = ""
 app_secret   = ""
 timeout_s    = 30              # 设计取值 V6 · 未实测
 stale_in_flight_minutes = 10   # 设计取值 V5 · 未实测
-confirm_salt = ""              # live 必填；H-1 confirm_token 的盐
+confirm_salt = ""              # 必填、非开发默认值；H-1 confirm_token 的盐
 user_agent   = "service_supplychain/0.1"
 # ★ 领星 IP 白名单：必须经固定 IP 代理（凭证见 /home/fido/work/2026/tools/config/services.toml [proxies.*]）
 proxy_host     = ""
@@ -107,4 +106,4 @@ proxy_user     = ""
 proxy_password = ""
 
 [auth]
-mode = "dev"                   # dev | rbac（生产必须 rbac，spec §12）
+mode = "dev"                   # dev | rbac（rbac 在 M2 实现前拒绝启动；dev 身份可伪造，PB-D15）
