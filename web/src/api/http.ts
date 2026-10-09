@@ -19,6 +19,19 @@ function qs(params: Record<string, string | number | boolean | undefined>): stri
   return pairs.length === 0 ? '' : `?${pairs.map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`).join('&')}`;
 }
 
+/** 建连或读体阶段的失败 → ApiError(0)。phase 写进日志：读体失败说明请求已经到了后端 */
+function transportError(call_: string, ms: number, e: unknown, phase: 'connect' | 'body', timeoutMs: number): ApiError {
+  // ★ 「超时」与「连不上」签名互斥、处置相反：前者调大超时有用，后者一行都不会生效
+  if (e instanceof DOMException && e.name === 'TimeoutError') {
+    logFail(call_, ms, { kind: 'TimeoutError', phase, timeout_ms: timeoutMs });
+    return new ApiError(0, 'timeout', `${timeoutMs}ms 内没有响应`, { timeout_ms: timeoutMs, phase });
+  }
+  const cause = (e as { cause?: { code?: string; errors?: { code?: string }[] } }).cause;
+  const code = cause?.code ?? cause?.errors?.[0]?.code ?? 'unknown';
+  logFail(call_, ms, { kind: (e as Error).name, phase, cause_code: code, message: (e as Error).message });
+  return new ApiError(0, 'network', `连不上（${code}）`, { cause_code: code, phase });
+}
+
 export function createHttpApi(opt: HttpOptions): SupplyChainApi {
   async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
     const url = `${opt.base}${path}`;
@@ -33,22 +46,16 @@ export function createHttpApi(opt: HttpOptions): SupplyChainApi {
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
     } catch (e) {
-      const ms = Date.now() - started;
-      // ★ 「超时」与「连不上」签名互斥、处置相反：前者调大超时有用，后者一行都不会生效
-      if (e instanceof DOMException && e.name === 'TimeoutError') {
-        logFail(call_, ms, { kind: 'TimeoutError', timeout_ms: opt.timeoutMs });
-        throw new ApiError(0, 'timeout', `${opt.timeoutMs}ms 内没有响应`, { timeout_ms: opt.timeoutMs });
-      }
-      const cause = (e as { cause?: { code?: string; errors?: { code?: string }[] } }).cause;
-      const code = cause?.code ?? cause?.errors?.[0]?.code ?? 'unknown';
-      logFail(call_, ms, { kind: (e as Error).name, cause_code: code, message: (e as Error).message });
-      throw new ApiError(0, 'network', `连不上（${code}）`, { cause_code: code });
+      throw transportError(call_, Date.now() - started, e, 'connect', opt.timeoutMs);
     }
 
     const ms = Date.now() - started;
     if (ms >= 2000) console.warn('[api]', JSON.stringify({ call: call_, ms, status: res.status, slow: true }));
 
-    const text = await res.text();
+    // ★ 读体失败时请求已到后端：必须和建连失败一样落成 status 0（结果未知），不能漏成裸异常
+    let text: string;
+    try { text = await res.text(); }
+    catch (e) { throw transportError(call_, Date.now() - started, e, 'body', opt.timeoutMs); }
     let parsed: unknown = null;
     if (text !== '') {
       try { parsed = JSON.parse(text); }

@@ -34,6 +34,17 @@ export function handlerThrew(tag: string, action: string, e: unknown): ApiError 
     { action, ...(x?.cause?.code ? { cause_code: x.cause.code } : {}) });
 }
 
+/** 不可逆 / 查单请求本身抛出的非 ApiError：请求可能已发出，按「结果未知」处理（status 0），绝不当「没做」 */
+export function requestThrew(tag: string, action: string, e: unknown): ApiError {
+  if (e instanceof ApiError) return e;
+  const x = e as { name?: string; message?: string; cause?: { code?: string } };
+  const name = x?.name ?? 'Error';
+  const message = x?.message ?? String(e);
+  console.error(`[${tag}] ${action} request threw`, JSON.stringify({ name, message, cause_code: x?.cause?.code ?? null }));
+  return new ApiError(0, 'request_threw', `请求出了异常，结果不明（${name}: ${message}）`,
+    { action, ...(x?.cause?.code ? { cause_code: x.cause.code } : {}) });
+}
+
 /** 写动作的三问日志：打的谁（call）· 多久（ms）· 怎么失败的（status / error / cause_code） */
 export function logWrite(tag: string, call: string, t0: number, extra: Record<string, unknown>): void {
   console.info(`[${tag}]`, JSON.stringify({ call, ms: Math.round(performance.now() - t0), ...extra }));

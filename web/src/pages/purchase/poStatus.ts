@@ -16,7 +16,8 @@ export const POLL_MS = 3000;
  *  例外：后端自己发的 502 lookup_failed 是明确结论（查询本身失败，什么也没改）；
  *  mock 的 501 not_in_mock 与界面自己的 client_exception 也是确定的「没做」。 */
 export function isUnknownOutcome(err: ApiError): boolean {
-  // mock 的 501 not_in_mock 是确定的「没做」（spec §8.1）；界面自己抛的异常发生在发请求之前或之外
+  // mock 的 501 not_in_mock 是确定的「没做」（spec §8.1）；client_exception 只给发请求之外的处理代码用，
+  // 请求本身抛的走 requestThrew（status 0，算未知）
   if (err.status === 501 || err.error === 'not_in_mock' || err.error === 'client_exception') return false;
   if (err.status === 0 || err.error === 'bad_response') return true;
   return err.status >= 500 && err.error !== 'lookup_failed';

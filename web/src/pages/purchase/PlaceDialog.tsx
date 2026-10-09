@@ -10,7 +10,7 @@ import { api, ApiError } from '../../api';
 import { asApiError } from '../../api/client';
 import type { PlaceResult, PoTimeline, PurchaseOptions, PurchaseOrder } from '../../api/types';
 import { QC_LABEL } from './poEditorModel';
-import { exactTotal, fmtAt, handlerThrew, logWrite, logWriteFail } from './fmt';
+import { exactTotal, fmtAt, handlerThrew, logWrite, logWriteFail, requestThrew } from './fmt';
 import { isCreate, isUnknownOutcome, lastCreateId, usePoll } from './poStatus';
 
 type Res =
@@ -91,7 +91,7 @@ export function PlaceDialog({ po, options, onClose, onSettled, onStale }: {
     try {
       r = await api.placePurchaseOrder(snap.po_id, snap.confirm_token);
     } catch (e) {
-      const err = e instanceof ApiError ? e : handlerThrew('po-place', 'place', e);
+      const err = requestThrew('po-place', 'place', e);
       logWriteFail('po-place', call, t0, err);
       refreshAttention();
       if (err.error === 'stale_confirm_token') { setRes({ kind: 'stale' }); onStale(); return; }

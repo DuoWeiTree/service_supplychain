@@ -8,7 +8,7 @@ import { refreshAttention } from '../../shell/AttentionBanner';
 import { api, ApiError } from '../../api';
 import type { AttentionItem, AttentionKind, PoAttempt, PoTimeline, PurchaseOrder, TimelineConclusion } from '../../api/types';
 import { KIND_LABEL, isUnknownOutcome, usePoll } from './poStatus';
-import { fmtAt, handlerThrew, logWrite, logWriteFail } from './fmt';
+import { fmtAt, handlerThrew, logWrite, logWriteFail, requestThrew } from './fmt';
 
 const OUTCOME_LABEL: Record<string, string> = {
   ok: '成功', rejected: '拒绝', not_sent: '没发出', unknown: '结果未知', in_flight: '进行中',
@@ -203,7 +203,10 @@ export function AttentionPanel({ po, timeline, timelineErr, stuck, placing, onCh
         errs.succeed(key);
         pushToast(d.toast);
       } catch (e) {
-        const err = e instanceof ApiError ? e : handlerThrew('po-attention', key, e);
+        // ★ 重新核对 / 登记已有单会打领星：请求本身抛的异常算结果未知，不算「没做」
+        const err = key === 'recheck' || key === 'register'
+          ? requestThrew('po-attention', key, e)
+          : e instanceof ApiError ? e : handlerThrew('po-attention', key, e);
         logWriteFail('po-attention', call, t0, err);
         errs.fail(key, err);
         if ((key === 'recheck' || key === 'register') && isUnknownOutcome(err)) { setUnknownKey(key); return; }
