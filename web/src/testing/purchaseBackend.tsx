@@ -13,16 +13,20 @@ export const OPTIONS: PurchaseOptions = {
   history: { available: true, cause: null, as_of: '2026-10-08', dropped: 0 },
 };
 
+/** 来源链（repo.read_po JOIN plan_line / plan） */
+const chainOf = (line_id: number) => ({ plan_id: 1, plan_title: '2026 Q4 销售计划', rev: 2,
+  sku: line_id === 101 ? 'SKU-A' : 'SKU-B', period: '2026-10' });
+
 export const DRAFT: PurchaseOrder = {
   po_id: 1, supplier_id: 'S-1001', purchaser_id: 111, opt_uid: 10925905, qc_type: 1, wid: 101,
   custom_order_sn: 'SCM-PO-1', order_sn: null, state: '草稿', placed_at: null, draft_version: 4,
   created_by: 'ops.zhang', is_void: false, discarded_at: null,
   lines: [
     { line_no: 1, sku: 'SKU-A', wid: 101, units: 30, price: '12.5000', expect_arrive_date: null,
-      unplanned_reason: null, lx_item_id: null, sources: [{ line_id: 101, seller_id: '11072', units: 30 }],
+      unplanned_reason: null, lx_item_id: null, sources: [{ line_id: 101, seller_id: '11072', units: 30, ...chainOf(101) }],
       sources_units: 30, unplanned_units: 0 },
     { line_no: 2, sku: 'SKU-B', wid: 101, units: 12, price: '0.3333', expect_arrive_date: null,
-      unplanned_reason: '补样品', lx_item_id: null, sources: [{ line_id: 102, seller_id: '11072', units: 10 }],
+      unplanned_reason: '补样品', lx_item_id: null, sources: [{ line_id: 102, seller_id: '11072', units: 10, ...chainOf(102) }],
       sources_units: 10, unplanned_units: 2 },
   ],
   source_line_states: [{ line_id: 101, state: '已确认' }, { line_id: 102, state: '已确认' }],

@@ -10,6 +10,7 @@ import type { AttentionItem, LineTrace, PoId, PoTimeline, PurchaseOrder } from '
 import { AttemptTable, AttentionPanel } from './AttentionPanel';
 import { fmtAt } from './fmt';
 import { KIND_LABEL, inFlightCreate, isEditable, usePoll } from './poStatus';
+import { chainText } from './poEditorModel';
 import { pushToast } from '../../shell/toastStore';
 import { refreshAttention } from '../../shell/AttentionBanner';
 
@@ -159,7 +160,8 @@ export function PoDetail({ poId, onEditable }: { poId: PoId; onEditable?: () => 
                     const tr = traces[s.line_id];
                     return (
                       <div key={`${s.line_id}|${s.seller_id}`}>
-                        店 {s.seller_id} 量 <span className="num">{s.units}</span>{' '}
+                        {/* R3：来源链由单自己带，不等反查 */}
+                        {chainText(s, s.seller_id, s.units)}{' '}
                         {(!tr || tr.kind === 'loading') && <span className="muted">记录 #{s.line_id} 正在反查…</span>}
                         {tr?.kind === 'ok' && (
                           <span className="muted" data-testid={`trace-${s.line_id}`}>

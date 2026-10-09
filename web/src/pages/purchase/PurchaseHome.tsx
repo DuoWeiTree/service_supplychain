@@ -38,6 +38,8 @@ function TodoList({ cands, err, shop, sellersErr }: {
           {shop(sid)} 期望 {v.expected === null ? <Qty v={{ kind: 'unknown' }} /> : v.expected}
           {shares ? `（占比 ${shares[sid]}%）` : ' '}
           {v.cap !== null && `上限 ${v.cap}`}
+          {/* 上限里可能已有别的草稿占着：剩多少才是这次能组的 */}
+          {v.remaining !== null && ` 剩 ${v.remaining}`}
         </div>
       );
     });
@@ -62,8 +64,16 @@ function TodoList({ cands, err, shop, sellersErr }: {
                 <Fold summary="原因"><ErrorDetail err={sellersErr} /></Fold>
               </div>
             )}
-            {DROPPED_LABEL.filter(([k]) => (cands.excluded[k] ?? 0) > 0)
-              .map(([k, t]) => <div className="dropline" key={k}>{t} {cands.excluded[k]} 条</div>)}
+            {/* 状态不可组单 数的是全库历史（撤销 / 完结 / 已下单），只增不减：总数可见，分项进折叠 */}
+            {(() => {
+              const dropped = DROPPED_LABEL.filter(([k]) => (cands.excluded[k] ?? 0) > 0);
+              const n = dropped.reduce((a, [k]) => a + cands.excluded[k], 0);
+              return n > 0 && (
+                <Fold summary={`未列入 ${n} 条`} testId="todo-dropped">
+                  {dropped.map(([k, t]) => <div className="dropline" key={k}>{t} {cands.excluded[k]} 条</div>)}
+                </Fold>
+              );
+            })()}
             {lines.length === 0 ? (
               <div className="empty">没有待采购的记录 <Link to="/">去销售计划</Link></div>
             ) : (

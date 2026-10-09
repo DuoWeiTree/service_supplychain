@@ -27,7 +27,12 @@
         {
           "line_id": 3,
           "seller_id": "11072",
-          "units": 10
+          "units": 10,
+          "plan_id": 3,
+          "plan_title": "t",
+          "rev": 1,
+          "sku": "DCC1800264G1",
+          "period": "2026-10"
         }
       ],
       "sources_units": 10,

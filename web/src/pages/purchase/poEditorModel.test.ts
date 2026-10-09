@@ -214,10 +214,13 @@ describe('toBody', () => {
   it('★ 后端回来的整数 id 经 fromPo → toBody 往返不炸、不变型', () => {
     const r = toBody(fromPo({ supplier_id: 'S-1', purchaser_id: 111, opt_uid: 10925905, qc_type: 2,
       lines: [{ line_no: 1, sku: 'SKU-A', wid: 1, units: 5, price: '2.5000', expect_arrive_date: null,
-        unplanned_reason: null, lx_item_id: null, sources: [{ line_id: 1, seller_id: '11072', units: 5 }],
+        unplanned_reason: null, lx_item_id: null, sources: [{ line_id: 1, seller_id: '11072', units: 5,
+          plan_id: 1, plan_title: 't', rev: 1, sku: 'SKU-A', period: '2026-10' }],
         sources_units: 5, unplanned_units: 0 }] }));
     if (!r.ok) throw new Error(JSON.stringify(r));
     expect(r.body).toMatchObject({ purchaser_id: 111, opt_uid: 10925905, lines: [{ wid: 1 }] });
+    // 读回的来源链字段不进请求体
+    expect(r.body.lines[0]!.sources).toEqual([{ line_id: 1, seller_id: '11072', units: 5 }]);
   });
 });
 
@@ -290,6 +293,8 @@ describe('来源：从哪张销售计划来（R3）', () => {
 
   it('?lines= 解析：null = 没带参数；不是记录号的原样点名，不丢', () => {
     expect(parseLineIds(null)).toBeNull();
+    expect(parseLineIds('')).toBeNull();
+    expect(parseLineIds(',,')).toBeNull();
     expect(parseLineIds('11,12')).toEqual({ ids: [11, 12], bad: [] });
     expect(parseLineIds('11,abc,,0,11')).toEqual({ ids: [11], bad: ['abc', '0'] });
   });
@@ -303,6 +308,8 @@ describe('来源：从哪张销售计划来（R3）', () => {
 
   it('分店占比：按期望销量算；无分店依据时不给（不是 0%）', () => {
     expect(sellerShares(cand())).toEqual({ '11072': 67, '11094': 33 });
+    const three = { expected: 1, cap: null, used: 0, remaining: null };
+    expect(sellerShares(cand({ sellers: { a: three, b: three, c: three } }))).toEqual({ a: 34, b: 33, c: 33 });
     expect(sellerShares(cand({ blocked: { reason: 'no_seller_basis', sellers: ['11072'] } }))).toBeNull();
     expect(sellerShares(cand({ sellers: { a: { expected: 0, cap: null, used: 0, remaining: null } } }))).toBeNull();
   });

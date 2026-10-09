@@ -33,6 +33,12 @@ describe('采购单详情', () => {
     expect(tr).toHaveTextContent('已下单 0');
   });
 
+  it('★ 来源链：计划 rev 货号 月份 → 店 件数，不等反查', async () => {
+    await mountPurchase('/purchase/1', purchaseRoutes(placed(), { 'GET /v1/plan-lines/101/trace': () => new Promise(() => {}) }));
+    const rows = await screen.findAllByTestId('detail-line');
+    expect(rows[0]).toHaveTextContent('2026 Q4 销售计划 rev2 SKU-A 2026-10 → 11072 30 件');
+  });
+
   it('反查失败只落在那一条来源上，明细照常', async () => {
     await mountPurchase('/purchase/1', purchaseRoutes(placed(), {
       'GET /v1/plan-lines/102/trace': () => fail(404, 'line_not_found', '没有这条记录', { line_id: 102 }),

@@ -140,11 +140,17 @@ def read_po(cur, po_id: int) -> dict | None:
                     "expect_arrive_date": f.isoformat() if f else None,
                     "unplanned_reason": g, "lx_item_id": h, "sources": []}
                    for a, b, c, d, e, f, g, h in cur.fetchall()]
-    cur.execute("SELECT line_no, line_id, seller_id, units FROM po_source_map WHERE po_id = %s"
-                " ORDER BY line_no, line_id, seller_id", (po_id,))
+    # ★ R3 来源链（计划 revN 货号 月份 → 店 件数）由单自己带：组满的记录被候选的
+    #   orderable 滤掉，靠候选补链恰好在最常见的「一单吃满一条」时断掉。
+    #   JOIN 不丢行：po_source_map → plan_line → plan_rev → plan 全是外键。
+    cur.execute("SELECT m.line_no, m.line_id, m.seller_id, m.units, l.plan_id, p.title, l.rev, l.sku,"
+                " to_char(l.period_start, 'YYYY-MM')"
+                " FROM po_source_map m JOIN plan_line l USING (line_id) JOIN plan p ON p.plan_id = l.plan_id"
+                " WHERE m.po_id = %s ORDER BY m.line_no, m.line_id, m.seller_id", (po_id,))
     by_no = {ln["line_no"]: ln for ln in po["lines"]}
-    for no, lid, sid, u in cur.fetchall():
-        by_no[no]["sources"].append({"line_id": lid, "seller_id": sid, "units": u})
+    for no, lid, sid, u, pid, title, rev, sku, period in cur.fetchall():
+        by_no[no]["sources"].append({"line_id": lid, "seller_id": sid, "units": u, "plan_id": pid,
+                                     "plan_title": title, "rev": rev, "sku": sku, "period": period})
     for ln in po["lines"]:
         ln["sources_units"] = sum(s["units"] for s in ln["sources"])
         ln["unplanned_units"] = ln["units"] - ln["sources_units"]

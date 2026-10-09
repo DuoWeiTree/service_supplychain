@@ -39,7 +39,8 @@ def test_create_draft_and_read_back(client, seed, world):
     assert r.status_code == 201, r.text
     po = client.get(f"/v1/purchase-orders/{r.json()['po_id']}").json()
     assert po["state"] == "草稿" and po["custom_order_sn"] == f"SCM-PO-{po['po_id']}"
-    assert po["lines"][0]["sources"] == [{"line_id": world, "seller_id": seed.seller_a, "units": 13}]
+    assert [{k: x[k] for k in ("line_id", "seller_id", "units")} for x in po["lines"][0]["sources"]] \
+        == [{"line_id": world, "seller_id": seed.seller_a, "units": 13}]
     assert po["confirm_token"]
     assert line_state(world) == "已提交"      # 13 / 24，未满
 
@@ -280,3 +281,36 @@ def test_unknown_supplier_is_400_not_500(client, seed, world):
     b["draft_version"] = 1
     r = client.put(f"/v1/purchase-orders/{po_id}", json=b, headers=H(seed.actor))
     assert r.status_code == 400 and r.json()["error"] == "unknown_supplier"
+
+
+def test_sources_carry_their_plan_chain_even_when_the_draft_used_the_record_up(client, seed, world):
+    """R3 来源链：组满的记录不在候选里（orderable 滤掉），链不能靠候选补 —— 单自己带。"""
+    with pg_conn() as c, c.cursor() as cur:   # world 的 OTHER 不在 seller 表里，换成真店才落得进 po_source_map
+        cur.execute("UPDATE plan_line SET demand_by_seller=%s::jsonb WHERE line_id=%s",
+                    (json.dumps({seed.seller_a: {"units": 12, "basis": "human"},
+                                 seed.seller_b: {"units": 12, "basis": "human"}}), world))
+    b = body(seed, world, units=12, line_units=24)
+    b["lines"][0]["sources"].append({"line_id": world, "seller_id": seed.seller_b, "units": 12})
+    r = client.post("/v1/purchase-orders", json=b, headers=H(seed.actor))
+    assert r.status_code == 201, r.text
+    cands = client.get("/v1/plan-lines?orderable=1").json()["lines"]
+    assert world not in {x["line_id"] for x in cands}, "记录没被组满，这条测不到要测的情形"
+    po = client.get(f"/v1/purchase-orders/{r.json()['po_id']}").json()
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT l.plan_id, p.title, l.rev, l.sku, to_char(l.period_start, 'YYYY-MM')"
+                    " FROM plan_line l JOIN plan p USING (plan_id) WHERE l.line_id=%s", (world,))
+        pid, title, rev, sku, period = cur.fetchone()
+    srcs = po["lines"][0]["sources"]
+    assert len(srcs) == 2
+    for x in srcs:
+        assert (x["plan_id"], x["plan_title"], x["rev"], x["sku"], x["period"]) == (pid, title, rev, sku, period)
+
+
+def test_confirm_token_ignores_plan_title_renames(client, seed, world):
+    """来源链的计划名是展示用的：改了计划标题不该让「确认下单」的 token 失效。"""
+    po_id = client.post("/v1/purchase-orders", json=body(seed, world), headers=H(seed.actor)).json()["po_id"]
+    before = client.get(f"/v1/purchase-orders/{po_id}").json()["confirm_token"]
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("UPDATE plan SET title='改名了' WHERE plan_id=(SELECT plan_id FROM plan_line WHERE line_id=%s)",
+                    (world,))
+    assert client.get(f"/v1/purchase-orders/{po_id}").json()["confirm_token"] == before

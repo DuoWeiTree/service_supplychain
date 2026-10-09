@@ -174,7 +174,9 @@ def load_po(po_id: int) -> dict:
         po["attention"] = repo.open_attention(cur, po_id)
     content = {k: po[k] for k in ("supplier_id", "purchaser_id", "opt_uid", "qc_type", "wid",
                                   "draft_version")}
-    content["lines"] = [{k: ln[k] for k in ("sku", "wid", "units", "price", "unplanned_reason", "sources")}
+    # ★ token 只认单的内容：来源上的计划名 / rev 等是展示用的来源链，改个计划标题不该让确认失效
+    content["lines"] = [{**{k: ln[k] for k in ("sku", "wid", "units", "price", "unplanned_reason")},
+                         "sources": [{k: s[k] for k in ("line_id", "seller_id", "units")} for s in ln["sources"]]}
                         for ln in po["lines"]]
     po["preflight"] = preflight(po)
     po["confirm_token"] = confirm_token(po_id, po_digest(content), erp()["confirm_salt"])

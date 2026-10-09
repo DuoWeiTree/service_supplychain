@@ -114,7 +114,8 @@ describe('采购首页', () => {
   it('核对不一致：说 N 项，折叠区列明细', async () => {
     await mount({ getPurchaseChecks: async () => BAD_CHECKS });
     expect(await screen.findByText('核对有 2 项不一致')).toBeInTheDocument();
-    const fold = document.querySelector('details.fold') as HTMLElement;
+    // 页上不止一个折叠区（待采购的「未列入」也是）：按标题找
+    const fold = screen.getByText('不一致明细').closest('details') as HTMLElement;
     expect(fold).not.toBeNull();
     expect(fold).toHaveTextContent('po_source');
     expect(fold).toHaveTextContent('po=2 line=1');
@@ -210,12 +211,18 @@ describe('采购首页：待采购（R3）', () => {
     expect(row).toHaveTextContent('200');
     const shops = within(row).getByTestId('todo-shops');
     // 店名取得到就写店名；取不到店名的那家写店编号
-    expect(shops).toHaveTextContent('A4Pet-BS-US-US 期望 75（占比 75%）上限 150');
-    expect(shops).toHaveTextContent('11094 期望 25（占比 25%）上限 50');
+    expect(shops).toHaveTextContent('A4Pet-BS-US-US 期望 75（占比 75%）上限 150 剩 150');
+    expect(shops).toHaveTextContent('11094 期望 25（占比 25%）上限 50 剩 50');
     // ★ 待采购在采购单列表之前（第一屏）
     const po = await screen.findByTestId('po-list');
     expect(t.compareDocumentPosition(po) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByRole('heading', { name: '采购单' })).toBeInTheDocument();
+  });
+
+  it('别的草稿占了该店额度：写剩多少，不只写上限', async () => {
+    await mount({});
+    const shops = within(await screen.findByTestId('todo-14')).getByTestId('todo-shops');
+    expect(shops).toHaveTextContent('上限 80 剩 50');
   });
 
   it('还可组 ≠ 总量时两个数都在', async () => {
@@ -256,7 +263,8 @@ describe('采购首页：待采购（R3）', () => {
 
   it('被滤掉的一侧要说：已组满 N 条、状态不可组单 N 条', async () => {
     await mount({});
-    const t = await screen.findByTestId('todo');
+    const t = await screen.findByTestId('todo-dropped');
+    expect(t).toHaveTextContent('未列入 5 条');
     expect(t).toHaveTextContent('已组满 2 条');
     expect(t).toHaveTextContent('状态不可组单 3 条');
   });

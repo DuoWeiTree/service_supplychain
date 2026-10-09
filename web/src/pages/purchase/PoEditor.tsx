@@ -18,7 +18,7 @@ import {
   addSource, available, baselineOf, chainText, emptyDraft, fromPo, gateText, groupCandidates, lineUnits, ownOnlyRecords,
   parseLineIds, planName, preselect, QC_LABEL, sourceSummary,
   recordRemaining, removeSource, setHeader, setLineWid, sourcesUnits, toBody, unplannedUnits, updateLine, validate,
-  type AddRefusal, type Baseline, type Draft, type DraftHeader, type QcType, type SourceTarget,
+  type AddRefusal, type Baseline, type ChainRef, type Draft, type DraftHeader, type QcType, type SourceTarget,
 } from './poEditorModel';
 import { asApiError } from '../../api/client';
 import { handlerThrew } from './fmt';
@@ -44,10 +44,12 @@ const REFUSAL_TEXT: Record<Exclude<AddRefusal, 'over_remaining'>, string> = {
 };
 
 /** 带来的记录列不出时反查到的样子：组满了 / 状态走了 / 不存在 / 查不到 */
-type Missing = { kind: 'pending' } | { kind: 'trace'; t: LineTrace } | { kind: 'gone' } | { kind: 'err'; err: ApiError };
+const TRACE_CAP = 20;
+type Missing = { kind: 'pending' } | { kind: 'skipped' } | { kind: 'trace'; t: LineTrace } | { kind: 'gone' } | { kind: 'err'; err: ApiError };
 const ORDERABLE_STATES: readonly string[] = ['已提交', '已确认'];
 function missingText(id: number, m: Missing): string {
   if (m.kind === 'pending') return `记录 ${id} 正在查状态…`;
+  if (m.kind === 'skipped') return `记录 ${id} 不可组单，超过 ${TRACE_CAP} 条未反查状态`;
   if (m.kind === 'gone') return `记录 ${id} 不存在`;
   if (m.kind === 'err') return `记录 ${id} 状态取不到`;
   // 状态还可组单却没列出 = 被 fully_confirmed 滤掉了：说「组满」，不拿一个可组单的状态说「不可组单」
@@ -260,8 +262,10 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
   useEffect(() => {
     if (!sel || sel.missing.length === 0) return;
     let alive = true;
-    setMissingInfo(Object.fromEntries(sel.missing.map((id) => [id, { kind: 'pending' } as Missing])));
-    for (const id of sel.missing) {
+    setMissingInfo(Object.fromEntries(sel.missing.map((id, i) =>
+      [id, (i < TRACE_CAP ? { kind: 'pending' } : { kind: 'skipped' }) as Missing])));
+    // 手拼的 URL 可以带任意多个号：只反查前 TRACE_CAP 条，其余点名「未反查」
+    for (const id of sel.missing.slice(0, TRACE_CAP)) {
       const t0 = performance.now();
       Promise.resolve().then(() => api.getLineTrace(id)).then(
         (t) => { if (alive) setMissingInfo((m) => ({ ...m, [id]: { kind: 'trace', t } })); },
@@ -277,7 +281,13 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
   }, [missingKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const narrowed = sel !== null && !showAll;
   const groups = useMemo(() => groupCandidates(narrowed ? sel.shown : cands?.lines ?? []), [cands, sel, narrowed]);
-  const candById = useMemo(() => new Map((cands?.lines ?? []).map((l) => [l.line_id, l])), [cands]);
+  // 来源链的依据：单自己带的（组满的记录不在候选里）优先，新加的来源从候选取
+  const chainRef = useMemo(() => {
+    const m = new Map<number, ChainRef>();
+    for (const l of cands?.lines ?? []) m.set(l.line_id, l);
+    for (const ln of po?.lines ?? []) for (const x of ln.sources) m.set(x.line_id, x);
+    return m;
+  }, [cands, po]);
   const localGates = useMemo(() => validate(draft), [draft]);
   const ownOnly = useMemo(() => (cands !== null || candsErr !== null ? ownOnlyRecords(po, cands?.lines ?? []) : []),
     [po, cands, candsErr]);
@@ -597,7 +607,7 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
                   </div>
                   <ul data-testid="sources">
                     {l.sources.map((s, j) => {
-                      const c = candById.get(s.line_id);
+                      const c = chainRef.get(s.line_id);
                       return (
                         <li key={`${s.line_id}|${s.seller_id}`}>
                           {/* R3：一眼看出这件货是哪张计划哪一版哪条记录、哪家店的量 */}

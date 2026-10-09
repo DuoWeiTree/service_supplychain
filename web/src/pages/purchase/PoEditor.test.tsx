@@ -28,12 +28,15 @@ const CANDS: CandidateLines = {
   groups: {},
   excluded: { state: 1, sku: 0, category: 0, period: 0, fully_confirmed: 2 },
 };
+/** 被本单组满的记录 200：候选里没有它，来源链只能靠单自己带 */
+const USED_UP = { plan_id: 4, plan_title: '夏季计划', rev: 3, sku: 'SKU-Z', period: '2026-12' };
 const DRAFT: PurchaseOrder = {
   po_id: 1, supplier_id: 'S-1001', purchaser_id: 111, opt_uid: 10925905, qc_type: 1, wid: 101,
   custom_order_sn: 'SCM-PO-1', order_sn: null, state: '草稿', placed_at: null, draft_version: 4,
   created_by: 'ops.zhang', is_void: false, discarded_at: null,
   lines: [{ line_no: 1, sku: 'SKU-A', wid: 101, units: 30, price: '12.5000', expect_arrive_date: null,
-    unplanned_reason: null, lx_item_id: null, sources: [{ line_id: 101, seller_id: '11072', units: 30 }],
+    unplanned_reason: null, lx_item_id: null, sources: [{ line_id: 101, seller_id: '11072', units: 30,
+      plan_id: 3, plan_title: '春季计划', rev: 1, sku: 'SKU-A', period: '2026-10' }],
     sources_units: 30, unplanned_units: 0 }],
   source_line_states: [{ line_id: 101, state: '已提交' }], attention: [], preflight: [], confirm_token: 't',
 };
@@ -309,7 +312,7 @@ describe('采购单编辑器：已保存草稿', () => {
 
   it('★ 本单把记录组满（候选不列）：单列「本单原有来源」，移除后能加回，超过原有量拒绝', async () => {
     const full: PurchaseOrder = { ...DRAFT, lines: [{ ...DRAFT.lines[0]!, sku: 'SKU-Z', units: 50,
-      sources: [{ line_id: 200, seller_id: '11072', units: 50 }], sources_units: 50 }] };
+      sources: [{ line_id: 200, seller_id: '11072', units: 50, ...USED_UP }], sources_units: 50 }] };
     await mount('/purchase/1', { getPurchaseOrder: vi.fn(async () => full) });
     const own = await screen.findByTestId('own-200');
     expect(own).toHaveTextContent('本单原有来源');
@@ -498,6 +501,14 @@ describe('★ 明细里的来源链：不展开就看得到', () => {
     await userEvent.click(within(row).getByRole('button', { name: '加入' }));
     const src = within(await screen.findByTestId('po-line-1')).getByTestId('sources');
     expect(src).toHaveTextContent('春季计划 rev1 SKU-A 2026-10 → A4Pet-US 30 件');
+  });
+
+  it('★ 草稿把记录组满后重新载入（候选不再列它）：来源链照样完整', async () => {
+    const full: PurchaseOrder = { ...DRAFT, lines: [{ ...DRAFT.lines[0]!, sku: 'SKU-Z', units: 50,
+      sources: [{ line_id: 200, seller_id: '11072', units: 50, ...USED_UP }], sources_units: 50 }] };
+    await mount('/purchase/1', { getPurchaseOrder: vi.fn(async () => full) });
+    const src = within(await screen.findByTestId('po-line-1')).getByTestId('sources');
+    expect(src).toHaveTextContent('夏季计划 rev3 SKU-Z 2026-12 → A4Pet-US 50 件');
   });
 
   it('已保存草稿的来源同样给链', async () => {

@@ -479,6 +479,14 @@ export type PoState = '草稿' | '已下单';
 export type PoId = number;
 
 export interface PoSource { line_id: number; seller_id: SellerId; units: number }
+/** 读回的来源带来源链（repo.read_po JOIN plan_line / plan）：组满的记录不在候选里，链不能靠候选补 */
+export interface PoSourceOut extends PoSource {
+  plan_id: PlanId;
+  plan_title: string;
+  rev: number;
+  sku: string;
+  period: Period;
+}
 
 /** 请求体里的一行：price 为字符串（后端 Decimal，库里 numeric::text） */
 /** ★ purchaser_id / opt_uid / wid 后端是整数列（010_po.sql：int / bigint / int），JSON 里是数；
@@ -510,7 +518,7 @@ export interface PoLine {
   expect_arrive_date: string | null;
   unplanned_reason: string | null;
   lx_item_id: string | null;
-  sources: PoSource[];
+  sources: PoSourceOut[];
   sources_units: number;
   unplanned_units: number;
 }

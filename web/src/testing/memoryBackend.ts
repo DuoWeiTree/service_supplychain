@@ -6,7 +6,7 @@ import { ApiError, type SupplyChainApi } from '../api/client';
 import type {
   CatalogResult, CountKey, DroppedPurchaseCell, GridResponse, LeadTime,
   LeadTimeResult, NoHistoryEntry, PlanSummary, RevList, Seller, Sid, SkippedCell, SubmitResult, SystemBasisNoSource,
-  CandidateLine, LineState, PoBody, PoId, PoLine, PoSummary, PurchaseOptions, PurchaseOrder,
+  CandidateLine, LineState, PoBody, PoId, PoLine, PoSource, PoSummary, PurchaseOptions, PurchaseOrder,
   PurchaseChecks, PreflightGate,
 } from '../api/types';
 import plansFixture from './fixtures/plans.json';
@@ -60,7 +60,9 @@ export function createMemoryBackend(): SupplyChainApi {
   };
 
   // ★ 采购单：只读 + 草稿增删改。下单与「转人工」处理动作调用即抛（见下方 notSimulated）
-  type PoRow = PurchaseOrder & { created_at: string };
+  // 存的是写进来的样子（来源只有 line_id / seller_id / units）；来源链在读时补，同 repo.read_po 的 JOIN
+  type StoredLine = Omit<PoLine, 'sources'> & { sources: PoSource[] };
+  type PoRow = Omit<PurchaseOrder, 'lines'> & { lines: StoredLine[]; created_at: string };
   const pos = new Map<PoId, PoRow>(
     (clone(purchaseFixture.purchase_orders) as unknown as PoRow[]).map((p) => {
       return [p.po_id, { ...p, attention: [], source_line_states: [], preflight: [], confirm_token: '' }];
@@ -122,7 +124,12 @@ export function createMemoryBackend(): SupplyChainApi {
     const full: PoRow = { ...p, source_line_states: ids.map((id) => ({
       line_id: id, state: planLines.find((l) => l.line_id === id)?.state ?? '已提交' })) };
     const { created_at: _c, ...rest } = full;
-    return clone({ ...rest, preflight: preflight(full),
+    const lines: PoLine[] = rest.lines.map((ln) => ({ ...ln, sources: ln.sources.map((sc) => {
+      const pl = planLines.find((l) => l.line_id === sc.line_id)!;
+      return { ...sc, plan_id: pl.plan_id, plan_title: list.plans.find((x) => x.plan_id === pl.plan_id)?.title ?? '',
+               rev: pl.rev, sku: pl.sku, period: pl.period };
+    }) }));
+    return clone({ ...rest, lines, preflight: preflight(full),
                    confirm_token: `mock-${p.po_id}-v${p.draft_version}` } as PurchaseOrder);
   };
   const po = (id: PoId): PoRow => {
@@ -143,7 +150,7 @@ export function createMemoryBackend(): SupplyChainApi {
     if (missing.length) throw poErr(400, 'missing_required', '单头必填项缺失', { missing });
     if (!body.lines || body.lines.length === 0) throw poErr(400, 'missing_required', '至少一行明细', { missing: ['lines'] });
     const seen = new Set<string>();
-    const lines: PoLine[] = body.lines.map((ln, i) => {
+    const lines: StoredLine[] = body.lines.map((ln, i) => {
       const key = `${ln.sku}|${ln.wid}`;
       if (seen.has(key)) throw poErr(400, 'duplicate_line', '同一张单里同货号同仓只能一行', { sku: ln.sku, wid: ln.wid });
       seen.add(key);

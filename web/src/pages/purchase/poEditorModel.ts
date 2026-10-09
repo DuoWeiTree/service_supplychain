@@ -277,8 +277,9 @@ export function ownOnlyRecords(po: Pick<PurchaseOrder, 'lines'> | null, listed: 
 type PlanRef = Pick<CandidateLine, 'plan_id' | 'plan_title'>;
 export const planName = (c: PlanRef): string => c.plan_title.trim() || `计划 ${c.plan_id}`;
 
+export type ChainRef = Pick<CandidateLine, 'plan_id' | 'plan_title' | 'rev' | 'sku' | 'period'>;
 /** 「10 月计划 rev5 DCC1045014AI 2026-10 → A4Pet-US 100 件」 */
-export function chainText(c: Pick<CandidateLine, 'plan_id' | 'plan_title' | 'rev' | 'sku' | 'period'>, shop: string, units: number): string {
+export function chainText(c: ChainRef, shop: string, units: number): string {
   return `${planName(c)} rev${c.rev} ${c.sku} ${c.period} → ${shop} ${units} 件`;
 }
 
@@ -294,7 +295,8 @@ export function sourceSummary(lines: readonly Pick<CandidateLine, 'plan_id' | 'p
   return `来自 ${[...m.values()].map(({ c, n }) => `销售计划「${planName(c)}」rev${c.rev} 的 ${n} 条记录`).join('，')}`;
 }
 
-/** `?lines=` → 记录号。null = 没带这个参数；不是正整数的片段原样交回去点名，不丢 */
+/** `?lines=` → 记录号。null = 没带这个参数（或带了个空值：没带来任何东西，不收窄）；
+ *  不是正整数的片段原样交回去点名，不丢 */
 export function parseLineIds(raw: string | null): { ids: number[]; bad: string[] } | null {
   if (raw === null) return null;
   const ids: number[] = [];
@@ -304,7 +306,7 @@ export function parseLineIds(raw: string | null): { ids: number[]; bad: string[]
     if (n === null || n <= 0) { if (!bad.includes(t)) bad.push(t); continue; }
     if (!ids.includes(n)) ids.push(n);
   }
-  return { ids, bad };
+  return ids.length === 0 && bad.length === 0 ? null : { ids, bad };
 }
 
 /** 候选里列得出的给出来；列不出的逐条交回去，由页面反查状态后点名 */
@@ -322,5 +324,11 @@ export function sellerShares(c: Pick<CandidateLine, 'blocked' | 'sellers'>): Rec
   if (ex.some(([, e]) => e === null)) return null;
   const sum = ex.reduce((a, [, e]) => a + (e ?? 0), 0);
   if (sum <= 0) return null;
-  return Object.fromEntries(ex.map(([sid, e]) => [sid, Math.round(((e ?? 0) * 100) / sum)]));
+  // 最大余数法凑满 100（同 seller_caps 的分法）：各自四舍五入会出现 33+33+33
+  const out = Object.fromEntries(ex.map(([sid, e]) => [sid, Math.floor(((e ?? 0) * 100) / sum)]));
+  const extra = 100 - Object.values(out).reduce((a, b) => a + b, 0);
+  const order = ex.map(([sid, e]) => [sid, ((e ?? 0) * 100) % sum] as const)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  for (const [sid] of order.slice(0, extra)) out[sid]! += 1;
+  return out;
 }
