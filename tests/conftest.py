@@ -359,7 +359,11 @@ def client(wipe):
     from starlette.testclient import TestClient
 
     from api import create_app
-    return TestClient(create_app(), raise_server_exceptions=False)
+    from api.ui.purchase_options import history_query_dep
+    app = create_app()
+    # 非 live 测试默认不碰真 CH；要历史数据或不可达路径的测试自行覆盖 / 移除
+    app.dependency_overrides[history_query_dep] = lambda: (lambda sql, params=None: [])
+    return TestClient(app, raise_server_exceptions=False)
 
 
 @pytest.fixture

@@ -1266,23 +1266,41 @@ SELECT purchaser_id, opt_uid, opt_realname, count() AS n, max(cap) AS cap
 
 class PurchaseActors(NamedTuple):
     purchasers: list[tuple[int, int]]            # (purchaser_id, 单数)，降序
-    opt_uids: list[tuple[int, str | None, int]]  # (opt_uid, 姓名, 单数)，降序
+    opt_uids: list[tuple[int, str | None, int]]  # (opt_uid, 最常见姓名, 单数)，降序
     as_of: dt.date | None
+    dropped: int
+    drop_reasons: dict
 
 
 def fetch_purchase_actors(query: Query) -> PurchaseActors:
     """★ 历史为空不是错误（与 `_nonempty` 相反）：这里是候选来源之一，不是镜像。
-    空 / '0' / 非数字 id 不是候选，丢弃（po 表里这两列是整数）。"""
+    空 / '0' / 非数字 id 不是候选（po 表里这两列是整数），丢弃并计数（单位是采购单数）。
+    一个 opt_uid 对应多个姓名时单数合计、姓名取最常见的。"""
     raw = query(SQL_PURCHASE_ACTORS)
     purchasers: dict[int, int] = {}
-    opt: dict[tuple[int, str | None], int] = {}
+    opt: dict[int, dict[str | None, int]] = {}
+    reasons: dict = {}
+    dropped = 0
     for pid, uid, name, n, _cap in raw:
+        n = int(n)
         if str(pid).isdigit() and int(pid) != 0:
-            purchasers[int(pid)] = purchasers.get(int(pid), 0) + int(n)
+            purchasers[int(pid)] = purchasers.get(int(pid), 0) + n
+        else:
+            reasons["bad_purchaser_id"] = reasons.get("bad_purchaser_id", 0) + n
+            dropped += n
         if str(uid).isdigit() and int(uid) != 0:
-            key = (int(uid), (name or "").strip() or None)
-            opt[key] = opt.get(key, 0) + int(n)
+            names = opt.setdefault(int(uid), {})
+            nm = (name or "").strip() or None
+            names[nm] = names.get(nm, 0) + n
+        else:
+            reasons["bad_opt_uid"] = reasons.get("bad_opt_uid", 0) + n
+            dropped += n
+    opts = []
+    for uid, names in opt.items():
+        named = {k: v for k, v in names.items() if k is not None}
+        top = max(named.items(), key=lambda kv: kv[1])[0] if named else None
+        opts.append((uid, top, sum(names.values())))
+    opts.sort(key=lambda t: (-t[2], t[0]))
     return PurchaseActors(
-        sorted(purchasers.items(), key=lambda kv: (-kv[1], kv[0])),
-        [(u, nm, n) for (u, nm), n in sorted(opt.items(), key=lambda kv: (-kv[1], kv[0][0]))],
-        max((r[4] for r in raw), default=None))
+        sorted(purchasers.items(), key=lambda kv: (-kv[1], kv[0])), opts,
+        max((r[4] for r in raw), default=None), dropped, reasons)

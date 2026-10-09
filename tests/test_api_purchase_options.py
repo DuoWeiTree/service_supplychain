@@ -1,7 +1,5 @@
 import datetime as dt
 
-import pytest
-
 from api.ui.purchase_options import history_query_dep
 from dim.ch_source import fetch_purchase_actors
 from shared.pg_client import pg_conn
@@ -12,12 +10,6 @@ DAY = dt.date(2026, 10, 7)
 
 def _stub(client, rows):
     client.app.dependency_overrides[history_query_dep] = lambda: (lambda sql, params=None: rows)
-
-
-@pytest.fixture(autouse=True)
-def _clear(client):
-    yield
-    client.app.dependency_overrides.pop(history_query_dep, None)
 
 
 def _po(seed, purchaser, opt):
@@ -40,11 +32,12 @@ def test_merges_local_and_history_with_source_and_counts(client, seed):
     o = {x["opt_uid"]: x for x in b["opt_uids"]}
     assert o[10925905] == {"opt_uid": 10925905, "name": "陈彩凤", "source": "本服务", "count": 143}
     assert o[777]["name"] is None and o[777]["source"] == "领星历史"
-    assert b["history"] == {"available": True, "cause": None, "as_of": "2026-10-07"}
+    assert b["history"] == {"available": True, "cause": None, "as_of": "2026-10-07", "dropped": 0}
 
 
 def test_ch_unreachable_degrades_not_503(client, seed, monkeypatch):
     _po(seed, 111, 10925905)
+    client.app.dependency_overrides.pop(history_query_dep)
     make_ch_unreachable(monkeypatch)
     r = client.get("/v1/purchase-options")
     assert r.status_code == 200
@@ -60,4 +53,16 @@ def test_empty_history_is_not_an_error(client, seed):
     assert got.purchasers == [] and got.opt_uids == [] and got.as_of is None
     _stub(client, [])
     b = client.get("/v1/purchase-options").json()
-    assert b["history"] == {"available": True, "cause": None, "as_of": None}
+    assert b["history"] == {"available": True, "cause": None, "as_of": None, "dropped": 0}
+
+
+def test_default_client_never_reaches_real_ch(client, seed, monkeypatch):
+    make_ch_unreachable(monkeypatch)
+    h = client.get("/v1/purchase-options").json()["history"]
+    assert h["available"] is True, h  # 触到真 CH 就会是 False
+
+
+def test_opt_uid_with_two_names_sums_counts_keeps_top_name(client, seed):
+    _stub(client, [("111", "5", "甲", 3, DAY), ("111", "5", "乙", 7, DAY), ("111", "5", "", 1, DAY)])
+    o = client.get("/v1/purchase-options").json()["opt_uids"]
+    assert o == [{"opt_uid": 5, "name": "乙", "source": "领星历史", "count": 11}]

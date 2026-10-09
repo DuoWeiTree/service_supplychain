@@ -205,3 +205,4 @@ def test_fetch_purchase_actors_groups_and_drops_bad_ids():
     assert got.purchasers == [(111, 135), (185, 8)]
     assert got.opt_uids == [(10925905, "陈彩凤", 135)]
     assert got.as_of == day
+    assert got.dropped == 10 and got.drop_reasons == {"bad_opt_uid": 9, "bad_purchaser_id": 1}
