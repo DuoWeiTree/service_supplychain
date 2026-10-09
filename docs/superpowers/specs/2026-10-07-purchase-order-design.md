@@ -67,7 +67,7 @@
 
 | 表 | 要点 | 出处 |
 |---|---|---|
-| `po` | `supplier_id` · `purchaser_id` · `opt_uid` · ★ `qc_type`（0/1/2）· `wid` **可空** · `custom_order_sn`（我们生成，前缀撞不上 `PO…`）· `order_sn` · 本地状态 `草稿→已下单` · ★ `placed_mode ∈ {fake,live}` · `draft_version` | `03:394` · B7 · B8 · §2 |
+| `po` | `supplier_id` · `purchaser_id` · `opt_uid` · ★ `qc_type`（0/1/2）· `wid` **可空** · `custom_order_sn`（我们生成，前缀撞不上 `PO…`）· `order_sn` · 本地状态 `草稿→已下单` · `draft_version` | `03:394` · B7 · B8 · §2 |
 | `po_line` | `sku` · ★ `wid NOT NULL` · `units`（采购员填）· `price` · `expect_arrive_date` · ★ `unplanned_reason` · `lx_item_id`（下单后回填，回读行级键） | B7 · `17:245` · D9 |
 | `po_source_map` | `(po_id, line_no, line_id, seller_id, units)` | `03:423` · N-1 |
 | `po_transition` / `po_event` | 白名单 1 行 `草稿→已下单`，校验 `order_sn` 非空 | `04:992` |
@@ -115,8 +115,8 @@
 ```
 每日一次（APScheduler 进程内，S-33；时刻 V2，排在三类采集都落地之后）
   1. CH 增量 → *_obs(source='ch')
-  2. 未结单 PO（status ∉ {9,-1}，仅 live）→ 领星只读接口复核 PO 头 + 其 CR/IB → *_obs(source='api')
-     fake 单不走 CH/API，由「模拟外部」抽屉喂 *_obs(source='sim')（§11 G2）
+  2. 未结单 PO（status ∉ {9,-1}）→ 领星只读接口复核 PO 头 + 其 CR/IB → *_obs(source='api')
+     观测来源只有 ch / api 两种（PB-D14：已无 sim）
   3. 两源不符 → 采信较新的一方 + 写 recon_discrepancy（撤销就在这里被抓到）
   4. 写 recon_run：每源水位、进 / 丢 / 原因（无 PO 的 IB 在这里点名，B11）
   5. 触发记录再评估（§7）
@@ -188,9 +188,12 @@ POST /v1/purchase-orders/{id}/place {confirm_token}
 ② 最近一次 create 为 `ok/unknown` 却没记账也没待核实的草稿 → 补开待核实、查重。
 ★ 恢复动作记在**原下单人** `actor` 名下（`actor` 表里没有「系统」，不编一个），事件 `src=recover:<call_id>` 可分辨；一条失败只记 ERROR、不拖累其余。全程不自动重试 `createPurchaseOrder`。
 
-### 6.4 fake / live
+### 6.4 单一路径与启动闸（PB-D14 / PB-D15）
 
-`[erp] mode = fake|live`，默认 fake。fake 单号带 `FAKE-` 前缀，CH 回读与 API 复核跳过、改由「模拟外部」喂数（§11 G2）；界面单头与确认弹窗醒目标 FAKE/LIVE；live 缺凭证 → 启动即报错；启动日志首屏 `erp mode= host=`。★ 第一次 live 下单由负责人亲手开关、亲手点。
+下单只有一条真路径：草稿 → ⛔ 下单打真领星 → 已下单；`erp/gateway` 永远用 `LiveDriver`，没有 `[erp] mode`。配置里残留 `[erp] mode` 键 → 启动失败。
+启动闸（`api/__init__.py`，配置类错误在启动钩子炸）：`app_id` / `app_secret` / `proxy_host` 缺失 → 失败；`confirm_salt` 为空或仍是开发默认值 → 失败；`[auth] mode=rbac` → 失败（M2 未实现，§13 #8）。
+通过后启动日志首屏 WARN：`erp host= proxy= auth mode=`，注明下单打真领星、dev 身份可伪造。
+领星替身只在 `tests/`（`tests/lingxing_double.py`）：测试内注入，且禁止构造 `LiveDriver`、禁止取领星 token。
 
 ### 6.5 日志
 
@@ -275,7 +278,7 @@ erp op= host= path= idem= ms= outcome= http= lx_code= lx_msg= cause=<__cause__ �
 | 采购员首页 | 我的采购单 · 本地状态 × 领星状态计数 · 不一致 / 待人工核实告警 · 各源「截至」条 |
 | 候选 | 记录按货号分组 · 分店上限 / 已用 / 剩余 · 不可组单的点名原因 |
 | 采购单编辑 | 单头表单 · 明细行 · 每行来源 · 无计划来源量 + 理由 |
-| ⛔ 下单确认弹窗 | 供应商 / 采购方 / 采购员 · 行 · 合计件数与金额 · FAKE/LIVE |
+| ⛔ 下单确认弹窗 | 供应商 / 采购方 / 采购员 · 行 · 合计件数与金额 · 将打真领星 |
 | 采购单详情 | 每行：下单 · 收货 · 良品入库 · 待检 · 次品 · 各带截至；两轴状态并排 |
 
 按 `CLAUDE.md`：屏幕给数据，说明进折叠区；不可逆按钮 `.btn--danger` + ⛔（`10:87`）。
@@ -307,7 +310,7 @@ erp op= host= path= idem= ms= outcome= http= lx_code= lx_msg= cause=<__cause__ �
 | D1 | 直接建领星采购单 PO，不经采购计划 PP |
 | D2 | 采购量记到店铺，分店上限按期望销量占比 |
 | D3 | Σ期望 = 0 或有店 unknown → 拒绝组单并点名 |
-| D4 | 真网关 + `fake｜live` 开关，默认 fake |
+| D4 | ~~真网关 + `fake｜live` 开关，默认 fake~~ ★ 已推翻（PB-D14，§13 #9） |
 | D5 | 领星作废 → 释放额度，记录按量退回 |
 | D6 | 采购阶段到入库为止；CR / IB 只读回 |
 | D7 | 可备货只算良品 |
@@ -367,7 +370,7 @@ erp op= host= path= idem= ms= outcome= http= lx_code= lx_msg= cause=<__cause__ �
 | # | 缺口 | 不补的后果 | 修补 |
 |---|---|---|---|
 | ★ G1 | 下单后没有核对「领星落下的」与「我们发的」是否一致；领星侧还能用变更单改量（实测 3 张） | 领星里数量被改、或接口静默截断，计划→订单的链在**最后一跳**断了，没有任何东西失败 | `v_check_po_landed`：按 `lx_item_id`（缺时按 sku + 仓）比 `po_line` 与领星 PO 明细的 sku / `quantity_real` / 单价 / 仓；不符进 `recon_discrepancy` 并在采购单上告警。下单成功后立即用 `PurchaseOrderList` 读回一次做首检 |
-| ★ G2 | fake 模式下回读跳过 fake 单 ⇒ **闭环在下单之后断掉**，到不了「准备排货」，mock 与真 API 跑不出同一屏（`00e` A 判据⑥ 同款要求） | 只能在 live 下验证后半段 = 每次验证都在领星建真单 | 「模拟外部」抽屉（`16` §0 · E-1 全局一个）：对 fake 单模拟 收货 / 入库（良品·待检·次品）/ 撤销 / 作废 / 变更数量 → 写 `*_obs(source='sim')`。★ 明确标「模拟外部」，不长成业务输入框 |
+| ★ G2 | ~~fake 模式下回读跳过 fake 单 ⇒ 闭环在下单之后断掉~~ ★ **已随 PB-D14 删除**：产品里不再有 fake 单与「模拟外部」抽屉（也无 `source='sim'`） | 下单之后的回读 / 核对逻辑由 **测试替身（`tests/` 内）** 喂数验证，不进产品代码 | 测试里直接改替身的量（`LingxingDouble.mutate_item`）再调落地核对，覆盖 收货 / 入库 / 变更数量 等分支；真领星的后半段只能在首张真单上验 |
 | ★ G3 | 恒等式只在触发器里，**查不出来**；`00e` 阶段 B 判据① 措辞与视图不符（矛盾 2） | 「过了」和「没测到」长得一样 | `v_check_*` 一族：每个视图返回**违例行**，空 = 通过 · `GET /v1/checks/purchase` 汇总 · E2E 每步之后断言全空 · 判据① 改写为「Σ 映射 ≡ 已确认量；Σ 已下单单的映射 ≡ 已下单量」 |
 | G4 | UC-P7 反查没进设计 | 运营问「我这条计划下到哪了」答不出 | `/plan-lines/{id}/trace` 的承重墙① 部分本刀实现 |
 | G5 | 只有按采购单看，没有**按计划看**的完成度 | 采购员不知道还剩哪些没组；运营不知道计划落了多少 | 计划级汇总：计划 × 货号 × 月 —— 计划采购 / 已确认 / 已下单 / 良品入库 四列并排，不合成达成率（`00e` D 判据同款） |
@@ -381,7 +384,7 @@ erp op= host= path= idem= ms= outcome= http= lx_code= lx_msg= cause=<__cause__ �
 |---|---|---|
 | ① 承重墙① 恒等式 | `v_check_po_source` + 判据改写（G3） | 补后可兑现 |
 | ② 部分下单用量表达 | 量视图（§3.4），不新增状态值 | ✓ |
-| ③ 作废读回并退出已下单 | D5 + 新退回边 + 回读 / 模拟外部 | ✓（fake 靠 G2） |
+| ③ 作废读回并退出已下单 | D5 + 新退回边 + 回读 | ✓（测试替身覆盖，G2） |
 | ④ 分批到货，首批与到齐分得开 | 首批 → 准备排货（D10）· 到齐 = 领星 9 + 量并排（§7） | ✓ |
 | ⑤ 良品 / 待检 / 次品分开 | `po_ib_obs` 三列 · D7 | ✓ |
 | ⑥ 多仓库采购 | `po.wid` 可空 + `po_line.wid`（B7） | ✓ |
@@ -390,9 +393,9 @@ erp op= host= path= idem= ms= outcome= http= lx_code= lx_msg= cause=<__cause__ �
 
 | 里程碑 | 含 | ★ 验收（全部可复现） |
 |---|---|---|
-| **M1 计划→订单正确**（fake） | 刀0 · 1 · 2 · 3 · G1~G6 · 模拟外部的「下单」部分 | 建计划 → 提交 → 组单（含分店上限、超计划量）→ 下单四种结果 → `v_check_*` 全空 → trace 能反查 |
-| **M2 首张 live 单** | M1 + live 开关 | 负责人亲手下一张 → `v_check_po_landed` 空 → 回答 §6.7 右列三问 |
-| **M3 入库闭环** | 刀4 · 模拟外部的到货部分 · 作废 / 撤销 | fake：模拟到货 → 准备排货；模拟作废 → 退回；live：首次回读 + API 复核 → `recon_run` 留痕 |
+| **M1 计划→订单正确**（测试替身（`tests/` 内）） | 刀0 · 1 · 2 · 3 · G1~G6 | 建计划 → 提交 → 组单（含分店上限、超计划量）→ 下单四种结果 → `v_check_*` 全空 → trace 能反查 |
+| **M2 首张真单** | M1 + RBAC 接入（PB-D15 之后下单已可打真领星，M2 补身份） | 负责人亲手下一张 → `v_check_po_landed` 空 → 回答 §6.7 右列三问 |
+| **M3 入库闭环** | 刀4 · 作废 / 撤销 | 测试替身：改量到货 → 准备排货；作废 → 退回；真领星：首次回读 + API 复核 → `recon_run` 留痕 |
 | **M4 交互完善** | 刀5 余项 · V10 / V11 预填 | 采购员独立完成一轮：从首页工作队列到下单 |
 
 ### 11.5 交互管理（深入要求）
@@ -401,7 +404,7 @@ erp op= host= path= idem= ms= outcome= http= lx_code= lx_msg= cause=<__cause__ �
 |---|---|
 | 一眼知道今天要干什么 | 首页工作队列：待组单记录 · 草稿（缺什么）· 待人工核实 · 不一致告警 · 各源截至 |
 | 少填 | 采购员只有 1 人、采购方 2 个 → 默认值；V10 分店预填；V11 供应商 / 单价 / 质检方式按历史预填并标出处 |
-| 下单前不踩雷 | preflight 一次列全；⛔ 弹窗列出将产生什么 + FAKE/LIVE |
+| 下单前不踩雷 | preflight 一次列全；⛔ 弹窗列出将产生什么 |
 | 出错可回 | 草稿随便改 / 删；下单后只能去领星作废，读回自动释放额度（D5） |
 | 回答别人的问题 | 从计划 / 记录 / 采购单三个入口都能反查到同一条链（G4 · G5） |
 
@@ -446,7 +449,7 @@ erp op= host= path= idem= ms= outcome= http= lx_code= lx_msg= cause=<__cause__ �
 
 | 硬闸（启动钩子，全局规范第 4 条） |
 |---|
-| ★ `[erp] mode=live` 且 `[auth] mode=dev` → **启动失败**（不可逆操作必须有主） |
+| ~~`[erp] mode=live` 且 `[auth] mode=dev` → 启动失败~~ ★ **已推翻（PB-D15，§13 #9）**：RBAC（M2）之前下单照常打真领星，身份沿用 dev 下拉；★ 已知风险由负责人接受：**RBAC 之前内网任何人可以任意身份真下单**。启动闸见 §6.4（`[auth] mode=rbac` 仍拒绝） |
 | `rbac` 模式缺 `RBAC_API_URL` / Service Token → 启动失败；启动时探 `GET /health`，不通 → 首屏 WARN（不阻塞 /health，同 I-1） |
 
 ### 12.3 ★ 失败必须分得开（样板会把它们混成 401，我们不照搬）
@@ -476,7 +479,6 @@ erp op= host= path= idem= ms= outcome= http= lx_code= lx_msg= cause=<__cause__ �
 | ★ `resolve:scm-po` | §6.6 人工处理 | 采购员 |
 | `cancel:scm-line` | 撤销计划单记录（须理由） | 管理 |
 | `manage:scm-binding` | 维护 用户 ↔ 领星采购员 绑定 | 管理 |
-| `simulate:scm-external` | 模拟外部（仅 fake） | 开发 / 测试 |
 
 角色由 RBAC 管理后台分配（含按部门 / 职位自动规则，`rbac:README.md:886-894`），**不在本服务**。
 登记方式：按目录 `conventions.request_channel` 向 RBAC 维护者申请，由其录入（同 `rbac:migrations/0006` 的做法）。
@@ -512,10 +514,11 @@ erp op= host= path= idem= ms= outcome= http= lx_code= lx_msg= cause=<__cause__ �
 |---|---|---|
 | 1 | **锁模式 `FOR NO KEY UPDATE`**（不是 `FOR UPDATE`）：提交时检查锁 `plan_line`，`FOR UPDATE` 与并发事务经 `po_source_map` 外键持有的 `KEY SHARE` 冲突，两个提交者互等；`NO KEY UPDATE` 与 `KEY SHARE` 兼容且仍按记录串行。应用层 `lock_plan_lines` 同模式 | `012` `assert_line_po_qty` · `03` §4.0 |
 | 2 | **恢复动作的 actor = 原下单人**：库里无 system actor（`plan_line_event_actor_fk`），M1 不加种子；事件 `src=recover:<call_id>` 区分；M2 接 RBAC 时再定系统身份 | §6.3 |
-| 3 | **模拟接口门控**：仅 `[erp] mode=fake` 且 `[auth] mode=dev`，否则 403 `simulation_disabled`；测试配置钉死这两项，免得本机切 live 后测试经真代理打领星建真单 | `08` §1.2 |
+| 3 | ~~模拟接口门控~~ ★ 已随 PB-D14 作废：模拟接口整体删除；「测试不得经真代理打领星」改由 `tests/conftest.py` 强制（注入替身、测试内构造 `LiveDriver` 即抛错、禁取领星 token） | `08` §1.2 |
 | 4 | **落地核对三态**：`checked` / `read_outcome` / `read_cause` / `problems`。读回不成 → `checked=false`，不开 `landed_mismatch`、不拿旧观测冒充「已核对」；`not_observed` 由 `v_check_po_landed` 如实反映 | `07` §2 |
 | 5 | **settle 原子化**：close_call 与「记已下单」/「开待核实」同一事务（§6.2）；`needs_verify.detail` 冻结为事实、时间线实时推导已知 / 未知（§6.6） | §6.2 §6.6 |
 | 6 | **手动推进拒绝推导态**：`已确认 / 已下单 / 准备排货` → 422 `derived_state`，`allowed[]` 过滤它们；错误码优先级 404 → `unknown_state` → `terminal_state` → `derived_state` → `illegal_transition`（对已撤销记录说「由量推导」不真实） | `04` §1.2 |
 | 7 | 试过下单（有 `erp_call`）的草稿被删 → **软作废**（`discarded_at`），单头留档、释放额度；对已作废草稿的 place / 登记 → 409 `po_discarded` | `03` §4.0 |
-| 8 | ★ **M1 `[auth] mode=rbac` 启动即拒**（「RBAC not implemented until M2」）：鉴权链路未实现，放行等于 live 下照收伪造的 `x-actor`；因而 M1 不可能 live。live 凭证检查排在此闸之前 | §12.2 · `api/__init__.py` |
+| 8 | ★ **M1 `[auth] mode=rbac` 启动即拒**（「RBAC not implemented until M2」）：鉴权链路未实现，放行等于照收伪造的 `x-actor`（PB-D15 之后下单打真领星，此闸仍保留）。凭证检查排在此闸之前 | §12.2 · `api/__init__.py` |
 | 9 | 终审修复波：`recover_stuck` 由调度器每 V5 分钟周期跑；`/v1/attention` 读时列出 `stuck_call`；卡住的读调用由恢复收尾；查重命中须对得上才记账（同键多张 / 对不上 → `landed_mismatch`）；不可逆端点非明确拒绝一律 `unknown`；`landed_mismatch` 出口 `acknowledge-mismatch`；下单前检查加 `sources_orderable` | §6.2 §6.3 §6.6 · `07` §2 · `08` |
+| 9 | ★ **删除 fake 模式（PB-D14）· 现在就允许真下单（PB-D15）**（负责人 2026-10-08）：产品只剩一条真路径，无 `[erp] mode` / `placed_mode` / `erp_call.mode` / `source='sim'`，无模拟接口；领星替身只在 `tests/`。推翻 D4 与 §12.2「live + dev 拒绝启动」。★ 已知风险由负责人接受：RBAC（M2）之前，内网任何人可以任意身份真下单。残留 `[erp] mode` → 启动失败（PB-D14a） | §6.4 · §12.2 · `00` PB 组 |
