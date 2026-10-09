@@ -18,7 +18,7 @@ from pathlib import Path
 
 from api.ui.purchase_options import history_query_dep
 from shared.pg_client import pg_conn
-from tests.helpers import H, mint
+from tests.helpers import H, advance, mint
 
 DIR = Path(__file__).resolve().parents[1] / "web" / "src" / "testing" / "fixtures" / "contract"
 WRITE = os.environ.get("SCM_WRITE_CONTRACT") == "1"
@@ -96,6 +96,10 @@ def test_contract_samples_match_backend_types(client, seed, lingxing):
     assert got["po-list"]["purchase_orders"] and got["plan-lines"]["lines"] and got["attention"]["items"]
     assert got["timeline-needs-verify"]["conclusion"] and got["purchase-options"]["purchasers"]
 
+    _compare(got)
+
+
+def _compare(got: dict) -> None:
     if WRITE:
         DIR.mkdir(parents=True, exist_ok=True)
         for name, body in got.items():
@@ -108,6 +112,60 @@ def test_contract_samples_match_backend_types(client, seed, lingxing):
         if skeleton(body) != want:
             drift[name] = {"backend": skeleton(body), "committed": want}
     assert not drift, f"后端响应的类型骨架与 web 契约样本不符（改了形状就重写样本并改前端）：{json.dumps(drift, ensure_ascii=False)}"
+
+
+def test_contract_submit_samples(client, seed):
+    """提交结果页（R1 · D5 · 裁定 A/B）与 409 lines_in_purchase 的形状。
+    ★ 每个桶都要有内容：空列表的骨架是 ["list", []]，约束不了明细的键与类型。"""
+    a = H(seed.actor)
+    put = lambda path, body: client.put(f"/v1/plans/{pid}/{path}", json=body, headers=a)
+    pid = client.post("/v1/plans", json={"title": "契约", "period_start": "2026-10-01", "months": 3},
+                      headers=a).json()["plan_id"]
+    for ms in (seed.msku_a, seed.msku_c, seed.msku_d):
+        assert client.post(f"/v1/plans/{pid}/claims", json={"seller_sku": ms[0], "sid": ms[1]},
+                           headers=a).status_code == 200
+    put(f"demand/{seed.msku_a[0]}/{seed.msku_a[1]}/2026-10", {"expected_units": 120})
+    put(f"demand/{seed.msku_c[0]}/{seed.msku_c[1]}/2026-10", {"expected_units": 120})
+    put(f"demand/{seed.msku_d[0]}/{seed.msku_d[1]}/2026-10", {"expected_units": 50})
+    for sku, period, units in [(seed.sku_a, "2026-10", 500), (seed.sku_a, "2026-11", 100),
+                               (seed.sku_a, "2026-12", 50), (seed.sku_b, "2026-10", 300)]:
+        put(f"purchase/{sku}/{period}", {"planned_units": units})
+    assert client.post(f"/v1/plans/{pid}/submit", headers=a).status_code == 200
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT sku, period_start, line_id FROM plan_line WHERE plan_id = %s", (pid,))
+        lid = {(r[0], r[1].strftime("%Y-%m")): r[2] for r in cur.fetchall()}
+        advance(cur, lid[(seed.sku_a, "2026-10")], "已确认", "已下单", actor=seed.actor)
+        advance(cur, lid[(seed.sku_a, "2026-12")], "已确认", "已下单", "准备排货", "已排货", "已完结",
+                actor=seed.actor)
+    put(f"demand/{seed.msku_a[0]}/{seed.msku_a[1]}/2026-10", {"expected_units": 130})  # split_frozen
+    put(f"purchase/{seed.sku_a}/2026-11", {"planned_units": 150})                      # replaced
+    put(f"purchase/{seed.sku_a}/2026-12", {"planned_units": None})                     # left_completed
+    put(f"purchase/{seed.sku_b}/2026-10", {"planned_units": None})                     # removed
+    put(f"purchase/{seed.sku_b}/2026-11", {"planned_units": 0})                        # zero_purchase
+    put(f"purchase/{seed.sku_b}/2026-12", {"planned_units": 80})                       # added
+    r = client.post(f"/v1/plans/{pid}/submit", headers=a)
+    assert r.status_code == 200, r.text
+    resubmit = r.json()
+    for k in ("kept", "replaced", "added", "removed", "split_frozen", "left_completed"):
+        assert resubmit[k]["lines"], k
+    assert {s["reason"] for s in resubmit["skipped"]} >= {"empty_purchase", "zero_purchase"}
+
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("INSERT INTO supplier VALUES ('8085','01[吉信德]',now()) ON CONFLICT DO NOTHING")
+        cur.execute("SELECT line_id FROM plan_line WHERE plan_id = %s AND sku = %s"
+                    " AND period_start = '2026-12-01' AND state = '已提交'", (pid, seed.sku_b))
+        lid_b = cur.fetchone()[0]
+    assert client.post("/v1/purchase-orders", json=_body(seed, lid_b, 10) | {"lines": [
+        {"sku": seed.sku_b, "wid": seed.wid, "units": 10, "price": "2.5",
+         "sources": [{"line_id": lid_b, "seller_id": seed.msku_d[1], "units": 10}]}]},
+        headers=a).status_code == 201
+    put(f"purchase/{seed.sku_b}/2026-12", {"planned_units": 90})
+    r = client.post(f"/v1/plans/{pid}/submit", headers=a)
+    assert r.status_code == 409 and r.json()["error"] == "lines_in_purchase", r.text
+    blocked = r.json()
+    assert any(x["po_ids"] for x in blocked["lines"])
+
+    _compare({"submit-resubmit": resubmit, "submit-lines-in-purchase": blocked})
 
 
 def test_skeleton_catches_string_vs_int():

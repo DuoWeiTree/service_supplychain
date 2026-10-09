@@ -118,20 +118,49 @@ describe('memoryBackend（测试替身）', () => {
     });
   });
 
-  it('★ 提交逐条列 skipped[]，理由取 S-14 的两个值；铸出与跳过两个数都给', async () => {
+  it('★ 提交逐条列 skipped[]：空与 0 分开报；这一版与跳过两个数都给', async () => {
     const r = await api.submit(1);
     expect(r.rev).toBe(1);
-    expect(r.skipped.map((s) => s.reason)).toContain('zero_purchase');
-    // ★ 被丢掉的那一侧要对得上：铸出 + 跳过 = 参与评估的（货号 × 月）格子数
+    // ★ fixture 里没填的是 null：报 empty_purchase，不是 zero_purchase（空 ≠ 0）
+    expect(r.skipped.map((s) => s.reason)).toContain('empty_purchase');
+    expect(r.skipped.map((s) => s.reason)).not.toContain('zero_purchase');
+    // ★ 被丢掉的那一侧要对得上：这一版 + 跳过 = 参与评估的（货号 × 月）格子数
     const g = await api.getGrid(1);
     expect(r.lines + r.skipped.length).toBe(g.purchase.length);
+    expect(r.added.count).toBe(r.lines);
+    expect(r.kept.count + r.replaced.count + r.removed.count).toBe(0);
   });
 
-  it('★ 已有在流转的版本 → 再提交 409 rev_in_flight，点名旧版号', async () => {
-    const err = await api.submit(2).catch((e) => e);
-    expect((err as ApiError).status).toBe(409);
-    expect((err as ApiError).error).toBe('rev_in_flight');
-    expect((err as ApiError).fields).toMatchObject({ in_flight_rev: 2 });
+  it('★ 填了 0 报 zero_purchase', async () => {
+    const c = (await api.getGrid(1)).purchase.find((x) => x.planned_units === null)!;
+    await api.putPurchase(1, c.sku, c.period, 0);
+    const r = await api.submit(1);
+    expect(r.skipped).toContainEqual({ sku: c.sku, period: c.period, reason: 'zero_purchase' });
+  });
+
+  it('★ R2：有一版在流转也能直接再提交；没变的保留、变了的替换、去掉的点名', async () => {
+    const first = await api.submit(1);
+    const again = await api.submit(1);
+    expect(again.rev).toBe(first.rev + 1);
+    expect(again.kept.count).toBe(first.lines);
+    expect(again.kept.lines.map((l) => l.line_id)).toEqual(first.added.lines.map((l) => l.line_id));
+    expect(again.added.count + again.replaced.count + again.removed.count).toBe(0);
+
+    const minted = first.added.lines[0]!;
+    await api.putPurchase(1, minted.sku, minted.period, minted.total_units + 1);
+    const changed = await api.submit(1);
+    expect(changed.replaced.lines).toEqual([expect.objectContaining({
+      sku: minted.sku, period: minted.period, old_line_id: minted.line_id,
+      total_units: { from: minted.total_units, to: minted.total_units + 1 } })]);
+
+    await api.putPurchase(1, minted.sku, minted.period, null);
+    const dropped = await api.submit(1);
+    expect(dropped.removed.lines.map((l) => [l.sku, l.period])).toEqual([[minted.sku, minted.period]]);
+
+    // ★ S-4 不变：任一时刻只有一版在流转
+    const revs = await api.listRevs(1);
+    expect(revs.revs.filter((r) => r.in_flight).map((r) => r.rev)).toEqual(
+      dropped.in_flight ? [dropped.rev] : []);
   });
 
   it('搜索目录：不给条件 → need_query=true 且 items 为空，与「查不到」不同形', async () => {

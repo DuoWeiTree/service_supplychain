@@ -1,0 +1,17 @@
+{
+  "error": "lines_in_purchase",
+  "hint": "要改动的记录已进采购：先从采购单里移掉，或保持该货号·月不变",
+  "plan_id": 1,
+  "lines": [
+    {
+      "sku": "A4P-TOY-002",
+      "period": "2026-12",
+      "line_id": 5,
+      "state": "已提交",
+      "change": "replace",
+      "po_ids": [
+        1
+      ]
+    }
+  ]
+}

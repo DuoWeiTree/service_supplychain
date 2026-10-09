@@ -1,9 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { screen, within } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
 import type {
-  AttentionQueue, CandidateLines, LineTrace, PoList, PoTimeline, PreflightResult, PurchaseOptions, PurchaseOrder,
+  AttentionQueue, CandidateLines, LineInPurchase, LineTrace, PoList, PoTimeline, PreflightResult, PurchaseOptions,
+  PurchaseOrder, SubmitResult,
 } from './types';
+import submitResubmit from '../testing/fixtures/contract/submit-resubmit.json';
+import submitBlocked from '../testing/fixtures/contract/submit-lines-in-purchase.json';
+import { ApiError } from './client';
+import { SubmitPanel } from '../pages/SubmitPanel';
 import poDraft from '../testing/fixtures/contract/po-draft.json';
 import poNeedsVerify from '../testing/fixtures/contract/po-needs-verify.json';
 import poPlaced from '../testing/fixtures/contract/po-placed.json';
@@ -38,6 +44,8 @@ const typed = {
   options: options satisfies Widen<PurchaseOptions>,
   planLines: planLines satisfies Widen<CandidateLines>,
   lineTrace: lineTrace satisfies Widen<LineTrace>,
+  submitResubmit: submitResubmit satisfies Widen<SubmitResult>,
+  submitBlocked: submitBlocked satisfies Widen<{ error: string; hint: string; plan_id: number; lines: LineInPurchase[] }>,
 };
 
 beforeEach(() => { vi.resetModules(); });
@@ -108,5 +116,31 @@ describe('契约样本 · 页面', () => {
     await mountPurchase(`/purchase/${placed.po_id}`, routes());
     expect(await screen.findByTestId('po-axes')).toHaveTextContent('已下单');
     expect(screen.getByTestId('po-detail-head')).toHaveTextContent(placed.order_sn!);
+  });
+});
+
+describe('契约样本 · 提交结果', () => {
+  it('★ 真后端的再提交响应：四个数、拆分冻结、已完结留着、空与 0 分开', () => {
+    const r = typed.submitResubmit as unknown as SubmitResult;
+    render(<MemoryRouter><SubmitPanel planId={1} report={r} blocked={null} sellers={[]} /></MemoryRouter>);
+    const report = screen.getByTestId('submit-report');
+    expect(within(report).getByTestId('count-kept')).toHaveTextContent(`保留 ${r.kept.count}`);
+    expect(within(report).getByTestId('count-removed')).toHaveTextContent(`去掉 ${r.removed.count}`);
+    expect(within(report).getByTestId('replaced-detail')).toHaveTextContent(
+      `${r.replaced.lines[0]!.total_units.from} → ${r.replaced.lines[0]!.total_units.to}`);
+    expect(within(report).getByTestId('split_frozen-detail')).toHaveTextContent(r.split_frozen.lines[0]!.sku);
+    expect(within(report).getByTestId('left_completed-detail')).toHaveTextContent(`rev ${r.left_completed.lines[0]!.rev}`);
+    expect(within(report).getByTestId('skip-empty_purchase')).toBeInTheDocument();
+    expect(within(report).getByTestId('skip-zero_purchase')).toBeInTheDocument();
+  });
+
+  it('★ 真后端的 409 lines_in_purchase：采购单号可点', () => {
+    const { error, hint, ...fields } = typed.submitBlocked;
+    const lines = fields.lines as LineInPurchase[];
+    render(<MemoryRouter><SubmitPanel planId={1} report={null} sellers={[]}
+      blocked={{ err: new ApiError(409, error, hint, fields), lines }} /></MemoryRouter>);
+    const po = lines.find((l) => l.po_ids.length > 0)!.po_ids[0]!;
+    expect(within(screen.getByTestId('lines-in-purchase')).getByRole('link', { name: `采购单 ${po}` }))
+      .toHaveAttribute('href', `/purchase/${po}`);
   });
 });

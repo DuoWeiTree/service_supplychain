@@ -1,40 +1,135 @@
 import { Link } from 'react-router-dom';
 import type { ApiError } from '../api/client';
-import type { PlanId, SkipReason, SubmitResult } from '../api/types';
+import { Fold } from '../components/Fold';
+import type { LineInPurchase, PlanId, Seller, SkippedCell, SubmitResult } from '../api/types';
 
-/** S-14 的值域只有这两个。★ 这里写的是「当场发生的事」，不是功能解说 */
-const SKIP_WHY: Record<SkipReason, string> = {
-  zero_purchase: '计划采购量为空或 0',
-  no_claimed_msku: '这个货号下没有已认领的 msku',
-};
+export interface LinesInPurchaseBlock { err: ApiError; lines: LineInPurchase[] }
 
-export interface InFlightBlock { rev: number; err: ApiError }
+const CHANGE: Record<LineInPurchase['change'], string> = { replace: '这次改了量', remove: '这次不再包含' };
 
-/** 提交结果的展示层。两块互斥：409 rev_in_flight 时只有 `inFlight`，
- *  成功（含空版本）时只有 `report`——由 PlanGrid.tsx 的 submit() 决定哪个非空。 */
-export function SubmitPanel(
-  { planId, report, inFlight }: { planId: PlanId; report: SubmitResult | null; inFlight: InFlightBlock | null },
-) {
+/** 处置按条说：已完结 的记录没有「从采购单移掉」这条路（裁定 A） */
+function howToProceed(l: LineInPurchase): string {
+  const restore = l.change === 'remove' ? '把采购量填回原来的数' : '改回原来的量';
+  if (l.state === '已完结' || l.po_ids.length === 0) return restore;
+  return `${restore}，或先从采购单里移掉这条记录`;
+}
+
+const units = (v: number | null | undefined) => (v === null || v === undefined ? '未知' : String(v));
+
+function CellList({ cells }: { cells: SkippedCell[] }) {
+  return (
+    <ul>
+      {cells.map((s) => (
+        <li key={`${s.sku}-${s.period}`}><span className="k">{s.sku}</span> <span>{s.period}</span></li>
+      ))}
+    </ul>
+  );
+}
+
+/** 提交结果的展示层。两块互斥：409 lines_in_purchase 时只有 `blocked`，
+ *  成功（含空版本）时只有 `report` —— 由 PlanGrid.tsx 的 submit() 决定哪个非空。 */
+export function SubmitPanel({ planId, report, blocked, sellers }: {
+  planId: PlanId;
+  report: SubmitResult | null;
+  blocked: LinesInPurchaseBlock | null;
+  sellers: Seller[] | null;
+}) {
+  const sellerName = (sid: string) => sellers?.find((s) => s.seller_id === sid)?.name ?? sid;
+  const by = (reason: SkippedCell['reason']) => report?.skipped.filter((s) => s.reason === reason) ?? [];
+  const empty = by('empty_purchase');
+  const zero = by('zero_purchase');
+  const noMsku = by('no_claimed_msku');
+
   return (
     <>
-      {inFlight && (
-        // ★ 409 是「你没写错，但现在不行」—— 点名旧版号，下一步是去看那一版，不是改表单
-        <div className="flash flash--bad" data-testid="rev-in-flight">
-          <div>rev {inFlight.rev} 还在流转，这一版不能提交</div>
-          <div className="gate__code">{inFlight.err.status} {inFlight.err.error}</div>
-          <Link className="btn btn--sm" to={`/plans/${planId}/revs`}>去看 rev {inFlight.rev}</Link>
+      {blocked && (
+        <div className="flash flash--bad" data-testid="lines-in-purchase">
+          <div>{blocked.err.hint}</div>
+          <div className="gate__code">{blocked.err.status} {blocked.err.error}</div>
+          <ul>
+            {blocked.lines.map((l) => (
+              <li key={l.line_id} className="gate__detail">
+                <span className="k">{l.sku}</span> <span>{l.period}</span>{' '}
+                <span className="chip chip--dim">{l.state}</span> <span>{CHANGE[l.change]}</span>{' '}
+                {l.po_ids.map((po) => (
+                  <Link key={po} to={`/purchase/${po}`}>采购单 {po}</Link>
+                )).flatMap((a, i) => (i === 0 ? [a] : [' ', a]))}
+                <div>{howToProceed(l)}</div>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
       {report && (
         <div className="sec" data-testid="submit-report">
           <div className="sec__title">提交结果</div>
-          {/* ★ 铸出几条 + 跳过几条，各自成句：只报一个等于藏起另一半 */}
           <div className="gate__sum">
             <div>rev {report.rev}</div>
-            <div>铸出 {report.lines} 条</div>
-            <div>跳过 {report.skipped.length} 条</div>
+            <div>这一版 {report.lines} 条</div>
           </div>
+          {/* ★ D5：四个数各自成列 —— 只报一个总数，人看不出哪些被换掉了 */}
+          <div className="gate__sum">
+            <div data-testid="count-kept">保留 {report.kept.count}</div>
+            <div data-testid="count-replaced">替换 {report.replaced.count}</div>
+            <div data-testid="count-added">新增 {report.added.count}</div>
+            <div data-testid="count-removed">去掉 {report.removed.count}</div>
+          </div>
+          {report.replaced.count > 0 && (
+            <Fold summary="替换明细" testId="replaced-detail">
+              <ul>
+                {report.replaced.lines.map((l) => (
+                  <li key={l.old_line_id}>
+                    <span className="k">{l.sku}</span> <span>{l.period}</span>{' '}
+                    <span>{l.total_units.from} → {l.total_units.to}</span>
+                  </li>
+                ))}
+              </ul>
+            </Fold>
+          )}
+          {report.removed.count > 0 && (
+            <Fold summary="去掉明细" testId="removed-detail">
+              <ul>
+                {report.removed.lines.map((l) => (
+                  <li key={l.line_id}>
+                    <span className="k">{l.sku}</span> <span>{l.period}</span> <span>{l.total_units}</span>
+                  </li>
+                ))}
+              </ul>
+            </Fold>
+          )}
+          {report.split_frozen.count > 0 && (
+            <div className="muted" data-testid="split_frozen">
+              <Fold summary={`已进采购，按原分店拆分保留 ${report.split_frozen.count} 条`} testId="split_frozen-detail">
+                <ul>
+                  {report.split_frozen.lines.map((l) => (
+                    <li key={l.line_id}>
+                      <span className="k">{l.sku}</span> <span>{l.period}</span>
+                      <ul>
+                        {[...new Set([...Object.keys(l.split.from), ...Object.keys(l.split.to)])].sort().map((sid) => (
+                          <li key={sid}>{sellerName(sid)} {units(l.split.from[sid])} → {units(l.split.to[sid])}</li>
+                        ))}
+                      </ul>
+                    </li>
+                  ))}
+                </ul>
+              </Fold>
+            </div>
+          )}
+          {report.left_completed.count > 0 && (
+            <div className="muted" data-testid="left_completed">
+              <Fold summary={`已完结，原样留着 ${report.left_completed.count} 条`} testId="left_completed-detail">
+                <ul>
+                  {report.left_completed.lines.map((l) => (
+                    <li key={l.line_id}>
+                      <span className="k">{l.sku}</span> <span>{l.period}</span> <span>rev {l.rev}</span>{' '}
+                      <span>{l.total_units}</span>
+                    </li>
+                  ))}
+                </ul>
+              </Fold>
+            </div>
+          )}
           {/* ★ 空版本：说出「没有占在流转位」，否则人会以为提交成功了，
                然后奇怪为什么采购那边什么都没有 */}
           {report.lines === 0 && (
@@ -42,19 +137,37 @@ export function SubmitPanel(
               这一版是空的{report.in_flight === false && '，没有占在流转位'}
             </div>
           )}
-          {/* ★ 判据②：被跳过的格子逐条列出，一条都不许合成「部分跳过」 */}
-          <ul data-testid="skipped-list">
-            {report.skipped.map((s) => (
-              <li className="dropline" key={`${s.sku}-${s.period}-${s.reason}`}>
-                <span className="k">{s.sku}</span>
-                <span>{s.period}</span>
-                <span className="gate__code">{s.reason}</span>
-                <span className="gate__detail">{SKIP_WHY[s.reason]}</span>
-              </li>
-            ))}
-          </ul>
-          {/* ★ 不自动跳走：skipped[] 只在这一次响应里存在，由人点「去版本」 */}
-          <Link className="btn btn--sm" to={`/plans/${planId}/revs`}>去版本</Link>
+          {/* ★ R1：空与 0 各自一行灰字（空 ≠ 0）；红色只给填了采购量却铸不出的 */}
+          {empty.length > 0 && (
+            <div className="muted" data-testid="skip-empty_purchase">
+              <Fold summary={`采购量为空 ${empty.length} 个`}><CellList cells={empty} /></Fold>
+            </div>
+          )}
+          {zero.length > 0 && (
+            <div className="muted" data-testid="skip-zero_purchase">
+              <Fold summary={`采购量为 0 ${zero.length} 个`}><CellList cells={zero} /></Fold>
+            </div>
+          )}
+          {noMsku.length > 0 && (
+            <div data-testid="skip-no_claimed_msku">
+              <div className="gate__sum">没有已认领的 msku {noMsku.length} 个</div>
+              <ul>
+                {noMsku.map((s) => (
+                  <li className="dropline" key={`${s.sku}-${s.period}`}>
+                    <span className="k">{s.sku}</span>
+                    <span>{s.period}</span>
+                    <span className="gate__code">{s.reason}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {/* ★ 不自动跳走：skipped[] 只在这一次响应里存在，由人点「去版本」。
+               去采购不带 N：kept 里哪些还可组单，响应里没有（剩余量要另查） */}
+          <div className="gate__sum">
+            <Link className="btn btn--sm" to="/purchase">去采购</Link>
+            <Link className="btn btn--sm" to={`/plans/${planId}/revs`}>去版本</Link>
+          </div>
         </div>
       )}
     </>

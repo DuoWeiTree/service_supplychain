@@ -1,0 +1,108 @@
+{
+  "rev": 2,
+  "lines": 3,
+  "in_flight": true,
+  "content_digest": "9cee87c963ab2d31bd002d2b2cd2366095f996a617b62d6a0ea80ba3adb24067",
+  "skipped": [
+    {
+      "sku": "A4P-TOY-002",
+      "period": "2026-10",
+      "reason": "empty_purchase"
+    },
+    {
+      "sku": "A4P-TOY-002",
+      "period": "2026-11",
+      "reason": "zero_purchase"
+    },
+    {
+      "sku": "DCC1800264G1",
+      "period": "2026-12",
+      "reason": "empty_purchase"
+    }
+  ],
+  "kept": {
+    "count": 1,
+    "lines": [
+      {
+        "sku": "DCC1800264G1",
+        "period": "2026-10",
+        "line_id": 2,
+        "state": "已下单",
+        "total_units": 500
+      }
+    ]
+  },
+  "replaced": {
+    "count": 1,
+    "lines": [
+      {
+        "sku": "DCC1800264G1",
+        "period": "2026-11",
+        "old_line_id": 3,
+        "new_line_id": 6,
+        "total_units": {
+          "from": 100,
+          "to": 150
+        },
+        "demand_at_submit": {
+          "from": 195,
+          "to": 195
+        }
+      }
+    ]
+  },
+  "added": {
+    "count": 1,
+    "lines": [
+      {
+        "sku": "A4P-TOY-002",
+        "period": "2026-12",
+        "line_id": 5,
+        "total_units": 80
+      }
+    ]
+  },
+  "removed": {
+    "count": 1,
+    "lines": [
+      {
+        "sku": "A4P-TOY-002",
+        "period": "2026-10",
+        "line_id": 1,
+        "total_units": 300
+      }
+    ]
+  },
+  "split_frozen": {
+    "count": 1,
+    "lines": [
+      {
+        "sku": "DCC1800264G1",
+        "period": "2026-10",
+        "line_id": 2,
+        "split": {
+          "from": {
+            "11072": 120,
+            "11094": 120
+          },
+          "to": {
+            "11072": 130,
+            "11094": 120
+          }
+        }
+      }
+    ]
+  },
+  "left_completed": {
+    "count": 1,
+    "lines": [
+      {
+        "sku": "DCC1800264G1",
+        "period": "2026-12",
+        "line_id": 4,
+        "rev": 1,
+        "total_units": 50
+      }
+    ]
+  }
+}

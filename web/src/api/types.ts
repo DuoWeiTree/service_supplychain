@@ -362,21 +362,56 @@ export interface RemoveSkuResult {
   dropped_purchase_cells: DroppedPurchaseCell[];
 }
 
-/** S-14：值域已裁定，只有这两个 */
-export type SkipReason = 'zero_purchase' | 'no_claimed_msku';
+/** S-14 + 013：空（没打算采购）与 0（明确表态）是两个值 —— R1「空 ≠ 0」 */
+export type SkipReason = 'empty_purchase' | 'zero_purchase' | 'no_claimed_msku';
 export interface SkippedCell { sku: string; period: Period; reason: SkipReason }
+
+/** 再提交（R2）的每一类都是「计数 + 明细」—— 只给数，人对不上是哪几条 */
+export interface SubmitBucket<T> { count: number; lines: T[] }
+export interface SubmitKept { sku: string; period: Period; line_id: number; state: LineState; total_units: number }
+export interface SubmitReplaced {
+  sku: string;
+  period: Period;
+  old_line_id: number;
+  new_line_id: number;
+  total_units: { from: number; to: number };
+  demand_at_submit: { from: number; to: number };
+}
+export interface SubmitMoved { sku: string; period: Period; line_id: number; total_units: number }
+/** 裁定 B：已进采购、总量没变、分店拆分变了 —— 记录带着旧拆分留下。null = 这家店没数，不是 0 */
+export interface SubmitSplitFrozen {
+  sku: string;
+  period: Period;
+  line_id: number;
+  split: { from: Record<Sid, number | null>; to: Record<Sid, number | null> };
+}
+/** 裁定 A：这次铸不出、但已 已完结 —— 终态撤不掉，原地留着 */
+export interface SubmitLeftCompleted { sku: string; period: Period; line_id: number; rev: number; total_units: number }
 
 export interface SubmitResult {
   rev: number;
-  /** ★ 铸出几条。字段名是 `lines`（team-lead 裁定；后端若残留 `minted` 以 `lines` 为准） */
+  /** ★ 这一版的记录条数（保留 + 替换 + 新增），不只是新铸的 */
   lines: number;
   skipped: SkippedCell[];
-  /** ★ team-lead 09-22 裁定：两个都是保证的，不是可选 —— 契约块原文「后两个也是保证的，
-   *  不是可选」（`docs/superpowers/plans/2026-09-22-stage-a-backend.md:64`），
-   *  `api/ui/submit.py:114-117` 恒返回两者。brief 原文 Step 1 写成可选，是 brief 自己的错，
-   *  只有 `CatalogResult.matched` 允许可选。 */
+  /** ★ team-lead 09-22 裁定：两个都是保证的，不是可选（`api/ui/submit.py` 恒返回两者） */
   in_flight: boolean;
   content_digest: string;
+  kept: SubmitBucket<SubmitKept>;
+  replaced: SubmitBucket<SubmitReplaced>;
+  added: SubmitBucket<SubmitMoved>;
+  removed: SubmitBucket<SubmitMoved>;
+  split_frozen: SubmitBucket<SubmitSplitFrozen>;
+  left_completed: SubmitBucket<SubmitLeftCompleted>;
+}
+
+/** 409 `lines_in_purchase`（D1）：`fields.lines` 的一条 */
+export interface LineInPurchase {
+  sku: string;
+  period: Period;
+  line_id: number;
+  state: LineState;
+  change: 'replace' | 'remove';
+  po_ids: PoId[];
 }
 
 export interface Rev {

@@ -5,7 +5,7 @@
 import { ApiError, type SupplyChainApi } from '../api/client';
 import type {
   CatalogResult, CountKey, DroppedPurchaseCell, GridResponse, LeadTime,
-  LeadTimeResult, NoHistoryEntry, PlanSummary, RevList, Seller, Sid, SkippedCell, SystemBasisNoSource,
+  LeadTimeResult, NoHistoryEntry, PlanSummary, RevList, Seller, Sid, SkippedCell, SubmitResult, SystemBasisNoSource,
   CandidateLine, LineState, PoBody, PoId, PoLine, PoSummary, PurchaseOptions, PurchaseOrder,
   PurchaseChecks, PreflightGate,
 } from '../api/types';
@@ -49,6 +49,10 @@ export function createMemoryBackend(): SupplyChainApi {
   const revs = new Map<number, RevList>([[2, clone(revsFixture) as RevList]]);
   const sellers = (clone(sellersFixture) as { sellers: Seller[] }).sellers;
   const inFlight = new Map<number, number | null>([[1, null], [2, 2], [3, null], [4, null]]);
+  /** 每张计划当前的活记录，键 `${sku}/${period}` —— 再提交按它分保留 / 替换 / 新增 / 去掉 */
+  type LiveLine = { line_id: number; sku: string; period: string; total_units: number };
+  const liveLines = new Map<number, Map<string, LiveLine>>();
+  let nextLineId = 1001;
   // ★ 14 B12：全局配置，与 grid-1.json 的 params 出厂值一致（30/60/15）
   let lead: LeadTime = {
     route: 'oversea_sea', make_days: 30, ship_days: 60, anchor_day: 15,
@@ -467,16 +471,11 @@ export function createMemoryBackend(): SupplyChainApi {
 
     async submit(planId) {
       writable(planId);
-      const held = inFlight.get(planId) ?? null;
-      if (held !== null) {
-        throw new ApiError(409, 'rev_in_flight', `rev ${held} 还在流转`, { in_flight_rev: held });
-      }
       const g = grid(planId);
       const skipped: SkippedCell[] = [];
-      let lines = 0;
-      // ★ M2：判据的键照抄 `rules/submit.py:53` —— 后端是 `{c.sku for c in demand_cells}`，
-      //   **只按货号**，不带月份。当前 fixture 每个货号三个月全有需求格，两者给同一答案，
-      //   所以这是潜伏分叉不是现症；按月份多卡一道，会在「某个月没认领 msku」时
+      const minted: { sku: string; period: string; total_units: number }[] = [];
+      // ★ M2：判据的键照抄 `rules/submit.py` —— 后端是 `{c.sku for c in demand_cells}`，
+      //   **只按货号**，不带月份。按月份多卡一道，会在「某个月没认领 msku」时
       //   报出后端根本不会报的 no_claimed_msku
       const skusWithClaim = new Set(g.demand.map((d) => d.sku));
       // ★ 后端按排序后的 purchase_cells 遍历、skipped 也排序输出（`rules/submit.py`）——
@@ -487,26 +486,64 @@ export function createMemoryBackend(): SupplyChainApi {
         if (!skusWithClaim.has(pc.sku)) {
           skipped.push({ sku: pc.sku, period: pc.period, reason: 'no_claimed_msku' }); continue;
         }
-        if (pc.planned_units === null || pc.planned_units === 0) {
+        // ★ R1：空 ≠ 0
+        if (pc.planned_units === null) {
+          skipped.push({ sku: pc.sku, period: pc.period, reason: 'empty_purchase' }); continue;
+        }
+        if (pc.planned_units === 0) {
           skipped.push({ sku: pc.sku, period: pc.period, reason: 'zero_purchase' }); continue;
         }
-        lines += 1;
+        minted.push({ sku: pc.sku, period: pc.period, total_units: pc.planned_units });
       }
+      // ★ R2：按 (货号, 月) 对上一版的活记录。替身不追踪分店拆分与采购引用 ——
+      //   split_frozen / left_completed / 409 lines_in_purchase 要测，用 stubBackend 给后端的形状
+      const prev = liveLines.get(planId) ?? new Map<string, LiveLine>();
+      const next = new Map<string, LiveLine>();
       const p = plan(planId);
       const rev = (p.state_rev ?? 0) + 1;
-      // ★ 空版本不占在流转位：占着的话这张计划从此再也提交不了，而错误会说「有一版在流转」
+      const r: Pick<SubmitResult, 'kept' | 'replaced' | 'added' | 'removed'> = {
+        kept: { count: 0, lines: [] }, replaced: { count: 0, lines: [] },
+        added: { count: 0, lines: [] }, removed: { count: 0, lines: [] },
+      };
+      for (const m of minted) {
+        const key = `${m.sku}/${m.period}`;
+        const old = prev.get(key);
+        if (old && old.total_units === m.total_units) {
+          next.set(key, old);
+          r.kept.lines.push({ sku: m.sku, period: m.period, line_id: old.line_id, state: '已提交', total_units: old.total_units });
+          continue;
+        }
+        const line = { ...m, line_id: nextLineId++ };
+        next.set(key, line);
+        if (old) {
+          r.replaced.lines.push({ sku: m.sku, period: m.period, old_line_id: old.line_id, new_line_id: line.line_id,
+            total_units: { from: old.total_units, to: m.total_units }, demand_at_submit: { from: 0, to: 0 } });
+        } else {
+          r.added.lines.push({ sku: m.sku, period: m.period, line_id: line.line_id, total_units: m.total_units });
+        }
+      }
+      for (const [key, old] of [...prev].sort(([a], [b]) => a.localeCompare(b))) {
+        if (!next.has(key)) r.removed.lines.push({ sku: old.sku, period: old.period, line_id: old.line_id, total_units: old.total_units });
+      }
+      for (const k of ['kept', 'replaced', 'added', 'removed'] as const) r[k].count = r[k].lines.length;
+      liveLines.set(planId, next);
+      const lines = next.size;
+      // ★ 空版本不占在流转位：占着的话这张计划从此再也提交不了
       const alive = lines > 0;
       p.state_rev = rev;
-      // ★ M3：铸出 0 条时后端一条 plan_line 都没有，木桶派生的 v_plan_overall_state.overall
-      //   是 NULL（即「未提交」）—— 不是「已撤销」。写成已撤销会让两种数据源的首页计数不同
+      // ★ M3：一条活记录都没有时后端木桶派生的 overall 是 NULL（即「未提交」）—— 不是「已撤销」
       p.state = alive ? '已提交' : null;
       inFlight.set(planId, alive ? rev : null);
-      revs.set(planId, {
-        revs: [{ rev, content_digest: `mock-${planId}-${rev}`, is_current: true, in_flight: alive,
-                 submitted_by: 'ops.zhang', submitted_at: new Date().toISOString(), lines }],
-        in_flight_rev: alive ? rev : null, current_rev: rev,
-      });
-      return { rev, lines, in_flight: alive, content_digest: `mock-${planId}-${rev}`, skipped };
+      // ★ S-4：任一时刻只有一版在流转 —— 旧版在同一次再提交里让位
+      const l = revs.get(planId) ?? { revs: [], in_flight_rev: null, current_rev: null };
+      l.revs.forEach((x) => { x.in_flight = false; x.is_current = false; });
+      l.revs.unshift({ rev, content_digest: `mock-${planId}-${rev}`, is_current: true, in_flight: alive,
+                       submitted_by: 'ops.zhang', submitted_at: new Date().toISOString(), lines });
+      l.in_flight_rev = alive ? rev : null;
+      l.current_rev = rev;
+      revs.set(planId, l);
+      return { rev, lines, in_flight: alive, content_digest: `mock-${planId}-${rev}`, skipped, ...r,
+               split_frozen: { count: 0, lines: [] }, left_completed: { count: 0, lines: [] } };
     },
 
     async listRevs(planId) {
@@ -537,6 +574,7 @@ export function createMemoryBackend(): SupplyChainApi {
       target.in_flight = false;
       l.in_flight_rev = null;
       inFlight.set(planId, null);
+      liveLines.delete(planId);
       plan(planId).state = '已撤销';
       // ★ team-lead 09-22 裁定：skipped_terminal 是保证字段（api/ui/submit.py:213-214）——
       //   「这一版本来就只有 1 条」与「另外 3 条早已在终态」长得一模一样，必须给这个数。

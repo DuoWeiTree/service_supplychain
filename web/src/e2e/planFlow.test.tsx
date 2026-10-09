@@ -99,9 +99,10 @@ describe('判据① · 建 → 加货品 → 填两种量 → 提交 → 铸出 
     await userEvent.click(screen.getByRole('button', { name: '提交' }));
     const report = await screen.findByTestId('submit-report');
     expect(report).toHaveTextContent('rev 1');
-    // ★ 恒等式，不是写死的数：铸出 + 跳过 = 货号×月 的格子数
-    const lines = Number(/铸出 (\d+) 条/.exec(report.textContent!)![1]);
-    const skipped = Number(/跳过 (\d+) 条/.exec(report.textContent!)![1]);
+    // ★ 恒等式，不是写死的数：这一版 + 三种跳过 = 货号×月 的格子数
+    const lines = Number(/这一版 (\d+) 条/.exec(report.textContent!)![1]);
+    const skipped = [/采购量为空 (\d+) 个/, /采购量为 0 (\d+) 个/, /没有已认领的 msku (\d+) 个/]
+      .reduce((a, re) => a + Number(re.exec(report.textContent!)?.[1] ?? 0), 0);
     expect(lines + skipped).toBe(G.purchase.length);
     expect(lines).toBeGreaterThanOrEqual(1);   // ★ 刚填的 300 至少让一个月铸得出来
 

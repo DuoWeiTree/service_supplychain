@@ -6,12 +6,14 @@ import { useActionError } from '../shell/useActionError';
 import { useInFlight } from '../shell/useInFlight';
 import { ErrorDetail } from '../components/ErrorDetail';
 import { api, ApiError } from '../api';
-import type { GridResponse, LeadTime, NoHistoryEntry, NoHistoryReason, PlanSummary, Seller, SubmitResult } from '../api/types';
+import type {
+  GridResponse, LeadTime, LineInPurchase, NoHistoryEntry, NoHistoryReason, PlanSummary, Seller, SubmitResult,
+} from '../api/types';
 import { buildGridModel } from './planGridModel';
 import { usePlanGridSaves } from './usePlanGridSaves';
 import { LeadTimeBar } from './LeadTimeBar';
 import { PlanSheet } from './PlanSheet';
-import { SubmitPanel, type InFlightBlock } from './SubmitPanel';
+import { SubmitPanel, type LinesInPurchaseBlock } from './SubmitPanel';
 
 const SUBMIT_KEY = 'submit';
 const RECOMPUTE_KEY = 'recompute';
@@ -50,7 +52,7 @@ export function PlanGrid() {
   // ★ T4 R2 裁定：写动作的错误不跟着 load() 走 —— 见 useActionError 的注释
   const { err: actionErr, fail, succeed, dismiss } = useActionError();
   const [report, setReport] = useState<SubmitResult | null>(null);
-  const [inFlight, setInFlight] = useState<InFlightBlock | null>(null);
+  const [blocked, setBlocked] = useState<LinesInPurchaseBlock | null>(null);
   // task-23：重算预测点名了哪些 msku 算不出速率——留到下次重算/刷新前，不是闪一下 toast 就没了
   // （与 PlanAdd.tsx 的 noHistory 同一个理由）
   const [noRate, setNoRate] = useState<NoHistoryEntry[]>([]);
@@ -80,22 +82,24 @@ export function PlanGrid() {
   async function submit() {
     await run(SUBMIT_KEY, async () => {
       setReport(null);
-      setInFlight(null);
+      setBlocked(null);
       try {
         const r = await api.submit(planId);
         setReport(r);
         succeed(SUBMIT_KEY);
         // ★ 不自动跳走：skipped[] 只在这一次响应里存在，成功后留在原地由人点「去版本」
+        // ★ R1：没填 / 填 0 是人的选择，不是故障 —— 只有铸不出的才出警告色
         pushToast({
-          kind: r.skipped.length === 0 ? 'ok' : 'warn',
-          text: `已提交 rev ${r.rev}，铸出 ${r.lines} 条，跳过 ${r.skipped.length} 条`,
+          kind: r.skipped.some((s) => s.reason === 'no_claimed_msku') ? 'warn' : 'ok',
+          text: `已提交 rev ${r.rev}，这一版 ${r.lines} 条`,
         });
         await load();
       } catch (e) {
         const ae = e as ApiError;
-        // ★ 409 是「你没写错，但现在不行」—— 点名旧版号，下一步是去看那一版
-        if (ae.status === 409 && ae.error === 'rev_in_flight') {
-          setInFlight({ rev: Number(ae.fields['in_flight_rev']), err: ae });
+        // ★ D1：要改的记录已进采购 —— 逐条点名，处置在面板里按条说，不落到通用错误区
+        if (ae.status === 409 && ae.error === 'lines_in_purchase' && Array.isArray(ae.fields['lines'])) {
+          setBlocked({ err: ae, lines: ae.fields['lines'] as LineInPurchase[] });
+          succeed(SUBMIT_KEY);    // 收掉上一次提交留在通用错误区的那条，免得两处说两件事
           return;
         }
         fail(SUBMIT_KEY, ae);
@@ -175,7 +179,7 @@ export function PlanGrid() {
       {planErr && <ErrorDetail err={planErr} />}
       {!plan && !planErr && <div className="empty"><p className="empty__title">正在取计划抬头…</p></div>}
 
-      <SubmitPanel planId={planId} report={report} inFlight={inFlight} />
+      <SubmitPanel planId={planId} report={report} blocked={blocked} sellers={sellers} />
 
       {gridErr && <ErrorDetail err={gridErr} />}
       {sellersErr && <ErrorDetail err={sellersErr} />}
