@@ -244,7 +244,7 @@ erp op= host= path= idem= ms= outcome= http= lx_code= lx_msg= cause=<__cause__ �
 | 重新核对 | — | 再查一次 `PurchaseOrderList`，结果追加进时间线 |
 | 去领星查 | — | 给出照着搜的条件：幂等键 · 供应商 · 货号清单 · 时间窗 |
 | 登记「领星已有此单」 | 填 `order_sn` | ★ 系统先用只读接口读回该单，核对 幂等键 / 供应商 / 明细（同 `v_check_po_landed`），**对上才接受** → 转已下单 |
-| 确认「领星无此单」 | 必填理由；无调用在途（否则 409 `lookup_in_progress`） | 记 `confirmed_absent`，解锁「重新下单」（新 `erp_call`，`retry_of` 串起）或「删除草稿」。★ 这是 `ok/unknown` 之后重下单的**唯一**放行条件 |
+| 确认「领星无此单」 | 必填理由；无调用在途（否则 409 `lookup_in_progress`）；★ 不得与系统证据相反 —— 本次 create 之后查单见过本单幂等键、或查重开出的 `landed_mismatch` 未处理 → 409 `contradicts_evidence`（PB-U8） | 记 `confirmed_absent`，解锁「重新下单」（新 `erp_call`，`retry_of` 串起）或「删除草稿」。★ 这是 `ok/unknown` 之后重下单的**唯一**放行条件 |
 
 处理中的单：改 / 删 / 下单 → 409 `needs_verify`（回显时间线链接）。
 

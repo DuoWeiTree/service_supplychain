@@ -5,7 +5,7 @@ import datetime as dt
 import logging
 
 from repo import purchase as repo
-from rules.purchase import order_differences
+from rules.purchase import order_differences, orders_by_custom_sn
 from shared.config import erp as erp_config
 from shared.pg_client import pg_conn, timed
 from usecase import place_po
@@ -161,11 +161,35 @@ def register_existing(po_id: int, order_sn: str, actor: str) -> dict:
     return {"outcome": "placed", "po_id": po_id, "order_sn": order_sn, "found_by": "manual"}
 
 
+def _contrary_evidence(cur, po_id: int, custom_sn: str) -> dict | None:
+    """★ 人工断言「领星无此单」不得与系统自己的证据相反：放行就会再建一张真单（PB-D15 后不可逆）。
+    证据 ① 本次 create 之后任一成功查单见过本单幂等键；② 查重开出的 landed_mismatch 未处理。"""
+    after = repo.last_create_call(cur, po_id) or 0
+    found, lookup_call = set(), None
+    for cid, resp in repo.ok_lookups_after(cur, po_id, after):
+        rows = (resp or {}).get("data") if isinstance(resp, dict) else None
+        hits = orders_by_custom_sn(rows if isinstance(rows, list) else [], custom_sn)
+        if hits:
+            found |= {str(o.get("order_sn")) for o in hits}
+            lookup_call = cid
+    lm = repo.open_attention_of(cur, po_id, "landed_mismatch")
+    if lm:
+        d = lm["detail"] or {}
+        found |= {str(x) for x in (d.get("order_sns") or [d.get("order_sn") or d.get("also_found_order_sn")])
+                  if x}
+        lookup_call = lookup_call or d.get("lookup_call_id") or lm["opened_by_call"]
+    if not found and not lm:
+        return None
+    return {"found_order_sns": sorted(found), "lookup_call_id": lookup_call, "open_landed_mismatch": lm is not None,
+            "custom_order_sn": custom_sn}
+
+
 def confirm_absent(po_id: int, reason: str, actor: str) -> dict:
     with pg_conn() as c, c.cursor() as cur:
         _require_open(cur, po_id)
     if not (reason or "").strip():
         raise Conflict(400, "reason_required", "确认「领星无此单」必须写理由（怎么核实的）")
+    custom_sn = load_po(po_id)["custom_order_sn"]
     with timed("po_confirm_absent", po_id=po_id, actor=actor), pg_conn() as c, c.cursor() as cur:
         locked = repo.lock_po(cur, po_id)
         if locked["state"] != "草稿":
@@ -173,6 +197,13 @@ def confirm_absent(po_id: int, reason: str, actor: str) -> dict:
         if repo.any_in_flight(cur, po_id, int(erp_config()["stale_in_flight_minutes"])):
             log.warning("op=po_confirm_absent po_id=%s actor=%s outcome=lookup_in_progress", po_id, actor)
             raise Conflict(409, "lookup_in_progress", "有查询 / 下单调用进行中，等它结束再确认", po_id=po_id)
+        evidence = _contrary_evidence(cur, po_id, custom_sn)
+        if evidence:
+            log.warning("op=po_confirm_absent po_id=%s actor=%s outcome=contradicts_evidence evidence=%s",
+                        po_id, actor, evidence)
+            raise Conflict(409, "contradicts_evidence",
+                           "系统查重在领星找到过本单幂等键的单，不能确认「领星无此单」；先在领星处理该单",
+                           po_id=po_id, **evidence)
         n = repo.resolve_attention(cur, po_id, "needs_verify", "confirmed_absent", actor, reason.strip())
     if n == 0:
         raise Conflict(409, "nothing_to_resolve", "待处理项刚被别人处理了", po_id=po_id)

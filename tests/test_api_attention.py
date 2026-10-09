@@ -309,3 +309,74 @@ def test_acknowledge_mismatch_does_not_touch_needs_verify(client, seed, stuck):
                     headers=H(seed.actor))
     assert r.status_code == 409 and r.json()["error"] == "nothing_to_resolve"
     assert len(client.get("/v1/attention").json()["items"]) == 1
+# ---- 去 fake 终审修复波：confirm_absent 的证据闸 ----
+
+def _creates(po_id):
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT count(*) FROM erp_call WHERE po_id=%s AND endpoint='create_purchase_order'", (po_id,))
+        return cur.fetchone()[0]
+
+
+@pytest.fixture
+def single_hit_mismatch(client, seed, stuck, lingxing):
+    """create 结果未知后，领星里冒出一张同幂等键、数量不同的单：查重单命中但明细对不上。"""
+    po_id, _ = stuck
+    _late_order(seed, po_id)
+    lingxing.mutate_item("FAKE-PO000001", seed.sku_a, quantity_real=7)
+    res = client.post(f"/v1/purchase-orders/{po_id}/recheck", headers=H(seed.actor)).json()
+    assert res["outcome"] == "needs_verify" and res["landed_mismatch"] == ["FAKE-PO000001"]
+    return po_id, res["lookup_call_id"]
+
+
+def test_confirm_absent_refused_when_lookup_found_our_key(client, seed, single_hit_mismatch):
+    """Critical #1(a)：系统自己查到过同幂等键的单，「领星无此单」与证据相反 —— 放行就是重复真单。"""
+    po_id, lookup_call = single_hit_mismatch
+    r = client.post(f"/v1/purchase-orders/{po_id}/confirm-absent", json={"reason": "后台没搜到"},
+                    headers=H(seed.actor))
+    assert r.status_code == 409, r.text
+    j = r.json()
+    assert j["error"] == "contradicts_evidence"
+    assert j["found_order_sns"] == ["FAKE-PO000001"] and j["lookup_call_id"] == lookup_call
+    assert j["open_landed_mismatch"] is True
+    kinds = {i["kind"] for i in client.get("/v1/attention").json()["items"]}
+    assert kinds == {"needs_verify", "landed_mismatch"}
+    tok = client.get(f"/v1/purchase-orders/{po_id}").json()["confirm_token"]
+    again = client.post(f"/v1/purchase-orders/{po_id}/place", json={"confirm_token": tok}, headers=H(seed.actor))
+    assert again.status_code == 409 and again.json()["error"] == "needs_verify"
+    assert _creates(po_id) == 1
+
+
+def test_confirm_absent_still_refused_after_mismatch_acknowledged(client, seed, single_hit_mismatch):
+    """知悉不一致只收掉 landed_mismatch；查重找到过同键单这个事实还在。"""
+    po_id, lookup_call = single_hit_mismatch
+    assert client.post(f"/v1/purchase-orders/{po_id}/acknowledge-mismatch", json={"reason": "看过了"},
+                       headers=H(seed.actor)).status_code == 200
+    r = client.post(f"/v1/purchase-orders/{po_id}/confirm-absent", json={"reason": "x"}, headers=H(seed.actor))
+    assert r.status_code == 409 and r.json()["error"] == "contradicts_evidence"
+    assert r.json()["open_landed_mismatch"] is False and r.json()["lookup_call_id"] == lookup_call
+    assert _creates(po_id) == 1
+
+
+def test_confirm_absent_refused_on_open_mismatch_alone(client, seed, stuck):
+    """(ii)：查重开出的 landed_mismatch 未处理，即使找不到对应的查重响应也拒。"""
+    po_id, _ = stuck
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT max(call_id) FROM erp_call WHERE po_id=%s AND endpoint='purchase_order_list'",
+                    (po_id,))
+        cid = cur.fetchone()[0]
+        cur.execute("INSERT INTO po_attention (po_id, kind, opened_by_call, detail)"
+                    " VALUES (%s, 'landed_mismatch', %s, %s::jsonb)",
+                    (po_id, cid, json.dumps({"order_sns": ["X1", "X2"], "lookup_call_id": cid})))
+    r = client.post(f"/v1/purchase-orders/{po_id}/confirm-absent", json={"reason": "x"}, headers=H(seed.actor))
+    assert r.status_code == 409 and r.json()["error"] == "contradicts_evidence"
+    assert r.json()["found_order_sns"] == ["X1", "X2"] and r.json()["lookup_call_id"] == cid
+
+
+def test_confirm_absent_allowed_after_genuine_not_found(client, seed, stuck):
+    """对照：查重真的没找到，人工确认照常放行。"""
+    po_id, _ = stuck
+    assert client.post(f"/v1/purchase-orders/{po_id}/recheck", headers=H(seed.actor)).json()["outcome"] \
+        == "needs_verify"
+    r = client.post(f"/v1/purchase-orders/{po_id}/confirm-absent", json={"reason": "后台按幂等键搜过，无"},
+                    headers=H(seed.actor))
+    assert r.status_code == 200, r.text

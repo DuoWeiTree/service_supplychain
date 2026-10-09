@@ -212,6 +212,13 @@ def last_create_call(cur, po_id: int) -> int | None:
     return cur.fetchone()[0]
 
 
+def ok_lookups_after(cur, po_id: int, after_call: int) -> list[tuple[int, dict | None]]:
+    """本次 create 之后成功的查单调用及其响应（查重窗口与登记已有单的窄查询都算）。"""
+    cur.execute("SELECT call_id, response FROM erp_call WHERE po_id = %s AND endpoint = 'purchase_order_list'"
+                " AND outcome = 'ok' AND call_id > %s ORDER BY call_id", (po_id, after_call))
+    return cur.fetchall()
+
+
 def stuck_calls(cur, minutes: int, side_effect: str = "irreversible") -> list[tuple[int, int, str]]:
     cur.execute("SELECT call_id, po_id, actor FROM erp_call WHERE outcome='in_flight' AND side_effect=%s"
                 " AND started_at < now() - make_interval(mins => %s) ORDER BY call_id", (side_effect, minutes))
