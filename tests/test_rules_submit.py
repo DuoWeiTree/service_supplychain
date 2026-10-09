@@ -6,7 +6,7 @@ import pytest
 
 from rules.digest import content_digest
 from rules.effective import effective_demand
-from rules.submit import DemandCell, PurchaseCell, select_submittable
+from rules.submit import DemandCell, Line, PrevLine, PurchaseCell, reconcile, select_submittable
 
 SKU = "DCC1800264G1"
 OCT, NOV = "2026-10", "2026-11"
@@ -43,13 +43,14 @@ def test_mints_one_line_per_purchase_cell_with_units():
 
 
 def test_zero_or_empty_purchase_is_skipped_with_its_reason():
-    """★ 坑①：总量 0 的记录 0 = 0 恒真，一诞生就会自动跳到「已确认」。"""
+    """★ 坑①：总量 0 的记录 0 = 0 恒真，一诞生就会自动跳到「已确认」。
+    ★ 空 ≠ 0（R1）：没填是「没打算采购」，填 0 是明确表态 —— 原因分开记。"""
     lines, skipped = select_submittable(
         [PurchaseCell(SKU, OCT, 0), PurchaseCell(SKU, NOV, None)],
         [dcell(A, OCT, 100, 120), dcell(A, NOV, 100, 120)], claimed={A})
     assert lines == []
     assert [(s.period, s.reason) for s in skipped] == [
-        (OCT, "zero_purchase"), (NOV, "zero_purchase")]
+        (OCT, "zero_purchase"), (NOV, "empty_purchase")]
 
 
 def test_purchase_cell_without_any_claimed_msku_is_skipped():
@@ -149,3 +150,56 @@ def test_digest_distinguishes_none_from_zero_not_just_from_a_different_number():
     d = [dcell(A, OCT, 100, 120)]
     assert content_digest([PurchaseCell(SKU, OCT, None)], d) != \
            content_digest([PurchaseCell(SKU, OCT, 0)], d)
+
+
+# ── 再提交对比（R2 · spec §2）──────────────────────────────────────────────
+
+def _line(sku, period, total, by_seller=None):
+    return Line(sku, period, total, by_seller or {"11072": {"units": 10, "basis": "human"}}, 10)
+
+
+def _prev(line_id, sku, period, total, by_seller=None, state="已提交"):
+    return PrevLine(line_id, sku, period, total,
+                    by_seller or {"11072": {"units": 10, "basis": "human"}}, state)
+
+
+def test_reconcile_sorts_every_cell_into_exactly_one_of_four_buckets():
+    """★ 保留 + 替换 + 去掉 ≡ 上一版活记录；保留 + 替换 + 新增 ≡ 这次铸得出的。
+    少一边就是静默丢失：上一版有一条既没保留也没撤销，它会永远占着在流转位。"""
+    prev = [_prev(1, "S1", OCT, 100), _prev(2, "S2", OCT, 200), _prev(3, "S3", OCT, 300)]
+    now = [_line("S1", OCT, 100), _line("S2", OCT, 250), _line("S4", OCT, 400)]
+    r = reconcile(prev, now)
+    assert [p.line_id for p in r.kept] == [1]
+    assert [(p.line_id, n.total_units) for p, n in r.replaced] == [(2, 250)]
+    assert [n.sku for n in r.added] == ["S4"]
+    assert [p.line_id for p in r.removed] == [3]
+
+
+def test_reconcile_counts_a_seller_split_change_as_a_change():
+    """★ D2：总量相同、分店拆分变了 —— 分店占比决定采购上限，带着旧上限的记录不能冒充新的。"""
+    prev = [_prev(1, "S1", OCT, 100, {"11072": {"units": 10, "basis": "human"}})]
+    now = [_line("S1", OCT, 100, {"11072": {"units": 12, "basis": "human"}})]
+    r = reconcile(prev, now)
+    assert r.kept == [] and [p.line_id for p, _ in r.replaced] == [1]
+
+
+def test_reconcile_counts_a_basis_change_as_a_change():
+    """同样的数、依据从人填变成系统预估 —— 冻结的是「当时为什么是这个数」，也算变。"""
+    prev = [_prev(1, "S1", OCT, 100, {"11072": {"units": 10, "basis": "human"}})]
+    now = [_line("S1", OCT, 100, {"11072": {"units": 10, "basis": "system"}})]
+    assert [p.line_id for p, _ in reconcile(prev, now).replaced] == [1]
+
+
+def test_reconcile_of_identical_content_keeps_everything():
+    prev = [_prev(1, "S1", OCT, 100), _prev(2, "S1", NOV, 200, state="已下单")]
+    now = [_line("S1", OCT, 100), _line("S1", NOV, 200)]
+    r = reconcile(prev, now)
+    assert [p.line_id for p in r.kept] == [1, 2]
+    assert r.replaced == [] and r.added == [] and r.removed == []
+
+
+def test_reconcile_refuses_two_live_lines_for_one_cell():
+    """★ S-4 下同一货号·月只会有一条活记录；有两条是数据坏了，挑一条用就是静默丢另一条。"""
+    with pytest.raises(ValueError) as ei:
+        reconcile([_prev(1, "S1", OCT, 100), _prev(2, "S1", OCT, 100)], [])
+    assert "S1" in str(ei.value) and "[1, 2]" in str(ei.value)

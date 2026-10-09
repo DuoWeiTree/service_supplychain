@@ -31,7 +31,7 @@ DATA_TABLES = (
     "po_item_obs", "po_snapshot", "po_attention", "erp_call",
     "po_event", "po_source_map", "po_line", "po", "supplier",
     "dim_refresh_run",
-    "plan_line_event", "plan_submit_skip", "plan_line", "plan_rev",
+    "plan_line_carry", "plan_line_event", "plan_submit_skip", "plan_line", "plan_rev",
     "plan_demand_cell", "plan_purchase_cell", "msku_claim", "plan",
     # ★ Task 1（sku-image 计划）新增：sku_category 引用 sku_catalog，必须排在它前面
     #   清空（TRUNCATE ... CASCADE 已经处理依赖顺序，这里的列表顺序不影响执行，

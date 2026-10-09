@@ -9,7 +9,7 @@ def test_submit_mints_lines_and_lists_every_skipped_cell(client, seed):
     r = client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor)).json()
     assert r["rev"] == 1 and r["lines"] == 1
     assert [(s["period"], s["reason"]) for s in r["skipped"]] == [
-        ("2026-11", "zero_purchase"), ("2026-12", "zero_purchase")]
+        ("2026-11", "empty_purchase"), ("2026-12", "empty_purchase")]
     with pg_conn() as c, c.cursor() as cur:
         cur.execute("SELECT sku, total_units, demand_at_submit, demand_by_seller, state"
                     " FROM plan_line WHERE plan_id = %s", (pid,))
@@ -31,15 +31,6 @@ def test_every_line_has_its_birth_event(client, seed):
                     " WHERE l.plan_id = %s AND NOT EXISTS (SELECT 1 FROM plan_line_event e"
                     "   WHERE e.line_id = l.line_id AND e.from_state = '[*]')", (pid,))
         assert cur.fetchone()[0] == 0
-
-
-def test_second_submit_while_one_is_in_flight_is_409_naming_the_old_rev(client, seed):
-    """★ 判据④ / S-4：改了只能出新 rev，而旧版还在流转就拒 —— 点名旧版。"""
-    pid = prepared(client, seed)
-    client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
-    r = client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
-    assert r.status_code == 409 and r.json()["error"] == "rev_in_flight"
-    assert r.json()["in_flight_rev"] == 1
 
 
 def test_an_empty_rev_does_not_hold_the_in_flight_slot(client, seed):

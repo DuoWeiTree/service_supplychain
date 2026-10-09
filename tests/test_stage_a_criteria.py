@@ -33,7 +33,7 @@ def test_criterion_2_every_skipped_cell_is_listed_with_a_reason(client, seed):
     """② 提交时被跳过的格子逐条列出，不静默丢。"""
     pid = prepared(client, seed, purchase=None)
     r = client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor)).json()
-    assert {s["reason"] for s in r["skipped"]} == {"zero_purchase"}
+    assert {s["reason"] for s in r["skipped"]} == {"empty_purchase"}
     assert len(r["skipped"]) == 3
     with pg_conn() as c, c.cursor() as cur:
         cur.execute("SELECT count(*) FROM plan_submit_skip WHERE plan_id = %s", (pid,))

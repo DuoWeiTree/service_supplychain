@@ -36,7 +36,7 @@ class Line(NamedTuple):
 class Skipped(NamedTuple):
     sku: str
     period: str
-    reason: str                 # zero_purchase | no_claimed_msku
+    reason: str                 # empty_purchase | zero_purchase | no_claimed_msku
 
 
 def select_submittable(
@@ -59,7 +59,11 @@ def select_submittable(
             # ★ 先判结构：没有落点比「填了 0」更早一步，两个都成立时报这个
             skipped.append(Skipped(pc.sku, pc.period, "no_claimed_msku"))
             continue
-        if not pc.planned_units:            # None 或 0
+        if pc.planned_units is None:
+            # ★ 空 ≠ 0（R1）：没填 = 没打算采购；填了 0 = 明确表态。两者给人看的处置不同
+            skipped.append(Skipped(pc.sku, pc.period, "empty_purchase"))
+            continue
+        if pc.planned_units == 0:
             skipped.append(Skipped(pc.sku, pc.period, "zero_purchase"))
             continue
 
@@ -82,3 +86,48 @@ def select_submittable(
         lines.append(Line(pc.sku, pc.period, pc.planned_units, by_sid, total_demand))
 
     return lines, skipped
+
+
+class PrevLine(NamedTuple):
+    """上一版的一条活记录（非终态）。"""
+    line_id: int
+    sku: str
+    period: str
+    total_units: int
+    demand_by_seller: dict
+    state: str
+
+
+class Reconciled(NamedTuple):
+    kept: list[PrevLine]
+    replaced: list[tuple[PrevLine, Line]]
+    added: list[Line]
+    removed: list[PrevLine]
+
+
+def reconcile(prev: list[PrevLine], lines: list[Line]) -> Reconciled:
+    """按 (货号, 月) 对比上一版活记录与这次能铸出的（spec §2）。
+
+    ★ D2：demand_by_seller 整体相等才算没变 —— 分店占比决定采购上限，
+      带着旧上限的记录不能冒充新的。
+    """
+    by_cell: dict[tuple[str, str], list[PrevLine]] = {}
+    for p in prev:
+        by_cell.setdefault((p.sku, p.period), []).append(p)
+    dup = {k: sorted(x.line_id for x in v) for k, v in by_cell.items() if len(v) > 1}
+    if dup:
+        raise ValueError(f"同一货号·月有多条活记录（违反 S-4）：{sorted(dup.items())}")
+    old = {k: v[0] for k, v in by_cell.items()}
+    new = {(m.sku, m.period): m for m in lines}
+
+    kept, replaced, added = [], [], []
+    for k in sorted(new):
+        m, p = new[k], old.get(k)
+        if p is None:
+            added.append(m)
+        elif p.total_units == m.total_units and p.demand_by_seller == m.demand_by_seller:
+            kept.append(p)
+        else:
+            replaced.append((p, m))
+    removed = [old[k] for k in sorted(old.keys() - new.keys())]
+    return Reconciled(kept, replaced, added, removed)
