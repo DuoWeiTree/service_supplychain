@@ -2,12 +2,15 @@ import { ApiError, type SupplyChainApi } from './client';
 import type {
   CatalogResult, CountKey, DroppedPurchaseCell, ForecastArrival, ForecastState, GridResponse, LeadTime,
   LeadTimeResult, NoHistoryEntry, PlanSummary, RevList, Seller, Sid, SkippedCell, SystemBasisNoSource,
+  CandidateLine, LineState, PoBody, PoId, PoLine, PoSummary, PurchaseOptions, PurchaseOrder,
+  PurchaseChecks, PreflightGate,
 } from './types';
 import plansFixture from './fixtures/plans.json';
 import gridFixture from './fixtures/grid-1.json';
 import catalogFixture from './fixtures/catalog.json';
 import revsFixture from './fixtures/revs-1.json';
 import sellersFixture from './fixtures/sellers.json';
+import purchaseFixture from './fixtures/purchase.json';
 
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 
@@ -56,6 +59,28 @@ export function markForecastStale(g: GridResponse, sku: string, cause: 'demand' 
   }
 }
 
+/** 同 rules/purchase.py::seller_caps：最大余数法，余数同分按 seller_id 升序。
+ *  返回 null = 无法定上限（任一店 unknown / 总期望为 0），对应后端 NoSellerBasis */
+function sellerCaps(total: number, dbs: CandidateLine['demand_by_seller']): Record<string, number> | null {
+  const ids = Object.keys(dbs);
+  const exp: Record<string, number> = {};
+  for (const id of ids) {
+    const v = dbs[id];
+    if (!v || v.basis === 'unknown' || typeof v.units !== 'number') return null;
+    exp[id] = v.units;
+  }
+  const sum = ids.reduce((a, id) => a + exp[id]!, 0);
+  if (sum === 0) return null;
+  const caps: Record<string, number> = {};
+  for (const id of ids) caps[id] = Math.floor((total * exp[id]!) / sum);
+  const extra = total - ids.reduce((a, id) => a + caps[id]!, 0);
+  const order = [...ids].sort((a, b) => (total * exp[b]! % sum) - (total * exp[a]! % sum) || a.localeCompare(b));
+  for (const id of order.slice(0, extra)) caps[id]! += 1;
+  return caps;
+}
+
+const ORDERABLE: LineState[] = ['已提交', '已确认'];
+
 export function createMockApi(): SupplyChainApi {
   // ★ fixture 里只有 plans：`excluded.archived` 是**按这次查询现算**的（见 listPlans），
   //   冻一个常量进去就会在加了归档计划之后继续报旧数，而那正是它要挡的事
@@ -70,6 +95,134 @@ export function createMockApi(): SupplyChainApi {
     route: 'oversea_sea', make_days: 30, ship_days: 60, anchor_day: 15,
     valid_from: { making: '2026-01-01', shipping: '2026-01-01' },
   };
+
+  // ★ 采购单：只读 + 草稿增删改。下单与「转人工」处理动作一律 501（见下方 notInMock 的注释）
+  type PoRow = PurchaseOrder & { created_at: string };
+  const pos = new Map<PoId, PoRow>(
+    (clone(purchaseFixture.purchase_orders) as unknown as PoRow[]).map((p) => {
+      return [p.po_id, { ...p, attention: [], source_line_states: [], preflight: [], confirm_token: '' }];
+    }));
+  type PlanLineRow = Pick<CandidateLine, 'line_id' | 'plan_id' | 'rev' | 'sku' | 'period' | 'total_units' |
+    'demand_at_submit' | 'demand_by_seller' | 'state' | 'confirmed_units' | 'ordered_units'>;
+  const planLines = clone(purchaseFixture.lines) as unknown as PlanLineRow[];
+  let nextPo = Math.max(0, ...pos.keys()) + 1;
+  const poErr = (status: number, error: string, hint: string, fields: Record<string, unknown> = {}) =>
+    new ApiError(status, error, hint, fields);
+  /** 草稿占用额度（排除 exclude 自己）：未作废的所有单（草稿 + 已下单），同 repo.seller_used */
+  const usedBy = (exclude?: PoId): Map<string, number> => {
+    const m = new Map<string, number>();
+    for (const p of pos.values()) {
+      if (p.po_id === exclude || p.discarded_at) continue;
+      for (const ln of p.lines) for (const sc of ln.sources) {
+        const k = `${sc.line_id}|${sc.seller_id}`;
+        m.set(k, (m.get(k) ?? 0) + sc.units);
+      }
+    }
+    return m;
+  };
+  const candidate = (l: PlanLineRow): CandidateLine => {
+    const used = usedBy();
+    const caps = sellerCaps(l.total_units, l.demand_by_seller);
+    return {
+      ...l,
+      remaining: l.total_units - l.confirmed_units,
+      blocked: caps ? null : { reason: 'no_seller_basis', sellers: Object.keys(l.demand_by_seller) },
+      sellers: Object.fromEntries(Object.entries(l.demand_by_seller).map(([sid, v]) => {
+        const u = used.get(`${l.line_id}|${sid}`) ?? 0;
+        return [sid, { expected: v?.units ?? null, cap: caps?.[sid] ?? null, used: u,
+                       remaining: caps && sid in caps ? caps[sid]! - u : null }];
+      })),
+    };
+  };
+  const gate = (g: string, ok: boolean, detail: Record<string, unknown> = {}): PreflightGate => ({ gate: g, ok, detail });
+  /** 同 rules/purchase.py::preflight 的前五类 + 逐行三类；sources_orderable 取现算的来源状态 */
+  const preflight = (p: PoRow): PreflightGate[] => {
+    const g: PreflightGate[] = [
+      gate('supplier', !!p.supplier_id), gate('purchaser', !!p.purchaser_id), gate('opt_uid', !!p.opt_uid),
+      gate('qc_type', [0, 1, 2].includes(p.qc_type), { got: p.qc_type }), gate('lines', p.lines.length > 0),
+    ];
+    for (const ln of p.lines) {
+      g.push(gate('line_wid', !!ln.wid, { line_no: ln.line_no }));
+      g.push(gate('line_price', Number(ln.price) >= 0, { line_no: ln.line_no }));
+      g.push(gate('line_units', ln.units >= ln.sources_units, { line_no: ln.line_no, units: ln.units, sources: ln.sources_units }));
+      g.push(gate('line_unplanned_reason', ln.unplanned_units <= 0 || !!(ln.unplanned_reason ?? '').trim(),
+                  { line_no: ln.line_no, unplanned: Math.max(ln.unplanned_units, 0) }));
+    }
+    const offenders = p.source_line_states.filter((s) => !ORDERABLE.includes(s.state));
+    g.push(gate('sources_orderable', offenders.length === 0, { offenders }));
+    return g;
+  };
+  const withDerived = (p: PoRow): PurchaseOrder => {
+    const ids = [...new Set(p.lines.flatMap((l) => l.sources.map((s) => s.line_id)))].sort((a, b) => a - b);
+    const full: PoRow = { ...p, source_line_states: ids.map((id) => ({
+      line_id: id, state: planLines.find((l) => l.line_id === id)?.state ?? '已提交' })) };
+    const { created_at: _c, ...rest } = full;
+    return clone({ ...rest, preflight: preflight(full),
+                   confirm_token: `mock-${p.po_id}-v${p.draft_version}` } as PurchaseOrder);
+  };
+  const po = (id: PoId): PoRow => {
+    const p = pos.get(id);
+    if (!p) throw poErr(404, 'po_not_found', '采购单不存在', { po_id: id });
+    return p;
+  };
+  const draft = (id: PoId): PoRow => {
+    const p = po(id);
+    if (p.discarded_at) throw poErr(409, 'po_discarded', '这张草稿已作废', { po_id: id });
+    if (p.state !== '草稿') throw poErr(409, 'po_frozen', '采购单已下单，不可改', { po_id: id, order_sn: p.order_sn });
+    return p;
+  };
+  /** 同 usecase/draft_po.py::_normalize + _check_quantities 里 mock 能复刻的闸 */
+  const applyBody = (p: PoRow, body: PoBody): void => {
+    const missing = (['supplier_id', 'purchaser_id', 'opt_uid', 'qc_type'] as const)
+      .filter((k) => body[k] === undefined || body[k] === null || (body[k] as unknown) === '');
+    if (missing.length) throw poErr(400, 'missing_required', '单头必填项缺失', { missing });
+    if (!body.lines || body.lines.length === 0) throw poErr(400, 'missing_required', '至少一行明细', { missing: ['lines'] });
+    const seen = new Set<string>();
+    const lines: PoLine[] = body.lines.map((ln, i) => {
+      const key = `${ln.sku}|${ln.wid}`;
+      if (seen.has(key)) throw poErr(400, 'duplicate_line', '同一张单里同货号同仓只能一行', { sku: ln.sku, wid: ln.wid });
+      seen.add(key);
+      const srcUnits = ln.sources.reduce((a, s) => a + s.units, 0);
+      if (ln.units > srcUnits && !(ln.unplanned_reason ?? '').trim())
+        throw poErr(400, 'unplanned_reason_required', '超出计划来源的数量必须写理由', { sku: ln.sku, unplanned: ln.units - srcUnits });
+      return { line_no: i + 1, sku: ln.sku, wid: ln.wid, units: ln.units, price: ln.price, expect_arrive_date: null,
+               unplanned_reason: ln.unplanned_reason ?? null, lx_item_id: null, sources: clone(ln.sources),
+               sources_units: srcUnits, unplanned_units: ln.units - srcUnits };
+    });
+    const want = new Map<string, number>();
+    for (const ln of lines) for (const s of ln.sources) {
+      const k = `${s.line_id}|${s.seller_id}`;
+      want.set(k, (want.get(k) ?? 0) + s.units);
+    }
+    const used = usedBy(p.po_id);
+    for (const id of [...new Set(lines.flatMap((l) => l.sources.map((s) => s.line_id)))].sort((a, b) => a - b)) {
+      const pl = planLines.find((l) => l.line_id === id);
+      if (!pl) throw poErr(404, 'line_not_found', '没有这条计划单记录', { line_id: id });
+      if (!ORDERABLE.includes(pl.state))
+        throw poErr(409, 'line_not_orderable', '只有 已提交/已确认 的记录能组单', { line_id: id, state: pl.state });
+      const caps = sellerCaps(pl.total_units, pl.demand_by_seller);
+      if (!caps) throw poErr(409, 'no_seller_basis', '期望销量为 0 或 unknown 的店无法定分店上限',
+                             { line_id: id, sellers: Object.keys(pl.demand_by_seller) });
+      const rows = [...want].filter(([k]) => k.startsWith(`${id}|`));
+      const totalWant = rows.reduce((a, [, v]) => a + v, 0);
+      const totalUsed = [...used].filter(([k]) => k.startsWith(`${id}|`)).reduce((a, [, v]) => a + v, 0);
+      if (totalUsed + totalWant > pl.total_units)
+        throw poErr(409, 'over_total', '超过记录总量', { line_id: id, total: pl.total_units, used: totalUsed, requested: totalWant });
+      for (const [k, req] of rows) {
+        const sid = k.split('|')[1]!;
+        const cap = caps[sid] ?? 0;
+        const u = used.get(k) ?? 0;
+        if (u + req > cap)
+          throw poErr(409, 'over_seller_cap', '超过该店上限（按期望销量占比）',
+                      { line_id: id, seller_id: sid, cap, used: u, requested: req });
+      }
+    }
+    Object.assign(p, { supplier_id: body.supplier_id, purchaser_id: body.purchaser_id, opt_uid: body.opt_uid,
+                       qc_type: body.qc_type, wid: lines[0]?.wid ?? null, lines });
+  };
+  /** ★ 下单与四个「转人工」动作在 mock 里一律 501：它们的结果由领星决定（建单 / 查重 / 登记要对领星核对），
+   *  mock 编一个「成功」就是编造外部事实 —— spec §8.1 裁定 mock 不模拟领星下单。 */
+  const notInMock = (): never => { throw new ApiError(501, 'not_in_mock', 'mock 数据源不下单'); };
 
   const plan = (id: number): PlanSummary => {
     const p = list.plans.find((x) => x.plan_id === id);
@@ -438,6 +591,88 @@ export function createMockApi(): SupplyChainApi {
       //   「这一版本来就只有 1 条」与「另外 3 条早已在终态」长得一模一样，必须给这个数。
       //   mock 不追踪逐条记录的状态，固定给 0（fixture 里 revs-1 的记录都当作非终态在流转）。
       return { cancelled: Array.from({ length: target.lines }, (_, i) => i + 1), skipped_terminal: 0, reason };
+    },
+
+    async listPurchaseOrders(state) {
+      const rows: PoSummary[] = [...pos.values()]
+        .filter((p) => !p.discarded_at && (state === undefined || p.state === state))
+        .sort((a, b) => b.po_id - a.po_id)
+        .map((p) => ({
+          po_id: p.po_id, supplier_id: p.supplier_id,
+          supplier_name: purchaseFixture.options.suppliers.find((x) => x.supplier_id === p.supplier_id)?.name ?? p.supplier_id,
+          state: p.state, order_sn: p.order_sn, is_void: p.is_void, lines: p.lines.length,
+          units: p.lines.reduce((a, l) => a + l.units, 0), open_attention: 0,
+          created_by: p.created_by, created_at: p.created_at,
+        }));
+      return { purchase_orders: rows };
+    },
+    async getPurchaseOrder(poId) { return withDerived(po(poId)); },
+    async createPurchaseOrder(body) {
+      const id = nextPo;
+      const p: PoRow = { po_id: id, supplier_id: '', purchaser_id: '', opt_uid: '', qc_type: 0, wid: null,
+        custom_order_sn: `SCM-PO-${id}`, order_sn: null, state: '草稿', placed_at: null, draft_version: 1,
+        created_by: 'ops.zhang', is_void: false, discarded_at: null, lines: [], source_line_states: [],
+        attention: [], preflight: [], confirm_token: '', created_at: new Date().toISOString() };
+      if (!purchaseFixture.options.suppliers.some((x) => x.supplier_id === body.supplier_id) && body.supplier_id)
+        throw poErr(400, 'unknown_supplier', '没有这个供应商（不在供应商镜像里）', { supplier_id: body.supplier_id });
+      applyBody(p, body);
+      nextPo += 1;
+      pos.set(id, p);
+      return { po_id: id };
+    },
+    async updatePurchaseOrder(poId, body) {
+      const p = draft(poId);
+      if (body.draft_version !== p.draft_version)
+        throw poErr(409, 'stale_draft', '草稿已被别人改过，请刷新后再改',
+                    { po_id: poId, current_version: p.draft_version, got: body.draft_version });
+      applyBody(p, body);
+      p.draft_version += 1;
+      return { po_id: poId, draft_version: p.draft_version };
+    },
+    async deletePurchaseOrder(poId) { draft(poId); pos.delete(poId); },
+    async getPreflight(poId) {
+      const gates = withDerived(po(poId)).preflight;
+      return { po_id: poId, ok: gates.every((g) => g.ok), gates };
+    },
+    async placePurchaseOrder(_poId, _token) { return notInMock(); },
+    async getTimeline(poId) {
+      const p = po(poId);
+      return { po_id: poId, conclusion: null, attempts: [], attention: [],
+               events: p.state === '已下单'
+                 ? [{ from: '草稿', to: '已下单', actor: p.created_by, reason: null, src: 'mock', at: p.placed_at ?? p.created_at }]
+                 : [] };
+    },
+    async recheck(_poId) { return notInMock(); },
+    async registerExisting(_poId, _orderSn) { return notInMock(); },
+    async confirmAbsent(_poId, _reason) { return notInMock(); },
+    async acknowledgeMismatch(_poId, _reason) { return notInMock(); },
+    async listAttention() { return { count: 0, items: [] }; },
+    async getPurchaseOptions() { return clone(purchaseFixture.options) as PurchaseOptions; },
+    async getPurchaseChecks() { return clone(purchaseFixture.checks) as PurchaseChecks; },
+    async listCandidateLines({ plan_ids, sku }) {
+      const all = planLines.map(candidate).filter((l) => !plan_ids?.length || plan_ids.includes(l.plan_id));
+      const excluded = { state: 0, sku: 0, category: 0, period: 0, fully_confirmed: 0 };
+      let lines = all;
+      if (sku) { excluded.sku = lines.filter((l) => l.sku !== sku).length; lines = lines.filter((l) => l.sku === sku); }
+      excluded.state = lines.filter((l) => !ORDERABLE.includes(l.state)).length;
+      lines = lines.filter((l) => ORDERABLE.includes(l.state));
+      excluded.fully_confirmed = lines.filter((l) => l.remaining <= 0).length;
+      lines = lines.filter((l) => l.remaining > 0);
+      return { lines, groups: {}, excluded };
+    },
+    async getLineTrace(lineId) {
+      const l = planLines.find((x) => x.line_id === lineId);
+      if (!l) throw poErr(404, 'line_not_found', '没有这条记录', { line_id: lineId });
+      return {
+        line_id: l.line_id, sku: l.sku, period: l.period, total_units: l.total_units, state: l.state,
+        confirmed_units: l.confirmed_units, ordered_units: l.ordered_units,
+        purchase_orders: [...pos.values()].filter((p) => !p.discarded_at).flatMap((p) => {
+          const sources = p.lines.flatMap((ln) => ln.sources.filter((s) => s.line_id === lineId))
+            .map((s) => ({ seller_id: s.seller_id, units: s.units }));
+          return sources.length === 0 ? [] : [{ po_id: p.po_id, custom_order_sn: p.custom_order_sn,
+            order_sn: p.order_sn, state: p.state, is_void: p.is_void, sources }];
+        }),
+      };
     },
   };
 }

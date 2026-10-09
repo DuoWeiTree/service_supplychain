@@ -4,6 +4,9 @@ import type {
   ListPlansQuery, Period, PlanDiff, PlanId,
   PlanList, PlanSummary, PurchaseCell, RecomputeResult, ReleaseResult, RemoveSkuResult, RevList, Seller, Sid,
   SubmitResult, UnsubmittedBoard,
+  AcknowledgeResult, AttentionQueue, CandidateLineQuery, CandidateLines, ConfirmAbsentResult, LineTrace,
+  PlaceResult, PoBody, PoId, PoList, PoState, PoTimeline, PreflightResult, PurchaseChecks,
+  PurchaseOptions, PurchaseOrder, RecheckResult, RegisterResult,
 } from './types';
 
 /** ★ 后端的错误形状是 `{error, hint, …点名字段平铺在顶层}`（team-lead 2026-09-22 裁定）。
@@ -67,4 +70,27 @@ export interface SupplyChainApi {
   setCurrentRev(planId: PlanId, rev: number): Promise<{ current_rev: number }>;
   diff(planId: PlanId, from: number, to: number): Promise<PlanDiff>;
   cancelRev(planId: PlanId, rev: number, reason: string): Promise<CancelRevResult>;
+
+  // ───── 采购（spec §8.1）─────
+  listPurchaseOrders(state?: PoState): Promise<PoList>;
+  getPurchaseOrder(poId: PoId): Promise<PurchaseOrder>;
+  createPurchaseOrder(body: PoBody): Promise<{ po_id: PoId }>;
+  /** ★ draft_version 不对 ⇒ 409 stale_draft */
+  updatePurchaseOrder(poId: PoId, body: PoBody & { draft_version: number }): Promise<{ po_id: PoId; draft_version: number }>;
+  deletePurchaseOrder(poId: PoId): Promise<void>;
+  getPreflight(poId: PoId): Promise<PreflightResult>;
+  /** ⛔ 不可逆。★ 超时转人工，绝不自动重试（CLAUDE.md 出站 #2）——这里不重试，也不许调用方重试 */
+  placePurchaseOrder(poId: PoId, confirmToken: string): Promise<PlaceResult>;
+  getTimeline(poId: PoId): Promise<PoTimeline>;
+  recheck(poId: PoId): Promise<RecheckResult>;
+  registerExisting(poId: PoId, orderSn: string): Promise<RegisterResult>;
+  /** 409 contradicts_evidence 的 fields.found_order_sns 点名领星里已有的单 */
+  confirmAbsent(poId: PoId, reason: string): Promise<ConfirmAbsentResult>;
+  acknowledgeMismatch(poId: PoId, reason: string): Promise<AcknowledgeResult>;
+  listAttention(): Promise<AttentionQueue>;
+  getPurchaseOptions(): Promise<PurchaseOptions>;
+  getPurchaseChecks(): Promise<PurchaseChecks>;
+  /** 固定带 orderable=1：只要还能组单的记录 */
+  listCandidateLines(params: CandidateLineQuery): Promise<CandidateLines>;
+  getLineTrace(lineId: number): Promise<LineTrace>;
 }

@@ -438,3 +438,228 @@ export interface ListPlansQuery {
 }
 export interface CreatePlanInput { title: string; period_start: string; months: number }
 export interface CatalogQuery { q?: string; limit?: number }
+
+// ───────── 采购单（spec §8.1；字段照 api/ui/purchase_orders.py · repo/purchase.py · usecase/*）─────────
+
+export type PoState = '草稿' | '已下单';
+export type PoId = number;
+
+export interface PoSource { line_id: number; seller_id: SellerId; units: number }
+
+/** 请求体里的一行：price 为字符串（后端 Decimal，库里 numeric::text） */
+export interface PoLineInput {
+  sku: string;
+  wid: string;
+  units: number;
+  price: string;
+  sources: PoSource[];
+  unplanned_reason?: string;
+}
+export interface PoBody {
+  supplier_id: string;
+  purchaser_id: string;
+  opt_uid: string;
+  qc_type: 0 | 1 | 2;
+  lines: PoLineInput[];
+}
+
+export interface PoLine {
+  line_no: number;
+  sku: string;
+  wid: string;
+  units: number;
+  price: string;
+  expect_arrive_date: string | null;
+  unplanned_reason: string | null;
+  lx_item_id: string | null;
+  sources: PoSource[];
+  sources_units: number;
+  unplanned_units: number;
+}
+
+export interface PreflightGate {
+  gate: string;
+  ok: boolean;
+  /** 随闸不同（line_no / offenders / units …），后端 `_gate(**detail)` */
+  detail: Record<string, unknown>;
+}
+export interface PoAttentionBrief { attention_id: number; kind: AttentionKind; opened_at: string }
+
+export interface PurchaseOrder {
+  po_id: PoId;
+  supplier_id: string;
+  purchaser_id: string;
+  opt_uid: string;
+  qc_type: 0 | 1 | 2;
+  wid: string | null;
+  custom_order_sn: string;
+  /** 草稿为 null */
+  order_sn: string | null;
+  state: PoState;
+  placed_at: string | null;
+  draft_version: number;
+  created_by: string;
+  is_void: boolean;
+  discarded_at: string | null;
+  lines: PoLine[];
+  source_line_states: { line_id: number; state: LineState }[];
+  attention: PoAttentionBrief[];
+  preflight: PreflightGate[];
+  confirm_token: string;
+}
+
+export interface PoSummary {
+  po_id: PoId;
+  supplier_id: string;
+  supplier_name: string;
+  state: PoState;
+  order_sn: string | null;
+  is_void: boolean;
+  lines: number;
+  units: number;
+  open_attention: number;
+  created_by: string;
+  created_at: string;
+}
+export interface PoList { purchase_orders: PoSummary[] }
+
+export interface PreflightResult { po_id: PoId; ok: boolean; gates: PreflightGate[] }
+
+/** 下单结果（usecase/place_po.py）。needs_verify 的可选字段随路径不同：
+ *  place 内查重给 lookup_*；_lost_race 给 settled_by（及对方回报的字段，L8 禁词不在此声明）；有同键异单时给 landed_mismatch。 */
+export type PlaceResult =
+  | { outcome: 'placed'; po_id: PoId; order_sn: string | null; erp_call_id?: number;
+      found_by?: 'lookup' | 'already_recorded'; settled_by?: 'recover';
+      landed_mismatch?: string | string[]; timeline?: string }
+  | { outcome: 'rejected'; po_id: PoId; lx_code: string | number | null; lx_msg: string | null; erp_call_id: number }
+  | { outcome: 'not_sent'; po_id: PoId; cause: string | null; erp_call_id: number; hint: string }
+  | { outcome: 'needs_verify'; po_id: PoId; erp_call_id: number | null; timeline: string;
+      lookup_call_id?: number; lookup_outcome?: string; truncated?: boolean;
+      landed_mismatch?: string[]; settled_by?: 'recover';
+      order_sn?: string | null };
+
+export type AttentionKind = 'needs_verify' | 'landed_mismatch' | 'stuck_call';
+export interface AttentionItem {
+  /** stuck_call 是读时推导，没有行 ⇒ null */
+  attention_id: number | null;
+  po_id: PoId;
+  kind: AttentionKind;
+  opened_at: string;
+  custom_order_sn: string;
+  supplier_id: string;
+  timeline: string;
+  /** 以下仅 stuck_call */
+  call_id?: number;
+  endpoint?: string;
+  actor?: string;
+  started_at?: string;
+  stale_after_minutes?: number;
+}
+export interface AttentionQueue { count: number; items: AttentionItem[] }
+
+export interface PoAttempt {
+  call_id: number;
+  at: string;
+  actor: string;
+  endpoint: string;
+  host: string | null;
+  path: string | null;
+  idem_key: string | null;
+  elapsed_ms: number | null;
+  outcome: string | null;
+  http_status: number | null;
+  lx_code: string | number | null;
+  lx_msg: string | null;
+  cause: string | null;
+  retry_of: number | null;
+  request: Record<string, unknown> | null;
+  response: Record<string, unknown> | null;
+}
+export interface PoEvent { from: string; to: string; actor: string; reason: string | null; src: string | null; at: string }
+export interface PoAttentionRow {
+  attention_id: number;
+  kind: AttentionKind;
+  opened_at: string;
+  resolved_at: string | null;
+  resolution: string | null;
+  resolved_by: string | null;
+  reason: string | null;
+  detail: Record<string, unknown>;
+}
+export interface TimelineConclusion {
+  kind: AttentionKind;
+  known: string;
+  unknown: string;
+  /** needs_verify */
+  last_lookup?: { call_id: number; at: string; outcome: string; truncated: boolean | null;
+                  window: Record<string, unknown> } | null;
+  how_to_search?: { custom_order_sn: string | null; window: Record<string, unknown> };
+  /** landed_mismatch */
+  facts?: Record<string, unknown>;
+}
+export interface PoTimeline {
+  po_id: PoId;
+  conclusion: TimelineConclusion | null;
+  attempts: PoAttempt[];
+  events: PoEvent[];
+  attention: PoAttentionRow[];
+}
+
+export type RecheckResult = Extract<PlaceResult, { outcome: 'placed' | 'needs_verify' }>;
+export interface RegisterResult { outcome: 'placed'; po_id: PoId; order_sn: string; found_by: 'manual' }
+export interface ConfirmAbsentResult { po_id: PoId; unlocked: ('place' | 'update' | 'delete')[] }
+export interface AcknowledgeResult { po_id: PoId; resolution: 'mismatch_acknowledged' }
+
+export interface PurchaseOptions {
+  suppliers: { supplier_id: string; name: string }[];
+  warehouses: { wid: string; name: string }[];
+  purchasers: { purchaser_id: string; source: '本服务' | '领星历史'; count: number | null }[];
+  opt_uids: { opt_uid: string; name: string | null; source: '本服务' | '领星历史'; count: number | null }[];
+  history: { available: boolean; cause: string | null; as_of: string | null; dropped: number };
+}
+
+export type PurchaseCheckName = 'po_source' | 'line_state' | 'po_unplanned' | 'po_landed';
+export interface PurchaseChecks {
+  ok: boolean;
+  counts: Record<PurchaseCheckName, number>;
+  violations: { check_name: PurchaseCheckName; ref: string }[];
+}
+
+export interface CandidateSeller { expected: number | null; cap: number | null; used: number; remaining: number | null }
+export interface CandidateLine {
+  line_id: number;
+  plan_id: PlanId;
+  rev: number;
+  sku: string;
+  period: Period;
+  total_units: number;
+  demand_at_submit: number;
+  demand_by_seller: Record<SellerId, { units: number | null; basis?: string } | null>;
+  state: LineState;
+  confirmed_units: number;
+  ordered_units: number;
+  remaining: number;
+  /** 非 null = 无法定分店上限（期望销量 0 或 unknown），组单会 409 no_seller_basis */
+  blocked: { reason: 'no_seller_basis'; sellers: SellerId[] } | null;
+  sellers: Record<SellerId, CandidateSeller>;
+}
+export interface CandidateLines {
+  lines: CandidateLine[];
+  groups: Record<string, unknown>;
+  excluded: { state: number; sku: number; category: number; period: number; fully_confirmed: number };
+}
+export interface CandidateLineQuery { plan_ids?: number[]; sku?: string }
+
+export interface LineTrace {
+  line_id: number;
+  sku: string;
+  period: Period;
+  total_units: number;
+  state: LineState;
+  confirmed_units: number;
+  ordered_units: number;
+  purchase_orders: {
+    po_id: PoId; custom_order_sn: string; order_sn: string | null; state: PoState; is_void: boolean;
+    sources: { seller_id: SellerId; units: number }[];
+  }[];
+}

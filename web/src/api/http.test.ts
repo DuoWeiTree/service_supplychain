@@ -139,4 +139,68 @@ describe('http 数据源', () => {
     expect(String(spy.mock.calls[1]![0])).toBe('/v1/lead-time');
     expect((spy.mock.calls[1]![1] as RequestInit).method).toBe('GET');
   });
+
+  describe('采购接口：method / URL / body / x-actor', () => {
+    const run = async (fn: (api: ReturnType<typeof mk>) => Promise<unknown>, resp: Response = ok({})) => {
+      const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => Promise.resolve(resp.clone()));
+      setActor('ops.li');
+      await fn(mk());
+      const [url, init] = spy.mock.calls[0]! as [string, RequestInit];
+      return { url, method: init.method, actor: new Headers(init.headers).get('x-actor'),
+               body: init.body === undefined ? undefined : JSON.parse(init.body as string) };
+    };
+    const body = { supplier_id: 'S-1001', purchaser_id: 'ops.zhang', opt_uid: 'u-501', qc_type: 1 as const, lines: [] };
+
+    it.each([
+      ['listPurchaseOrders()', (a: ReturnType<typeof mk>) => a.listPurchaseOrders(), 'GET', '/v1/purchase-orders', undefined],
+      ['listPurchaseOrders(草稿)', (a: ReturnType<typeof mk>) => a.listPurchaseOrders('草稿'), 'GET',
+        `/v1/purchase-orders?state=${encodeURIComponent('草稿')}`, undefined],
+      ['getPurchaseOrder', (a: ReturnType<typeof mk>) => a.getPurchaseOrder(7), 'GET', '/v1/purchase-orders/7', undefined],
+      ['createPurchaseOrder', (a: ReturnType<typeof mk>) => a.createPurchaseOrder(body), 'POST', '/v1/purchase-orders', body],
+      ['updatePurchaseOrder', (a: ReturnType<typeof mk>) => a.updatePurchaseOrder(7, { ...body, draft_version: 3 }), 'PUT',
+        '/v1/purchase-orders/7', { ...body, draft_version: 3 }],
+      ['getPreflight', (a: ReturnType<typeof mk>) => a.getPreflight(7), 'GET', '/v1/purchase-orders/7/preflight', undefined],
+      ['placePurchaseOrder', (a: ReturnType<typeof mk>) => a.placePurchaseOrder(7, 'tok'), 'POST',
+        '/v1/purchase-orders/7/place', { confirm_token: 'tok' }],
+      ['getTimeline', (a: ReturnType<typeof mk>) => a.getTimeline(7), 'GET', '/v1/purchase-orders/7/timeline', undefined],
+      ['recheck', (a: ReturnType<typeof mk>) => a.recheck(7), 'POST', '/v1/purchase-orders/7/recheck', undefined],
+      ['registerExisting', (a: ReturnType<typeof mk>) => a.registerExisting(7, 'PO1'), 'POST',
+        '/v1/purchase-orders/7/register-existing', { order_sn: 'PO1' }],
+      ['confirmAbsent', (a: ReturnType<typeof mk>) => a.confirmAbsent(7, '已核实'), 'POST',
+        '/v1/purchase-orders/7/confirm-absent', { reason: '已核实' }],
+      ['acknowledgeMismatch', (a: ReturnType<typeof mk>) => a.acknowledgeMismatch(7, '知悉'), 'POST',
+        '/v1/purchase-orders/7/acknowledge-mismatch', { reason: '知悉' }],
+      ['listAttention', (a: ReturnType<typeof mk>) => a.listAttention(), 'GET', '/v1/attention', undefined],
+      ['getPurchaseOptions', (a: ReturnType<typeof mk>) => a.getPurchaseOptions(), 'GET', '/v1/purchase-options', undefined],
+      ['getPurchaseChecks', (a: ReturnType<typeof mk>) => a.getPurchaseChecks(), 'GET', '/v1/checks/purchase', undefined],
+      ['listCandidateLines 全空仍带 orderable=1', (a: ReturnType<typeof mk>) => a.listCandidateLines({}), 'GET',
+        '/v1/plan-lines?orderable=1', undefined],
+      ['listCandidateLines plan_ids+sku', (a: ReturnType<typeof mk>) => a.listCandidateLines({ plan_ids: [1, 2], sku: 'A/B' }),
+        'GET', '/v1/plan-lines?plan_ids=1%2C2&sku=A%2FB&orderable=1', undefined],
+      ['getLineTrace', (a: ReturnType<typeof mk>) => a.getLineTrace(101), 'GET', '/v1/plan-lines/101/trace', undefined],
+    ])('%s', async (_n, fn, method, url, b) => {
+      const r = await run(fn);
+      expect(r).toEqual({ url, method, actor: 'ops.li', body: b });
+    });
+
+    it('deletePurchaseOrder：DELETE，204 空体不炸', async () => {
+      const r = await run((a) => a.deletePurchaseOrder(7), new Response(null, { status: 204 }));
+      expect(r).toEqual({ url: '/v1/purchase-orders/7', method: 'DELETE', actor: 'ops.li', body: undefined });
+    });
+
+    it('★ 409 contradicts_evidence：点名字段平铺，解析进 ApiError.fields', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+        error: 'contradicts_evidence', hint: '系统查重在领星找到过本单幂等键的单', po_id: 7,
+        found_order_sns: ['PO260930001'], lookup_call_id: 12, open_landed_mismatch: false,
+        custom_order_sn: 'SCM-PO-7',
+      }), { status: 409, headers: { 'content-type': 'application/json' } }));
+      const e = await mk().confirmAbsent(7, 'x').catch((x: unknown) => x);
+      expect(e).toBeInstanceOf(ApiError);
+      const err = e as ApiError;
+      expect([err.status, err.error]).toEqual([409, 'contradicts_evidence']);
+      expect(err.fields.found_order_sns).toEqual(['PO260930001']);
+      expect(err.fields.po_id).toBe(7);
+    });
+  });
 });
+

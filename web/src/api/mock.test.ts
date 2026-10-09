@@ -440,4 +440,69 @@ describe('★ Task 22（业主裁定 2026-09-27）：货号没有 msku 了，货
     expect((err as ApiError).status).toBe(404);
     expect((err as ApiError).error).toBe('sku_not_in_plan');
   });
+
+  describe('采购（只读 + 草稿增删改；不下单）', () => {
+    const body = (over: Record<string, unknown> = {}, units = 10, seller = '11072', lineId = 101) => ({
+      supplier_id: 'S-1001', purchaser_id: 'ops.zhang', opt_uid: 'u-501', qc_type: 1 as const,
+      lines: [{ sku: 'A4P-TOY-002', wid: 'W-SZ', units, price: '12.5',
+                sources: [{ line_id: lineId, seller_id: seller, units }] }],
+      ...over,
+    });
+    const code = async (p: Promise<unknown>) => {
+      const e = await p.catch((x: unknown) => x);
+      expect(e).toBeInstanceOf(ApiError);
+      return e as ApiError;
+    };
+
+    it('读：列表按状态筛、详情带 preflight / confirm_token、候选行带 orderable 过滤', async () => {
+      expect((await api.listPurchaseOrders('已下单')).purchase_orders.map((p) => p.po_id)).toEqual([2]);
+      expect((await api.listPurchaseOrders()).purchase_orders).toHaveLength(2);
+      const po = await api.getPurchaseOrder(1);
+      expect(po.preflight.length).toBeGreaterThan(0);
+      expect(po.confirm_token).not.toBe('');
+      const c = await api.listCandidateLines({});
+      expect(c.lines.map((l) => l.line_id)).toEqual([101, 103]);   // 102 已全确认；被丢的一侧要有数
+      expect(c.excluded.fully_confirmed).toBe(1);
+    });
+
+    it('草稿增删改：创建 → draft_version 递增 → 删除', async () => {
+      const { po_id } = await api.createPurchaseOrder(body());
+      expect((await api.getPurchaseOrder(po_id)).draft_version).toBe(1);
+      const r = await api.updatePurchaseOrder(po_id, { ...body({}, 12), draft_version: 1 });
+      expect(r).toEqual({ po_id, draft_version: 2 });
+      await api.deletePurchaseOrder(po_id);
+      expect((await code(api.getPurchaseOrder(po_id))).error).toBe('po_not_found');
+    });
+
+    it('★ over_seller_cap：形状同后端（line_id/seller_id/cap/used/requested）', async () => {
+      // 100 件、期望 40:20 ⇒ 最大余数法 67 / 33；11072 已被 PO1 占 30
+      const e = await code(api.createPurchaseOrder(body({}, 38, '11072')));
+      expect([e.status, e.error]).toEqual([409, 'over_seller_cap']);
+      expect(e.fields).toEqual({ line_id: 101, seller_id: '11072', cap: 67, used: 30, requested: 38 });
+      await api.createPurchaseOrder(body({}, 37, '11072'));   // 恰在上限上不拒
+    });
+
+    it('★ stale_draft：draft_version 不对 ⇒ 409 点名 current_version / got', async () => {
+      const e = await code(api.updatePurchaseOrder(1, { ...body(), draft_version: 9 }));
+      expect([e.status, e.error]).toEqual([409, 'stale_draft']);
+      expect(e.fields).toMatchObject({ po_id: 1, current_version: 1, got: 9 });
+    });
+
+    it('已下单的单不可改不可删（po_frozen）', async () => {
+      expect((await code(api.deletePurchaseOrder(2))).error).toBe('po_frozen');
+    });
+
+    it('★ 下单与四个转人工动作一律 501 not_in_mock —— mock 不编造领星的结果', async () => {
+      const calls = [
+        () => api.placePurchaseOrder(1, 't'), () => api.recheck(1), () => api.registerExisting(1, 'PO1'),
+        () => api.confirmAbsent(1, 'r'), () => api.acknowledgeMismatch(1, 'r'),
+      ];
+      for (const c of calls) {
+        const e = await code(c());
+        expect([e.status, e.error, e.hint]).toEqual([501, 'not_in_mock', 'mock 数据源不下单']);
+      }
+      expect((await api.getPurchaseOrder(1)).state).toBe('草稿');   // 没有半截状态
+    });
+  });
 });
+

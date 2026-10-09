@@ -123,5 +123,32 @@ export function createHttpApi(opt: HttpOptions): SupplyChainApi {
     setCurrentRev: (planId, rev) => call('POST', `/plans/${planId}/revs/${rev}/current`),
     diff: (planId, from, to) => call('GET', `/plans/${planId}/diff${qs({ from, to })}`),
     cancelRev: (planId, rev, reason) => call('POST', `/plans/${planId}/revs/${rev}/cancel`, { reason }),
+
+    listPurchaseOrders: (state) => call('GET', `/purchase-orders${qs({ state })}`),
+    getPurchaseOrder: (poId) => call('GET', `/purchase-orders/${encodeURIComponent(poId)}`),
+    createPurchaseOrder: (body) => call('POST', '/purchase-orders', body),
+    updatePurchaseOrder: (poId, body) => call('PUT', `/purchase-orders/${encodeURIComponent(poId)}`, body),
+    async deletePurchaseOrder(poId) {
+      await call<null>('DELETE', `/purchase-orders/${encodeURIComponent(poId)}`);
+    },
+    getPreflight: (poId) => call('GET', `/purchase-orders/${encodeURIComponent(poId)}/preflight`),
+    placePurchaseOrder: (poId, confirmToken) =>
+      call('POST', `/purchase-orders/${encodeURIComponent(poId)}/place`, { confirm_token: confirmToken }),
+    getTimeline: (poId) => call('GET', `/purchase-orders/${encodeURIComponent(poId)}/timeline`),
+    recheck: (poId) => call('POST', `/purchase-orders/${encodeURIComponent(poId)}/recheck`),
+    registerExisting: (poId, orderSn) =>
+      call('POST', `/purchase-orders/${encodeURIComponent(poId)}/register-existing`, { order_sn: orderSn }),
+    confirmAbsent: (poId, reason) =>
+      call('POST', `/purchase-orders/${encodeURIComponent(poId)}/confirm-absent`, { reason }),
+    acknowledgeMismatch: (poId, reason) =>
+      call('POST', `/purchase-orders/${encodeURIComponent(poId)}/acknowledge-mismatch`, { reason }),
+    listAttention: () => call('GET', '/attention'),
+    getPurchaseOptions: () => call('GET', '/purchase-options'),
+    getPurchaseChecks: () => call('GET', '/checks/purchase'),
+    listCandidateLines: (params) => {
+      const planIds = params.plan_ids && params.plan_ids.length > 0 ? params.plan_ids.join(',') : undefined;
+      return call('GET', `/plan-lines${qs({ plan_ids: planIds, sku: params.sku, orderable: 1 })}`);
+    },
+    getLineTrace: (lineId) => call('GET', `/plan-lines/${encodeURIComponent(lineId)}/trace`),
   };
 }
