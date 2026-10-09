@@ -598,7 +598,7 @@ export function createMockApi(): SupplyChainApi {
         .filter((p) => !p.discarded_at && (state === undefined || p.state === state))
         .sort((a, b) => b.po_id - a.po_id)
         .map((p) => ({
-          po_id: p.po_id, supplier_id: p.supplier_id,
+          po_id: p.po_id, custom_order_sn: p.custom_order_sn, supplier_id: p.supplier_id,
           supplier_name: purchaseFixture.options.suppliers.find((x) => x.supplier_id === p.supplier_id)?.name ?? p.supplier_id,
           state: p.state, order_sn: p.order_sn, is_void: p.is_void, lines: p.lines.length,
           units: p.lines.reduce((a, l) => a + l.units, 0), open_attention: 0,

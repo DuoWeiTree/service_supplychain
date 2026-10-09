@@ -16,7 +16,7 @@ import purchaseFixture from '../api/fixtures/purchase.json';
 beforeEach(() => { vi.resetModules(); });
 afterEach(() => { vi.restoreAllMocks(); vi.doUnmock('../api'); });
 
-type Fx = { po_id: number; supplier_id: string; state: string; order_sn: string | null; is_void: boolean;
+type Fx = { po_id: number; custom_order_sn: string; supplier_id: string; state: string; order_sn: string | null; is_void: boolean;
   discarded_at: string | null; lines: { units: number }[]; created_by: string; created_at: string };
 const POS = purchaseFixture.purchase_orders as unknown as Fx[];
 
@@ -29,7 +29,7 @@ function backendBody(url: string): unknown {
       .filter((p) => p.discarded_at === null && (state === null || p.state === state))
       .sort((a, b) => b.po_id - a.po_id)
       .map((p) => ({
-        po_id: p.po_id, supplier_id: p.supplier_id,
+        po_id: p.po_id, custom_order_sn: p.custom_order_sn, supplier_id: p.supplier_id,
         supplier_name: purchaseFixture.options.suppliers.find((s) => s.supplier_id === p.supplier_id)?.name ?? p.supplier_id,
         state: p.state, order_sn: p.order_sn, is_void: p.is_void, lines: p.lines.length,
         units: p.lines.reduce((a, l) => a + l.units, 0), open_attention: 0,

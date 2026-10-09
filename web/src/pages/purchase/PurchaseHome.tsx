@@ -5,16 +5,13 @@ import { ErrorDetail } from '../../components/ErrorDetail';
 import { Fold } from '../../components/Fold';
 import { Qty, type QtyValue } from '../../components/Qty';
 import { api, ApiError } from '../../api';
-import type { AttentionKind, AttentionQueue, PoId, PoList, PurchaseChecks } from '../../api/types';
+import type { AttentionKind, AttentionQueue, PoList, PurchaseChecks } from '../../api/types';
 
 export const KIND_LABEL: Record<AttentionKind, string> = {
   needs_verify: '下单结果待核实',
   landed_mismatch: '领星明细不一致',
   stuck_call: '下单请求卡住',
 };
-
-/** 列表接口不回 custom_order_sn；它由 po_id 定死（spec §10.2 V7，设计取值） */
-const orderSn = (poId: PoId) => `SCM-PO-${poId}`;
 
 // 非 ApiError（建连失败等）也要落成可显示明细：cause.code 是分辨「超时」与「连不上」的唯一线索
 function asApiError(e: unknown): ApiError {
@@ -35,24 +32,21 @@ export function PurchaseHome() {
   const [checksErr, setChecksErr] = useState<ApiError | null>(null);
 
   useEffect(() => {
-    const t0 = performance.now();
-    const settle = <T,>(name: string, r: PromiseSettledResult<T>, ok: (v: T) => void, bad: (e: ApiError) => void) => {
-      if (r.status === 'fulfilled') { ok(r.value); return; }
-      const err = asApiError(r.reason);
-      console.warn(`[purchase-home] ${name} failed`, JSON.stringify({
-        status: err.status, error: err.error, fields: err.fields, ms: Math.round(performance.now() - t0),
-      }));
-      bad(err);
+    // 各读各自落地：慢的或超时的那个不许拖住另外两块
+    const load = <T,>(name: string, f: () => Promise<T>, ok: (v: T) => void, bad: (e: ApiError) => void) => {
+      const t0 = performance.now();
+      // api 同步抛（桩缺方法）也要落进各自的错，不能让整页白屏
+      Promise.resolve().then(f).then(ok, (e: unknown) => {
+        const err = asApiError(e);
+        console.warn(`[purchase-home] ${name} failed`, JSON.stringify({
+          status: err.status, error: err.error, fields: err.fields, ms: Math.round(performance.now() - t0),
+        }));
+        bad(err);
+      });
     };
-    // api 同步抛（桩缺方法）也要落进各自的错，不能让整页白屏
-    const call = <T,>(f: () => Promise<T>) => Promise.resolve().then(f);
-    void Promise.allSettled([
-      call(() => api.listAttention()), call(() => api.listPurchaseOrders()), call(() => api.getPurchaseChecks()),
-    ]).then(([a, l, c]) => {
-      settle('listAttention', a, setAttn, setAttnErr);
-      settle('listPurchaseOrders', l, setList, setListErr);
-      settle('getPurchaseChecks', c, setChecks, setChecksErr);
-    });
+    load('listAttention', () => api.listAttention(), setAttn, setAttnErr);
+    load('listPurchaseOrders', () => api.listPurchaseOrders(), setList, setListErr);
+    load('getPurchaseChecks', () => api.getPurchaseChecks(), setChecks, setChecksErr);
   }, []);
 
   const rows = list?.purchase_orders ?? [];
@@ -119,7 +113,7 @@ export function PurchaseHome() {
             <tbody>
               {rows.map((p) => (
                 <tr key={p.po_id}>
-                  <td><Link to={`/purchase/${p.po_id}`}>{orderSn(p.po_id)}</Link></td>
+                  <td><Link to={`/purchase/${p.po_id}`}>{p.custom_order_sn}</Link></td>
                   <td>{p.supplier_name}</td>
                   <td>
                     {p.state}{p.is_void && <> <span className="chip chip--dim">作废</span></>}

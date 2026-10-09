@@ -8,9 +8,9 @@ beforeEach(() => { vi.resetModules(); });
 afterEach(() => { vi.doUnmock('../../api'); });
 
 const PO_LIST: PoList = { purchase_orders: [
-  { po_id: 2, supplier_id: 'S-2', supplier_name: '宁波远景', state: '已下单', order_sn: 'PO260930001', is_void: false,
+  { po_id: 2, custom_order_sn: 'SCM-PO-2', supplier_id: 'S-2', supplier_name: '宁波远景', state: '已下单', order_sn: 'PO260930001', is_void: false,
     lines: 1, units: 80, open_attention: 2, created_by: 'buyer.wang', created_at: '2026-10-08T10:00:00+08:00' },
-  { po_id: 1, supplier_id: 'S-1', supplier_name: '东莞宏达', state: '草稿', order_sn: null, is_void: false,
+  { po_id: 1, custom_order_sn: 'SCM-PO-1', supplier_id: 'S-1', supplier_name: '东莞宏达', state: '草稿', order_sn: null, is_void: false,
     lines: 2, units: 150, open_attention: 0, created_by: 'ops.zhang', created_at: '2026-10-08T09:00:00+08:00' },
 ] };
 const OK_CHECKS: PurchaseChecks = { ok: true, counts: { po_source: 0, line_state: 0, po_unplanned: 0, po_landed: 0 }, violations: [] };
@@ -123,6 +123,27 @@ describe('采购首页', () => {
     await mount({ getPurchaseChecks: async () => { throw new ApiError(500, 'boom', '核对取不到', {}); } });
     expect(await screen.findByText('核对取不到')).toBeInTheDocument();
     expect(screen.queryByText('核对全部通过')).toBeNull();
+  });
+
+  it('★ 待处理一直没回：列表与核对照样出，不等它', async () => {
+    await mount({ listAttention: () => new Promise(() => {}) });
+    expect(await screen.findByTestId('po-list')).toBeInTheDocument();
+    expect(await screen.findByText('核对全部通过')).toBeInTheDocument();
+    expect(screen.queryByTestId('attention-list')).toBeNull();
+  });
+
+  it('★ 失败日志带该次调用自己的耗时', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { ApiError } = await import('../../api/client');
+    await mount({
+      getPurchaseChecks: async () => { throw new ApiError(500, 'boom', '核对取不到', {}); },
+      listAttention: () => new Promise(() => {}),
+    });
+    await screen.findByText('核对取不到');
+    const line = warn.mock.calls.map((c) => String(c[0]) + String(c[1])).find((t) => t.includes('getPurchaseChecks'))!;
+    expect(line).toContain('"ms":');
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('listAttention'))).toBe(false);
+    warn.mockRestore();
   });
 
   it('加载与空态措辞不同', async () => {

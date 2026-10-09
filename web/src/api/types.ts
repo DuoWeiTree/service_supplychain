@@ -510,6 +510,7 @@ export interface PurchaseOrder {
 
 export interface PoSummary {
   po_id: PoId;
+  custom_order_sn: string;
   supplier_id: string;
   supplier_name: string;
   state: PoState;

@@ -160,7 +160,7 @@ def supplier_exists(cur, supplier_id: str) -> bool:
 
 
 def list_pos(cur, state: str | None) -> list[dict]:
-    cur.execute("SELECT e.po_id, e.supplier_id, s.name, e.state, e.order_sn, e.is_void,"
+    cur.execute("SELECT e.po_id, e.custom_order_sn, e.supplier_id, s.name, e.state, e.order_sn, e.is_void,"
                 " (SELECT count(*) FROM po_line l WHERE l.po_id = e.po_id),"
                 " (SELECT coalesce(sum(units), 0) FROM po_line l WHERE l.po_id = e.po_id),"
                 " (SELECT count(*) FROM po_attention a WHERE a.po_id = e.po_id AND a.resolved_at IS NULL),"
@@ -168,7 +168,7 @@ def list_pos(cur, state: str | None) -> list[dict]:
                 " FROM v_po_effective e JOIN supplier s USING (supplier_id)"
                 " WHERE e.discarded_at IS NULL AND (%s::text IS NULL OR e.state = %s)"
                 " ORDER BY e.po_id DESC", (state, state))
-    keys = ("po_id", "supplier_id", "supplier_name", "state", "order_sn", "is_void",
+    keys = ("po_id", "custom_order_sn", "supplier_id", "supplier_name", "state", "order_sn", "is_void",
             "lines", "units", "open_attention", "created_by", "created_at")
     out = [dict(zip(keys, r)) for r in cur.fetchall()]
     for o in out:

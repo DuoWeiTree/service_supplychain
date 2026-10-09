@@ -188,6 +188,14 @@ def test_delete_after_erp_call_is_soft_discard(client, seed, world):
     assert po_id not in ids
 
 
+def test_list_carries_custom_order_sn_from_db(client, seed, world):
+    mk_other()
+    po_id = mk_draft(client, seed, full_body(seed, world))
+    row = next(p for p in client.get("/v1/purchase-orders").json()["purchase_orders"] if p["po_id"] == po_id)
+    assert row["custom_order_sn"] == sql("SELECT custom_order_sn FROM po WHERE po_id=%s", po_id)[0][0]
+    assert row["custom_order_sn"]
+
+
 @pytest.mark.parametrize("setup, error", [
     (place, "po_frozen"),
     (lambda po: mk_call(po, "in_flight"), "po_placing"),
