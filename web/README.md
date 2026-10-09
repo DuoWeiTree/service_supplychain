@@ -13,6 +13,8 @@
 | `VITE_API_BASE` | 默认 `/v1` | 只打 `api/ui/` |
 | `VITE_API_TIMEOUT_MS` | 默认 `8000` | 超时抛 `ApiError(error='timeout')`，与连不上（`error='network'`）分得开 |
 
+采购页入口 `/purchase`（首页）· `/purchase/new` · `/purchase/:poId`，页面在 `src/pages/purchase/`，路径语义见 `docs/10` §2.0。
+
 ## 打真接口跑（`VITE_DATA_SOURCE=api`）
 
 三条命令，两个终端：
