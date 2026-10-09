@@ -165,6 +165,12 @@ def supplier_exists(cur, supplier_id: str) -> bool:
     return cur.fetchone()[0]
 
 
+def missing_sellers(cur, seller_ids: list[str]) -> list[str]:
+    cur.execute("SELECT s FROM unnest(%s::text[]) s WHERE NOT EXISTS (SELECT 1 FROM seller WHERE seller_id = s)",
+                (sorted(set(seller_ids)),))
+    return sorted(r[0] for r in cur.fetchall())
+
+
 def list_pos(cur, state: str | None) -> list[dict]:
     cur.execute("SELECT e.po_id, e.custom_order_sn, e.supplier_id, s.name, e.state, e.order_sn, e.is_void,"
                 " (SELECT count(*) FROM po_line l WHERE l.po_id = e.po_id),"

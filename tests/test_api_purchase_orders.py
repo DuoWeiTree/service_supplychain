@@ -314,3 +314,18 @@ def test_confirm_token_ignores_plan_title_renames(client, seed, world):
         cur.execute("UPDATE plan SET title='改名了' WHERE plan_id=(SELECT plan_id FROM plan_line WHERE line_id=%s)",
                     (world,))
     assert client.get(f"/v1/purchase-orders/{po_id}").json()["confirm_token"] == before
+
+
+def test_unknown_seller_is_named_not_500(client, seed):
+    """来源里的店不在店铺镜像里：调用方 / 数据的问题，给 409 点名，不让外键冲突以 500 冒出"""
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("INSERT INTO supplier VALUES ('8085','01',now()) ON CONFLICT DO NOTHING")
+        _, lid = mint(cur, seed.actor, seed.sku_a, total=10)
+        cur.execute("UPDATE plan_line SET demand_by_seller=%s::jsonb WHERE line_id=%s",
+                    (json.dumps({"99999999": {"units": 5, "basis": "human"}}), lid))
+    body = {"supplier_id": "8085", "purchaser_id": 111, "opt_uid": 10925905, "qc_type": 2,
+            "lines": [{"sku": seed.sku_a, "wid": seed.wid, "units": 10, "price": "2",
+                       "sources": [{"line_id": lid, "seller_id": "99999999", "units": 10}]}]}
+    r = client.post("/v1/purchase-orders", json=body, headers=H(seed.actor))
+    assert r.status_code == 409, r.text
+    assert r.json()["error"] == "unknown_seller" and r.json()["seller_ids"] == ["99999999"]

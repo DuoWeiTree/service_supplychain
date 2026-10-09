@@ -557,3 +557,14 @@ def test_lookup_with_two_orders_on_one_key_is_not_adopted(client, seed, draft, l
     lm = next(a[2] for a in _attentions(po_id) if a[0] == "landed_mismatch")
     assert lm["order_sns"] == ["FAKE-PO000001", "FAKE-PO000002"]
     assert _line_state(lid) == "已确认"
+
+
+def test_token_covers_expect_arrive_date(client, seed, draft):
+    """★ 预计到货日会发给领星（expect_arrive_time）：不靠 draft_version 间接兜，token 自己就要变"""
+    po_id, _ = draft
+    before = client.get(f"/v1/purchase-orders/{po_id}").json()["confirm_token"]
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("UPDATE po_line SET expect_arrive_date = DATE '2026-12-01' WHERE po_id = %s", (po_id,))
+    after = client.get(f"/v1/purchase-orders/{po_id}").json()["confirm_token"]
+    assert before != after
+    assert _place(client, seed, po_id, token=before).json()["error"] == "stale_confirm_token"

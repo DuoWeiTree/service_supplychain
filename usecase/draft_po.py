@@ -85,6 +85,14 @@ def _check_quantities(cur, lines: list[dict], exclude_po: int | None) -> list[in
     return line_ids
 
 
+def _check_sellers(cur, lines: list[dict]) -> None:
+    # 同 _check_supplier：来源里的店不在店铺镜像里 → 点名，不让 po_source_map 的外键冲突以 500 冒出
+    missing = repo.missing_sellers(cur, [s["seller_id"] for ln in lines for s in ln["sources"]])
+    if missing:
+        raise Conflict(409, "unknown_seller", "来源里的店不在店铺镜像里（先刷新店铺镜像，或计划里的店已下架）",
+                       seller_ids=missing)
+
+
 def _check_supplier(cur, supplier_id) -> None:
     # 不让外键冲突以 500 冒出：供应商镜像里没有 = 调用方填错，不是我们算错
     if not repo.supplier_exists(cur, supplier_id):
@@ -121,6 +129,7 @@ def create_draft(body: dict, actor: str) -> int:
     header, lines = _normalize(body)
     with timed("create_po", actor=actor), pg_conn() as c, c.cursor() as cur:
         _check_supplier(cur, header["supplier_id"])
+        _check_sellers(cur, lines)
         line_ids = _check_quantities(cur, lines, exclude_po=None)
         po_id = repo.insert_po(cur, header, actor)
         repo.replace_lines(cur, po_id, lines)
@@ -136,6 +145,7 @@ def update_draft(po_id: int, body: dict, actor: str) -> int:
     with timed("update_po", actor=actor, po_id=po_id), pg_conn() as c, c.cursor() as cur:
         po = _assert_editable(cur, po_id)
         _check_supplier(cur, header["supplier_id"])
+        _check_sellers(cur, lines)
         if body.get("draft_version") != po["draft_version"]:
             raise Conflict(409, "stale_draft", "草稿已被别人改过，请刷新后再改", po_id=po_id,
                            current_version=po["draft_version"], got=body.get("draft_version"))
@@ -175,7 +185,7 @@ def load_po(po_id: int) -> dict:
     content = {k: po[k] for k in ("supplier_id", "purchaser_id", "opt_uid", "qc_type", "wid",
                                   "draft_version")}
     # ★ token 只认单的内容：来源上的计划名 / rev 等是展示用的来源链，改个计划标题不该让确认失效
-    content["lines"] = [{**{k: ln[k] for k in ("sku", "wid", "units", "price", "unplanned_reason")},
+    content["lines"] = [{**{k: ln[k] for k in ("sku", "wid", "units", "price", "expect_arrive_date", "unplanned_reason")},
                          "sources": [{k: s[k] for k in ("line_id", "seller_id", "units")} for s in ln["sources"]]}
                         for ln in po["lines"]]
     po["preflight"] = preflight(po)
