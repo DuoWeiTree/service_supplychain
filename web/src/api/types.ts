@@ -454,6 +454,8 @@ export interface PoLineInput {
   price: string;
   sources: PoSource[];
   unplanned_reason?: string;
+  /** YYYY-MM-DD；后端 repo.replace_lines 按 ln.get 读，可不带 */
+  expect_arrive_date?: string;
 }
 export interface PoBody {
   supplier_id: string;

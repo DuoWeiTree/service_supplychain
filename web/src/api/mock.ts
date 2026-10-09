@@ -185,7 +185,7 @@ export function createMockApi(): SupplyChainApi {
       const srcUnits = ln.sources.reduce((a, s) => a + s.units, 0);
       if (ln.units > srcUnits && !(ln.unplanned_reason ?? '').trim())
         throw poErr(400, 'unplanned_reason_required', '超出计划来源的数量必须写理由', { sku: ln.sku, unplanned: ln.units - srcUnits });
-      return { line_no: i + 1, sku: ln.sku, wid: ln.wid, units: ln.units, price: ln.price, expect_arrive_date: null,
+      return { line_no: i + 1, sku: ln.sku, wid: ln.wid, units: ln.units, price: ln.price, expect_arrive_date: ln.expect_arrive_date ?? null,
                unplanned_reason: ln.unplanned_reason ?? null, lx_item_id: null, sources: clone(ln.sources),
                sources_units: srcUnits, unplanned_units: ln.units - srcUnits };
     });
