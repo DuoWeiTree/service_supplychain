@@ -49,14 +49,13 @@ def test_stockout_days_are_censored_and_counted(client, seed):
 
 
 def test_no_history_is_null_named_and_explained(client, seed, use_source):
-    from api.ui import plans
-    from dim.fixture_source import FixtureSource
+    from fixture_source import FIXTURES, FixtureSource
 
     class NoSales(FixtureSource):
         def daily_sales(self, *a):
             return {}
 
-    use_source(lambda: NoSales(plans.FIXTURES))
+    use_source(lambda: NoSales(FIXTURES))
     body, rows = claim(client, seed, seed.msku_a)
     assert [r[0] for r in rows] == [None, None, None]
     assert rows[0][2]["reason"] == "no_sales_in_window" and rows[0][2]["base_rate"] is None
@@ -79,8 +78,9 @@ def test_stock_days_are_never_asked_past_the_estimation_anchor(client, seed, use
                                                                 monkeypatch, scm_log):
     """★ task-14 交代：SQL_FBA_STOCK_DAYS 不看 settled —— 还在写的采集日会被读成断货。
     只有窗口止于 as_of − embargo_days 才安全，所以调用方必须守住，窗口一越线就点名炸。"""
+    from fixture_source import FIXTURES, FixtureSource
+
     from api.ui import plans
-    from dim.fixture_source import FixtureSource
     from forecast.baseline import DataWindows
 
     asked = []
@@ -90,7 +90,7 @@ def test_stock_days_are_never_asked_past_the_estimation_anchor(client, seed, use
             asked.append((start, end))
             return super().fba_stock_days(seller_sku, sid, start, end)
 
-    use_source(lambda: Spy(plans.FIXTURES))
+    use_source(lambda: Spy(FIXTURES))
     claim(client, seed, seed.msku_a)
     assert asked == [(dt.date(2026, 7, 21), dt.date(2026, 9, 14))]   # 止于锚点 09-14
 
@@ -138,14 +138,15 @@ def test_no_rate_is_never_marked_extrapolated(client, seed, use_source, monkeypa
     """★ 没有数就没有外推（库层 CHECK：外推 ⇒ system_units 非空）—— 估计器说 True 也不许写上去。"""
     import dataclasses
 
+    from fixture_source import FIXTURES, FixtureSource
+
     from api.ui import plans
-    from dim.fixture_source import FixtureSource
 
     class NoSales(FixtureSource):
         def daily_sales(self, *a):
             return {}
 
-    use_source(lambda: NoSales(plans.FIXTURES))
+    use_source(lambda: NoSales(FIXTURES))
     real = plans.estimate_rate
     monkeypatch.setattr(plans, "estimate_rate",
                         lambda *a, **k: dataclasses.replace(real(*a, **k), extrapolated=True))

@@ -28,6 +28,7 @@ import concurrent.futures as cf
 import datetime as dt
 import threading
 
+import conftest as ct
 import pytest
 
 from api.ui import source_factory as sf
@@ -189,10 +190,10 @@ def test_one_ch_client_is_never_shared_across_concurrent_requests(client, seed, 
         issued.append(c)
         return c
 
-    monkeypatch.setattr(sf, "forecast", lambda: {"source": "ch"})
+    monkeypatch.setattr(sf, "forecast", dict)
     monkeypatch.setattr(sf, "ch_client", fake_ch_client)
     # ★ 不换 `ch_query`：日志三问那层是生产的一部分，换掉它这条就不是端到端了。
-    use_source(sf.make_source)
+    use_source(ct.REAL_MAKE_SOURCE)
 
     pid = _plan(client, seed)
     client.post(f"/v1/plans/{pid}/claims",

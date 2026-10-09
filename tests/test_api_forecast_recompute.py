@@ -7,10 +7,10 @@ fixture：as_of 2026-09-21 → 估计锚点 09-14；MSKU-A 每天 4 件（4.3251
 import datetime as dt
 
 import pytest
+from fixture_source import FIXTURES, FixtureSource
 
 from api.ui import plans
 from dim.ch_source import ChUnavailable
-from dim.fixture_source import FixtureSource
 from shared.pg_client import pg_conn
 
 
@@ -42,7 +42,7 @@ def test_recompute_fills_a_null_cell_with_full_basis(client, seed, use_source):
     """claim() 在没有销量时把 system_units 留 NULL；「换源」之后 recompute 应当把它算出来，
     且 system_basis 七项齐全：base_rate、月天数、估计锚点、embargo_days、窗口起止、
     censor 天数、收缩前后两个速率（raw_rate / base_rate）。"""
-    use_source(lambda: NoSales(plans.FIXTURES))
+    use_source(lambda: NoSales(FIXTURES))
     pid = new_plan(client, seed)
     r = client.post(f"/v1/plans/{pid}/claims", json={"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]},
                     headers=H(seed.actor))
@@ -50,7 +50,7 @@ def test_recompute_fills_a_null_cell_with_full_basis(client, seed, use_source):
     before = cells(pid)
     assert [row[3] for row in before] == [None, None, None]
 
-    use_source(lambda: FixtureSource(plans.FIXTURES))  # 「换源」：这次真的有销量历史了
+    use_source(lambda: FixtureSource(FIXTURES))  # 「换源」：这次真的有销量历史了
     r2 = client.post(f"/v1/plans/{pid}/forecast/recompute", headers=H(seed.actor))
     assert r2.status_code == 200, r2.text
     body = r2.json()
@@ -91,7 +91,7 @@ def test_recompute_never_touches_expected_units(client, seed):
 def test_no_rate_msku_stays_null_and_is_named_separately(client, seed, use_source):
     """★ 判据③⑥：算不出速率的 msku 走 no_rate[]，system_units 仍是 NULL（不是 0），
     且与「算出来了」分开列，不合成一个成功计数。"""
-    use_source(lambda: NoSales(plans.FIXTURES))
+    use_source(lambda: NoSales(FIXTURES))
     pid = new_plan(client, seed)
     client.post(f"/v1/plans/{pid}/claims", json={"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]},
                headers=H(seed.actor))
@@ -143,7 +143,7 @@ def test_a_mid_batch_source_failure_leaves_no_cell_changed(client, seed, use_sou
                 raise ChUnavailable("ch://test", {"code": "ETIMEDOUT"})
             return super().daily_sales(seller_sku, sid, start, end)
 
-    use_source(lambda: FlakyOnSecond(plans.FIXTURES))
+    use_source(lambda: FlakyOnSecond(FIXTURES))
     r = client.post(f"/v1/plans/{pid}/forecast/recompute", headers=H(seed.actor))
     assert r.status_code == 503, r.text
 

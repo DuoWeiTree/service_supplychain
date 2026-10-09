@@ -1,4 +1,4 @@
-"""PB-D14：产品代码只有一条真路径。领星替身只许住在 tests/。
+"""PB-D14 / PB-D17：产品代码只有一条真路径。领星替身与 CSV 取数源只许住在 tests/。
 
 ★ 允许清单为空：任何一处命中都是 fake 模式在长回来。
 """
@@ -8,7 +8,12 @@ from pathlib import Path
 from tests.test_layering import PACKAGES
 
 ROOT = Path(__file__).resolve().parents[1]
-FORBIDDEN = re.compile(r"fake|simulat|placed_mode|[\"']sim[\"']|gateway\.mode", re.IGNORECASE)
+FORBIDDEN = re.compile(
+    r"fake|simulat|placed_mode|[\"']sim[\"']|gateway\.mode"
+    # PB-D17：预测只读真 CH —— CSV 取数源、它的档位值、指向测试底料的路径都不许回到产品里
+    r"|FixtureSource|fixture_source|[\"']fixture[\"']|source\s*=\s*[\"']fixture"
+    r"|tests[\"']?\s*/\s*[\"']?fixtures",
+    re.IGNORECASE)
 
 
 def _product_sources() -> list[Path]:
@@ -22,7 +27,7 @@ def test_product_code_has_no_fake_mode():
             for p in _product_sources()
             for n, line in enumerate(p.read_text("utf-8").splitlines(), start=1)
             if FORBIDDEN.search(line)]
-    assert hits == [], "产品代码里出现 fake / 模拟 / placed_mode / 'sim' / gateway.mode：\n" + "\n".join(hits)
+    assert hits == [], "产品代码里出现假模式字样（fake / 模拟 / placed_mode / 'sim' / gateway.mode / FixtureSource / 'fixture' / tests/fixtures）：\n" + "\n".join(hits)
 
 
 def test_simulate_routes_are_gone(client):

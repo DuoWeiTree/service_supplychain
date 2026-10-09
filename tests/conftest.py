@@ -10,8 +10,10 @@ from types import SimpleNamespace
 from urllib.parse import urlsplit
 
 import pytest
+from fixture_source import FIXTURES, FixtureSource
 from lingxing_double import LingxingDouble
 
+from api.ui import source_factory
 from erp import auth as erp_auth
 from erp import gateway
 from erp.drivers.live import LiveDriver
@@ -68,18 +70,6 @@ def _switch_schema(text: str) -> str:
 _FRESHNESS_TEST_PINS = ("scheduler_enabled", "startup_gate")
 
 
-#: ★ 取数源也必须钉死。测试配置是**从真实 `config.toml` 生成**的（只换 schema），
-#: 所以 `[forecast] source` 会原样漏进来 —— 2026-09-28 负责人的机器上把它改成 `"ch"`
-#: 之后，23 条本该离线的测试当场开始打生产 ClickHouse 并失败。
-#: ★ 判据：**一个红绿取决于本机配置的门禁，等于没有门禁**。默认封闭、显式开口 ——
-#: 想连真 CH 的测试走 `use_source` 或 live 测试自己那套，不靠这个文件的默认值。
-#: ★ `[forecast]` 里的数值旋钮（snapshot_* / drop_threshold / min_rows /
-#: purchase_staleness_days）**故意不钉**：它们只在 `source = "ch"` 下生效，而真正用到
-#: 它们的是 live 测试，那些测试断言的就该是**本机配置的那个值**。钉死它们会让
-#: 「配置改了、live 测试还在验旧值」——那是另一个方向的假绿。
-_FORECAST_TEST_PINS = {"source": '"fixture"'}
-
-
 def _pin_section_keys(text: str, section: str, pins: dict[str, str]) -> str:
     """把 `section` 段里 `pins` 的每个键钉成给定字面量。
 
@@ -116,9 +106,22 @@ def _pin_section_keys(text: str, section: str, pins: dict[str, str]) -> str:
     return "".join(out)
 
 
-def _pin_forecast_source(text: str) -> str:
-    """★ 见 `_FORECAST_TEST_PINS` 上面那段：取数源不许跟着本机配置走。"""
-    return _pin_section_keys(text, "[forecast]", _FORECAST_TEST_PINS)
+def _strip_forecast_source(text: str) -> str:
+    """删掉 `[forecast]` 段里的 `source` 键（PB-D17：留着它任何值都拒绝启动）。
+
+    ★ 测试配置是从本机 `config.toml` 生成的；本机那一行没删之前，不删它每个起 app
+      的测试都会撞启动闸。离线测试不连 CH 靠的是 `forecast_source` autouse 夹具，
+      不是这个键 —— 2026-09-28 本机写着 `"ch"` 时 23 条离线测试打了生产 CH。
+    """
+    out, inside = [], False
+    for line in text.splitlines(keepends=True):
+        s = line.strip()
+        if s.startswith("["):
+            inside = s.split("#", 1)[0].strip() == "[forecast]"   # 本机段头带行尾注释
+        if inside and s.split("=", 1)[0].strip() == "source" and "=" in s:
+            continue
+        out.append(line)
+    return "".join(out)
 
 
 #: ★ business_db 夹具生成的测试配置里，领星目标与凭证钉成不可达的测试值 ——
@@ -193,6 +196,18 @@ def lingxing(monkeypatch):
     DOUBLE.reset()
 
 
+#: ★ 测试永远不碰真 CH（PB-D17 之后产品只造 ChSource）。换的是 `make_source` 这个
+#: 模块属性：`source_dep`（每请求）按名字调它，所以 `client` 夹具的 app、各测试自己
+#: `create_app()` 出来的 app 一样被覆盖。要验生产装配的测试显式调 `REAL_MAKE_SOURCE`
+#: 并自己把建连那一步换成桩；live 测试直接构造 `ChSource`，不经这里。
+REAL_MAKE_SOURCE = source_factory.make_source
+
+
+@pytest.fixture(autouse=True)
+def forecast_source(monkeypatch):
+    monkeypatch.setattr(source_factory, "make_source", lambda: FixtureSource(FIXTURES))
+
+
 def _disable_scheduler(text: str) -> str:
     """★ 测试固定 `[freshness]` 里 `_FRESHNESS_TEST_PINS` 这几个键为 false ——
     不这样，每个 `with TestClient(create_app())` 都会在 `_lifespan` 里碰外部
@@ -232,7 +247,7 @@ def business_db(tmp_path_factory):
     from shared import config as config_module
 
     cfg = tmp_path_factory.mktemp("jxd_scm") / "config.toml"
-    text = _pin_erp_auth(_pin_forecast_source(_disable_scheduler(_switch_schema(CONFIG_TOML.read_text("utf-8")))))
+    text = _pin_erp_auth(_strip_forecast_source(_disable_scheduler(_switch_schema(CONFIG_TOML.read_text("utf-8")))))
     cfg.write_text(text, encoding="utf-8")
     prev = os.environ.get("JXD_SCM_CONFIG")
     os.environ["JXD_SCM_CONFIG"] = str(cfg)

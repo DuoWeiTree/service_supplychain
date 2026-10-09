@@ -73,15 +73,14 @@ def test_onhand_is_the_sum_of_that_stores_mskus(client, seed, use_source):
     ★ fixture 里 MSKU-B 在仓是 0，300 == 300+0 时断言对「掉一个 msku」证伪不了 ——
     改用 monkeypatch 让第二个 msku 非零（50），这样掉一个就不等于 350。
     """
-    from api.ui import plans as plans_module
-    from dim.fixture_source import FixtureSource
+    from fixture_source import FIXTURES, FixtureSource
     fake_onhand = {("MSKU-A", "11072"): 300, ("MSKU-B", "11072"): 50}
 
     class Src(FixtureSource):
         def onhand_available(self, seller_sku, sid):
             return fake_onhand.get((seller_sku, sid))
 
-    use_source(lambda: Src(plans_module.FIXTURES))
+    use_source(lambda: Src(FIXTURES))
     pid = setup_plan(client, seed, mskus=(("MSKU-A", "11072"), ("MSKU-B", "11072")))
     g = client.get(f"/v1/plans/{pid}/grid", headers=H(seed.actor)).json()
     rows = sorted([r for r in g["forecast_store"] if r["sid"] == "11072"],

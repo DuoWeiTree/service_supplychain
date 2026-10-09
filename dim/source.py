@@ -1,7 +1,7 @@
-"""取数口子。阶段 A 只有 FixtureSource 跑得起来，真 CH 实现显式未做。
+"""取数口子。产品里唯一的实现是 ChSource（PB-D17）；测试替身住在 tests/。
 
-★ 做成协议是为了让接口层**不知道**数据从哪来 —— 阶段 B 换成 ChSource 时
-  改的只有装配那一行。
+★ 做成协议是为了让接口层**不知道**数据从哪来 —— 测试换替身时改的只有装配
+  那一处（`api/ui/source_factory.source_dep`）。
 """
 from __future__ import annotations
 

@@ -23,10 +23,7 @@ from api.ui.deps import (
 from api.ui.errors import ApiError
 from api.ui.grid_forecast import NO_SALES_SOURCE, forecast_payload
 from api.ui.lead_time import read_lead_time
-from api.ui.source_factory import (  # noqa: F401 - 供测试用 plans.FIXTURES 构造替身源
-    FIXTURES,
-    source_dep,
-)
+from api.ui.source_factory import source_dep
 from dim.ch_source import (
     ChDataUnusable,
     ChUnavailable,
@@ -60,7 +57,6 @@ router = APIRouter(dependencies=[Depends(require_fresh_mirrors)])
 #:   一个 CH 客户端和 `ChSource` 全部可变的每次调用状态（两份缓存、`stats()`、
 #:   `history_window()`、`purchase_as_of`）钉在进程上，而 grid()/claim() 是
 #:   plain def 端点、跑在 Starlette 的线程池里 —— 于是并发请求会互相踩。
-#:   换源仍然只改 config.toml 的 [forecast] source，dim/source.py 的协议不变。
 
 
 #: 有销量取数源的平台。★ 阶段 A 只有 Amazon：`daily_sales` 唯一的
@@ -149,7 +145,7 @@ def _history_window(source, seller_sku: str, sid: str) -> dict | None:
     """这一次取数的口径标记。★ 只有**真查过**的那两条路径调它（取到了 / 查了没有）。
 
     ★ 不适用那两支不调：口径标记的意思是「查了，用的是这几个月」，给一个没查过
-    的格子贴上它，就是说了一句没发生的事。`FixtureSource` 没有这个方法 ⇒ None。
+    的格子贴上它，就是说了一句没发生的事。源没有这个方法 ⇒ None。
     """
     if not hasattr(source, "history_window"):
         return None
@@ -296,9 +292,8 @@ def _seed_forecast(source, plan_id: int, seller_sku: str, sid: str, platform: st
     """
     if platform not in _SALES_PLATFORM:
         # ★ 终审 I-2：「这个店压根没有 Amazon 销量源」是**不适用**，不是未知。
-        #   走到 daily_sales 的话，CH 档会在 store_for() 上抛
-        #   UnknownStore → 503，而 fixture 档同一个 msku 是 200 —— 两档对同一
-        #   件事给出两种答案，且 503 那一侧把「不适用」说成了「认不出这个店」。
+        #   走到 daily_sales 的话，会在 store_for() 上抛 UnknownStore → 503，
+        #   把「不适用」说成了「认不出这个店」。
         #   闸放在调用方，与 grid() 里 `has_fba` 那一闸同一个位置、同一个理由：
         #   ★ 不适用 ≠ 0，也 ≠ 未知（CLAUDE.md 判据一），三者必须分得开。
         return {"rate": None, "extrapolated": False,
@@ -786,7 +781,7 @@ def grid(plan_id: int, request: Request,
         as_of = as_of_date.isoformat()
         # ★ OQ-5 陈旧闸：调用本身就是守卫（越线 → PurchaseTableStale）；结果写进
         #   source_notes.purchase_as_of，并作在途「已逾期」的判据日（OQ-6，终审 I-2）。
-        #   FixtureSource 没有这个方法，按 hasattr 跳过。
+        #   源没有这个方法（Source 协议里它是可选的），按 hasattr 跳过。
         purchase_as_of = source.purchase_as_of() if hasattr(source, "purchase_as_of") else None
         dropped_stats = source.stats() if hasattr(source, "stats") else {}
     # ★ fix round 1 审计（team-lead 要求逐一核对 ChSource 实际会抛的异常集合是否都

@@ -70,8 +70,8 @@ def forecast_payload(*, as_of: dt.date, periods: list[dt.date], demand_rows: lis
     plan_skus = {m.sku for m in mskus} | {s for s, _ in purchase} | set(in_transit)
     for sku in plan_skus - {s for s, _ in purchase}:
         purchase.update({(sku, p): None for p in periods})
-    # ★ 逾期按在途的快照日判（OQ-6：ETA 所在月早于它即逾期）。FixtureSource 没有单独的采购
-    #   快照，它的在途就是 as_of 那天的 —— 退到 as_of，并在 params 里写明用的是哪天。
+    # ★ 逾期按在途的快照日判（OQ-6：ETA 所在月早于它即逾期）。源没给单独的采购快照日时，
+    #   它的在途就是 as_of 那天的 —— 退到 as_of，并在 params 里写明用的是哪天。
     in_transit_as_of = purchase_as_of or as_of
     inp = PlanForecastInput(
         as_of=as_of, periods=periods, make_days=lead.make_days, ship_days=lead.ship_days,

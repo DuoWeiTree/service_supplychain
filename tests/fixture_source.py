@@ -1,4 +1,6 @@
-"""CSV 底料。阶段 A 的唯一数据源，也是前端 mock 与真 API 同源的那一份。
+"""测试专用取数替身：读 tests/fixtures/ 的 CSV 底料（PB-D17：产品只读真 CH，这个类不许回到产品包）。
+
+conftest 的 autouse 夹具 `forecast_source` 把它装进每个测试的 `make_source`。
 
 ★ 空串读成 None，不读成 0 —— 旧项目冻结 fixture 时踩过：
   空串被读成 0 之后，「不适用」和「真的没有」再也分不开。
@@ -10,6 +12,8 @@ import datetime as dt
 from pathlib import Path
 
 from dim.source import InTransit, StockDays
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
 def _int_or_none(s: str) -> int | None:

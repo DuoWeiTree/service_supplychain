@@ -2,9 +2,9 @@ import datetime as dt
 from pathlib import Path
 
 import pytest
+from fixture_source import FixtureSource
 
 from dim.ch_source import ChSource
-from dim.fixture_source import FixtureSource
 
 FIX = Path(__file__).parent / "fixtures"
 

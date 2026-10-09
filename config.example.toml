@@ -45,9 +45,7 @@ coverage_drop_threshold = 0.30
 startup_gate = true
 
 [forecast]
-# ★ 阶段 A 取数源。"fixture" = tests/fixtures 的 5 个假 msku（离线可跑）；
-#   "ch" = 真 ClickHouse。默认 fixture —— 漏配不该变成「去连生产」。
-source = "fixture"
+# 预测只读真 ClickHouse（PB-D17）。★ 没有 source 键 —— 写了它（任何值）就拒绝启动。
 
 # 快照日候选窗口，以及「这批采集算写完了」的静置时长。
 # ★ 实测：lingxing_inventory_fba_detail 当天 06:34~07:39 起跑、约 60 秒跑完，

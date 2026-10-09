@@ -106,15 +106,14 @@ def test_msku_without_history_is_seeded_null_and_named(client, seed, use_source)
       其实是**不适用**（见下一条）。这里改成一个 Amazon 店的 msku，用一个真的
       返回空历史的源 —— 「查过了、一行都没有」与「压根没有这条取数链路」是
       两件事，两个 reason 各有各的靶子。"""
-    from api.ui import plans
-    from dim.fixture_source import FixtureSource
+    from fixture_source import FIXTURES, FixtureSource
 
     class NoHistory(FixtureSource):
         # spec §3.1：预测换成 base_rate × 天数，取数改走日销 —— 「查过了、一行都没有」
         def daily_sales(self, *a):
             return {}
 
-    use_source(lambda: NoHistory(plans.FIXTURES))
+    use_source(lambda: NoHistory(FIXTURES))
     p = mk(client, seed)
     r = client.post(f"/v1/plans/{p}/claims",
                     json={"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]},
@@ -709,14 +708,13 @@ def test_no_sales_source_is_persisted_into_system_basis_for_both_causes(client, 
 
 def test_no_sales_history_is_not_marked_not_applicable(client, seed, use_source):
     """反面：Amazon 店查过了、窗口里没卖（no_sales_history）—— 那是未知，不是不适用。"""
-    from api.ui import plans
-    from dim.fixture_source import FixtureSource
+    from fixture_source import FIXTURES, FixtureSource
 
     class NoHistory(FixtureSource):
         def daily_sales(self, *a):
             return {}
 
-    use_source(lambda: NoHistory(plans.FIXTURES))
+    use_source(lambda: NoHistory(FIXTURES))
     p = mk(client, seed)
     r = client.post(f"/v1/plans/{p}/claims", json={"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]},
                     headers=H(seed.actor)).json()
@@ -837,8 +835,7 @@ def test_two_sibling_releases_racing_still_drop_the_purchase_cells(client, seed)
 def test_reclaiming_an_active_msku_is_a_no_op_without_touching_the_source(client, seed, use_source):
     """★ 控制器裁定（fix round 2）：同一计划里重复认领一个在认领中的 msku（双击 / 两个标签页 /
     重试）= 幂等空操作：不取数、不重种格子、人填的数不动，响应点明 already_claimed。"""
-    from api.ui import plans
-    from dim.fixture_source import FixtureSource
+    from fixture_source import FIXTURES, FixtureSource
     p = mk(client, seed)
     body = {"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]}
     first = client.post(f"/v1/plans/{p}/claims", json=body, headers=H(seed.actor)).json()
@@ -852,7 +849,7 @@ def test_reclaiming_an_active_msku_is_a_no_op_without_touching_the_source(client
             calls.append(a)
             return super().daily_sales(*a)
 
-    use_source(lambda: Counting(plans.FIXTURES))
+    use_source(lambda: Counting(FIXTURES))
     r = client.post(f"/v1/plans/{p}/claims", json=body, headers=H(seed.actor))
     assert r.status_code == 200, r.text
     b = r.json()
@@ -869,8 +866,7 @@ def test_active_reclaim_racing_release_does_not_deadlock(client, seed, use_sourc
     """★ 修复前：重复认领走 ON CONFLICT DO UPDATE → 攥着认领行锁去取数 → 再等 (计划, 货号) 锁；
     同时释放拿着 (计划, 货号) 锁在等那一行 → 40P01，其中一个请求 500。
     两条连接真的交错：认领卡在取数里时释放进场。"""
-    from api.ui import plans
-    from dim.fixture_source import FixtureSource
+    from fixture_source import FIXTURES, FixtureSource
     p = mk(client, seed)
     body = {"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]}
     client.post(f"/v1/plans/{p}/claims", json=body, headers=H(seed.actor))
@@ -882,7 +878,7 @@ def test_active_reclaim_racing_release_does_not_deadlock(client, seed, use_sourc
             go.wait(5)
             return super().daily_sales(*a)
 
-    use_source(lambda: Gated(plans.FIXTURES))
+    use_source(lambda: Gated(FIXTURES))
     out = {}
     t1 = threading.Thread(target=lambda: out.__setitem__(
         "claim", client.post(f"/v1/plans/{p}/claims", json=body, headers=H(seed.actor))))
