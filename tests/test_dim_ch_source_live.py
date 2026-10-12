@@ -185,10 +185,9 @@ def test_purchase_as_of_sql_runs_on_real_clickhouse(live_query_raw):
 
 def test_purchase_in_transit_sql_runs_on_real_clickhouse_and_row_shape_is_sane(live_query_raw):
     """★ 真跑一次 `SQL_PURCHASE_IN_TRANSIT`（不是回放），验证行宽与「按状态过滤
-    确实生效」——E-12 那个坑（`status=9` 已完成单 `quantity_receive` 全为 0）在
-    真实数据上仍然存在：手写一条**不带 `o.st = 2`** 的算术版本对比，真实开口量
-    必须明显小于裸算术版本，否则说明 `o.st = 2` 这个过滤条件已经在真实 SQL 里
-    失效了（这条断言就是「必须按状态过滤」这条判据本身在真实数据上的证据）。
+    确实生效」：作废单（status=-1）的 `quantity_receive` 等于 real（10-10 实测），
+    手写一条**不带 `o.st = 2`** 的版本对比，真实开口量必须明显小于它，否则说明
+    `o.st = 2` 这个过滤条件已经在真实 SQL 里失效了。
     """
     src = cs.ChSource(live_query_raw, classify_failure=describe_failure)
     purchase_as_of = src.purchase_as_of()
@@ -203,18 +202,48 @@ def test_purchase_in_transit_sql_runs_on_real_clickhouse_and_row_shape_is_sane(l
     true_total = sum(int(r[2]) for r in rows)
 
     naive_sql = f"""
-        SELECT toInt64(sum(i.quantity_real - i.quantity_receive)) AS units
+        SELECT toInt64(sum(i.quantity_receive)) AS units
           FROM {cs.PURCHASE_ITEMS_TABLE} AS i
          WHERE i._captured_date = toDate('{purchase_as_of.isoformat()}')
            AND ifNull(i.is_delete, 0) = 0
-           AND i.quantity_real > i.quantity_receive
     """
     naive_total = live_query_raw(naive_sql)[0][0]
     assert naive_total > true_total, (
-        f"裸算术（不按 status 过滤）算出 {naive_total}，应当明显大于按 "
-        f"o.st=2 过滤后的真实开口量 {true_total}（E-12：已完成单 "
-        f"quantity_receive 全为 0）——如果两者相等，说明 status 过滤在真实 "
-        f"SQL 里已经不起作用了")
+        f"不按 status 过滤算出 {naive_total}，应当明显大于按 o.st=2 过滤后的"
+        f"真实开口量 {true_total}（作废单的 quantity_receive 等于 real）——"
+        f"如果两者相等，说明 status 过滤在真实 SQL 里已经不起作用了")
+
+
+def test_purchase_in_transit_is_quantity_receive_not_real_minus_receive(live_query_raw):
+    """★ 2026-10-10 实测：`quantity_receive` = **待到货量**（17:65），不是已到货量。
+    status=2 的行项 `quantity_entry + quantity_receive == quantity_real`（实测 33,623 =
+    3,301 + 30,322）；status=9 的 `quantity_receive` 全为 0 是「没有待到货」，不是采集缺陷。
+    原 SQL 取 `real − receive` = 已入库量，把 3,301 件已到货报成在途、漏掉 30,322 件真在途。"""
+    src = cs.ChSource(live_query_raw, classify_failure=describe_failure)
+    purchase_as_of = src.purchase_as_of()
+    rows = live_query_raw(cs.SQL_PURCHASE_IN_TRANSIT,
+                          {"purchase_as_of": purchase_as_of.isoformat()})
+    got = sum(int(r[2]) for r in rows)
+    hand = live_query_raw(f"""
+        WITH o AS (
+            SELECT order_sn, argMax(status, _captured_date) AS st
+              FROM {cs.PURCHASE_ORDER_TABLE}
+             GROUP BY order_sn
+        )
+        SELECT toInt64(sum(i.quantity_receive)),
+               toInt64(sum(i.quantity_real)), toInt64(sum(i.quantity_entry))
+          FROM {cs.PURCHASE_ITEMS_TABLE} AS i
+         INNER JOIN o ON o.order_sn = i.order_sn
+         WHERE i._captured_date = toDate('{purchase_as_of.isoformat()}')
+           AND o.st = 2 AND ifNull(i.is_delete, 0) = 0
+    """)
+    pending, real, entry = hand[0]
+    assert pending + entry == real, (
+        f"status=2 行项 待到货 {pending} + 已入库 {entry} ≠ 实际采购 {real}——"
+        "quantity_receive 的含义变了，在途口径要重新实测")
+    assert got == pending, (
+        f"SQL_PURCHASE_IN_TRANSIT 合计 {got} ≠ status=2 的 Σquantity_receive {pending}"
+        f"（若 {got} == {entry}，说明还在用 real − receive = 已入库量）")
 
 
 def test_purchase_in_transit_matches_a_hand_written_sum(live_query_raw):
@@ -243,12 +272,12 @@ def test_purchase_in_transit_matches_a_hand_written_sum(live_query_raw):
               FROM {cs.PURCHASE_ORDER_TABLE}
              GROUP BY order_sn
         )
-        SELECT toInt64(sum(i.quantity_real - i.quantity_receive))
+        SELECT toInt64(sum(i.quantity_receive))
           FROM {cs.PURCHASE_ITEMS_TABLE} AS i
          INNER JOIN o ON o.order_sn = i.order_sn
          WHERE i._captured_date = toDate('{purchase_as_of.isoformat()}')
            AND o.st = 2 AND ifNull(i.is_delete, 0) = 0
-           AND i.quantity_real > i.quantity_receive
+           AND i.quantity_receive > 0
            AND i.sku = '{sku}'
     """)
     assert hand and hand[0][0] == want, (

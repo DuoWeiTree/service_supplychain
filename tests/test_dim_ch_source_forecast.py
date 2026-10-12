@@ -23,9 +23,8 @@ Fix round 2（团队负责人裁定 2026-09-23）：
   `settle_minutes`），下面补「改了会变」的测试。
 
 Task 3（`purchase_in_transit`，controller 裁定 09-23，design §4.4 / §8 OQ-5 OQ-6）：
-· ★★ 必须按采购单 `status` 过滤，不能只靠 `quantity_real > quantity_receive`——
-  E-12 实测 `status=9（已完成）` 的行项 `quantity_receive` 全为 0，只按算术
-  会多出真实开口量的 3.7 倍。
+· ★★ 在途 = `quantity_receive`（待到货量），按采购单 `status=2` 过滤——
+  10-10 实测纠正 E-12：原口径 `real − receive` 取到的是已入库量。
 · `expect_arrive_time` 为 NULL 的行（E-14）：丢弃 + 计数，不许落进 `else ''`
   再被下游过滤掉。
 · `purchase_as_of` 用采购表自己的 `max(_captured_date)`（覆盖型表，没有历史
@@ -401,9 +400,8 @@ def test_onhand_cache_rebuilds_when_as_of_moves_to_a_new_day():
 # ---------------------------------------------------------------------------
 
 #: ★ 实测形状（design §1.3 E-12/E-13/E-14）：
-#:   · status=9（已完成）的行项 quantity_receive **全为 0** —— 966 行 / 104,479 件。
-#:     只按 `quantity_real - quantity_receive > 0` 取在途，会多出真实开口量的 3.7 倍。
-#:     SQL 端已经按 `o.st = 2` 过滤掉这批，所以下面的假行只出现「待到货」形态的数据。
+#:   · quantity_receive = 待到货量（10-10 实测纠正 E-12，见 SQL_PURCHASE_IN_TRANSIT 注释）；
+#:     SQL 端按 `o.st = 2` 过滤掉作废单，所以下面的假行只出现「待到货」形态的数据。
 #:   · expect_arrive_time 有 1 行为 NULL（50 件）。
 PURCHASE_ROWS = [
     ("DVCD105013L1", "2026-10", 600, "PO260514011"),

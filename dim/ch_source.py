@@ -539,11 +539,12 @@ SELECT max(_captured_date) FROM {PURCHASE_ORDER_TABLE}
 #: `PURCHASE_ORDER_TABLE` 里的任何一个。
 BOTH_PURCHASE_TABLES = f"{PURCHASE_ITEMS_TABLE}+{PURCHASE_ORDER_TABLE}"
 
-#: ★★ 必须按采购单 `status` 过滤，不能只靠 `quantity_real > quantity_receive`。
-#:    实测（design §1.3 E-12）：status=9（已完成）的 966 行 / 104,479 件，行项
-#:    `quantity_receive` **全为 0** —— 只按算术会把这批已到货的货报成在途，
-#:    是真实开口量 28,561 件的 3.7 倍。status=-1（已作废）468 行 / 39,375 件
-#:    同样显式排除，不依赖「它恰好净为 0」。
+#: ★★ 在途 = `quantity_receive`（**待到货量**，17:65），不是 `real − receive`。
+#:    2026-10-10 实测：status=2 行项 `quantity_entry + quantity_receive == quantity_real`；
+#:    status=9 的 `quantity_receive` 全为 0 = 没有待到货；status=-1 的等于 real（作废单
+#:    的待到货不是在途）。原 SQL 取 `real − receive` = 已入库量（实测 3,301 vs 真在途
+#:    30,322）—— E-12 把「完成单待到货为 0」读反了。仍按 `status=2` 过滤：作废单的
+#:    `quantity_receive` 非 0，不过滤就把它们算成在途。
 #: ★ `expect_arrive_time` 为 NULL 的行（E-14，1 行 / 50 件）不在 SQL 里过滤掉——
 #:   过滤会让它悄悄消失，必须留给 `parse_in_transit` 数出来再丢弃（判据五）。
 SQL_PURCHASE_IN_TRANSIT = f"""
@@ -555,14 +556,14 @@ WITH o AS (
 SELECT i.sku                                                  AS sku,
        if(i.expect_arrive_time IS NULL, NULL,
           formatDateTime(i.expect_arrive_time, '%Y-%m'))      AS period,
-       toInt64(sum(i.quantity_real - i.quantity_receive))     AS units,
+       toInt64(sum(i.quantity_receive))                       AS units,
        i.order_sn                                             AS ref
   FROM {PURCHASE_ITEMS_TABLE} AS i
  INNER JOIN o ON o.order_sn = i.order_sn
  WHERE i._captured_date = {{purchase_as_of:Date}}
    AND o.st = 2
    AND ifNull(i.is_delete, 0) = 0
-   AND i.quantity_real > i.quantity_receive
+   AND i.quantity_receive > 0
  GROUP BY sku, period, ref
  ORDER BY sku, period, ref
 """
