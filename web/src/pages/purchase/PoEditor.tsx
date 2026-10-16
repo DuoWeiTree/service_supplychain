@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { AppShell } from '../../shell/AppShell';
 import { useInFlight } from '../../shell/useInFlight';
@@ -22,7 +22,9 @@ import {
 } from './poEditorModel';
 import { asApiError } from '../../api/client';
 import { exactTotal, handlerThrew } from './fmt';
-import { CommitButton, GateList } from './parts';
+import { CommitButton, GateList, PoCrumbs } from './parts';
+import { LeaveGuard } from './LeaveGuard';
+import { homeHref, skuHit } from './purchaseHomeModel';
 
 const logFail = (name: string, err: ApiError, t0: number) => {
   console.warn(`[po-editor] ${name} failed`, JSON.stringify({
@@ -204,6 +206,10 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
   const [placeAfterSave, setPlaceAfterSave] = useState(() => poId !== null && search.get('place') === '1');
   const [showAll, setShowAll] = useState(false);
   const [missingInfo, setMissingInfo] = useState<Record<number, Missing>>({});
+  const [skuQ, setSkuQ] = useState('');
+  /** 人点过的货号展开 / 收起；没点过的按默认（见 skuOpenByDefault） */
+  const [openSku, setOpenSku] = useState<Map<string, boolean>>(() => new Map());
+  const leaving = useRef(false);
 
   // 稿一变，旧的拒绝理由（按旧可用量算的）就不再成立
   const edit = (next: Draft) => { setDraft(next); setDirty(true); setRefusal({}); };
@@ -306,8 +312,23 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
     console.warn('[po-editor] preselected lines not orderable', JSON.stringify({ wanted: wanted?.ids, missing: sel.missing }));
     return () => { alive = false; };
   }, [missingKey]); // eslint-disable-line react-hooks/exhaustive-deps
-  const narrowed = sel !== null && !showAll;
-  const groups = useMemo(() => groupCandidates(narrowed ? sel.shown : cands?.lines ?? []), [cands, sel, narrowed]);
+  // UX-D4：续编草稿只列本单来源计划的记录 —— 与新建带记录进来同一种收窄，同一个放开出口
+  const ownPlans = useMemo(() => new Set((po?.lines ?? []).flatMap((l) => l.sources.map((s) => s.plan_id))), [po]);
+  const scope = useMemo(() => {
+    if (sel) return sel.shown;
+    if (poId !== null && ownPlans.size > 0 && cands) return cands.lines.filter((l) => ownPlans.has(l.plan_id));
+    return null;
+  }, [sel, poId, ownPlans, cands]);
+  const narrowed = scope !== null && !showAll;
+  const allGroups = useMemo(() => groupCandidates(narrowed ? scope : cands?.lines ?? []), [cands, scope, narrowed]);
+  const groups = useMemo(() => (skuQ.trim() === '' ? allGroups : allGroups.filter((g) => skuHit(g.sku, skuQ))),
+    [allGroups, skuQ]);
+  const summary = useMemo(() => {
+    if (sel) return sourceSummary(sel.shown);
+    const bySrc = new Map<number, ChainRef>();
+    for (const ln of po?.lines ?? []) for (const x of ln.sources) bySrc.set(x.line_id, x);
+    return sourceSummary([...bySrc.values()]);
+  }, [sel, po]);
   // 来源链的依据：单自己带的（组满的记录不在候选里）优先，新加的来源从候选取
   const chainRef = useMemo(() => {
     const m = new Map<number, ChainRef>();
@@ -316,6 +337,13 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
     return m;
   }, [cands, po]);
   const localGates = useMemo(() => validate(draft), [draft]);
+  // 本单原有的货号也算：移除最后一条来源时，正在改的那组不该在手底下收起来
+  const touched = useMemo(() => new Set([...draft.lines, ...(po?.lines ?? [])].map((l) => l.sku)), [draft, po]);
+  // UX-D5：带进来的记录（人刚在列表上挑过）、本单已填的货号、搜索命中的展开；其余收起，量大时不摊成几十屏
+  const brought = useMemo(() => new Set((sel?.shown ?? []).map((l) => l.sku)), [sel]);
+  const skuOpenByDefault = (sku: string) => brought.has(sku) || allGroups.length === 1 || touched.has(sku) || skuHit(sku, skuQ);
+  const isSkuOpen = (sku: string) => openSku.get(sku) ?? skuOpenByDefault(sku);
+  const allOpen = groups.length > 0 && groups.every((g) => isSkuOpen(g.sku));
   const ownOnly = useMemo(() => (cands !== null || candsErr !== null ? ownOnlyRecords(po, cands?.lines ?? []) : []),
     [po, cands, candsErr]);
   const sellerName = useMemo(() => new Map((sellers ?? []).map((x) => [x.seller_id, x.name])), [sellers]);
@@ -362,7 +390,9 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
         succeed('save');
         pushToast({ kind: 'ok', text: '已保存草稿' });
         refreshAttention();
-        navigate(`/purchase/${po_id}${thenPlace ? '?place=1' : ''}`);
+        leaving.current = true;
+        // replace：浏览器返回不再落到一张空的新建编辑器
+        navigate(`/purchase/${po_id}${thenPlace ? '?place=1' : ''}`, { replace: true });
         return;
       }
       if (po === null) return;
@@ -403,6 +433,7 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
       succeed('delete');
       pushToast({ kind: 'ok', text: `已删除草稿 ${po?.custom_order_sn ?? ''}`.trim() });
       refreshAttention();
+      leaving.current = true;
       navigate('/purchase');
     } catch (e) {
       const err = e instanceof ApiError ? e : handlerThrew('po-editor', 'delete', e);
@@ -512,11 +543,22 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
   const wids = draftWids(draft);
   const totalUnits = draft.lines.reduce((a, l) => a + lineUnits(l), 0);
   const amount = exactTotal(draft.lines.map((l) => ({ units: lineUnits(l), price: l.price })));
+  const crumbSources = draft.lines.flatMap((l) => l.sources.flatMap((s) => {
+    const c = chainRef.get(s.line_id);
+    return c ? [{ plan_id: c.plan_id, units: s.units }] : [];
+  }));
+  const firstBrought = sel?.shown[0];
+  const home = crumbSources.length > 0 ? homeHref(crumbSources)
+    : firstBrought ? `/purchase?plan=${firstBrought.plan_id}` : '/purchase';
 
   return (
     <AppShell crumb={po ? po.custom_order_sn : '新建采购单'}>
+      <LeaveGuard when={unsaved && (dirty || draft.lines.length > 0)} bypass={leaving} />
       <div className="head">
-        <div className="head__main"><h1>{title}</h1></div>
+        <div className="head__main">
+          <PoCrumbs home={home} here={po ? po.custom_order_sn : '新建'} />
+          <h1>{title}</h1>
+        </div>
       </div>
 
       <div className="pe">
@@ -573,15 +615,26 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
           <section className="pe-pane" aria-label="可组单记录" data-testid="candidates">
             <div className="pe-pane__head">
               <span className="pe-pane__title">从计划记录分配</span>
-              {wanted && cands !== null && sel !== null && (() => {
-                const summary = sourceSummary(sel.shown);
-                return summary && <span className="pe-pane__sub" data-testid="source-summary">{summary}</span>;
-              })()}
+              {(sel !== null || (po !== null && cands !== null)) && summary && (
+                <span className="pe-pane__sub" data-testid="source-summary">{summary}</span>
+              )}
               <span className="pm-bar__sp" />
               {narrowed && (
                 <button type="button" className="btn btn--sm btn--ghost" onClick={() => setShowAll(true)}>加入其他待采购记录</button>
               )}
             </div>
+            {allGroups.length > 0 && (
+              <div className="pe-find">
+                <span className="pm-search-wrap">
+                  <input className="pm-search" type="search" aria-label="搜货号" placeholder="搜货号" value={skuQ}
+                    onChange={(e) => { setSkuQ(e.target.value); setOpenSku(new Map()); }} />
+                </span>
+                <span className="muted">{groups.length} 个货号</span>
+                <span className="pm-bar__sp" />
+                <button type="button" className="btn btn--sm btn--ghost" disabled={groups.length === 0}
+                  onClick={() => setOpenSku(new Map(groups.map((g) => [g.sku, !allOpen])))}>{allOpen ? '全部收起' : '全部展开'}</button>
+              </div>
+            )}
             {wanted && (wanted.bad.length > 0 || (sel?.missing.length ?? 0) > 0) && (
               <ul className="pe-lost" data-testid="preselect-missing">
                 {wanted.bad.map((t) => <li key={`bad-${t}`}>「{t}」不是记录号</li>)}
@@ -615,18 +668,30 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
               );
             })()}
             {cands === null ? (!candsErr && <div className="empty">正在取可组单记录…</div>)
-              : groups.length === 0 ? <div className="empty">{narrowed ? '带来的记录没有一条可组单' : '没有可组单的记录'}</div>
-              : groups.map((g) => (
-                <div className="pe-grp" key={g.sku} data-testid={`cand-sku-${g.sku}`}>
-                  <div className="pe-grp__sku num">{g.sku}</div>
-                  {g.records.map((r) => (
-                    <div className="pe-rec" key={r.line_id} data-testid={`cand-${r.line_id}`}>
-                      {recHead(`${planName(r)} rev${r.rev} ${r.period}`, r, r.total_units)}
-                      {sellerRows(r)}
-                    </div>
-                  ))}
-                </div>
-              ))}
+              : allGroups.length === 0 ? (
+                <div className="empty">{!narrowed ? '没有可组单的记录' : sel ? '带来的记录没有一条可组单' : '本单来源计划没有还可组的记录'}</div>
+              ) : groups.length === 0 ? <div className="empty">没有匹配「{skuQ}」的货号</div>
+              : groups.map((g) => {
+                const open = isSkuOpen(g.sku);
+                const ids = new Set(g.records.map((r) => r.line_id));
+                const rem = g.records.reduce((a, r) => a + recordRemaining(r, draft, baseline), 0);
+                const filled = draft.lines.reduce((a, l) => a + l.sources.filter((x) => ids.has(x.line_id)).reduce((b, x) => b + x.units, 0), 0);
+                return (
+                  <div className="pe-grp" key={g.sku} data-testid={`cand-sku-${g.sku}`}>
+                    <button type="button" className="pe-grp__sku" aria-expanded={open}
+                      onClick={() => setOpenSku((m) => new Map(m).set(g.sku, !open))}>
+                      <span className="num">{g.sku}</span>
+                      <span className="pe-grp__meta">{g.records.length} 条记录 · 剩 {rem} · 本单已填 {filled}</span>
+                    </button>
+                    {open && g.records.map((r) => (
+                      <div className="pe-rec" key={r.line_id} data-testid={`cand-${r.line_id}`}>
+                        {recHead(`${planName(r)} rev${r.rev} ${r.period}`, r, r.total_units)}
+                        {sellerRows(r)}
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
             {ownOnly.map((o) => (
               <div className="pe-grp" key={`own-${o.target.line_id}`} data-testid={`own-${o.target.line_id}`}>
                 <div className="pe-grp__sku"><span className="num">{o.target.sku}</span> 本单原有来源</div>
@@ -650,49 +715,63 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
                 {draft.lines.length} 行，{totalUnits} 件，金额 {amount ?? <Qty v={{ kind: 'unknown' }} />}
               </span>
             </div>
-            {draft.lines.length === 0 ? <div className="pm-empty">在左边给店铺填件数，这里按货号生成明细</div> : draft.lines.map((l, i) => {
-              const unplanned = unplannedUnits(l);
-              return (
-                <div className="pe-line" key={`${l.sku}#${i}`} data-testid={`po-line-${i + 1}`}>
-                  <div className="pe-line__top">
-                    <span className="pe-line__no">{i + 1}</span>
-                    <span className="pe-line__sku num">{l.sku}</span>
-                    <label className="pe-mini">数量
-                      <UnitsInput value={lineUnits(l)} onChange={(v) => edit(updateLine(draft, i, { units: v }))} />
-                    </label>
-                    <label className="pe-mini">单价
-                      <input className="pe-num" inputMode="decimal" aria-label="单价" placeholder="未填" value={l.price}
-                        onChange={(e) => edit(updateLine(draft, i, { price: e.target.value }))} />
-                    </label>
-                    <label className="pe-mini">预计到货
-                      <input className="pe-date" type="date" aria-label="预计到货" value={l.expect_arrive_date}
-                        onChange={(e) => edit(updateLine(draft, i, { expect_arrive_date: e.target.value }))} />
-                    </label>
-                  </div>
-                  {unplanned < 0 && <div className="pe-line__err">少于来源合计 {sourcesUnits(l)} 件</div>}
-                  {unplanned > 0 && (
-                    <div className="pe-line__unpl">
-                      <span className="chip chip--warn">无计划来源 {unplanned} 件</span>
-                      <input className="pe-reason" aria-label="理由" placeholder="写理由（必填）" value={l.unplanned_reason}
-                        onChange={(e) => edit(updateLine(draft, i, { unplanned_reason: e.target.value }))} />
-                    </div>
-                  )}
-                  <ul className="pe-src" data-testid="sources">
-                    {l.sources.map((s, j) => {
-                      const c = chainRef.get(s.line_id);
+            {draft.lines.length === 0 ? <div className="pm-empty">在左边给店铺填件数，这里按货号生成明细</div> : (
+              <div className="pt-wrap">
+                <table className="pt pe-lt">
+                  <thead><tr>
+                    <th className="r">#</th><th>货号</th><th>数量</th><th>单价</th><th>预计到货</th><th>来源</th>
+                  </tr></thead>
+                  <tbody>
+                    {draft.lines.map((l, i) => {
+                      const unplanned = unplannedUnits(l);
                       return (
-                        <li key={`${s.line_id}|${s.seller_id}`}>
-                          {/* R3：一眼看出这件货是哪张计划哪一版哪条记录、哪家店的量 */}
-                          <span>{c ? chainText(c, shopName(s.seller_id), s.units)
-                            : `记录 ${s.line_id} ${l.sku} → ${shopName(s.seller_id)} ${s.units} 件`}</span>
-                          <button type="button" className="pe-x" onClick={() => edit(removeSource(draft, i, j))}>移除</button>
-                        </li>
+                        <tr key={`${l.sku}#${i}`} data-testid={`po-line-${i + 1}`}>
+                          <td className="r pe-line__no">{i + 1}</td>
+                          <td className="pt-sku">{l.sku}</td>
+                          <td>
+                            <UnitsInput value={lineUnits(l)} onChange={(v) => edit(updateLine(draft, i, { units: v }))} />
+                            {unplanned < 0 && <div className="pe-line__err">少于来源合计 {sourcesUnits(l)} 件</div>}
+                            {unplanned > 0 && (
+                              <div className="pe-line__unpl">
+                                <span className="chip chip--warn">无计划来源 {unplanned} 件</span>
+                                <input className="pe-reason" aria-label="理由" placeholder="写理由（必填）" value={l.unplanned_reason}
+                                  onChange={(e) => edit(updateLine(draft, i, { unplanned_reason: e.target.value }))} />
+                              </div>
+                            )}
+                          </td>
+                          <td>
+                            <input className="pe-num" inputMode="decimal" aria-label="单价" placeholder="未填" value={l.price}
+                              onChange={(e) => edit(updateLine(draft, i, { price: e.target.value }))} />
+                          </td>
+                          <td>
+                            <input className="pe-date" type="date" aria-label="预计到货" value={l.expect_arrive_date}
+                              onChange={(e) => edit(updateLine(draft, i, { expect_arrive_date: e.target.value }))} />
+                          </td>
+                          <td>
+                            <details className="pe-srcfold">
+                              <summary>{l.sources.length} 条来源 · {sourcesUnits(l)} 件</summary>
+                              <ul className="pe-src" data-testid="sources">
+                                {l.sources.map((s, j) => {
+                                  const c = chainRef.get(s.line_id);
+                                  return (
+                                    <li key={`${s.line_id}|${s.seller_id}`}>
+                                      {/* R3：一眼看出这件货是哪张计划哪一版哪条记录、哪家店的量 */}
+                                      <span>{c ? chainText(c, shopName(s.seller_id), s.units)
+                                        : `记录 ${s.line_id} ${l.sku} → ${shopName(s.seller_id)} ${s.units} 件`}</span>
+                                      <button type="button" className="pe-x" onClick={() => edit(removeSource(draft, i, j))}>移除</button>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            </details>
+                          </td>
+                        </tr>
                       );
                     })}
-                  </ul>
-                </div>
-              );
-            })}
+                  </tbody>
+                </table>
+              </div>
+            )}
             {!useLocal && gatesErr ? <ErrorDetail err={gatesErr} />
               : shownGates === null ? <div className="muted">正在检查…</div>
               : <GateList gates={shownGates} source={useLocal ? '本地检查，保存后以服务端为准' : '服务端检查'} />}
