@@ -126,10 +126,11 @@ describe('文案纪律', () => {
     expect(toast).toHaveTextContent('已删除草稿');
   });
 
-  it('★ 加入来源：按钮说「加入」', async () => {
+  it('★ 逐店分配：直接打件数 +「剩余全给」，不再混一个「加入」', async () => {
     await app('/purchase/new');
     const rec = await screen.findByTestId('cand-101');
-    expect(within(rec).getAllByRole('button', { name: '加入' }).length).toBeGreaterThan(0);
+    expect(within(rec).getAllByRole('button', { name: '剩余全给' }).length).toBeGreaterThan(0);
+    expect(within(rec).queryByRole('button', { name: '加入' })).toBeNull();
   });
 
   it('★ 新建销售计划：按钮说「新建」，表单提交按钮也说「新建」，不混「创建」', async () => {
@@ -157,7 +158,7 @@ describe('文案纪律：下单与转人工', () => {
         how_to_search: { custom_order_sn: 'SCM-PO-1', window: { search_field_time: 'create_time', start_date: '2026-10-08', end_date: '2026-10-10' } } },
       attempts: [{ call_id: 10, at: '2026-10-09T10:01:03+08:00', actor: 'ops.zhang', endpoint: 'create_purchase_order',
         host: 'erp.example', path: '/x', idem_key: 'SCM-PO-1', elapsed_ms: 30012, outcome: 'unknown', http_status: 502,
-        lx_code: null, lx_msg: null, cause: 'http_502', retry_of: null, request: {}, response: null }],
+        lx_code: null, lx_msg: null, rejected_kind: null, cause: 'http_502', retry_of: null, request: {}, response: null }],
       events: [],
       attention: [{ ...LM, resolved_at: null, resolution: null, resolved_by: null, reason: null,
         detail: { order_sns: ['PO1', 'PO2'], known: '领星里有多张单用了本单的幂等键', unknown: '哪一张是本单下出去的' } }],
@@ -183,7 +184,7 @@ describe('文案纪律：下单与转人工', () => {
     }));
     await vi.waitFor(async () => expect(await screen.findByRole('button', { name: '⛔ 下单' })).toBeEnabled());
     await userEvent.click(screen.getByRole('button', { name: '⛔ 下单' }));
-    await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '确认下单' }));
+    await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '⛔ 确认下单' }));
     const toast = await screen.findByRole('status');
     expect(toast).toHaveTextContent('已下单');
     expect(toast.textContent).not.toContain(' · ');

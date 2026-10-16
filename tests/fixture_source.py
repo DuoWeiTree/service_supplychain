@@ -11,7 +11,7 @@ import csv
 import datetime as dt
 from pathlib import Path
 
-from dim.source import InTransit, StockDays
+from dim.source import FbaInbound, InTransit, StockDays
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
@@ -44,6 +44,34 @@ class FixtureSource:
             if r["seller_sku"] == seller_sku and r["sid"] == sid:
                 return _int_or_none(r["units"])
         return None
+
+    def fc_transfers(self, seller_sku: str, sid: str) -> int:
+        """`fba_onhand.csv` 的可选列 `fc_transfers`；缺列 / 空 → 0（同 ChSource 缺行 = 0）。"""
+        for r in self._rows("fba_onhand.csv"):
+            if r["seller_sku"] == seller_sku and r["sid"] == sid:
+                return _int_or_none(r.get("fc_transfers") or "") or 0
+        return 0
+
+    def fba_inbound(self, seller_sku: str, sid: str) -> list[FbaInbound] | None:
+        """可选文件 `fba_inbound.csv`；没有这个文件 = 查过了、没有在途（[]）。"""
+        if not (self.root / "fba_inbound.csv").exists():
+            return []
+        d = lambda v: dt.date.fromisoformat(v) if v else None
+        return [FbaInbound(r["shipment_id"], r["status"], int(r["units"]), d(r["deliver_from"]), d(r["deliver_to"]))
+                for r in self._rows("fba_inbound.csv") if r["seller_sku"] == seller_sku and r["sid"] == sid]
+
+    def fba_in_transit(self, sku: str) -> list[tuple[str, str, FbaInbound]] | None:
+        """可选文件 `fba_inbound.csv` 的 `sku` 列；没有这个文件 = 查过了、没有在途。"""
+        if not (self.root / "fba_inbound.csv").exists():
+            return []
+        d = lambda v: dt.date.fromisoformat(v) if v else None
+        return [(r["sid"], r["seller_sku"], FbaInbound(r["shipment_id"], r["status"], int(r["units"]),
+                                                        d(r["deliver_from"]), d(r["deliver_to"])))
+                for r in self._rows("fba_inbound.csv") if r.get("sku") == sku]
+
+    def fba_inbound_as_of(self) -> dt.date:
+        """替身没有单独的货件快照日：与 as_of 同一天。"""
+        return self.as_of()
 
     def purchase_in_transit(self, sku: str) -> list[InTransit]:
         return [InTransit(r["period"], int(r["units"]), r["ref"])

@@ -3,7 +3,8 @@ import datetime as dt
 
 D1, D2 = dt.date(2026, 9, 20), dt.date(2026, 9, 21)
 
-SKU_CATALOG = [("DCC1800264G1", "猫爬架", D2), ("", "无名氏", D2)]          # 空货号要被丢掉
+#: (sku, name, product_id, captured)。product_id = local_products.id（CA，10-10 实测 = 库存表 product_id 960/960）
+SKU_CATALOG = [("DCC1800264G1", "猫爬架", 9001, D2), ("", "无名氏", 9002, D2)]          # 空货号要被丢掉
 
 #: ★ OQ-3 裁定（09-22）：SQL_SELLER 已 join lingxing_product_listing 派生 has_fba_flag。
 #:   controller 09-22 进一步裁定（探针 §7.0 实测后）：lingxing_seller_list 没有
@@ -21,14 +22,17 @@ SELLER = [("11072", "A4Pet-US", "美国", D2, 1),
 
 #: ★ 控制器 09-22 追加裁定：seller_sku 形如 amzn.gr.* 是亚马逊虚拟促销组，
 #:   不是真 listing，必须丢弃且计数（不是静默滤掉的那一侧）。
-MSKU_BRIDGE = [("MSKU-A", "11072", "DCC1800264G1", D2),
-               ("MSKU-A", "11094", "DCC1800264G1", D2),   # ★ 同串跨店 = 两个 listing
-               ("MSKU-Z", "11072", "", D2),                # 未绑货号要被丢掉
-               ("amzn.gr.9001", "11072", "DCC1800264G1", D2)]  # 虚拟促销组要被丢掉
-WAREHOUSE = [(1, "11-北美亚马逊东孚仓", 1, 0, D2),
-             (2, "30-LA自有海外仓", 3, 1, D2),
-             (3, "A4pet英国仓", 3, 2, D2)]
-WAREHOUSE_UNKNOWN = WAREHOUSE + [(9, "说不清是什么仓", 7, 7, D2)]
+#: (seller_sku, sid, sku, fnsku, captured)。★ fnsku 空 = 没有（FBM 实测全空），不是 ''
+MSKU_BRIDGE = [("MSKU-A", "11072", "DCC1800264G1", "X00AAA", D2),
+               ("MSKU-A", "11094", "DCC1800264G1", "", D2),   # ★ 同串跨店 = 两个 listing；fnsku 空
+               ("MSKU-Z", "11072", "", None, D2),                # 未绑货号要被丢掉
+               ("amzn.gr.9001", "11072", "DCC1800264G1", None, D2)]  # 虚拟促销组要被丢掉
+#: (wid, name, type, sub_type, country_code, captured)。★ country_code 只对海外仓有意义（CA-D5 候选按市场过滤）
+WAREHOUSE = [(1, "11-北美亚马逊东孚仓", 1, 0, "CN", D2),
+             (2, "30-LA自有海外仓", 3, 1, "US", D2),
+             (3, "A4pet英国仓", 3, 2, "GB", D2),
+             (4, "魔方云仓BCI NL-TX", 3, 2, "", D2)]      # ★ 10-10 实测 21 个海外仓里 8 个 country_code 为空
+WAREHOUSE_UNKNOWN = WAREHOUSE + [(9, "说不清是什么仓", 7, 7, "", D2)]
 
 
 def replay(rows):

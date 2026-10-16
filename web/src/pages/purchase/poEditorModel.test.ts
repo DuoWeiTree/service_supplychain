@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  addSource, available, baselineOf, emptyDraft, fromPo, gateText, groupCandidates, lineUnits,
+  addSource, baselineOf, emptyDraft, fromPo, gateText, groupCandidates, lineUnits,
   ownOnlyRecords, recordRemaining, removeSource, setHeader, setLineWid, toBody, unplannedUnits, updateLine, validate,
-  chainText, parseLineIds, planName, preselect, sellerShares, sourceSummary,
+  chainText, draftWids, parseLineIds, planName, preselect, sellerShares, setAllocation, setDraftWid, sourceSummary,
   type Draft,
 } from './poEditorModel';
 import type { CandidateLine, PurchaseOrder } from '../../api/types';
@@ -10,10 +10,10 @@ import type { CandidateLine, PurchaseOrder } from '../../api/types';
 const cand = (over: Partial<CandidateLine> = {}): CandidateLine => ({
   line_id: 101, plan_id: 1, plan_title: '10 月计划', rev: 1, sku: 'SKU-A', period: '2026-10', total_units: 100,
   demand_at_submit: 60, demand_by_seller: {}, state: '已提交', confirmed_units: 0, ordered_units: 0,
-  remaining: 100, blocked: null,
+  remaining: 100,
   sellers: {
-    '11072': { expected: 40, cap: 67, used: 0, remaining: 67 },
-    '11094': { expected: 20, cap: 33, used: 0, remaining: 33 },
+    '11072': { expected: 40, used: 0 },
+    '11094': { expected: 20, used: 0 },
   },
   ...over,
 });
@@ -70,31 +70,39 @@ describe('来源合并', () => {
     expect(lineUnits(d.lines[0]!)).toBe(40);
   });
 
-  it('超过该店剩余 → 拒绝并给出可加的量；本稿已加的量要算进去', () => {
-    let d = okAdd(emptyDraft(), cand(), '11094', 30);
-    const r = addSource(d, cand(), '11094', 5, NONE);
-    expect(r).toEqual({ ok: false, reason: 'over_remaining', available: 3 });
-    d = okAdd(d, cand(), '11094', 3);
-    expect(available(cand(), '11094', d, NONE)).toBe(0);
+  it('★ PB-D22 没有分店上限：一家店可拿满整条记录（原按占比只有 33）', () => {
+    const d = okAdd(emptyDraft(), cand(), '11094', 100);
+    expect(recordRemaining(cand(), d, NONE)).toBe(0);
   });
 
-  it('已保存草稿：本单原有来源算回可用（后端 used 已含本单）', () => {
-    const c = cand({ sellers: { '11072': { expected: 40, cap: 67, used: 67, remaining: 0 } } });
+  it('★ PB-D22 期望为空（本月断货）也能加入', () => {
+    const c = cand({ sellers: { '11072': { expected: null, used: 0 } } });
+    expect(addSource(emptyDraft(), c, '11072', 100, NONE)).toMatchObject({ ok: true });
+  });
+
+  it('超过记录剩余 → 拒绝并给出可加的量；各店共用剩余，本稿已加的量要算进去', () => {
+    let d = okAdd(emptyDraft(), cand(), '11072', 60);
+    d = okAdd(d, cand(), '11094', 37);
+    const r = addSource(d, cand(), '11072', 5, NONE);
+    expect(r).toEqual({ ok: false, reason: 'over_remaining', available: 3 });
+    d = okAdd(d, cand(), '11094', 3);
+    expect(recordRemaining(cand(), d, NONE)).toBe(0);
+  });
+
+  it('已保存草稿：本单原有来源算回可用（后端 remaining 已扣本单）', () => {
+    const c = cand({ remaining: 33, sellers: { '11072': { expected: 40, used: 67 } } });
     const po = { lines: [{ sources: [{ line_id: 101, seller_id: '11072', units: 67 }] }] } as unknown as PurchaseOrder;
     const base = baselineOf(po);
     const d = fromPo({ ...po, supplier_id: 'S', purchaser_id: 1, opt_uid: 2, qc_type: 0,
       lines: [{ line_no: 1, sku: 'SKU-A', wid: 1, units: 67, price: '1', expect_arrive_date: null,
         unplanned_reason: null, lx_item_id: null, sources: [{ line_id: 101, seller_id: '11072', units: 67 }],
         sources_units: 67, unplanned_units: 0 }] } as PurchaseOrder);
-    expect(available(c, '11072', d, base)).toBe(0);
+    expect(recordRemaining(c, d, base)).toBe(33);
     const removed = removeSource(d, 0, 0);
-    expect(available(c, '11072', removed, base)).toBe(67);
+    expect(recordRemaining(c, removed, base)).toBe(100);
   });
 
-  it('blocked / 剩余未知 / 非正整数 → 拒绝', () => {
-    const blocked = cand({ blocked: { reason: 'no_seller_basis', sellers: ['11072'] },
-      sellers: { '11072': { expected: null, cap: null, used: 0, remaining: null } } });
-    expect(addSource(emptyDraft(), blocked, '11072', 1, NONE)).toMatchObject({ ok: false, reason: 'blocked' });
+  it('店不在记录里 / 非正整数 → 拒绝', () => {
     expect(addSource(emptyDraft(), cand(), '99999', 1, NONE)).toMatchObject({ ok: false, reason: 'no_seller' });
     expect(addSource(emptyDraft(), cand(), '11072', 0, NONE)).toMatchObject({ ok: false, reason: 'bad_units' });
     expect(addSource(emptyDraft(), cand(), '11072', 1.5, NONE)).toMatchObject({ ok: false, reason: 'bad_units' });
@@ -107,6 +115,68 @@ describe('来源合并', () => {
     const left = removeSource(typed, 0, 0);
     expect(left.lines).toHaveLength(1);
     expect(unplannedUnits(left.lines[0]!)).toBe(50);
+  });
+});
+
+describe('★ 设计稿：逐店直接打件数（setAllocation，绝对量）', () => {
+  const set = (d: Draft, sid: string, n: number, c = cand()) => {
+    const r = setAllocation(d, c, sid, n, NONE);
+    if (!r.ok) throw new Error(`refused: ${r.reason}`);
+    return r.draft;
+  };
+  it('设为 N 是覆盖不是叠加；同货号进同一行；单头仓写进新行', () => {
+    let d = setDraftWid(emptyDraft(), '101');
+    d = set(d, '11072', 30);
+    d = set(d, '11072', 20);
+    expect(d.lines).toHaveLength(1);
+    expect(d.lines[0]!.wid).toBe('101');
+    expect(d.lines[0]!.sources).toEqual([{ line_id: 101, seller_id: '11072', units: 20 }]);
+    d = set(d, '11094', 5);
+    expect(d.lines[0]!.sources).toHaveLength(2);
+  });
+  it('设为 0 = 去掉这条来源；最后一条去掉且数量没手改 → 行消失', () => {
+    let d = set(emptyDraft(), '11072', 30);
+    d = set(d, '11072', 0);
+    expect(d.lines).toHaveLength(0);
+  });
+  it('上限 = 记录剩余 + 本稿已给这家店的；超了拒绝并给出可设的量', () => {
+    let d = set(emptyDraft(), '11072', 60);
+    d = set(d, '11094', 30);                         // 记录剩 10
+    expect(setAllocation(d, cand(), '11072', 71, NONE)).toEqual({ ok: false, reason: 'over_remaining', available: 70 });
+    expect(setAllocation(d, cand(), '11072', 70, NONE).ok).toBe(true);
+  });
+  it('店不在记录里 / 负数 / 小数 → 拒绝', () => {
+    expect(setAllocation(emptyDraft(), cand(), '99999', 1, NONE)).toMatchObject({ reason: 'no_seller' });
+    expect(setAllocation(emptyDraft(), cand(), '11072', -1, NONE)).toMatchObject({ reason: 'bad_units' });
+    expect(setAllocation(emptyDraft(), cand(), '11072', 1.5, NONE)).toMatchObject({ reason: 'bad_units' });
+  });
+  it('单头仓：setDraftWid 写到每一行；fromPo 全同仓才带出单头仓，多仓留空', () => {
+    let d = set(emptyDraft(), '11072', 30);
+    d = set(d, '11072', 5, cand({ line_id: 102, sku: 'SKU-B' }));
+    d = setDraftWid(d, '102');
+    expect(d.lines.map((l) => l.wid)).toEqual(['102', '102']);
+    const po = (wids: number[]) => ({ supplier_id: 'S', purchaser_id: 1, opt_uid: 2, qc_type: 0 as const,
+      lines: wids.map((w, i) => ({ line_no: i + 1, sku: `S${i}`, wid: w, units: 1, price: '1', expect_arrive_date: null,
+        unplanned_reason: null, lx_item_id: null, sources: [], sources_units: 0, unplanned_units: 1 })) }) as unknown as PurchaseOrder;
+    expect(fromPo(po([7, 7])).wid).toBe('7');
+    const mixed = fromPo(po([7, 8]));
+    expect(mixed.wid).toBe('');
+    expect(draftWids(mixed)).toEqual(['7', '8']);
+  });
+});
+
+describe('★ PB-D25 一张单只许一个仓', () => {
+  it('两行不同仓 → single_wid 不过并列出仓；同仓 / 未选仓不算多仓', () => {
+    let d = okAdd(emptyDraft(), cand(), '11072', 30);
+    d = setLineWid(d, 0, '101');
+    d = okAdd(d, cand({ line_id: 102, sku: 'SKU-B' }), '11072', 5);
+    const g = () => validate(d).find((x) => x.gate === 'single_wid')!;
+    expect(g().ok).toBe(true);               // 第二行还没选仓
+    d = setLineWid(d, 1, '102');
+    expect(g()).toMatchObject({ ok: false, detail: { wids: [101, 102] } });
+    expect(gateText(g())).toContain('全单同一个仓');
+    d = setLineWid(d, 1, '101');
+    expect(g().ok).toBe(true);
   });
 });
 
@@ -138,7 +208,7 @@ describe('本地校验（闸名同后端 preflight）', () => {
   it('空稿：单头四闸 + lines 全部未过，一次列全', () => {
     const g = validate(emptyDraft());
     expect(g.map((x) => [x.gate, x.ok])).toEqual([
-      ['supplier', false], ['purchaser', false], ['opt_uid', false], ['qc_type', false], ['lines', false],
+      ['supplier', false], ['purchaser', false], ['opt_uid', false], ['qc_type', false], ['lines', false], ['single_wid', true],
     ]);
   });
 
@@ -249,9 +319,9 @@ describe('本单原有来源（候选已滤掉的记录）', () => {
     expect(own[0]!.saved).toEqual({ '11072': 30, '11094': 20 });
     const base = baselineOf(po);
     let d = fromPo(po);
-    expect(available(own[0]!.target, '11072', d, base)).toBe(0);
+    expect(recordRemaining(own[0]!.target, d, base)).toBe(0);
     d = removeSource(d, 0, 0);
-    expect(available(own[0]!.target, '11072', d, base)).toBe(30);
+    expect(recordRemaining(own[0]!.target, d, base)).toBe(30);
   });
 
   it('移除后加回：不超过原有量；超了拒绝并点名可加量', () => {
@@ -306,11 +376,11 @@ describe('来源：从哪张销售计划来（R3）', () => {
     expect(r.missing).toEqual([13]);
   });
 
-  it('分店占比：按期望销量算；无分店依据时不给（不是 0%）', () => {
+  it('分店占比（参考）：按计划销量算；有店期望为空或合计 0 时不给（不是 0%）', () => {
     expect(sellerShares(cand())).toEqual({ '11072': 67, '11094': 33 });
-    const three = { expected: 1, cap: null, used: 0, remaining: null };
+    const three = { expected: 1, used: 0 };
     expect(sellerShares(cand({ sellers: { a: three, b: three, c: three } }))).toEqual({ a: 34, b: 33, c: 33 });
-    expect(sellerShares(cand({ blocked: { reason: 'no_seller_basis', sellers: ['11072'] } }))).toBeNull();
-    expect(sellerShares(cand({ sellers: { a: { expected: 0, cap: null, used: 0, remaining: null } } }))).toBeNull();
+    expect(sellerShares(cand({ sellers: { a: { expected: null, used: 0 }, b: three } }))).toBeNull();
+    expect(sellerShares(cand({ sellers: { a: { expected: 0, used: 0 } } }))).toBeNull();
   });
 });

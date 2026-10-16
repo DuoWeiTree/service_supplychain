@@ -120,6 +120,8 @@ _ERP_DEFAULTS = {
     "app_secret": "",
     "timeout_s": 30,
     "stale_in_flight_minutes": 10,
+    # ★ 领星备货单回执轮询间隔（CB-D9）· 设计取值 · 未实测
+    "receipt_interval_minutes": 30,
     "confirm_salt": "dev-only-salt",
     "user_agent": "service_supplychain/0.1",
     # ★ 领星有 IP 白名单：生产与开发都必须经固定 IP 的 Squid 代理（HTTP CONNECT + Basic Auth）。

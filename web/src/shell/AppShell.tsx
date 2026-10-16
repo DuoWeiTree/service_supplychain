@@ -8,13 +8,16 @@ import { AttentionBanner } from './AttentionBanner';
 
 export function AppShell({ crumb, children }: { crumb: string; children: ReactNode }) {
   const actor = useSyncExternalStore(subscribeActor, getActor, getActor);
-  const inPurchase = useLocation().pathname.startsWith('/purchase');
+  const path = useLocation().pathname;
+  const inPurchase = path.startsWith('/purchase');
+  const inDispatch = path.startsWith('/dispatch');
   return (
     <>
       <div className="shell">
         <div className="shell__bar">
-          <Link className="shell__brand" to="/" aria-current={inPurchase ? undefined : 'page'}>销售计划</Link>
+          <Link className="shell__brand" to="/" aria-current={inPurchase || inDispatch ? undefined : 'page'}>销售计划</Link>
           <Link className="shell__nav" to="/purchase" aria-current={inPurchase ? 'page' : undefined}>采购</Link>
+          <Link className="shell__nav" to="/dispatch" aria-current={inDispatch ? 'page' : undefined}>排货</Link>
           <span className="sep" />
           <span className="shell__crumb">{crumb}</span>
           <span className="shell__spacer" />

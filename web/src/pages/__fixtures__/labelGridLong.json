@@ -523,6 +523,10 @@
             }
           ],
           "onhand_as_of": 300,
+          "onhand_parts": {
+            "fulfillable": 300,
+            "fc_transfers": 0
+          },
           "arrivals": [],
           "arrival_units": 0,
           "stockout_date": null
@@ -589,7 +593,7 @@
             "date": "2027-01-13",
             "units": 189,
             "order_period": "2026-10",
-            "rule": "缺口 159 补齐，余量按期望销量再摊 30",
+            "rule": "缺口 159 补齐，余量按计划销量再摊 30",
             "gap_part": 159,
             "weight_part": 30,
             "pool": 200
@@ -638,6 +642,10 @@
             }
           ],
           "onhand_as_of": 13,
+          "onhand_parts": {
+            "fulfillable": 13,
+            "fc_transfers": 0
+          },
           "arrivals": [],
           "arrival_units": 0,
           "stockout_date": null
@@ -704,7 +712,7 @@
             "date": "2027-01-13",
             "units": 11,
             "order_period": "2026-10",
-            "rule": "缺口 10 补齐，余量按期望销量再摊 1",
+            "rule": "缺口 10 补齐，余量按计划销量再摊 1",
             "gap_part": 10,
             "weight_part": 1,
             "pool": 200
@@ -950,8 +958,8 @@
             "overdue": false
           }
         ],
-        "fba_inbound": null,
-        "fba_inbound_reason": "not_fetched"
+        "fba_inbound": 0,
+        "fba_inbound_reason": null
       },
       "in_transit": 290,
       "in_transit_excludes": [
@@ -960,7 +968,25 @@
       "unfilled_purchase": [
         "2026-12",
         "2027-01"
-      ]
+      ],
+      "month_in_transit": {
+        "total": 40,
+        "fba": 0,
+        "oversea": 40,
+        "items": [
+          {
+            "source": "oversea",
+            "ref": "OWS-T1",
+            "units": 40,
+            "eta": "2026-11-05",
+            "current_only": false,
+            "from_wid": 1,
+            "to_wid": 2,
+            "shipped_at": "2026-09-30"
+          }
+        ],
+        "before_as_of": false
+      }
     },
     {
       "sku": "SKU-1",
@@ -995,8 +1021,8 @@
             "overdue": false
           }
         ],
-        "fba_inbound": null,
-        "fba_inbound_reason": "not_fetched"
+        "fba_inbound": 0,
+        "fba_inbound_reason": null
       },
       "in_transit": 370,
       "in_transit_excludes": [
@@ -1005,7 +1031,25 @@
       "unfilled_purchase": [
         "2026-12",
         "2027-01"
-      ]
+      ],
+      "month_in_transit": {
+        "total": 40,
+        "fba": 0,
+        "oversea": 40,
+        "items": [
+          {
+            "source": "oversea",
+            "ref": "OWS-T1",
+            "units": 40,
+            "eta": "2026-11-05",
+            "current_only": false,
+            "from_wid": 1,
+            "to_wid": 2,
+            "shipped_at": "2026-09-30"
+          }
+        ],
+        "before_as_of": false
+      }
     },
     {
       "sku": "SKU-1",
@@ -1040,8 +1084,8 @@
             "overdue": false
           }
         ],
-        "fba_inbound": null,
-        "fba_inbound_reason": "not_fetched"
+        "fba_inbound": 0,
+        "fba_inbound_reason": null
       },
       "in_transit": 370,
       "in_transit_excludes": [
@@ -1050,7 +1094,14 @@
       "unfilled_purchase": [
         "2026-12",
         "2027-01"
-      ]
+      ],
+      "month_in_transit": {
+        "total": 0,
+        "fba": 0,
+        "oversea": 0,
+        "items": [],
+        "before_as_of": false
+      }
     },
     {
       "sku": "SKU-1",
@@ -1085,8 +1136,8 @@
             "overdue": false
           }
         ],
-        "fba_inbound": null,
-        "fba_inbound_reason": "not_fetched"
+        "fba_inbound": 0,
+        "fba_inbound_reason": null
       },
       "in_transit": 170,
       "in_transit_excludes": [
@@ -1095,7 +1146,14 @@
       "unfilled_purchase": [
         "2026-12",
         "2027-01"
-      ]
+      ],
+      "month_in_transit": {
+        "total": 0,
+        "fba": 0,
+        "oversea": 0,
+        "items": [],
+        "before_as_of": false
+      }
     }
   ],
   "beyond_horizon": [

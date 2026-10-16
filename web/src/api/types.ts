@@ -145,6 +145,30 @@ export interface GridResponse {
   forecast_sku: SkuForecast[];
   beyond_horizon: BeyondHorizon[];
   unallocated: Unallocated[];
+  /** 取数说明（数据截至 / 丢弃计数 / 海外仓实查时刻，spec 2026-10-15） */
+  source_notes?: SourceNotes;
+}
+export interface SourceNotes {
+  as_of: string; purchase_as_of: string | null;
+  /** 海外仓在途是领星实查的：查于何时；读不到的原因 */
+  oversea_in_transit_at?: string | null; oversea_in_transit_error?: string | null;
+  /** FBA 货件实际用的快照日（10-15 裁定：当天没采到时用前一天） */
+  fba_inbound_as_of?: string | null;
+  dropped?: Record<string, unknown>;
+}
+/** 当月在途的一条（spec 2026-10-15）：运营拿 `ref` 去领星核实 */
+export interface MonthInTransitItem {
+  source: 'fba' | 'oversea'; ref: string; units: number; eta: string | null;
+  /** 到达日未知 / 已过还没收完：此刻在路上，只计 as_of 所在月 */
+  current_only: boolean;
+  sid?: Sid; msku?: string; status?: string; deliver_from?: string | null;
+  from_wid?: number; to_wid?: number; shipped_at?: string | null;
+}
+/** 货号 × 月「当月在途」= 当月任一天在路上的货（FM-D2）。`total` / 某来源为 null = 读不到（不是 0） */
+export interface MonthInTransit {
+  total: number | null; fba: number | null; oversea: number | null; items: MonthInTransitItem[];
+  /** as_of 之前的月份：那时在不在路上没有记录（全是 null，不是 0） */
+  before_as_of?: boolean;
 }
 
 // ─── 预测块（spec §6 · `api/ui/grid_forecast.py::_serialize`） ───
@@ -152,14 +176,26 @@ export interface GridResponse {
 export type ForecastState = 'ok' | 'partial' | 'unknown' | 'not_applicable' | 'elapsed' | 'no_msku';
 /** ★ null 只在 ok 时出现 */
 export type ForecastReason = null | 'as_of_inside_month' | 'unknown_onhand' | 'unknown_demand'
-  | 'bridge_rate_unknown' | 'inbound_unknown' | 'not_applicable' | 'elapsed' | 'no_msku';
+  | 'bridge_rate_unknown' | 'inbound_unknown' | 'not_applicable' | 'elapsed' | 'no_msku'
+  /** spec 2026-10-14：当天没有 FBA 货件快照 —— 在途未知，月末跟着未知 */
+  | 'fba_inbound_unavailable';
 
-/** 一次到货。★ `units` 为 null = 这批分不出去（OP-12），不是 0 */
-export interface ForecastArrival {
+/** 一次计划采购到货。★ `units` 为 null = 这批分不出去（OP-12），不是 0 */
+export interface PurchaseArrival {
+  kind?: undefined;
   date: string; units: number | null; order_period: Period; pool: number | null;
   rule?: string; gap_part?: number; weight_part?: number;
   reason?: 'gap_unknown';
 }
+/** 已发出的 FBA 货件（spec 2026-10-14）：到货日 = 亚马逊送达时段结束日 */
+export interface FbaShipmentRef {
+  kind: 'fba_shipment'; shipment_id: string; status: string;
+  deliver_from: string | null; deliver_to: string | null; order_period: null;
+}
+export interface FbaArrival extends FbaShipmentRef { date: string; units: number }
+export type ForecastArrival = PurchaseArrival | FbaArrival;
+/** 期初两部分（OP-19 c）：可售 + 调仓中 */
+export interface OnhandParts { fulfillable: number; fc_transfers: number }
 /** 一段扣减的每一步（`forecast/calendar.py::segment_detail`，终审 I-4）：
  *  month_total × (前半月天数 ÷ first_half_divisor + 后半月天数 ÷ second_half_divisor) = raw → 向上取整 units。
  *  ★ 面板照这个复算，不自己再算一遍 */
@@ -179,12 +215,14 @@ export interface ForecastBridge {
   by: 'forecast' | 'first_month_expected' | 'unknown'; rate: number | null;
   first_month_expected?: { period: Period; units: number; days: number };
   month_totals: Record<Period, number>; segments: BridgeSegment[]; onhand_as_of: number;
+  onhand_parts?: OnhandParts | null;
   arrivals: ForecastArrival[]; arrival_units: number | null; stockout_date: string | null;
 }
 /** as_of 落在本月里（state = partial）：台账从 `from`（as_of 次日）起，起点是 as_of 当天可售。
  *  ★ 本月已过去的那几天不在账上，所以这不是「期初」；其余月份为 null */
 export interface ForecastAsOfStart {
   as_of: string; onhand_as_of: number; from: string;
+  onhand_parts?: OnhandParts | null;
   /** 全月期望切到 as_of 次日起那一段；期望未填为 null */
   segment: SegmentDetail | null;
 }
@@ -215,8 +253,8 @@ export interface SkuPipeline {
   /** ★ `period` 是**预计到货月**（采购单 ETA 所在月），不是下单月；
    *  `overdue` = 预计到货月早于 `params.in_transit_as_of` 所在月（OQ-6，不改日期） */
   ordered_open_sources: { period: Period; units: number; ref: string; overdue: boolean }[];
-  /** ★ 没取，不是 0 */
-  fba_inbound: null; fba_inbound_reason: 'not_fetched';
+  /** spec 2026-10-14：已进月末的 FBA 货件剩余；null = 当天没采到（未知，不是 0） */
+  fba_inbound: number | null; fba_inbound_reason: null | 'fba_inbound_unavailable';
 }
 export interface SkuForecast {
   sku: string; period: Period; state: ForecastState; reason: ForecastReason;
@@ -230,6 +268,8 @@ export interface SkuForecast {
   stock_demand: number | null; inbound_planned: number | null;
   closing: number | null; excluded_not_applicable: number;
   pipeline: SkuPipeline; in_transit: number; in_transit_excludes: 'fba_inbound'[];
+  /** spec 2026-10-15：当月在途（FBA 货件 + 海外仓）；null = 这次没取（不是 0） */
+  month_in_transit: MonthInTransit | null;
   unfilled_purchase: Period[];
   /** ★ 三态收敛成一个布尔（sku-image 计划 Task 3）：有真图 true；只有占位图
    *  false；`sku_category` 里没有这个货号也 false —— 从不是 null、从不缺字段。
@@ -237,26 +277,36 @@ export interface SkuForecast {
   has_image: boolean;
 }
 /** ★ 日期只由采购月 + 提前期定；`units` 与「这条还在不在」随采购量变 */
-export interface BeyondHorizon {
+export interface BeyondHorizonPurchase {
+  kind?: undefined;
   sku: string; order_period: Period; units: number; placed: string; made: string; arrive: string;
   reason: 'arrives_after_horizon' | 'arrives_before_as_of';
 }
+export interface BeyondHorizonFba extends FbaShipmentRef {
+  sku: string; seller_sku: string; sid: Sid; units: number; arrive: string; reason: 'arrives_after_horizon';
+}
+export type BeyondHorizon = BeyondHorizonPurchase | BeyondHorizonFba;
 /** 整批分不出去（`forecast/allocate.py`） */
 export interface UnallocatedBatch {
-  scope: 'batch';
+  scope: 'batch'; kind?: undefined;
   sku: string; order_period: Period; arrive: string; units: number | null;
   reason: 'gap_unknown' | 'no_fba_msku';
   unknown: [string, Sid][];
 }
 /** 分到了、但这个 msku 推演不了（不适用 / 在仓未知） */
 export interface UnallocatedMsku {
-  scope: 'msku';
+  scope: 'msku'; kind?: undefined;
   sku: string; order_period: Period; arrive: string; units: number | null;
   reason: 'not_applicable' | 'unknown_onhand';
   seller_sku: string; sid: Sid; date: string; pool: number | null;
   rule?: string; gap_part?: number; weight_part?: number;
 }
-export type Unallocated = UnallocatedBatch | UnallocatedMsku;
+/** FBA 货件没进台账：逾期未签收 / 没有送达时段 / 这个 msku 推演不了（spec 2026-10-14） */
+export interface UnallocatedFba extends FbaShipmentRef {
+  scope: 'msku'; sku: string; seller_sku: string; sid: Sid; units: number; arrive: string | null;
+  reason: 'fba_overdue' | 'fba_no_eta' | 'not_applicable' | 'unknown_onhand';
+}
+export type Unallocated = UnallocatedBatch | UnallocatedMsku | UnallocatedFba;
 export interface ForecastParams {
   as_of: string; route: 'oversea_sea'; make_days: number; ship_days: number;
   anchor_day: number; embargo_days: number | null;
@@ -552,6 +602,29 @@ export interface PurchaseOrder {
   attention: PoAttentionBrief[];
   preflight: PreflightGate[];
   confirm_token: string;
+  /** 领星单头最近一次观察（po_snapshot）。null = 从没读回过 */
+  lx: LxObservation | null;
+}
+
+/** 领星单头的一次观察。status / status_shipped 码见领星 PurchaseOrderList 文档 */
+export interface LxObservation {
+  status: number;
+  status_shipped: number | null;
+  quantity_real: number | null;
+  quantity_receive: number | null;
+  quantity_entry: number | null;
+  source: 'api' | 'ch';
+  captured_at: string;
+  call_id: number | null;
+}
+/** POST /purchase-orders/{id}/read-back：checked=false 时 lx 是库里上一次观察（可能为 null） */
+export interface ReadBackResult {
+  checked: boolean;
+  read_outcome: string | null;
+  read_cause: string | null;
+  read_back_call: number | null;
+  problems: Record<string, unknown>[];
+  lx: LxObservation | null;
 }
 
 export interface PoSummary {
@@ -578,7 +651,8 @@ export type PlaceResult =
   | { outcome: 'placed'; po_id: PoId; order_sn: string | null; erp_call_id?: number;
       found_by?: 'lookup' | 'already_recorded'; settled_by?: 'recover';
       landed_mismatch?: string | string[]; timeline?: string }
-  | { outcome: 'rejected'; po_id: PoId; lx_code: string | number | null; lx_msg: string | null; erp_call_id: number }
+  | { outcome: 'rejected'; po_id: PoId; lx_code: string | number | null; lx_msg: string | null;
+      rejected_kind: RejectedKind; host: string; path: string; erp_call_id: number }
   | { outcome: 'not_sent'; po_id: PoId; cause: string | null; erp_call_id: number; hint: string }
   | { outcome: 'needs_verify'; po_id: PoId; erp_call_id: number | null; timeline: string;
       lookup_call_id?: number; lookup_outcome?: string; truncated?: boolean;
@@ -604,6 +678,8 @@ export interface AttentionItem {
 }
 export interface AttentionQueue { count: number; items: AttentionItem[] }
 
+/** 后端判定（erp/transport.py::rejection_kind）：auth = 授权 / 权限，改草稿无用 */
+export type RejectedKind = 'auth' | 'business';
 export interface PoAttempt {
   call_id: number;
   at: string;
@@ -617,6 +693,8 @@ export interface PoAttempt {
   http_status: number | null;
   lx_code: string | number | null;
   lx_msg: string | null;
+  /** 只有 rejected 有 */
+  rejected_kind: RejectedKind | null;
   cause: string | null;
   retry_of: number | null;
   request: Record<string, unknown> | null;
@@ -672,7 +750,8 @@ export interface PurchaseChecks {
   violations: { check_name: PurchaseCheckName; ref: string }[];
 }
 
-export interface CandidateSeller { expected: number | null; cap: number | null; used: number; remaining: number | null }
+/** PB-D22：没有分店上限。expected = null 是没有依据，不是 0 */
+export interface CandidateSeller { expected: number | null; used: number }
 export interface CandidateLine {
   line_id: number;
   plan_id: PlanId;
@@ -688,8 +767,6 @@ export interface CandidateLine {
   confirmed_units: number;
   ordered_units: number;
   remaining: number;
-  /** 非 null = 无法定分店上限（期望销量 0 或 unknown），组单会 409 no_seller_basis */
-  blocked: { reason: 'no_seller_basis'; sellers: SellerId[] } | null;
   sellers: Record<SellerId, CandidateSeller>;
 }
 export interface CandidateLines {
@@ -712,3 +789,212 @@ export interface LineTrace {
     sources: { seller_id: SellerId; units: number }[];
   }[];
 }
+
+// ───── 排货（阶段 C-a，spec 2026-10-10 §6；形状照 usecase/sheet.py）─────
+export type SheetState = '草稿' | '已确认' | '已取消';
+export type ConsignmentStage = '草稿' | '已确认' | '已投送' | '已归档' | '已放弃' | '已取消';
+export type DispatchChannel = 'fba' | 'oversea';
+/** ★ CA-D13 排货表的去向：平台仓 · 亚马逊 FBA / 海外仓。null = 021 之前的旧版混合 / 空表，只能看与取消 */
+export type DispatchRoute = 'fba' | 'oversea';
+
+/** CA-D11 入口：未完成的销售计划（需求侧的量，PG 内可得） */
+export interface DispatchPlan {
+  plan_id: PlanId; title: string; rev: number; lines: number; total: number; confirmed: number; ordered: number;
+  staged: number; dispatched: number; pending: number; sheets: { sheet_id: number; state: SheetState; route: DispatchRoute | null }[];
+  /** 每个产品（活记录）一行，还差多的在前 */
+  records: DispatchPlanRecord[];
+}
+export interface DispatchPlanRecord {
+  line_id: number; sku: string; sku_name: string | null; period: string; state: string;
+  total: number; staged: number; dispatched: number; pending: number;
+}
+export interface DispatchPlans { plans: DispatchPlan[] }
+
+export interface SheetSummary {
+  sheet_id: number; state: SheetState; created_by: string; created_at: string;
+  /** null = CA-D11 之前建的历史表 */
+  plan_id: PlanId | null; plan_title: string | null; route: DispatchRoute | null;
+  consignments: number; units: number;
+}
+export interface SheetList { sheets: SheetSummary[] }
+
+export interface ConsignmentLineView {
+  seller_sku: string; sid: Sid; from_wid: number; sku: string;
+  units: number; planned: number; unplanned: number;
+}
+export interface ConsignmentView {
+  consignment_id: number; channel: DispatchChannel; dest_wid: number | null; dest_sid: Sid | null;
+  our_stage: ConsignmentStage; idem_key: string; lines: ConsignmentLineView[];
+}
+export interface PackingBox {
+  box_count: number | null; box_len: number | null; box_wid: number | null; box_hei: number | null;
+  box_weight: number | null; units_per_box: number | null;
+}
+export interface PackingRow extends PackingBox { seller_sku: string; sid: Sid; from_wid: number; orphan: boolean }
+
+/** 七闸（G7 = 海外仓排货单选了物流方式，C-b）：ok = true 过 · false 不过 · null 无法判定 / 未检查（★ 不当成过） */
+export interface DispatchGate {
+  gate: 'G1' | 'G2' | 'G3' | 'G4' | 'G5' | 'G6' | 'G7';
+  ok: boolean | null; code: string; detail: unknown; fix: string;
+}
+export interface SheetDetail {
+  sheet_id: number; state: SheetState; created_by: string; created_at: string; watermark: number;
+  plan_id: PlanId | null; plan_title: string | null; route: DispatchRoute | null;
+  consignments: ConsignmentView[]; packing: PackingRow[];
+  last_gate_run: { run_id: number; ok: boolean; gates: DispatchGate[]; stock_as_of: string | null; at: string; actor: string } | null;
+  events: { from_state: string; to_state: string; actor: string; reason: string | null; at: string }[];
+  /** 每个海外仓目的地选的物流方式（C-b · G7） */
+  logistics: { dest_wid: number; logistics_id: number; channel_name: string; enabled: boolean }[];
+  /** 在领星建过的备货单（含已作废的） */
+  ext_refs: ExtRef[];
+}
+
+// ───── 提交领星备货单（C-b，spec 2026-10-12；形状照 usecase/submit_ows.py）─────
+export interface LogisticsChannel {
+  logistics_id: number; channel_name: string; method_name: string | null; provider_name: string | null;
+  receive_country_codes: unknown; enabled: boolean;
+}
+export interface LogisticsChannels { channels: LogisticsChannel[]; refreshed_at: string | null }
+export interface ExtRef {
+  ext_ref_id: number; consignment_id: number; from_wid: number; kind: string; idem_key: string; ext_no: string;
+  found_by: 'create' | 'lookup' | 'register'; actor: string; at: string; voided_at: string | null; void_reason: string | null;
+  /** FBA 发货计划批次的计划号（R…）与是否已锁库存；海外仓单为 null */
+  order_sns: string[] | null; locked: boolean | null;
+  /** 回执读回的领星进度（领星的词）；null = 还没读回过 */
+  erp_stage: string | null; stage_observed_at: string | null;
+  /** 两轴不一致（我方已投送，领星走不下去了）—— 只点名 */
+  drift: string | null;
+}
+/** 选目的仓时现查三方 sku 配对（CB-D8 同一判据） */
+export interface SkuMatchStatus {
+  wid: number; sku: string; product_id: number | null;
+  /** 第三方海外仓（kind = oversea_3pl） */
+  third_party: boolean;
+  /** 接了 API 的第三方仓：必须配对才能提交备货单 */
+  needs_match: boolean; matched: boolean | null; codes: string[];
+}
+export interface SheetReceiptResult {
+  sheet_id: number; run_id: number; archived: number[];
+  results: { ext_no: string; outcome: string; stage?: string; sub_status?: string | null; lx_msg?: string | null; cause?: string | null }[];
+}
+export interface OwsOrder {
+  key: string; consignment_id: number; s_wid: number;
+  /** 海外仓目的仓；FBA 批次为 null（目的 = dest_sid 本店） */
+  r_wid: number | null; logistics_id: number | null;
+  channel_name: string | null; idem_key: string;
+  /** 海外仓：product_id / stock_num …；FBA：msku / fnsku / shipment_plan_quantity / box_num …（领星原样字段） */
+  product_list: Record<string, unknown>[];
+  lines: { seller_sku: string; sid: Sid; sku: string; units: number }[];
+  /** null = 还没建 */
+  ext_no: string | null;
+  dest_sid?: Sid | null; locked?: boolean | null; order_sns?: string[] | null;
+}
+export interface OwsBlocker { code: 'product_id_missing' | 'logistics_missing' | 'logistics_disabled' | 'cancel_incomplete' | 'third_party_sku_missing' | 'third_party_sku_ambiguous' | 'sku_match_unavailable' | 'route_not_submittable' | 'legacy_mixed' | string; sku?: string; dest_wid?: number; logistics_id?: number; ext_nos?: string[]; product_id?: number; codes?: string[]; seller_sku?: string; sid?: Sid; from_wid?: number }
+export interface DispatchAttention {
+  attention_id: number; consignment_id: number; from_wid: number; idem_key: string; call_id: number | null;
+  detail: Record<string, unknown>; opened_at: string;
+}
+export interface OwsSubmission {
+  sheet_id: number; state: SheetState; orders: OwsOrder[]; blockers: OwsBlocker[]; skipped_fba: number[];
+  confirm_token: string; attention: DispatchAttention[];
+  route?: DispatchRoute | null;
+  /** C-c1：建成了但库存没锁上的 FBA 批次参考号 —— 再提交只补锁（CC-D3） */
+  to_lock?: string[];
+}
+export type OwsOutcome = 'created' | 'adopted' | 'rejected' | 'not_sent' | 'lookup_failed' | 'needs_verify' | 'unrecorded'
+  | 'locked' | 'lock_failed';
+export interface OwsResult {
+  key: string; idem_key: string; outcome: OwsOutcome; ext_no?: string; attention_id?: number;
+  lx_code?: unknown; lx_msg?: string | null; cause?: string | null; lookup_outcome?: string;
+}
+export interface OwsSubmitResult { sheet_id: number; results: OwsResult[]; dispatched: number[]; submission: OwsSubmission }
+export interface SheetCancelResult {
+  sheet_id: number; state: SheetState; from: SheetState; deleted_ows: string[];
+  /** CC-D4：FBA 发货计划没有作废接口 —— 已释放库存、改了备注，需在领星手工作废 */
+  manual_void: { ext_no: string; plans: string[]; marked: string[]; manual_void: boolean }[];
+}
+
+export interface DispatchWarehouse { wid: number; name: string; market: string | null; kind: string }
+export interface DispatchMsku { seller_sku: string; fnsku: string | null }
+export interface DispatchStore {
+  sid: Sid; seller_name: string; market: string; has_fba: boolean;
+  /** 计划里该店的期望，只作参考（空 = 未知，不是 0） */
+  expected: number | null; basis: string | null; mskus: DispatchMsku[];
+}
+export interface LinkedPo {
+  po_id: PoId; order_sn: string | null; state: PoState; is_void: boolean; wid: number; units: number;
+  /** 领星行项：已入库 / 待到货（CA-D9 口径）。null = 没读到（读不到 ≠ 0） */
+  entered: number | null; pending: number | null; captured: string | null;
+  /** CA-D12：api = 采购页 / 现查领星的读回；ch = 每日采集；取两者中较新的 */
+  source: 'api' | 'ch' | null;
+}
+export interface DemandRow {
+  line_id: number; plan_id: PlanId; plan_title: string; rev: number; sku: string; sku_name: string;
+  state: LineState; period: string; total: number; staged: number; dispatched: number; pending: number;
+  staged_here: number; staged_other: number;
+  /** 承重墙①：已组单（含草稿）/ 已下单 —— 只展示，不拦排货（CA-D10） */
+  confirmed: number; ordered: number;
+  /** 关联已下单采购单同货号行项的 已入库 / 待到货（不摊回记录，C4）；null = 读不到 */
+  entered: number | null; arriving: number | null;
+  purchase_orders: LinkedPo[]; stores: DispatchStore[];
+}
+export interface UnplannedSku {
+  sku: string; sku_name: string | null;
+  stores: { sid: Sid; seller_name: string; market: string; has_fba: boolean; mskus: DispatchMsku[] }[];
+}
+export interface StockRow {
+  sku: string; wid: number;
+  /** "shared" = 共享桶；其余键 = 店铺桶（CA-D8） */
+  buckets: Record<string, number>;
+  committed: Record<string, number>;
+  /** 每店还能再承诺多少；负数 = 已超 */
+  available: Record<string, number>;
+  /** CA-D12：api = 领星现读；ch = 每日采集（as_of 是那批的采集时刻） */
+  source: 'api' | 'ch'; as_of: string | null;
+}
+
+export interface LiveReadResult {
+  sku: string;
+  stock: { read_id: number; read_at: string; buckets: { wid: number; buckets: Record<string, number> }[];
+    dropped: Record<string, { rows: number; units: number }> } | { error: Record<string, unknown> & { target: string } };
+  purchase_orders: { po_id: PoId; order_sn: string; outcome: string; cause: string | null }[];
+}
+export interface DispatchCell {
+  arrangement_id: number; line_id: number | null; sku: string; seller_sku: string; sid: Sid; from_wid: number;
+  channel: DispatchChannel; dest_wid: number | null; dest_sid: Sid | null; units: number;
+}
+export interface StockError { target: string; cause: Record<string, unknown>; rejected?: unknown[] }
+export interface SheetGrid {
+  sheet: { sheet_id: number; state: SheetState; watermark: number; plan_id: PlanId | null; plan_title: string | null; route: DispatchRoute | null };
+  stock_as_of: string | null; stock_rejected: unknown[];
+  stock_error: StockError | null; po_progress_error: StockError | null;
+  warehouses: { local: DispatchWarehouse[]; oversea: DispatchWarehouse[] };
+  demand: DemandRow[]; unplanned: UnplannedSku[];
+  /** null = 本地库存读不到（看 stock_error），不是「没有库存」 */
+  stock: StockRow[] | null;
+  cells: DispatchCell[];
+  excluded: {
+    lines_not_dispatchable: number;
+    seller_not_in_mirror: { line_id: number; sid: Sid }[];
+    msku_missing: { line_id: number; sid: Sid }[];
+    stock: Record<string, { rows: number; units: number }> | null;
+  };
+}
+export interface CellTarget {
+  channel: DispatchChannel; dest_wid: number | null; dest_sid: Sid | null; from_wid: number;
+}
+export interface CellPut extends CellTarget {
+  line_id: number | null; seller_sku: string; sid: Sid; units: number | null;
+  /** 改目的地 / 来源仓：同一事务撤旧格 */
+  replaces?: CellTarget;
+}
+export interface CellResult {
+  cell: Omit<DispatchCell, 'arrangement_id'>;
+  consignments_diff: { created: [string, string | number][]; removed: [string, string | number][]; kept: [string, string | number][] };
+  orphan_packing: [string, string, number][];
+  watermark: number;
+  warnings: ({ code: 'over_available'; sku: string; from_wid: number; sid: Sid; available: number }
+    | ({ code: 'stock_unavailable' } & StockError))[];
+}
+export interface SheetPreflight { sheet_id: number; ok: boolean; gates: DispatchGate[]; stock_as_of: string | null }
+export interface SheetConfirmResult { sheet_id: number; state: SheetState; gates: DispatchGate[]; gate_run: number }

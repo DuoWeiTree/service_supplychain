@@ -89,3 +89,17 @@ def source_dep() -> Source:
     测试要换源走 `app.dependency_overrides[source_dep]`，不再有模块级单例可以
     monkeypatch —— 那个单例正是 C-1/C-2/C-3 的根因。"""
     return make_source()
+
+
+def stock_dep():
+    """FastAPI 依赖：排货网格的本地库存 / 采购行项读取器工厂（spec 2026-10-10 §4）。
+
+    ★ 返回工厂而不是实例：`local_wids` / `known_sids` 来自 PG（仓与店铺镜像），由用例在
+      自己的事务里读出来再传进来。每请求一个、不跨请求共享（同 `source_dep` 的 C-1 理由）。
+    测试换替身走 `app.dependency_overrides[stock_dep]`。"""
+    from dim.ch_stock import ChStock
+
+    def make(local_wids: set[int], known_sids: set[str]) -> ChStock:
+        return ChStock(lazy_ch_query(), local_wids=local_wids, known_sids=known_sids,
+                       classify_failure=describe_failure)
+    return make

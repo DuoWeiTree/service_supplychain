@@ -28,6 +28,28 @@ class CallResult:
     cause: str | None = None
 
 
+#: 领星「授权 / 权限」类拒绝：改草稿无用，要管理员去领星开放平台处理。
+#: 出处：erp_call 1·2（2026-10-09）createPurchaseOrder 回 HTTP 200 + code 403「授权失效，请更新授权有效期或检查权限」，
+#: 同一凭据 access_token 与 purchaseOrderList 照常成功。★ 只登记实测见过的码，别的码没见过不猜。
+AUTH_REJECT_CODES = frozenset({"403"})
+
+
+def _lx_msg(j: dict) -> str | None:
+    # 领星把真正的原因放在 error_details（message 只写「内部错误」）：只取 message 等于把原因丢掉
+    msg = j.get("message") or j.get("msg")
+    details = j.get("error_details")
+    if details and str(details) != str(msg):
+        return f"{msg}：{details}" if msg else str(details)
+    return msg
+
+
+def rejection_kind(outcome: str | None, lx_code) -> str | None:
+    """rejected 才有：auth（授权/权限，改草稿无用）| business（领星按内容拒绝）。"""
+    if outcome != "rejected":
+        return None
+    return "auth" if lx_code is not None and str(lx_code) in AUTH_REJECT_CODES else "business"
+
+
 def cause_chain(exc: BaseException) -> str:
     """★ 不只取 str(e)：errno、对端地址都在链上（全局规范判据 1）。"""
     parts, seen = [], set()
@@ -129,4 +151,4 @@ def post_json(base_url: str, path: str, query: dict, body: dict, timeout_s: floa
     code = str(j["code"])
     return CallResult("ok" if code in ("0", "200") else "rejected", host, path, ms(),
                       http_status=resp.status, lx_code=code,
-                      lx_msg=j.get("message") or j.get("msg"), body=j)
+                      lx_msg=_lx_msg(j), body=j)

@@ -13,6 +13,7 @@
   "created_by": "alice",
   "is_void": false,
   "discarded_at": null,
+  "lx": null,
   "lines": [
     {
       "line_no": 1,
@@ -49,7 +50,7 @@
     {
       "attention_id": 1,
       "kind": "needs_verify",
-      "opened_at": "2026-10-09T04:35:28.901064-04:00"
+      "opened_at": "2026-10-13T23:52:53.500450-04:00"
     }
   ],
   "preflight": [
@@ -112,6 +113,15 @@
       }
     },
     {
+      "gate": "single_wid",
+      "ok": true,
+      "detail": {
+        "wids": [
+          1
+        ]
+      }
+    },
+    {
       "gate": "sources_orderable",
       "ok": true,
       "detail": {
@@ -119,5 +129,5 @@
       }
     }
   ],
-  "confirm_token": "7b535ed37b0cd67863849c5160a74715e45f6b9e6fbad972be7c964bf759c81b"
+  "confirm_token": "de464496309f5ffebbdd0a6ed6d7e3890d6122567ea8a9cda30075858c64188a"
 }

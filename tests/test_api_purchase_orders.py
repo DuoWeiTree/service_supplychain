@@ -45,21 +45,29 @@ def test_create_draft_and_read_back(client, seed, world):
     assert line_state(world) == "已提交"      # 13 / 24，未满
 
 
-def test_over_seller_cap_names_the_numbers(client, seed, world):
-    r = client.post("/v1/purchase-orders", json=body(seed, world, units=14), headers=H(seed.actor))
-    assert r.status_code == 409
-    assert r.json()["error"] == "over_seller_cap"
-    assert {k: r.json()[k] for k in ("line_id", "seller_id", "cap", "used", "requested")} == \
-        {"line_id": world, "seller_id": seed.seller_a, "cap": 13, "used": 0, "requested": 14}
+def test_no_per_seller_cap_only_total(client, seed, world):
+    # PB-D22：一家店可以拿满整条记录（原上限 13），超过总量才拒
+    r = client.post("/v1/purchase-orders", json=body(seed, world, units=24), headers=H(seed.actor))
+    assert r.status_code == 201, r.text
+    r = client.post("/v1/purchase-orders", json=body(seed, world, units=1), headers=H(seed.actor))
+    assert r.status_code == 409 and r.json()["error"] == "over_total"
 
 
-def test_no_seller_basis_is_named(client, seed, world):
+def test_unknown_demand_does_not_block(client, seed, world):
     with pg_conn() as c, c.cursor() as cur:
-        cur.execute("UPDATE plan_line SET demand_by_seller='{\"X\":{\"units\":0,\"basis\":\"human\"}}'"
+        cur.execute("UPDATE plan_line SET demand_by_seller=%s::jsonb WHERE line_id=%s",
+                    (json.dumps({seed.seller_a: {"units": None, "basis": "unknown"}}), world))
+    r = client.post("/v1/purchase-orders", json=body(seed, world), headers=H(seed.actor))
+    assert r.status_code == 201, r.text
+
+
+def test_seller_not_in_line_is_named(client, seed, world):
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("UPDATE plan_line SET demand_by_seller='{\"X\":{\"units\":5,\"basis\":\"human\"}}'"
                     " WHERE line_id=%s", (world,))
     r = client.post("/v1/purchase-orders", json=body(seed, world), headers=H(seed.actor))
-    assert r.status_code == 409 and r.json()["error"] == "no_seller_basis"
-    assert r.json()["sellers"] == ["X"]
+    assert r.status_code == 409 and r.json()["error"] == "seller_not_in_line"
+    assert r.json()["seller_ids"] == [seed.seller_a] and r.json()["allowed"] == ["X"]
 
 
 def test_unplanned_needs_reason(client, seed, world):

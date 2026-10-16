@@ -1,0 +1,121 @@
+{
+  "sheet_id": 1,
+  "state": "草稿",
+  "created_by": "alice",
+  "plan_id": 1,
+  "plan_title": "t",
+  "route": "fba",
+  "created_at": "2026-10-13T23:52:56.709534-04:00",
+  "watermark": 4,
+  "consignments": [
+    {
+      "consignment_id": 1,
+      "channel": "fba",
+      "dest_wid": null,
+      "dest_sid": "11072",
+      "our_stage": "草稿",
+      "idem_key": "SCM-CN-1",
+      "lines": [
+        {
+          "seller_sku": "MSKU-A",
+          "sid": "11072",
+          "from_wid": 1,
+          "sku": "DCC1800264G1",
+          "units": 30,
+          "planned": 30,
+          "unplanned": 0
+        }
+      ]
+    }
+  ],
+  "packing": [
+    {
+      "seller_sku": "MSKU-A",
+      "sid": "11072",
+      "from_wid": 1,
+      "box_count": 2,
+      "box_len": 40.0,
+      "box_wid": 30.0,
+      "box_hei": 20.0,
+      "box_weight": 8.5,
+      "units_per_box": 15,
+      "orphan": false
+    }
+  ],
+  "last_gate_run": {
+    "run_id": 1,
+    "ok": false,
+    "gates": [
+      {
+        "ok": false,
+        "fix": "人：在排货单上填装箱",
+        "code": "packing_incomplete",
+        "gate": "G1",
+        "detail": [
+          {
+            "sid": "11072",
+            "missing": [
+              "box_count",
+              "box_len",
+              "box_wid",
+              "box_hei",
+              "box_weight",
+              "units_per_box"
+            ],
+            "from_wid": 1,
+            "seller_sku": "MSKU-A"
+          }
+        ]
+      },
+      {
+        "ok": true,
+        "fix": "系统：由店铺推出；仍缺则回网格重选目的地",
+        "code": "dest_incomplete",
+        "gate": "G2",
+        "detail": []
+      },
+      {
+        "ok": true,
+        "fix": "人：回网格减少安排或换来源仓",
+        "code": "insufficient_available",
+        "gate": "G3",
+        "detail": []
+      },
+      {
+        "ok": true,
+        "fix": "人：刷新后核对别的排货表的安排再确认",
+        "code": "ledger_moved",
+        "gate": "G4",
+        "detail": []
+      },
+      {
+        "ok": null,
+        "fix": "—",
+        "code": "unlinked_shipments_pending",
+        "gate": "G5",
+        "detail": "待裁定 · 未检查（CA-Q9）"
+      },
+      {
+        "ok": true,
+        "fix": "人：回网格改目的地",
+        "code": "invalid_destination",
+        "gate": "G6",
+        "detail": []
+      }
+    ],
+    "stock_as_of": "2026-10-10",
+    "at": "2026-10-13T23:52:57.237030-04:00",
+    "actor": "alice"
+  },
+  "events": [
+    {
+      "from_state": "[*]",
+      "to_state": "草稿",
+      "actor": "alice",
+      "reason": null,
+      "at": "2026-10-13T23:52:56.709534-04:00"
+    }
+  ],
+  "logistics": [],
+  "ext_refs": []
+}

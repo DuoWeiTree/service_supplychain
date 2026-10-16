@@ -61,9 +61,26 @@ def test_rejected_keeps_draft_and_echoes_lingxing(client, seed, draft, lingxing)
     lingxing.enqueue("create_purchase_order", "rejected")
     r = _place(client, seed, po_id)
     assert r.json() | {"erp_call_id": None} == {"outcome": "rejected", "po_id": po_id, "lx_code": "1001",
-                                                "lx_msg": "double: 供应商不存在", "erp_call_id": None}
+                                                "lx_msg": "double: 供应商不存在", "rejected_kind": "business",
+                                                "host": "lingxing.invalid",
+                                                "path": "/erp/sc/routing/purchase/purchase/createPurchaseOrder",
+                                                "erp_call_id": None}
     assert client.get(f"/v1/purchase-orders/{po_id}").json()["state"] == "草稿"
     assert _line_state(lid) == "已确认"
+
+
+def test_auth_rejection_is_named_as_auth_not_business(client, seed, draft, lingxing, caplog):
+    # 领星 code 403「授权失效」：改草稿无用，响应与调用记录都要说出是授权类，日志带 host/path/耗时/码
+    po_id, _ = draft
+    lingxing.enqueue("create_purchase_order", "rejected_auth")
+    with caplog.at_level("WARNING", logger="scm.usecase"):
+        r = _place(client, seed, po_id).json()
+    assert r["outcome"] == "rejected" and r["rejected_kind"] == "auth" and r["lx_code"] == "403"
+    assert client.get(f"/v1/purchase-orders/{po_id}").json()["state"] == "草稿"
+    attempts = client.get(f"/v1/purchase-orders/{po_id}/timeline").json()["attempts"]
+    assert [a["rejected_kind"] for a in attempts] == ["auth"]
+    line = next(m for m in caplog.messages if "op=erp_auth_rejected" in m)
+    assert "path=/erp/sc/routing/purchase/purchase/createPurchaseOrder" in line and "code=403" in line
 
 
 def test_delete_after_attempt_discards_and_keeps_evidence(client, seed, draft, lingxing):
@@ -124,9 +141,9 @@ def test_stuck_in_flight_is_recovered_by_lookup(client, seed, draft, lingxing):
     # 造现场：领星侧已有单，本地只有一条 in_flight
     lingxing.enqueue("create_purchase_order", "unknown_created")
     from erp import gateway
-    gateway.call("create_purchase_order", {"custom_order_sn": f"SCM-PO-{po_id}", "supplier_id": 8085,
-                                           "purchaser_id": 111, "opt_uid": 1, "qc_type": 2, "wid": seed.wid,
-                                           "product_list": [{"sku": seed.sku_a, "wid": seed.wid,
+    gateway.call("create_purchase_order", {"custom_order_sn": f"SCM-PO-{po_id}", "sys_supplier_id": 8085,
+                                           "purchaser_id": 111, "opt_uid": 1, "qc_type": 2, "sys_wid": seed.wid,
+                                           "product_list": [{"sku": seed.sku_a,
                                                              "quantity_real": 10, "price": "2"}]})
     with pg_conn() as c, c.cursor() as cur:
         cur.execute("INSERT INTO erp_call (endpoint, side_effect, po_id, idem_key, actor, request,"
@@ -519,9 +536,9 @@ def test_explicit_business_rejection_still_releases_the_draft(client, seed, draf
 
 def _created_order(seed, po_id, **over):
     from erp import gateway
-    p = {"custom_order_sn": f"SCM-PO-{po_id}", "supplier_id": 8085, "purchaser_id": 111, "opt_uid": 1,
-         "qc_type": 2, "wid": seed.wid,
-         "product_list": [{"sku": seed.sku_a, "wid": seed.wid, "quantity_real": 10, "price": "2"}]}
+    p = {"custom_order_sn": f"SCM-PO-{po_id}", "sys_supplier_id": 8085, "purchaser_id": 111, "opt_uid": 1,
+         "qc_type": 2, "sys_wid": seed.wid,
+         "product_list": [{"sku": seed.sku_a, "quantity_real": 10, "price": "2"}]}
     p.update(over)
     gateway.call("create_purchase_order", p)
 
@@ -531,7 +548,7 @@ def test_lookup_hit_that_does_not_match_is_not_adopted(client, seed, draft, ling
     po_id, lid = draft
     lingxing.enqueue("create_purchase_order", "unknown_absent")
     _place(client, seed, po_id)
-    _created_order(seed, po_id, supplier_id=9999)
+    _created_order(seed, po_id, sys_supplier_id=9999)
     from usecase import place_po
     res = place_po.lookup_and_settle(po_id, seed.actor, None, "t")
     assert res["outcome"] == "needs_verify" and res["landed_mismatch"] == ["FAKE-PO000001"]
@@ -568,3 +585,92 @@ def test_token_covers_expect_arrive_date(client, seed, draft):
     after = client.get(f"/v1/purchase-orders/{po_id}").json()["confirm_token"]
     assert before != after
     assert _place(client, seed, po_id, token=before).json()["error"] == "stale_confirm_token"
+
+
+# ─── 详情页打开时现查领星状态（read-back）───
+
+def _read_back(client, seed, po_id):
+    return client.post(f"/v1/purchase-orders/{po_id}/read-back", headers=H(seed.actor))
+
+
+def _snap_count(order_sn):
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT count(*) FROM po_snapshot WHERE order_sn=%s", (order_sn,))
+        return cur.fetchone()[0]
+
+
+def test_first_check_after_place_records_lingxing_status(client, seed, draft):
+    po_id, _ = draft
+    _place(client, seed, po_id)
+    po = client.get(f"/v1/purchase-orders/{po_id}").json()
+    assert po["lx"]["status"] == 2 and po["lx"]["source"] == "api" and po["lx"]["captured_at"]
+
+
+def test_read_back_fetches_latest_status_and_detail_shows_it(client, seed, draft, lingxing):
+    po_id, _ = draft
+    _place(client, seed, po_id)
+    sn = client.get(f"/v1/purchase-orders/{po_id}").json()["order_sn"]
+    lingxing._orders[sn]["status"] = 9
+    lingxing._orders[sn]["status_shipped"] = 3
+    r = _read_back(client, seed, po_id)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["checked"] is True and body["lx"]["status"] == 9 and body["lx"]["status_shipped"] == 3
+    assert client.get(f"/v1/purchase-orders/{po_id}").json()["lx"]["status"] == 9
+    assert _snap_count(sn) == 2                       # 只追加：首检一条 + 这次一条
+    assert client.get("/v1/checks/purchase").json()["ok"]
+
+
+def test_read_back_failure_keeps_last_observation_and_says_so(client, seed, draft, lingxing):
+    po_id, _ = draft
+    _place(client, seed, po_id)
+    lingxing.enqueue("purchase_order_list", "not_sent")
+    body = _read_back(client, seed, po_id).json()
+    assert body["checked"] is False and body["read_outcome"] == "not_sent" and "ConnectionRefused" in body["read_cause"]
+    assert body["lx"]["status"] == 2                  # 上一次观察，带 captured_at，不是 null 也不是编的
+
+
+def test_read_back_on_draft_is_409(client, seed, draft):
+    po_id, _ = draft
+    r = _read_back(client, seed, po_id)
+    assert r.status_code == 409 and r.json()["error"] == "po_not_placed"
+
+
+def test_read_back_sees_void_and_releases_lines(client, seed, draft, lingxing):
+    po_id, lid = draft
+    _place(client, seed, po_id)
+    assert _line_state(lid) == "已下单"
+    sn = client.get(f"/v1/purchase-orders/{po_id}").json()["order_sn"]
+    lingxing._orders[sn]["status"] = -1
+    body = _read_back(client, seed, po_id).json()
+    assert body["lx"]["status"] == -1
+    po = client.get(f"/v1/purchase-orders/{po_id}").json()
+    assert po["is_void"] is True
+    assert _line_state(lid) == "已提交"                # PB-D5：作废释放额度，记录按量退回
+    assert client.get("/v1/checks/purchase").json()["ok"]
+
+
+def _list_requests(po_id):
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT request FROM erp_call WHERE po_id=%s AND endpoint='purchase_order_list' ORDER BY call_id",
+                    (po_id,))
+        return [r[0] for r in cur.fetchall()]
+
+
+def test_read_back_filters_by_order_sn_array_with_required_dates(client, seed, draft):
+    # PB-D28：参数名是 order_sn[]（order_sns 领星不认、照回全部）；不带日期实测 64.5 s
+    po_id, _ = draft
+    _place(client, seed, po_id)
+    _read_back(client, seed, po_id)
+    sn = client.get(f"/v1/purchase-orders/{po_id}").json()["order_sn"]
+    for req in _list_requests(po_id):
+        assert req["order_sn"] == [sn] and "order_sns" not in req
+        assert req["search_field_time"] == "create_time" and req["start_date"] < req["end_date"]
+
+
+def test_idempotency_lookup_filters_by_custom_order_sn_server_side(client, seed, draft, lingxing):
+    po_id, _ = draft
+    lingxing.enqueue("create_purchase_order", "unknown_created")
+    assert _place(client, seed, po_id).json()["outcome"] == "placed"     # 查重找到了
+    lookup = next(r for r in _list_requests(po_id) if "custom_order_sn" in r)
+    assert lookup["custom_order_sn"] == [f"SCM-PO-{po_id}"] and lookup["start_date"] and lookup["end_date"]

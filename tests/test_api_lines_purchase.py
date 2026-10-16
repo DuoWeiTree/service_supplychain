@@ -14,19 +14,20 @@ def _line(seed, total, demand):
     return lid
 
 
-def test_candidates_carry_caps_and_remaining(client, seed):
+def test_candidates_carry_expected_and_used_without_caps(client, seed):
     lid = _line(seed, 24, {"A": {"units": 12, "basis": "human"}, "B": {"units": 11, "basis": "human"}})
     row = next(r for r in client.get("/v1/plan-lines").json()["lines"] if r["line_id"] == lid)
     assert row["confirmed_units"] == 0 and row["remaining"] == 24
-    assert row["sellers"] == {"A": {"expected": 12, "cap": 13, "used": 0, "remaining": 13},
-                              "B": {"expected": 11, "cap": 11, "used": 0, "remaining": 11}}
-    assert row["blocked"] is None
+    assert row["sellers"] == {"A": {"expected": 12, "used": 0}, "B": {"expected": 11, "used": 0}}
+    assert "blocked" not in row
 
 
-def test_blocked_line_is_named_up_front(client, seed):
-    lid = _line(seed, 24, {"A": {"units": 0, "basis": "human"}})
-    row = next(r for r in client.get("/v1/plan-lines").json()["lines"] if r["line_id"] == lid)
-    assert row["blocked"] == {"reason": "no_seller_basis", "sellers": ["A"]}
+def test_unknown_demand_line_is_orderable(client, seed):
+    # PB-D22 起因：本月断货、期望为空的单店记录，照样可组单；期望回显 null 不是 0
+    lid = _line(seed, 24, {"A": {"units": None, "basis": "unknown", "mskus": []}})
+    body = client.get("/v1/plan-lines?orderable=1").json()
+    row = next(r for r in body["lines"] if r["line_id"] == lid)
+    assert row["sellers"] == {"A": {"expected": None, "used": 0}}
 
 
 def test_orderable_filter_counts_what_it_drops(client, seed):
@@ -70,7 +71,6 @@ def test_orderable_drops_fully_covered_line_and_counts_it(client, seed):
     _draft(client, seed, part, 4)
     rows = {r["line_id"]: r for r in client.get("/v1/plan-lines").json()["lines"]}
     assert rows[part]["sellers"][seed.seller_a]["used"] == 4
-    assert rows[part]["sellers"][seed.seller_a]["remaining"] == rows[part]["sellers"][seed.seller_a]["cap"] - 4
     assert rows[full]["sellers"][seed.seller_a]["used"] == 10 and rows[full]["remaining"] == 0
     body = client.get("/v1/plan-lines?orderable=1").json()
     ids = {r["line_id"] for r in body["lines"]}

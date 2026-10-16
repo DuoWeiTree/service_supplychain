@@ -5,7 +5,7 @@ import { api, ApiError } from '../api';
 import type { DroppedPurchaseCell, PlanId, Period, Sid } from '../api/types';
 import { parseUnits, type SkuBlock } from './planGridModel';
 
-/** ★ 网格页的保存类动作（期望销量 / 计划采购量 / 移出货号 / 移出该店 / 移出 msku）从 PlanGrid.tsx
+/** ★ 网格页的保存类动作（计划销量 / 计划采购量 / 移出货号 / 移出该店 / 移出 msku）从 PlanGrid.tsx
  *  抽到这里——行为与测试断言不变（Ruling B），只是搬家。
  *  `load` 由调用方传入并在每次保存后触发重载；`fail`/`succeed` 把失败挂到页面底部的
  *  ErrorDetail 上，并在**同一个动作**下次成功时把它收掉（不是任何一次 load 都清）。 */
@@ -26,7 +26,7 @@ export const removeKey = (sku: string) => `rm:${sku}`;
 function droppedDemand(cells: { period: Period; expected_units: number | null; seller_sku?: string }[]): string {
   const named = cells.filter((c) => c.expected_units !== null)
     .map((c) => `${c.seller_sku ? `${c.seller_sku} ` : ''}${c.period} ${c.expected_units} 件`);
-  return `丢弃期望 ${cells.length} 格${named.length > 0 ? `（${named.join('、')}）` : ''}`;
+  return `丢弃计划销量 ${cells.length} 格${named.length > 0 ? `（${named.join('、')}）` : ''}`;
 }
 function droppedPurchase(cells: DroppedPurchaseCell[]): string {
   const named = cells.filter((c) => c.planned_units !== null).map((c) => `${c.period} ${c.planned_units} 件`);
@@ -54,7 +54,7 @@ export function usePlanGridSaves(
     setInputErr((m) => { if (!(key in m)) return m; const n = { ...m }; delete n[key]; return n; });
   }
 
-  // ★ F1/F2 裁定：期望销量与计划采购量共用同一套解析（`parseUnits`）——
+  // ★ F1/F2 裁定：计划销量与计划采购量共用同一套解析（`parseUnits`）——
   //   空 = 未知 ⇒ null；非负整数才收；`5oo`/负数/小数一律拒收，且**不发请求**。
   async function saveDemand(sellerSku: string, sid: Sid, period: Period, raw: string) {
     const key = demandKey(sellerSku, sid, period);

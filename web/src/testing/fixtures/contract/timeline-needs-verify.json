@@ -6,21 +6,21 @@
     "unknown": "领星是否已建单",
     "last_lookup": {
       "call_id": 2,
-      "at": "2026-10-09T04:35:28.978651-04:00",
+      "at": "2026-10-13T23:52:53.570757-04:00",
       "outcome": "ok",
       "truncated": false,
       "window": {
         "search_field_time": "create_time",
-        "start_date": "2026-10-08",
-        "end_date": "2026-10-10"
+        "start_date": "2026-10-12",
+        "end_date": "2026-10-14"
       }
     },
     "how_to_search": {
       "custom_order_sn": "SCM-PO-2",
       "window": {
         "search_field_time": "create_time",
-        "start_date": "2026-10-08",
-        "end_date": "2026-10-10"
+        "start_date": "2026-10-12",
+        "end_date": "2026-10-14"
       }
     }
   },
@@ -40,23 +40,23 @@
       "cause": "double: TimeoutError: timed out (read)",
       "retry_of": null,
       "request": {
-        "wid": 1,
         "opt_uid": 10925905,
         "qc_type": 2,
-        "supplier_id": 8085,
+        "sys_wid": 1,
         "product_list": [
           {
             "sku": "DCC1800264G1",
-            "wid": 1,
             "price": "2.5000",
             "quantity_real": 10
           }
         ],
         "purchaser_id": 111,
-        "custom_order_sn": "SCM-PO-2"
+        "custom_order_sn": "SCM-PO-2",
+        "sys_supplier_id": 8085
       },
       "response": null,
-      "at": "2026-10-09T04:35:28.877349-04:00"
+      "at": "2026-10-13T23:52:53.475408-04:00",
+      "rejected_kind": null
     },
     {
       "call_id": 2,
@@ -75,8 +75,11 @@
       "request": {
         "length": 500,
         "offset": 0,
-        "end_date": "2026-10-10",
-        "start_date": "2026-10-08",
+        "end_date": "2026-10-14",
+        "start_date": "2026-10-12",
+        "custom_order_sn": [
+          "SCM-PO-2"
+        ],
         "search_field_time": "create_time"
       },
       "response": {
@@ -84,7 +87,8 @@
         "data": [],
         "total": 0
       },
-      "at": "2026-10-09T04:35:28.978651-04:00"
+      "at": "2026-10-13T23:52:53.570757-04:00",
+      "rejected_kind": null
     }
   ],
   "events": [
@@ -94,14 +98,14 @@
       "actor": "alice",
       "reason": null,
       "src": "create",
-      "at": "2026-10-09T04:35:28.687302-04:00"
+      "at": "2026-10-13T23:52:53.270440-04:00"
     }
   ],
   "attention": [
     {
       "attention_id": 1,
       "kind": "needs_verify",
-      "opened_at": "2026-10-09T04:35:28.901064-04:00",
+      "opened_at": "2026-10-13T23:52:53.500450-04:00",
       "resolved_at": null,
       "resolution": null,
       "resolved_by": null,

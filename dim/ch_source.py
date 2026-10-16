@@ -53,6 +53,7 @@ Query = Callable[..., list[tuple]]
 SQL_SKU_CATALOG = """
 SELECT sku,
        argMax(product_name, _captured_date) AS name,
+       argMax(id, _captured_date)           AS product_id,
        max(_captured_date)                  AS captured
   FROM jxd_raw.lingxing_product_local_products
  GROUP BY sku
@@ -71,6 +72,7 @@ SQL_MSKU_BRIDGE = f"""
 SELECT seller_sku,
        toString(sid)                     AS sid,
        argMax(local_sku, _captured_date) AS sku,
+       argMax(fnsku, _captured_date)     AS fnsku,
        max(_captured_date)               AS captured
   FROM jxd_raw.lingxing_product_listing
  WHERE _captured_date >= today() - {_LISTING_WINDOW_DAYS}
@@ -82,6 +84,7 @@ SELECT wid,
        argMax(name, _captured_date)     AS name,
        argMax(type, _captured_date)     AS type,
        argMax(sub_type, _captured_date) AS sub_type,
+       argMax(country_code, _captured_date) AS country_code,
        max(_captured_date)              AS captured
   FROM jxd_raw.lingxing_inventory_warehouses
  GROUP BY wid
@@ -162,20 +165,21 @@ def fetch_sku_catalog(query: Query) -> Fetched:
     _nonempty(raw, "lingxing_product_local_products")
     rows, reasons = [], {}
     dropped = 0
-    for sku, name, _cap in raw:
+    for sku, name, product_id, _cap in raw:
         if not (sku or "").strip():
             _bump(reasons, "empty_sku")
             dropped += 1
             continue
-        rows.append((sku, _coerce_empty(reasons, "name", name)))
-    return Fetched(rows, dropped, reasons, max(r[2] for r in raw))
+        rows.append((sku, _coerce_empty(reasons, "name", name),
+                     None if product_id is None else int(product_id)))
+    return Fetched(rows, dropped, reasons, max(r[3] for r in raw))
 
 
 def fetch_msku_bridge(query: Query) -> Fetched:
     raw = query(SQL_MSKU_BRIDGE)
     _nonempty(raw, "lingxing_product_listing")
     rows, reasons = [], {}
-    for seller_sku, sid, sku, _cap in raw:
+    for seller_sku, sid, sku, fnsku, _cap in raw:
         # ★ 控制器 09-22 追加裁定：amzn.gr.* 是亚马逊虚拟促销组，不是真 listing——
         #   丢弃必须计数（不许用 SQL WHERE 静默滤掉，那一侧就再也数不出来了）。
         if (seller_sku or "").startswith("amzn.gr."):
@@ -184,15 +188,20 @@ def fetch_msku_bridge(query: Query) -> Fetched:
         if not (sku or "").strip():
             reasons["unbound_sku"] = reasons.get("unbound_sku", 0) + 1
             continue
-        rows.append((seller_sku, str(sid), sku))
-    return Fetched(rows, sum(reasons.values()), reasons, max(r[3] for r in raw))
+        if not (fnsku or "").strip():
+            # ★ 空 fnsku = 没有（FBM 实测全空），留 NULL；计数但不是丢行，不进 dropped
+            _bump(reasons, "fnsku_null")
+            fnsku = None
+        rows.append((seller_sku, str(sid), sku, fnsku))
+    dropped = reasons.get("virtual_promo_group", 0) + reasons.get("unbound_sku", 0)
+    return Fetched(rows, dropped, reasons, max(r[4] for r in raw))
 
 
 def fetch_warehouse(query: Query) -> Fetched:
     raw = query(SQL_WAREHOUSE)
     _nonempty(raw, "lingxing_inventory_warehouses")
     rows, reasons = [], {}
-    for wid, name, typ, sub, _cap in raw:
+    for wid, name, typ, sub, country, _cap in raw:
         # ★ 终审 M-11：`int(typ)` 在 type 为 NULL 时抛的是 `TypeError`，而不是
         #   下面那条写得很好的 `UnknownShape` —— 于是「认不出的仓」与「源里这
         #   一列是空的」在留痕里长成两种东西，而后者本该走同一条硬失败的路。
@@ -201,14 +210,33 @@ def fetch_warehouse(query: Query) -> Fetched:
             raise UnknownShape(
                 f"仓 {wid}「{name}」的 type/sub_type = {typ}/{sub} 认不出。"
                 "★ 仓名改了要的是报错，不是悄悄少一批货")
-        # ★ market 对国内仓无源（OQ-5 裁定：阶段 A 一律留 NULL，不在这里解析中文
-        #   仓名 —— 解析只能在一个地方，是兄弟仓 gen_locations.py 的活，不是这里）。
-        #   留 NULL 而不是 ''：空是「还没到」，'' 会被当成「查过了、就是没有」。
-        reasons["market_null"] = reasons.get("market_null", 0) + 1
+        # ★ market 对国内仓无意义（OQ-5：留 NULL，不解析中文仓名）。海外仓取
+        #   country_code（CA-D5：逐格选海外仓时按店铺市场过滤候选）——10-10 实测
+        #   21 个海外仓里 8 个为空，空的留 NULL（「不知道」），不写 ''。
+        market = _oversea_market(country) if kind != "local" else None
+        if market is None:
+            reasons["market_null"] = reasons.get("market_null", 0) + 1
         # ★ OQ-4 裁定：按 kind 记一条计数日志，方便一眼看出这轮刷了多少哪一档的仓。
         reasons[f"kind_{kind}"] = reasons.get(f"kind_{kind}", 0) + 1
-        rows.append((int(wid), name, kind, None))
-    return Fetched(rows, 0, reasons, max(r[4] for r in raw))
+        rows.append((int(wid), name, kind, market))
+    return Fetched(rows, 0, reasons, max(r[5] for r in raw))
+
+
+#: 领星仓库 country_code（ISO）→ seller.market 的代码（`_COUNTRY_TO_MARKET` 的值域）。
+#: 只有英国不同（ISO GB / 本仓 UK）。10-10 实测海外仓出现过 US / GB / DE。
+_ISO_TO_MARKET = {"GB": "UK"}
+
+
+def _oversea_market(country) -> str | None:
+    code = (country or "").strip().upper()
+    if not code:
+        return None
+    code = _ISO_TO_MARKET.get(code, code)
+    if code not in set(_COUNTRY_TO_MARKET.values()):
+        raise UnknownShape(
+            f"海外仓 country_code={country!r} 认不出是哪个市场代码。"
+            "★ 新国家要在 dim/ch_source.py 的 _COUNTRY_TO_MARKET / _ISO_TO_MARKET 里显式加")
+    return code
 
 
 #: ★ 09-23 裁定（负责人真实数据下撞见的第二个缺陷）：`lingxing_seller_list.country`
@@ -270,7 +298,7 @@ def fetch_seller(query: Query) -> Fetched:
 # ---------------------------------------------------------------------------
 
 from dim import order_store_map  # ★ 只有 monthly_sales_history 需要它
-from dim.source import InTransit, StockDays  # ★ 只有本段的 ChSource 需要它
+from dim.source import FbaInbound, InTransit, StockDays  # ★ 只有本段的 ChSource 需要它
 
 #: ★ ChUnavailable 的 target 与 SQL 的 FROM 共用同一个字面量——写两遍会有
 #:   一天悄悄对不上（改了表名却只改了其中一处）。
@@ -499,6 +527,141 @@ def parse_onhand(rows: list[tuple]) -> tuple[dict[tuple[str, str], int], dict]:
             dropped["rows_collapsed"] = dropped.get("rows_collapsed", 0) + 1
         out[key] = out.get(key, 0) + units
     return out, dropped
+
+
+#: ★ spec 2026-10-14（OP-19 裁定 c）：期初 = 可售 + 调仓中（`reserved_fc_transfers`，还在亚马逊仓网里、调完就能卖）；
+#:   订单预留（已卖）/ 处理中预留不算。同一批另取 `afn_inbound_shipped_quantity`，只为与货件表对账。
+#:   ★ 单开一条 SQL 而不改 `SQL_FBA_ONHAND`：`parse_onhand` 的形状被 7 处测试与 OQ-4 裁定钉着。
+SQL_FBA_EXTRA = f"""
+SELECT toString(sid)                                   AS sid,
+       seller_sku                                      AS seller_sku,
+       toInt64(sum(ifNull(reserved_fc_transfers, 0)))  AS fc,
+       toInt64(countIf(reserved_fc_transfers IS NULL)) AS fc_null,
+       toInt64(sum(ifNull(afn_inbound_shipped_quantity, 0))) AS inbound_shipped
+  FROM {FBA_DETAIL_TABLE}
+ WHERE _captured_date = {{as_of:Date}}
+ GROUP BY sid, seller_sku
+"""
+
+
+def parse_fba_extra(rows: list[tuple]) -> tuple[dict, dict, dict]:
+    """→ (调仓中, 亚马逊在途数, 丢弃计数)。★ 共享池 sid=0 不计（`parse_onhand` 已计数排除）；
+    调仓列 NULL 按 0 并计数 —— 可售有值时不该因为它把整个 msku 拖成未知（spec §3）。"""
+    fc: dict[tuple[str, str], int] = {}
+    shipped: dict[tuple[str, str], int] = {}
+    dropped: dict = {}
+    for sid, seller_sku, f, f_null, sh in rows:
+        sid = str(sid)
+        if sid == SHARED_POOL_SID:
+            continue
+        if int(f_null or 0):
+            dropped["fc_transfers_null"] = dropped.get("fc_transfers_null", 0) + int(f_null)
+        k = (sid, seller_sku)
+        fc[k] = fc.get(k, 0) + int(f or 0)
+        shipped[k] = shipped.get(k, 0) + int(sh or 0)
+    return fc, shipped, dropped
+
+
+# ---------------------------------------------------------------------------
+# FBA 在途货件（spec 2026-10-14-forecast-fba-inbound §3，推翻 OP-14）
+# ---------------------------------------------------------------------------
+FBA_SHIPMENT_TABLE = "jxd_raw.lingxing_fba_shipment_list"
+FBA_SHIPMENT_ITEMS_TABLE = "jxd_raw.lingxing_fba_shipment_list_items"
+#: OP-19 裁定 b（10-14）：只算已发出的；已建未发（WORKING / READY_TO_SHIP）只计数、不进推演
+FBA_INBOUND_STATUSES = ("SHIPPED", "IN_TRANSIT", "DELIVERED", "CHECKED_IN", "RECEIVING")
+_FBA_NOT_SHIPPED = ("WORKING", "READY_TO_SHIP")
+#: 已结束的货件：不在路上，不计数（预期形态）。★ 这三类之外认不出的状态一律计数 + 告警（终审 I-3）
+_FBA_DONE = ("CLOSED", "CANCELLED", "DELETED")
+#: 对账用：亚马逊 `afn_inbound_shipped_quantity` 对应的状态（RECEIVING 进 receiving 列）。
+#: ★ 10-14 实测：只取 SHIPPED + IN_TRANSIT 时 615 个 msku 对上 444 个，加上 DELIVERED / CHECKED_IN 对上 484 个
+FBA_SHIPPED_ONLY = ("SHIPPED", "IN_TRANSIT", "DELIVERED", "CHECKED_IN")
+
+SQL_FBA_INBOUND = f"""
+SELECT toString(s.sid)                            AS sid,
+       i.msku                                     AS msku,
+       s.shipment_id                              AS shipment_id,
+       s.shipment_status                          AS status,
+       toInt64(ifNull(i.quantity_shipped, 0))     AS shipped,
+       toInt64(ifNull(i.quantity_received, 0))    AS received,
+       s.sta_delivery_start_date                  AS deliver_from,
+       s.sta_delivery_end_date                    AS deliver_to,
+       i._captured_at                             AS captured_at,
+       i.sku                                      AS sku
+  FROM {FBA_SHIPMENT_ITEMS_TABLE} AS i
+  LEFT JOIN {FBA_SHIPMENT_TABLE} AS s
+    ON s.shipment_id = i.shipment_id AND s._captured_date = i._captured_date
+ WHERE i._captured_date = {{day:Date}}
+"""
+#: ★ 10-15 负责人裁定（推翻 FI-Q1「不回退」）：货件表每天约 14:17 才采、库存表约 06:35 —— 中间 8 小时当天没有货件快照。
+#:   取不晚于 as_of 的最近一份、最多早 FBA_INBOUND_FALLBACK_DAYS 天，并把用的是哪天写出去；更早 → 未知。
+FBA_INBOUND_FALLBACK_DAYS = 1
+SQL_FBA_INBOUND_DAY = f"""
+SELECT max(_captured_date)
+  FROM {FBA_SHIPMENT_ITEMS_TABLE}
+ WHERE _captured_date BETWEEN {{since:Date}} AND {{as_of:Date}}
+"""
+#: ★ LEFT JOIN（终审 I-3）：没有货件头的明细行要能数出来（`items_without_header`），内连接会把它们吞掉。
+#:   ClickHouse 默认 join_use_nulls=0 → 缺头的行状态是空串，`parse_fba_inbound` 按空串 / None 认。
+
+
+def _date_or_none(v) -> dt.date | None:
+    if v in (None, ""):
+        return None
+    if isinstance(v, dt.datetime):
+        return v.date()
+    if isinstance(v, dt.date):
+        return v
+    return dt.date.fromisoformat(str(v)[:10])
+
+
+def parse_fba_inbound(rows: list[tuple]) -> tuple[dict[tuple[str, str], list[FbaInbound]], dict]:
+    """CH 行 → `(sid, msku) -> [FbaInbound]`（剩余 > 0 的已发出货件）+ 丢弃计数。
+    ★ 被丢的每一类都计数（判据五）：已建未发 `not_shipped`、超收 `over_received`、同快照重复 `rows_collapsed`、
+      认不出的状态 `unknown_status`、没有货件头 `items_without_header`。
+    ★ 先去重再过滤（终审 I-4）：同一 (店, msku, 货件) 一天采到两次，以 `captured_at` 最新的为准 ——
+      不靠行序，也不让「旧的还在途」顶掉「新的已签收」。行可带第 9 列 captured_at；不带的按出现先后（后者为新）。"""
+    latest: dict[tuple[str, str, str], tuple] = {}
+    dropped: dict = {}
+    for i, r in enumerate(rows):
+        key = (str(r[0]), r[1], r[2])
+        ts = r[8] if len(r) > 8 else None
+        stamp = (ts is not None, ts.timestamp() if ts is not None else 0.0, i)   # 有采集时刻的优先，再按时刻、行序
+        if key in latest:
+            dropped["rows_collapsed"] = dropped.get("rows_collapsed", 0) + 1
+            if stamp <= latest[key][0]:
+                continue
+        latest[key] = (stamp, r)
+
+    def bump(kind: str, units: int) -> dict:
+        b = dropped.setdefault(kind, {"rows": 0, "units": 0})
+        b["rows"] += 1
+        b["units"] += units
+        return b
+
+    out: dict[tuple[str, str], dict[str, FbaInbound]] = {}
+    for _stamp, (sid, msku, sh, st, shipped, rec, f, t, *_rest) in latest.values():
+        sid, shipped, rec = str(sid), int(shipped or 0), int(rec or 0)
+        if not st:
+            bump("items_without_header", shipped)
+            continue
+        if st in _FBA_NOT_SHIPPED:
+            bump("not_shipped", shipped)
+            continue
+        if st in _FBA_DONE:
+            continue                                   # 已关 / 取消 / 删除：不在路上
+        if st not in FBA_INBOUND_STATUSES:
+            b = bump("unknown_status", shipped)
+            b.setdefault("statuses", [])
+            if st not in b["statuses"]:
+                b["statuses"].append(st)
+            continue
+        if rec > shipped:
+            bump("over_received", shipped)
+            continue
+        if shipped == rec:
+            continue
+        out.setdefault((sid, msku), {})[sh] = FbaInbound(sh, st, shipped - rec, _date_or_none(f), _date_or_none(t))
+    return {k: sorted(v.values(), key=lambda x: x.shipment_id) for k, v in out.items()}, dropped
 
 
 # ---------------------------------------------------------------------------
@@ -837,6 +1000,14 @@ class ChSource:
         #:   按快照日作键那条理由，只是它的参照物是自己）。
         self._purchase_as_of: tuple[dt.date, dt.date] | None = None
         self._transit_cache: tuple[dt.date, dict[str, list[InTransit]]] | None = None
+        #: spec 2026-10-14：调仓中 + 亚马逊在途数（对账）与 FBA 货件，同 `_onhand_cache` 按快照日作键。
+        #: ★ 货件缓存的值可以是 None —— 「当天没有货件快照」本身就是答案（未知），也要缓存住
+        self._extra_cache: tuple[dt.date, dict, dict] | None = None
+        self._inbound_cache: tuple[dt.date, dict | None] | None = None
+        #: 货件实际用的快照日（可能早 as_of 一天）；None = 没有可用快照
+        self._inbound_day: dt.date | None = None
+        #: (sid, msku) → 货号（货件明细自带 sku 列）—— 当月在途按货号 Σ 全部店铺（spec 2026-10-15）
+        self._fba_sku_of: dict[tuple[str, str], str] = {}
         #: ★ 最近一批取数的丢弃计数，供上层写进日志与响应（`source_notes.dropped`）。
         self._stats: dict = {}
         #: `(seller_sku, sid)` → 那一次 `monthly_sales_history()` 的窗口留痕
@@ -1078,6 +1249,121 @@ class ChSource:
         #   走到这里返回 0 冒充未知。`has_fba=false` 的「不适用」不经过本
         #   方法（B-6，调用方已按 PG `seller.has_fba` 闸住）。
         return self._onhand().get((str(sid), seller_sku), 0)
+
+    def _extra(self) -> tuple[dict, dict]:
+        """调仓中 + 亚马逊在途数，同 `_onhand()` 的批量与失败分类。"""
+        as_of = self.as_of()
+        if self._extra_cache is not None and self._extra_cache[0] == as_of:
+            return self._extra_cache[1], self._extra_cache[2]
+        t0 = time.perf_counter()
+        try:
+            rows = self._q(SQL_FBA_EXTRA, {"as_of": as_of.isoformat()})
+        except Exception as e:
+            cause = self._classify(e)
+            log.warning("op=ch_fba_extra outcome=fail target=%s as_of=%s elapsed_ms=%d cause=%s",
+                        FBA_DETAIL_TABLE, as_of, (time.perf_counter() - t0) * 1000, cause)
+            raise ChUnavailable(target=FBA_DETAIL_TABLE, cause=cause) from e
+        fc, shipped, dropped = parse_fba_extra(rows)
+        log.info("op=ch_fba_extra outcome=ok as_of=%s keys=%d fc_units=%d dropped=%s elapsed_ms=%d",
+                 as_of, len(fc), sum(fc.values()), dropped, (time.perf_counter() - t0) * 1000)
+        self._extra_cache = (as_of, fc, shipped)
+        self._stats["fc_transfers"] = dropped
+        return fc, shipped
+
+    def fc_transfers(self, seller_sku: str, sid: str) -> int:
+        """调仓中预留（OP-19 裁定 c：进期初）。缺行 = 0（同 `onhand_available` 的 L-1）。"""
+        return self._extra()[0].get((str(sid), seller_sku), 0)
+
+    def _fba_inbound(self) -> dict[tuple[str, str], list[FbaInbound]] | None:
+        as_of = self.as_of()
+        if self._inbound_cache is not None and self._inbound_cache[0] == as_of:
+            return self._inbound_cache[1]
+        t0 = time.perf_counter()
+        since = as_of - dt.timedelta(days=FBA_INBOUND_FALLBACK_DAYS)
+        try:
+            got = self._q(SQL_FBA_INBOUND_DAY, {"since": since.isoformat(), "as_of": as_of.isoformat()})
+            day = got[0][0] if got and got[0] and got[0][0] else None
+            rows = self._q(SQL_FBA_INBOUND, {"day": day.isoformat()}) if day else []
+        except Exception as e:
+            cause = self._classify(e)
+            log.warning("op=ch_fba_inbound outcome=fail target=%s as_of=%s elapsed_ms=%d cause=%s",
+                        FBA_SHIPMENT_TABLE, as_of, (time.perf_counter() - t0) * 1000, cause)
+            raise ChUnavailable(target=FBA_SHIPMENT_TABLE, cause=cause) from e
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        if not rows:
+            # 早于 as_of − 1 天也没有：未知 ≠ 0（10-15 裁定只许回退一天）
+            log.warning("op=ch_fba_inbound outcome=no_snapshot target=%s as_of=%s since=%s elapsed_ms=%d",
+                        FBA_SHIPMENT_TABLE, as_of, since, elapsed_ms)
+            self._inbound_cache = (as_of, None)
+            self._inbound_day = None
+            self._stats["fba_inbound"] = {"unavailable": True}
+            return None
+        if day != as_of:
+            log.info("op=ch_fba_inbound fallback=1 as_of=%s snapshot=%s", as_of, day)
+        self._inbound_day = day
+        by_key, dropped = parse_fba_inbound(rows)
+        sku_of: dict[tuple[str, str], str] = {}
+        for r in rows:
+            if len(r) > 9 and r[9]:
+                sku_of[(str(r[0]), r[1])] = r[9]
+        lost = [x for k, xs in by_key.items() if k not in sku_of for x in xs]
+        if lost:
+            # ★ 明细没有货号：msku 级照算（进月末），货号级当月在途数不进 —— 按件计数并在弹窗点名（终审 I-5）
+            dropped["items_without_sku"] = {"rows": len(lost), "units": sum(x.units for x in lost)}
+        self._fba_sku_of = sku_of
+        if "unknown_status" in dropped or "items_without_header" in dropped:
+            # ★ 认不出的状态 / 缺货件头的明细：可能是真在途被漏掉，必须有声（终审 I-3）
+            log.warning("op=ch_fba_inbound outcome=partial as_of=%s unknown_status=%s items_without_header=%s",
+                        as_of, dropped.get("unknown_status"), dropped.get("items_without_header"))
+        log.info("op=ch_fba_inbound outcome=ok target=%s as_of=%s keys=%d shipments=%d units=%d dropped=%s "
+                 "elapsed_ms=%d", FBA_SHIPMENT_TABLE, as_of, len(by_key),
+                 len({x.shipment_id for v in by_key.values() for x in v}),
+                 sum(x.units for v in by_key.values() for x in v), dropped, elapsed_ms)
+        self._reconcile(as_of, by_key)
+        self._inbound_cache = (as_of, by_key)
+        self._stats["fba_inbound"] = dropped
+        return by_key
+
+    def _reconcile(self, as_of: dt.date, by_key: dict) -> None:
+        """货件表 Σ(`FBA_SHIPPED_ONLY` 状态的剩余) 对 `fba_detail.afn_inbound_shipped_quantity`。
+        ★ 只记不拦：两张表各自采集，差一天的变动是常态；但不等必须有声，否则口径漂了没人知道。
+        ★ 对账数取不到也只记一条（终审 M-3）—— 不许把货件取数本身拖成 503。"""
+        try:
+            _fc, shipped = self._extra()
+        except Exception as e:  # noqa: BLE001 —— 对账是旁证，失败不影响推演
+            log.warning("op=fba_inbound_reconcile outcome=skipped as_of=%s cause=%s",
+                        as_of, getattr(e, "cause", None) or f"{type(e).__name__}: {e}")
+            return
+        ours: dict[tuple[str, str], int] = {}
+        for k, xs in by_key.items():
+            ours[k] = sum(x.units for x in xs if x.status in FBA_SHIPPED_ONLY)
+        keys = sorted(set(ours) | set(shipped))
+        bad = [(k, ours.get(k, 0), shipped.get(k, 0)) for k in keys if ours.get(k, 0) != shipped.get(k, 0)]
+        if not bad:
+            return
+        # ★ 一条汇总 + 差得最多的 5 个：每次 grid 都会走到这里，逐 msku 打会淹掉别的日志
+        top = sorted(bad, key=lambda b: -abs(b[2] - b[1]))[:5]
+        log.warning("op=fba_inbound_reconcile as_of=%s mismatched=%d/%d units_ours=%d units_lx=%d top=%s",
+                    as_of, len(bad), len(keys), sum(ours.values()), sum(shipped.values()),
+                    [f"{sid}/{msku} ours={o} lx={lx} diff={lx - o}" for (sid, msku), o, lx in top])
+
+    def fba_in_transit(self, sku: str) -> list[tuple[str, str, FbaInbound]] | None:
+        """货号级：全部店铺的已发出未签收货件 `(sid, msku, 货件)`（当月在途，spec 2026-10-15）。None = 当天无快照。"""
+        by_key = self._fba_inbound()
+        if by_key is None:
+            return None
+        return [(sid, msku, x) for (sid, msku), xs in sorted(by_key.items())
+                if self._fba_sku_of.get((sid, msku)) == sku for x in xs]
+
+    def fba_inbound_as_of(self) -> dt.date | None:
+        """货件实际用的快照日（10-15 裁定：可能早 as_of 一天，界面要写明）。"""
+        self._fba_inbound()
+        return self._inbound_day
+
+    def fba_inbound(self, seller_sku: str, sid: str) -> list[FbaInbound] | None:
+        """已发出未签收的 FBA 货件。★ None = 当天没有货件快照（未知），[] = 查过了、没有在途。"""
+        by_key = self._fba_inbound()
+        return None if by_key is None else list(by_key.get((str(sid), seller_sku), ()))
 
     def stats(self) -> dict:
         """最近一次批量取数的丢弃计数，供上层写进日志与响应（`source_notes.dropped`）。"""

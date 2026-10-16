@@ -58,3 +58,15 @@ def test_missing_id_neither_raises_nor_writes_none_string(po_line, seed, caplog)
         assert cur.fetchone()[0] is None
     assert _line_id(po_line) is None
     assert any(f"po_id={po_line}" in m and "skipped_no_id=1" in m for m in caplog.messages)
+
+
+def test_item_obs_keeps_per_item_entered_and_pending(business_db, wipe, seed):
+    """CA-D12：领星 item_list 行级有 quantity_entry（已入库）/ quantity_receive（待到货，CA-D9 口径）。
+    以前只存 quantity_real，排货页拿不到采购页已经读回的到货 —— 10-12 PO261012001 实测。"""
+    it = {**real_item(seed), "quantity_entry": 7, "quantity_receive": 3}
+    old = {k: v for k, v in real_item(seed).items()}            # 老形状：没有这两个键 → NULL（未知），不是 0
+    with pg_conn() as c, c.cursor() as cur:
+        repo.insert_item_obs(cur, "PO-E", [it], "api", None)
+        repo.insert_item_obs(cur, "PO-OLD", [old], "api", None)
+        cur.execute("SELECT order_sn, quantity_entry, quantity_receive FROM po_item_obs ORDER BY order_sn")
+        assert cur.fetchall() == [("PO-E", 7, 3), ("PO-OLD", None, None)]

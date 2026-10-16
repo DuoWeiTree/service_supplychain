@@ -3,6 +3,8 @@ import { Link } from 'react-router-dom';
 import { api, ApiError } from '../api';
 import { ErrorDetail } from '../components/ErrorDetail';
 import { asApiError } from '../api/client';
+import type { AttentionKind } from '../api/types';
+import { KIND_LABEL } from '../pages/purchase/poStatus';
 
 const listeners = new Set<() => void>();
 
@@ -13,7 +15,7 @@ export function refreshAttention(): void {
 
 type State =
   | { kind: 'loading' }
-  | { kind: 'ok'; count: number }
+  | { kind: 'ok'; count: number; byKind: [AttentionKind, number][] }
   | { kind: 'fail'; err: ApiError };
 
 
@@ -29,7 +31,12 @@ export function AttentionBanner() {
       // 包一层 then：api 同步抛（桩缺方法）也落进 catch，不让红条位悄悄消失
       Promise.resolve().then(() => api.listAttention()).then(
         // ★ 「N 张采购单」数的是单，不是项：一张单常同时开着待核实与不一致（final review I2）
-        (q) => { if (alive && mine === seq) setState({ kind: 'ok', count: new Set(q.items.map((i) => i.po_id)).size }); },
+        (q) => {
+          if (!(alive && mine === seq)) return;
+          const by = new Map<AttentionKind, number>();
+          for (const i of q.items) by.set(i.kind, (by.get(i.kind) ?? 0) + 1);
+          setState({ kind: 'ok', count: new Set(q.items.map((i) => i.po_id)).size, byKind: [...by.entries()] });
+        },
         (e: unknown) => {
           const err = asApiError(e);
           console.warn('[attention] listAttention failed', JSON.stringify({
@@ -59,10 +66,10 @@ export function AttentionBanner() {
     );
   } else if (state.kind === 'ok' && state.count > 0) {
     body = (
-      <div className="wrap mt">
-        <Link className="flash flash--bad attention" to="/purchase">
-          ⛔ {state.count} 张采购单需要人工处理
-        </Link>
+      <div className="ab attention">
+        <span className="ab-title">⛔ {state.count} 张采购单需要人工处理</span>
+        {state.byKind.map(([k, n]) => <span key={k} className="ab-item">{KIND_LABEL[k] ?? k} {n}</span>)}
+        <Link className="ab-go" to="/purchase">去处理</Link>
       </div>
     );
   }

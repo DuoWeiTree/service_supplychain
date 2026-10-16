@@ -17,13 +17,12 @@ const OPTIONS: PurchaseOptions = {
 const CANDS: CandidateLines = {
   lines: [
     { line_id: 101, plan_id: 3, plan_title: '春季计划', rev: 1, sku: 'SKU-A', period: '2026-10', total_units: 500, demand_at_submit: 60,
-      demand_by_seller: {}, state: '已提交', confirmed_units: 0, ordered_units: 0, remaining: 120, blocked: null,
-      sellers: { '11072': { expected: 40, cap: 80, used: 0, remaining: 80 },
-                 '11094': { expected: 20, cap: 40, used: 40, remaining: 0 } } },
+      demand_by_seller: {}, state: '已提交', confirmed_units: 0, ordered_units: 0, remaining: 120,
+      sellers: { '11072': { expected: 40, used: 0 },
+                 '11094': { expected: 20, used: 40 } } },
     { line_id: 103, plan_id: 3, plan_title: '春季计划', rev: 1, sku: 'SKU-B', period: '2026-11', total_units: 80, demand_at_submit: 0,
       demand_by_seller: {}, state: '已提交', confirmed_units: 0, ordered_units: 0, remaining: 80,
-      blocked: { reason: 'no_seller_basis', sellers: ['11072'] },
-      sellers: { '11072': { expected: null, cap: null, used: 0, remaining: null } } },
+      sellers: { '11072': { expected: null, used: 0 } } },
   ],
   groups: {},
   excluded: { state: 1, sku: 0, category: 0, period: 0, fully_confirmed: 2 },
@@ -39,6 +38,7 @@ const DRAFT: PurchaseOrder = {
       plan_id: 3, plan_title: '春季计划', rev: 1, sku: 'SKU-A', period: '2026-10' }],
     sources_units: 30, unplanned_units: 0 }],
   source_line_states: [{ line_id: 101, state: '已提交' }], attention: [], preflight: [], confirm_token: 't',
+  lx: null,
 };
 
 async function mount(entry: string, over: Record<string, unknown> = {}) {
@@ -79,58 +79,86 @@ async function mount(entry: string, over: Record<string, unknown> = {}) {
 
 const sellerRow = async (lineId: number, sid: string) =>
   within(await screen.findByTestId(`cand-${lineId}`)).getByTestId(`seller-${sid}`);
+/** 设计稿：在店铺行的件数框里直接打数，Enter 采用（绝对量） */
+const allot = async (row: HTMLElement, n: string) => {
+  const box = within(row).getByRole('textbox');
+  await userEvent.clear(box);
+  await userEvent.type(box, `${n}{Enter}`);
+};
 
 describe('采购单编辑器：新建', () => {
-  it('加入来源 → 明细出现该货号，数量默认 = 来源合计', async () => {
+  it('★ 设计稿：店铺行直接打件数 → 明细出现该货号，数量默认 = 来源合计', async () => {
     await mount('/purchase/new');
     const row = await sellerRow(101, '11072');
-    await userEvent.type(within(row).getByRole('spinbutton'), '30');
-    await userEvent.click(within(row).getByRole('button', { name: '加入' }));
+    await allot(row, '30');
     const line = await screen.findByTestId('po-line-1');
     expect(line).toHaveTextContent('SKU-A');
     expect(within(line).getByTestId('sources')).toHaveTextContent('A4Pet-US 30 件');
     expect(within(line).getByLabelText('数量')).toHaveValue(30);
-    // 本稿已加的量从剩余里扣掉
-    expect(within(await sellerRow(101, '11072')).getByTestId('avail')).toHaveTextContent('50');
+    // 本稿已加的量从记录剩余里扣掉
+    expect(await screen.findByTestId('cand-101')).toHaveTextContent('剩 90 / 500');
   });
 
-  it('超过该店剩余 → 不加，点名最多还能加多少', async () => {
+  it('★ PB-D22 没有分店上限：一家店能拿满记录剩余；超过才拒并点名', async () => {
     await mount('/purchase/new');
     const row = await sellerRow(101, '11072');
-    await userEvent.type(within(row).getByRole('spinbutton'), '81');
-    await userEvent.click(within(row).getByRole('button', { name: '加入' }));
-    expect(row).toHaveTextContent('最多还能加 80');
+    await allot(row, '121');
+    expect(row).toHaveTextContent('超过该记录剩余，最多还能加 120');
     expect(screen.queryByTestId('po-line-1')).toBeNull();
   });
 
-  it('剩余 0 的店：加入禁用并写原因', async () => {
-    await mount('/purchase/new');
-    const row = await sellerRow(101, '11094');
-    expect(within(row).getByRole('button', { name: '加入' })).toBeDisabled();
-    expect(row).toHaveTextContent('已无剩余');
+  it('记录剩余 0：各店件数框禁用、占位写「已无剩余」，「剩余全给」也禁用', async () => {
+    await mount('/purchase/new', { listCandidateLines: vi.fn(async () =>
+      ({ ...CANDS, lines: [{ ...CANDS.lines[0]!, remaining: 0 }] })) });
+    for (const sid of ['11072', '11094']) {
+      const row = await sellerRow(101, sid);
+      expect(within(row).getByRole('textbox')).toBeDisabled();
+      expect(within(row).getByRole('textbox')).toHaveAttribute('placeholder', '已无剩余');
+      expect(within(row).getByRole('button', { name: '剩余全给' })).toBeDisabled();
+    }
   });
 
-  it('★ blocked 记录照样列出、灰显、点名原因，不能加', async () => {
+  it('★ 设计稿：再打一次是改量不是叠加；「剩余全给」一键给满；清空 = 去掉这条来源', async () => {
+    await mount('/purchase/new');
+    const row = await sellerRow(101, '11072');
+    await allot(row, '30');
+    await allot(row, '20');
+    expect(within(await screen.findByTestId('po-line-1')).getByTestId('sources')).toHaveTextContent('A4Pet-US 20 件');
+    await userEvent.click(within(await sellerRow(101, '11094')).getByRole('button', { name: '剩余全给' }));
+    expect(screen.getByTestId('cand-101')).toHaveTextContent('剩 0 / 500');
+    const box = within(await sellerRow(101, '11072')).getByRole('textbox');
+    await userEvent.clear(box);
+    await userEvent.type(box, '{Enter}');
+    expect(within(screen.getByTestId('po-line-1')).getByTestId('sources')).not.toHaveTextContent('A4Pet-US');
+  });
+
+  it('★ PB-D22 期望为空（本月断货）的记录：不灰显、期望写未知、照样能加', async () => {
     await mount('/purchase/new');
     const rec = await screen.findByTestId('cand-103');
-    expect(rec).toHaveTextContent('无分店依据：A4Pet-US（11072）');
-    expect(rec).toHaveClass('muted');
-    expect(within(rec).queryByRole('button', { name: '加入' })).toBeNull();
+    expect(rec).not.toHaveClass('muted');
+    expect(rec).not.toHaveTextContent('无分店依据');
+    const row = within(rec).getByTestId('seller-11072');
+    expect(within(row).getByTestId('expected')).not.toHaveTextContent('0');
+    await allot(row, '80');
+    expect(await screen.findByTestId('po-line-1')).toHaveTextContent('SKU-B');
   });
 
-  it('被滤掉的计数用 dropline 列出', async () => {
+  it('被滤掉的计数：总数可见，分项进折叠（不是错误，默认收起）', async () => {
     await mount('/purchase/new');
-    const box = await screen.findByTestId('candidates');
-    const drops = Array.from(box.querySelectorAll('.dropline')).map((x) => x.textContent);
-    expect(drops).toContain('已组满 2 条');
-    expect(drops).toContain('状态不可组单 1 条');
+    const fold = await screen.findByTestId('cand-dropped');
+    expect(fold.tagName).toBe('DETAILS');
+    expect(fold).not.toHaveAttribute('open');
+    expect(fold.querySelector('summary')).toHaveTextContent('未列入 2 条');
+    const drops = Array.from(fold.querySelectorAll('.dropline')).map((x) => x.textContent);
+    expect(drops).toEqual(['已组满 2 条']);
+    // ★ PB-D29：状态不可组单（旧版被替换 / 已完结的历史）不显示
+    expect(document.body).not.toHaveTextContent('状态不可组单');
   });
 
   it('数量改大 → 出现「无计划来源 N 件」与理由；对应闸红色点名', async () => {
     await mount('/purchase/new');
     const row = await sellerRow(101, '11072');
-    await userEvent.type(within(row).getByRole('spinbutton'), '30');
-    await userEvent.click(within(row).getByRole('button', { name: '加入' }));
+    await allot(row, '30');
     const line = await screen.findByTestId('po-line-1');
     const qty = within(line).getByLabelText('数量');
     await userEvent.clear(qty);
@@ -166,10 +194,10 @@ describe('采购单编辑器：新建', () => {
     await userEvent.selectOptions(screen.getByLabelText('采购员'), '10925905');
     await userEvent.selectOptions(screen.getByLabelText('质检方式'), '2');
     const row = await sellerRow(101, '11072');
-    await userEvent.type(within(row).getByRole('spinbutton'), '30');
-    await userEvent.click(within(row).getByRole('button', { name: '加入' }));
+    await allot(row, '30');
     const line = screen.getByTestId('po-line-1');
-    await userEvent.selectOptions(within(line).getByLabelText('仓'), '102');
+    // 设计稿：仓在单头，整张单一个仓（PB-D25），写到每一行
+    await userEvent.selectOptions(screen.getByLabelText('仓库'), '102');
     await userEvent.type(within(line).getByLabelText('单价'), '3.20');
     await userEvent.click(screen.getByRole('button', { name: '保存草稿' }));
     expect(api.createPurchaseOrder).toHaveBeenCalledWith({
@@ -230,8 +258,8 @@ describe('采购单编辑器：已保存草稿', () => {
     expect(api.getPreflight).toHaveBeenCalledWith(1);
     const box = screen.getByTestId('preflight');
     expect(within(box).getByText('来源记录仍可组单').closest('li')).toHaveClass('gate__item--fail');
-    // 本单占着的 30 件算回该店可用：后端 remaining 80 + 本单 30 − 本稿 30
-    expect(within(await sellerRow(101, '11072')).getByTestId('avail')).toHaveTextContent('80');
+    // 本单占着的 30 件算回记录剩余：后端 remaining 120 + 本单 30 − 本稿 30
+    expect(await screen.findByTestId('cand-101')).toHaveTextContent('剩 120 / 500');
   });
 
   it('保存：带 draft_version，toast「已保存草稿」，之后重新取 preflight', async () => {
@@ -263,16 +291,16 @@ describe('采购单编辑器：已保存草稿', () => {
     expect(screen.queryByText('草稿已被别人改过，请刷新后再改')).toBeNull();
   });
 
-  it('后端 409 over_seller_cap：点名字段', async () => {
+  it('后端 409 seller_not_in_line：点名字段', async () => {
     const { ApiError } = await import('../../api/client');
     await mount('/purchase/1', { updatePurchaseOrder: vi.fn(async () => {
-      throw new ApiError(409, 'over_seller_cap', '超过该店上限（按期望销量占比）',
-        { line_id: 101, seller_id: '11072', cap: 80, used: 60, requested: 30 }); }) });
+      throw new ApiError(409, 'seller_not_in_line', '来源店不在这条记录里（只能记到计划里认领了该货号的店）',
+        { line_id: 101, seller_ids: ['99999'], allowed: ['11072', '11094'] }); }) });
     await screen.findByTestId('po-line-1');
     await userEvent.click(screen.getByRole('button', { name: '保存草稿' }));
-    const box = (await screen.findByText('超过该店上限（按期望销量占比）')).closest('[role=alert]')!;
-    expect(box).toHaveTextContent('seller_id');
-    expect(box).toHaveTextContent('11072');
+    const box = (await screen.findByText('来源店不在这条记录里（只能记到计划里认领了该货号的店）')).closest('[role=alert]')!;
+    expect(box).toHaveTextContent('seller_ids');
+    expect(box).toHaveTextContent('99999');
   });
 
   it('删除草稿：二次确认（非 danger），成功回采购首页', async () => {
@@ -317,38 +345,34 @@ describe('采购单编辑器：已保存草稿', () => {
     const own = await screen.findByTestId('own-200');
     expect(own).toHaveTextContent('本单原有来源');
     const row = within(own).getByTestId('seller-11072');
-    expect(within(row).getByTestId('avail')).toHaveTextContent('0');
-    expect(within(row).getByRole('button', { name: '加入' })).toBeDisabled();
+    expect(within(own).getByTestId('own-avail')).toHaveTextContent('0');
+    expect(within(row).getByRole('textbox')).toHaveValue('50');      // 本单现有的量，可改小
 
     await userEvent.click(within(screen.getByTestId('po-line-1')).getByRole('button', { name: '移除' }));
     expect(screen.queryByTestId('po-line-1')).toBeNull();
     const row2 = within(screen.getByTestId('own-200')).getByTestId('seller-11072');
-    expect(within(row2).getByTestId('avail')).toHaveTextContent('50');
-    await userEvent.type(within(row2).getByRole('spinbutton'), '51');
-    await userEvent.click(within(row2).getByRole('button', { name: '加入' }));
-    expect(row2).toHaveTextContent('最多还能加 50');
+    expect(within(screen.getByTestId('own-200')).getByTestId('own-avail')).toHaveTextContent('50');
+    await allot(row2, '51');
+    expect(within(screen.getByTestId('own-200')).getByTestId('seller-11072')).toHaveTextContent('最多还能加 50');
     expect(screen.queryByTestId('po-line-1')).toBeNull();
-    await userEvent.clear(within(row2).getByRole('spinbutton'));
-    await userEvent.type(within(row2).getByRole('spinbutton'), '50');
-    await userEvent.click(within(row2).getByRole('button', { name: '加入' }));
+    await allot(within(screen.getByTestId('own-200')).getByTestId('seller-11072'), '50');
     const line = await screen.findByTestId('po-line-1');
     expect(line).toHaveTextContent('SKU-Z');
     expect(within(line).getByTestId('sources')).toHaveTextContent('50');
   });
 
-  it('记录级剩余与分店可用同口径（加回本单已保存）', async () => {
+  it('记录级剩余加回本单已保存', async () => {
     await mount('/purchase/1');
-    expect(await screen.findByTestId('cand-101')).toHaveTextContent('剩 120/500');
+    expect(await screen.findByTestId('cand-101')).toHaveTextContent('剩 120 / 500');
     await userEvent.click(within(screen.getByTestId('po-line-1')).getByRole('button', { name: '移除' }));
-    expect(screen.getByTestId('cand-101')).toHaveTextContent('剩 150/500');
+    expect(screen.getByTestId('cand-101')).toHaveTextContent('剩 150 / 500');
   });
 
   it('稿变了，旧的拒绝理由收掉', async () => {
     await mount('/purchase/1');
     const row = await sellerRow(101, '11072');
-    await userEvent.type(within(row).getByRole('spinbutton'), '999');
-    await userEvent.click(within(row).getByRole('button', { name: '加入' }));
-    expect(row).toHaveTextContent('最多还能加');
+    await allot(row, '999');
+    expect(await sellerRow(101, '11072')).toHaveTextContent('最多还能加');
     await userEvent.click(within(screen.getByTestId('po-line-1')).getByRole('button', { name: '移除' }));
     expect(await sellerRow(101, '11072')).not.toHaveTextContent('最多还能加');
   });
@@ -377,7 +401,7 @@ describe('店名', () => {
     const box = await screen.findByTestId('seller-names-failed');
     expect(box).toHaveTextContent('店名取不到，按店编号显示');
     expect(box).toHaveTextContent('店铺取不到');
-    expect(await screen.findByTestId('cand-103')).toHaveTextContent('无分店依据：11072');
+    expect(within(await screen.findByTestId('cand-103')).getByTestId('seller-11072')).toHaveTextContent('11072');
   });
 });
 
@@ -386,7 +410,7 @@ describe('后端 409 点名字段', () => {
     ['over_total', '超过记录总量', { line_id: 101, total: 500, used: 480, requested: 30 }, ['line_id', 'total', 'used', 'requested', '480']],
     ['duplicate_line', '同一张单里同货号同仓只能一行', { sku: 'SKU-A', wid: 101 }, ['sku', 'SKU-A', 'wid', '101']],
     ['unplanned_reason_required', '超出计划来源的数量必须写理由', { sku: 'SKU-A', unplanned: 20 }, ['unplanned', '20']],
-    ['no_seller_basis', '期望销量为 0 或 unknown 的店无法定分店上限', { line_id: 103, sellers: ['11072'] }, ['sellers', '["11072"]']],
+    ['seller_not_in_line', '来源店不在这条记录里（只能记到计划里认领了该货号的店）', { line_id: 101, seller_ids: ['99999'], allowed: ['11072'] }, ['seller_ids', '["99999"]']],
     ['line_not_orderable', '只有 已提交/已确认 的记录能组单', { line_id: 101, state: '已撤销' }, ['state', '已撤销']],
     ['unknown_supplier', '没有这个供应商（不在供应商镜像里）', { supplier_id: 'S-9' }, ['supplier_id', 'S-9']],
     ['missing_required', '单价必填且为数字', { missing: ['lines[].price'], sku: 'SKU-A' }, ['missing', 'lines[].price']],
@@ -395,7 +419,7 @@ describe('后端 409 点名字段', () => {
     it(`${code}：hint、错误码与字段都在`, async () => {
       const { ApiError } = await import('../../api/client');
       await mount('/purchase/1', { updatePurchaseOrder: vi.fn(async () => {
-        throw new ApiError(code === 'over_total' || code === 'no_seller_basis' || code === 'line_not_orderable' ? 409 : 400,
+        throw new ApiError(code === 'over_total' || code === 'seller_not_in_line' || code === 'line_not_orderable' ? 409 : 400,
           code, hint, fields); }) });
       await screen.findByTestId('po-line-1');
       await userEvent.click(screen.getByRole('button', { name: '保存草稿' }));
@@ -497,8 +521,7 @@ describe('★ 明细里的来源链：不展开就看得到', () => {
   it('新加的来源：计划 rev 货号 月份 → 店名 件数', async () => {
     await mount('/purchase/new?lines=101');
     const row = await sellerRow(101, '11072');
-    await userEvent.type(within(row).getByRole('spinbutton'), '30');
-    await userEvent.click(within(row).getByRole('button', { name: '加入' }));
+    await allot(row, '30');
     const src = within(await screen.findByTestId('po-line-1')).getByTestId('sources');
     expect(src).toHaveTextContent('春季计划 rev1 SKU-A 2026-10 → A4Pet-US 30 件');
   });

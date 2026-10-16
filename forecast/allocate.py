@@ -79,11 +79,11 @@ def allocate(batches: list[Batch], keys: list[Key],
         tw = sum(w.values())
         if total == 0:
             give = spread(pool, w, keys)
-            parts = {k: (0, give[k], f"无人缺货，按期望销量比例 {w[k]}/{tw}") for k in keys}
+            parts = {k: (0, give[k], f"无人缺货，按计划销量比例 {w[k]}/{tw}") for k in keys}
         elif total <= pool:
             extra = spread(pool - total, w, keys)
             give = {k: need[k] + extra[k] for k in keys}
-            parts = {k: (need[k], extra[k], f"缺口 {need[k]} 补齐，余量按期望销量再摊 {extra[k]}")
+            parts = {k: (need[k], extra[k], f"缺口 {need[k]} 补齐，余量按计划销量再摊 {extra[k]}")
                      for k in keys}
         else:
             give = {k: pool * need[k] // total for k in keys}

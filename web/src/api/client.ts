@@ -6,7 +6,9 @@ import type {
   SubmitResult, UnsubmittedBoard,
   AcknowledgeResult, AttentionQueue, CandidateLineQuery, CandidateLines, ConfirmAbsentResult, LineTrace,
   PlaceResult, PoBody, PoId, PoList, PoState, PoTimeline, PreflightResult, PurchaseChecks,
-  PurchaseOptions, PurchaseOrder, RecheckResult, RegisterResult,
+  PurchaseOptions, PurchaseOrder, ReadBackResult, RecheckResult, RegisterResult,
+  CellPut, CellResult, DispatchPlans, LiveReadResult, PackingBox, PackingRow, SheetConfirmResult, SheetDetail, SheetGrid, SheetList,
+  SheetPreflight, SheetState, DispatchRoute, SheetReceiptResult, SkuMatchStatus, LogisticsChannels, OwsSubmission, OwsSubmitResult, SheetCancelResult,
 } from './types';
 
 /** ★ 后端的错误形状是 `{error, hint, …点名字段平铺在顶层}`（team-lead 2026-09-22 裁定）。
@@ -90,6 +92,8 @@ export interface SupplyChainApi {
   placePurchaseOrder(poId: PoId, confirmToken: string): Promise<PlaceResult>;
   getTimeline(poId: PoId): Promise<PoTimeline>;
   recheck(poId: PoId): Promise<RecheckResult>;
+  /** 现查领星（只读）：落观察 + 落地核对。409 po_not_placed */
+  readBack(poId: PoId): Promise<ReadBackResult>;
   registerExisting(poId: PoId, orderSn: string): Promise<RegisterResult>;
   /** 409 contradicts_evidence 的 fields.found_order_sns 点名领星里已有的单 */
   confirmAbsent(poId: PoId, reason: string): Promise<ConfirmAbsentResult>;
@@ -100,4 +104,40 @@ export interface SupplyChainApi {
   /** 固定带 orderable=1：只要还能组单的记录 */
   listCandidateLines(params: CandidateLineQuery): Promise<CandidateLines>;
   getLineTrace(lineId: number): Promise<LineTrace>;
+
+  // ───── 排货（阶段 C-a）─────
+  /** CA-D11 入口：未完成的销售计划 */
+  listDispatchPlans(): Promise<DispatchPlans>;
+  listSheets(state?: SheetState): Promise<SheetList>;
+  /** ★ CA-D13：建表就定去向；同计划同去向已有草稿 → 409 draft_exists（带 sheet_id） */
+  createSheet(planId: PlanId, route: DispatchRoute): Promise<{ sheet_id: number }>;
+  getSheet(sheetId: number): Promise<SheetDetail>;
+  getSheetGrid(sheetId: number): Promise<SheetGrid>;
+  /** ★ 唯一的安排原语：units 0 / null = 撤回。同事务重派生排货单 */
+  putSheetCell(sheetId: number, cell: CellPut): Promise<CellResult>;
+  putSheetPacking(sheetId: number, key: { seller_sku: string; sid: string; from_wid: number }, box: PackingBox): Promise<PackingRow>;
+  sheetPreflight(sheetId: number): Promise<SheetPreflight>;
+  /** 409 confirm_blocked 的 fields.gates 列出全部六闸；503 stock_unavailable */
+  confirmSheet(sheetId: number, seenWatermark: number): Promise<SheetConfirmResult>;
+  /** CA-D12「现查领星」：一个货号的本地库存 + 关联已下单采购单的读回 */
+  liveRead(sheetId: number, sku: string): Promise<LiveReadResult>;
+  /** CB-D6：领星里建过的备货单先删；任一已过待发货 → 409 ows_not_cancellable，整表不取消 */
+  cancelSheet(sheetId: number, reason: string): Promise<SheetCancelResult>;
+  /** ★ CA-D14：已确认 → 草稿；有单发到过领星 → 409 already_submitted（只能取消） */
+  /** 现查领星状态（回执，spec 2026-10-13）；与提交 / 取消互斥 → 409 sheet_busy */
+  receiptSheet(sheetId: number): Promise<SheetReceiptResult>;
+  /** 选目的仓时现查：这个货号在这个第三方海外仓配没配对三方 sku（503 = 领星读不到） */
+  checkSkuMatch(wid: number, sku: string): Promise<SkuMatchStatus>;
+  reopenSheet(sheetId: number, reason: string): Promise<{ sheet_id: number; state: SheetState; from: SheetState }>;
+
+  // ───── 提交领星备货单（C-b）─────
+  listLogisticsChannels(): Promise<LogisticsChannels>;
+  refreshLogisticsChannels(): Promise<{ channels: LogisticsChannels['channels'] }>;
+  setSheetLogistics(sheetId: number, destWid: number, logisticsId: number): Promise<{ dest_wid: number; logistics_id: number; channel_name: string }>;
+  getSubmission(sheetId: number): Promise<OwsSubmission>;
+  /** ⛔ 出站：逐张建领星备货单。出错就停在那一张 */
+  submitSheet(sheetId: number, confirmToken: string): Promise<OwsSubmitResult>;
+  verifyExtRef(sheetId: number, attentionId: number): Promise<{ attention_id: number; ext_no: string; dispatched: number[] }>;
+  registerExtRef(sheetId: number, attentionId: number, extNo: string): Promise<{ attention_id: number; ext_no: string; dispatched: number[] }>;
+  confirmExtAbsent(sheetId: number, attentionId: number, reason: string): Promise<{ attention_id: number; closed: string }>;
 }

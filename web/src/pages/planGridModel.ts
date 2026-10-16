@@ -1,7 +1,7 @@
 import type { QtyValue } from '../components/Qty';
 import type {
-  BeyondHorizon, DemandBasis, DemandCell, ForecastParams, ForecastState, GridResponse, MskuForecast, Period,
-  Seller, Sid, SkuForecast, StoreForecast, Unallocated,
+  BeyondHorizon, DemandBasis, DemandCell, ForecastParams, ForecastState, GridResponse, MonthInTransit, MskuForecast, OnhandParts, Period,
+  Seller, Sid, SkuForecast, SourceNotes, StoreForecast, Unallocated,
 } from '../api/types';
 
 export interface MskuCell {
@@ -24,7 +24,7 @@ export interface SkuBlock {
 }
 export interface PurchaseRow { sku: string; cells: { period: Period; planned_units: number | null }[] }
 /** 货号级在途，读 `forecast_sku[].in_transit`。★ null = 该月没有货号行（未知），不是 0 */
-export interface TransitCell { period: Period; units: number | null }
+export interface TransitCell { period: Period; units: number | null; mit: MonthInTransit | null }
 export interface TransitRow { sku: string; cells: TransitCell[] }
 export interface SkuTotals { sku: string; cells: SkuForecast[] }
 export interface Orphan {
@@ -39,6 +39,7 @@ export interface GridModel {
   /** `${seller_sku}/${sid}` → 整本台账第一个断货日（forecast_msku）；null = 不断货 */
   firstStockout: Map<string, string | null>;
   orphans: Orphan[];
+  sourceNotes: SourceNotes | null;
 }
 
 /** ★ 任何一项未知 ⇒ 和未知。空数组也是未知：没有数不等于 0 */
@@ -65,6 +66,34 @@ export function stockAt(block: SkuBlock, period: Period): QtyValue {
 export function mskuStockAt(row: MskuRow, period: Period): QtyValue {
   const r = row.forecast.find((f) => f.period === period);
   return r ? qtyOf(r.state, r.closing) : { kind: 'unknown' };
+}
+
+/** as_of 当天 FBA 可售（台账起点）：只在台账从这个月起算的那一格有 —— 桥接段或 as_of 所在月。
+ *  ★ OP-19：「月末」是预计期末，运营要对领星的是这个数；不是那一格 → null（不显示，不是 0） */
+export function mskuOnhandAt(row: MskuRow, period: Period): number | null {
+  const b = row.forecast.find((f) => f.period === period)?.basis;
+  return b?.as_of_start?.onhand_as_of ?? b?.bridge?.onhand_as_of ?? null;
+}
+
+/** 起点的两部分（OP-19 c：可售 + 调仓中）；没有 → null（只写合计） */
+export function mskuOnhandPartsAt(row: MskuRow, period: Period): OnhandParts | null {
+  const b = row.forecast.find((f) => f.period === period)?.basis;
+  return b?.as_of_start?.onhand_parts ?? b?.bridge?.onhand_parts ?? null;
+}
+
+export function onhandPartsAt(block: SkuBlock, period: Period): OnhandParts | null {
+  if (!block.has_fba || block.mskus.length === 0) return null;
+  const ps = block.mskus.map((r) => mskuOnhandPartsAt(r, period));
+  if (ps.some((x) => x === null)) return null;
+  return ps.reduce<OnhandParts>((a, x) => ({ fulfillable: a.fulfillable + x!.fulfillable,
+    fc_transfers: a.fc_transfers + x!.fc_transfers }), { fulfillable: 0, fc_transfers: 0 });
+}
+
+/** 店铺 = Σ msku；有 FBA 的 msku 里任一没有起点 → null（不拿部分和冒充全部） */
+export function onhandAt(block: SkuBlock, period: Period): number | null {
+  if (!block.has_fba) return null;
+  const vs = block.mskus.map((r) => mskuOnhandAt(r, period));
+  return vs.length === 0 || vs.some((v) => v === null) ? null : vs.reduce<number>((a, v) => a + (v ?? 0), 0);
 }
 
 export function systemAt(block: SkuBlock, period: Period): QtyValue {
@@ -214,7 +243,7 @@ export function buildGridModel(grid: GridResponse, sellers: Seller[]): GridModel
       if (c && c.in_transit !== c.pipeline.making + c.pipeline.shipping + c.pipeline.ordered_open) {
         orphans.push({ kind: 'in_transit_disagrees', key: `${t.sku}/${period}` });
       }
-      return { period, units: c ? c.in_transit : null };
+      return { period, units: c ? c.in_transit : null, mit: c?.month_in_transit ?? null };
     }),
   }));
 
@@ -232,6 +261,6 @@ export function buildGridModel(grid: GridResponse, sellers: Seller[]): GridModel
     periods: grid.periods, blocks: [...blocks.values()], purchase, transit, totals,
     params: grid.params, beyond: grid.beyond_horizon, unallocated: grid.unallocated,
     firstStockout: new Map(grid.forecast_msku.map((r) => [`${r.seller_sku}/${r.sid}`, r.first_stockout_date])),
-    orphans,
+    orphans, sourceNotes: grid.source_notes ?? null,
   };
 }

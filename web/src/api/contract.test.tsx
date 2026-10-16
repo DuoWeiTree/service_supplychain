@@ -4,7 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
 import type {
   AttentionQueue, CandidateLines, LineInPurchase, LineTrace, PoList, PoTimeline, PreflightResult, PurchaseOptions,
-  PurchaseOrder, SubmitResult,
+  PurchaseOrder, SubmitResult, CellResult, DispatchGate, DispatchPlans, SheetDetail, SheetGrid, SheetList, SheetPreflight,
 } from './types';
 import submitResubmit from '../testing/fixtures/contract/submit-resubmit.json';
 import submitBlocked from '../testing/fixtures/contract/submit-lines-in-purchase.json';
@@ -20,6 +20,13 @@ import attention from '../testing/fixtures/contract/attention.json';
 import options from '../testing/fixtures/contract/purchase-options.json';
 import planLines from '../testing/fixtures/contract/plan-lines.json';
 import lineTrace from '../testing/fixtures/contract/line-trace.json';
+import sheetList from '../testing/fixtures/contract/sheet-list.json';
+import dispatchPlans from '../testing/fixtures/contract/dispatch-plans.json';
+import sheetDetail from '../testing/fixtures/contract/sheet-detail.json';
+import sheetGrid from '../testing/fixtures/contract/sheet-grid.json';
+import sheetCell from '../testing/fixtures/contract/sheet-cell.json';
+import sheetPreflight from '../testing/fixtures/contract/sheet-preflight.json';
+import sheetBlocked from '../testing/fixtures/contract/sheet-confirm-blocked.json';
 import { fromPo, toBody, updateLine } from '../pages/purchase/poEditorModel';
 import { ok, type Handler } from '../testing/backendStub';
 import { mountPurchase } from '../testing/purchaseBackend';
@@ -46,6 +53,13 @@ const typed = {
   lineTrace: lineTrace satisfies Widen<LineTrace>,
   submitResubmit: submitResubmit satisfies Widen<SubmitResult>,
   submitBlocked: submitBlocked satisfies Widen<{ error: string; hint: string; plan_id: number; lines: LineInPurchase[] }>,
+  sheetList: sheetList satisfies Widen<SheetList>,
+  dispatchPlans: dispatchPlans satisfies Widen<DispatchPlans>,
+  sheetDetail: sheetDetail satisfies Widen<SheetDetail>,
+  sheetGrid: sheetGrid satisfies Widen<SheetGrid>,
+  sheetCell: sheetCell satisfies Widen<CellResult>,
+  sheetPreflight: sheetPreflight satisfies Widen<SheetPreflight>,
+  sheetBlocked: sheetBlocked satisfies Widen<{ error: string; hint: string; gates: DispatchGate[]; gate_run: number }>,
 };
 
 beforeEach(() => { vi.resetModules(); });
@@ -95,7 +109,8 @@ describe('契约样本 · 页面', () => {
     const line = await screen.findByTestId('po-line-1');
     // 下拉回填的就是后端的值（数转成文本后仍是已知选项，不掉进「手填」）
     expect(screen.queryByLabelText('采购方（手填）')).toBeNull();
-    expect((within(line).getByLabelText('仓') as HTMLSelectElement).value).toBe(String(draft.lines[0]!.wid));
+    // 单头仓（PB-D25）：回填的就是后端明细上的仓
+    expect((screen.getByLabelText('仓库') as HTMLSelectElement).value).toBe(String(draft.lines[0]!.wid));
     await userEvent.clear(within(line).getByLabelText('单价'));
     await userEvent.type(within(line).getByLabelText('单价'), '3.1');
     await userEvent.click(screen.getByRole('button', { name: '保存草稿' }));

@@ -1,0 +1,86 @@
+{
+  "sheet_id": 1,
+  "results": [
+    {
+      "key": "1-1",
+      "idem_key": "SCM-CN-1-1",
+      "outcome": "created",
+      "ext_no": "OWS261012001"
+    },
+    {
+      "key": "1-3",
+      "idem_key": "SCM-CN-1-3",
+      "outcome": "created",
+      "ext_no": "OWS261012002"
+    }
+  ],
+  "dispatched": [
+    1
+  ],
+  "submission": {
+    "sheet_id": 1,
+    "state": "已确认",
+    "route": "oversea",
+    "orders": [
+      {
+        "key": "1-1",
+        "consignment_id": 1,
+        "s_wid": 1,
+        "r_wid": 2,
+        "logistics_id": 28762,
+        "channel_name": "美森快船",
+        "idem_key": "SCM-CN-1-1",
+        "product_list": [
+          {
+            "product_id": 741805,
+            "stock_num": 5,
+            "receive_num": 0,
+            "fnsku": "X00AAA",
+            "sid": "11072"
+          }
+        ],
+        "lines": [
+          {
+            "seller_sku": "MSKU-A",
+            "sid": "11072",
+            "sku": "DCC1800264G1",
+            "units": 5
+          }
+        ],
+        "ext_no": "OWS261012001"
+      },
+      {
+        "key": "1-3",
+        "consignment_id": 1,
+        "s_wid": 3,
+        "r_wid": 2,
+        "logistics_id": 28762,
+        "channel_name": "美森快船",
+        "idem_key": "SCM-CN-1-3",
+        "product_list": [
+          {
+            "product_id": 741805,
+            "stock_num": 3,
+            "receive_num": 0,
+            "fnsku": "X00AAA",
+            "sid": "11072"
+          }
+        ],
+        "lines": [
+          {
+            "seller_sku": "MSKU-A",
+            "sid": "11072",
+            "sku": "DCC1800264G1",
+            "units": 3
+          }
+        ],
+        "ext_no": "OWS261012002"
+      }
+    ],
+    "blockers": [],
+    "skipped_fba": [],
+    "to_lock": [],
+    "confirm_token": "4f53cda18c2baa0c",
+    "attention": []
+  }
+}

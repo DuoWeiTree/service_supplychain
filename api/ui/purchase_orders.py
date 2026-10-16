@@ -8,7 +8,7 @@ from api.ui.errors import ApiError
 from repo import purchase as repo
 from shared.pg_client import pg_conn, timed
 from usecase import attention as attention_uc
-from usecase import draft_po, place_po
+from usecase import draft_po, landed, place_po
 
 router = APIRouter()
 
@@ -56,6 +56,12 @@ def delete(po_id: int, request: Request, who: str = Depends(actor)):
 def place(po_id: int, body: dict, request: Request, who: str = Depends(actor)):
     declared(request)
     return _call(place_po.place, po_id, (body or {}).get("confirm_token") or "", who)
+
+
+@router.post("/purchase-orders/{po_id}/read-back")
+def read_back(po_id: int, request: Request, who: str = Depends(actor)):
+    declared(request)
+    return _call(landed.read_back_now, po_id, who)
 
 
 @router.get("/purchase-orders/{po_id}/timeline")

@@ -1,6 +1,7 @@
 """接口层的地基：错误形状、操作人、未声明参数、镜像陈旧。"""
 import asyncio
 import json
+import re
 
 from fastapi.exceptions import RequestValidationError
 from starlette.requests import Request
@@ -71,7 +72,7 @@ def test_readiness_says_erp_is_not_implemented(client, seed):
     """★ 空实现会让「该做没做」和「本来就不用做」长得一样（规则五）。"""
     body = client.get("/v1/readiness", headers={"x-actor": seed.actor}).json()
     assert body["erp"] == "not_implemented"
-    assert body["migrations"][-1].startswith(("00", "01"))
+    assert re.fullmatch(r"\d{3}_\w+\.sql", body["migrations"][-1])
     assert len(body["mirrors"]) == 4
 
 

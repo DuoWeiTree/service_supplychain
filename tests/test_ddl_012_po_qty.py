@@ -27,40 +27,39 @@ def _draft(cur, seed, units):
     return po_id
 
 
-def test_seller_caps_largest_remainder(seed):
-    # 24 × 12/23 = 12.52 · 24 × 11/23 = 11.48 → 13 / 11，合计恒等于 24
+def test_one_seller_may_take_the_whole_line(seed):
+    # 014 / PB-D22：没有分店上限，期望为 unknown 也照样提交
     with pg_conn() as c, c.cursor() as cur:
-        lid = _line(cur, seed, 24, {"A": {"units": 12, "basis": "human"},
-                                    "B": {"units": 11, "basis": "human"}})
-        cur.execute("SELECT seller_id, cap FROM seller_caps(%s) ORDER BY 1", (lid,))
-        assert cur.fetchall() == [("A", 13), ("B", 11)]
-
-
-def test_seller_caps_empty_when_no_basis(seed):
-    with pg_conn() as c, c.cursor() as cur:
-        lid = _line(cur, seed, 24, {"A": {"units": 0, "basis": "human"}})
-        cur.execute("SELECT count(*) FROM seller_caps(%s)", (lid,))
-        assert cur.fetchone()[0] == 0
-        lid2 = _line(cur, seed, 24, {"A": {"units": 5, "basis": "unknown"}})
-        cur.execute("SELECT count(*) FROM seller_caps(%s)", (lid2,))
-        assert cur.fetchone()[0] == 0
-
-
-def test_over_seller_cap_is_rejected_at_commit(seed):
-    with pytest.raises(psycopg2.Error) as e, pg_conn() as c, c.cursor() as cur:
-        lid = _line(cur, seed, 24, {seed.seller_a: {"units": 12, "basis": "human"},
+        lid = _line(cur, seed, 24, {seed.seller_a: {"units": None, "basis": "unknown"},
                                     "OTHER": {"units": 11, "basis": "human"}})
-        po_id = _draft(cur, seed, 14)
-        cur.execute("INSERT INTO po_source_map VALUES (%s,1,%s,%s,14)", (po_id, lid, seed.seller_a))
-    assert e.value.diag.constraint_name == "po_over_seller_cap"
+        po_id = _draft(cur, seed, 24)
+        cur.execute("INSERT INTO po_source_map VALUES (%s,1,%s,%s,24)", (po_id, lid, seed.seller_a))
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT count(*) FROM v_check_po_source WHERE line_id=%s", (lid,))
+        assert cur.fetchone()[0] == 0
 
 
-def test_no_seller_basis_is_rejected_at_commit(seed):
+def test_over_total_is_rejected_at_commit(seed):
     with pytest.raises(psycopg2.Error) as e, pg_conn() as c, c.cursor() as cur:
-        lid = _line(cur, seed, 24, {seed.seller_a: {"units": 0, "basis": "human"}})
+        lid = _line(cur, seed, 24, {seed.seller_a: {"units": 12, "basis": "human"}})
+        po_id = _draft(cur, seed, 25)
+        cur.execute("INSERT INTO po_source_map VALUES (%s,1,%s,%s,25)", (po_id, lid, seed.seller_a))
+    assert e.value.diag.constraint_name == "po_over_total"
+
+
+def test_seller_not_in_line_is_rejected_at_commit(seed):
+    with pytest.raises(psycopg2.Error) as e, pg_conn() as c, c.cursor() as cur:
+        lid = _line(cur, seed, 24, {"OTHER": {"units": 12, "basis": "human"}})
         po_id = _draft(cur, seed, 5)
         cur.execute("INSERT INTO po_source_map VALUES (%s,1,%s,%s,5)", (po_id, lid, seed.seller_a))
-    assert e.value.diag.constraint_name == "po_no_seller_basis"
+    assert e.value.diag.constraint_name == "po_seller_not_in_line"
+
+
+def test_seller_caps_function_is_gone(seed):
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace"
+                    " WHERE p.proname = 'seller_caps' AND n.nspname = current_schema()")
+        assert cur.fetchone()[0] == 0
 
 
 def test_unplanned_units_need_a_reason(seed):

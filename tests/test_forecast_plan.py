@@ -249,3 +249,117 @@ def test_no_sales_source_msku_is_left_out_of_the_forecast_sums_not_made_unknown(
     st = [s for s in f.store if s.sku == SKU_B and s.sid == DD[1]]
     assert [(s.system, s.system_not_applicable) for s in st] == [(None, False)] * 3
     assert [r.system for r in sku_rows(f, SKU_B)] == [None] * 3
+
+
+# ── spec 2026-10-14：FBA 在途货件按送达结束日进台账 ─────────────────────
+
+from dim.source import FbaInbound
+
+AS_OF_IN_OCT = D(2026, 10, 14)
+K = ("M", "11072")
+
+
+def fi(sh, units, to, frm=None, st="SHIPPED"):
+    return FbaInbound(sh, st, units, frm, to)
+
+
+def fba_one(fba, onhand=52, eff=(27, 26, 27), purchase=None, parts=None):
+    mk = MskuInput("M", "11072", "S", True, onhand, dict(zip(P, eff)), dict(zip(P, eff)), 0.9,
+                   fba_inbound=None if fba is None else tuple(fba), onhand_parts=parts)
+    return PlanForecastInput(as_of=AS_OF_IN_OCT, periods=P, make_days=30, ship_days=60, mskus=[mk],
+                             purchase=purchase or {("S", p): 0 for p in P}, ordered_open={})
+
+
+def test_fba_shipment_arrives_on_delivery_end_date():
+    f = forecast_plan(fba_one([fi("FBA1", 7, D(2026, 11, 8), D(2026, 11, 1)), fi("FBA2", 24, D(2026, 11, 22))]))
+    nov = f.msku[K][1]
+    assert nov.inbound == 31
+    assert [(a["kind"], a["shipment_id"], a["date"], a["units"]) for a in nov.arrivals] == [
+        ("fba_shipment", "FBA1", "2026-11-08", 7), ("fba_shipment", "FBA2", "2026-11-22", 24)]
+    assert nov.arrivals[0]["deliver_from"] == "2026-11-01"
+
+
+def test_end_date_equal_to_as_of_is_overdue_next_day_is_placed():
+    f = forecast_plan(fba_one([fi("EDGE", 1, AS_OF_IN_OCT), fi("NEXT", 2, AS_OF_IN_OCT + dt.timedelta(days=1))]))
+    assert f.msku[K][0].inbound == 2
+    assert [(u["shipment_id"], u["reason"]) for u in f.unallocated] == [("EDGE", "fba_overdue")]
+
+
+def test_overdue_and_no_eta_are_named_not_placed():
+    f = forecast_plan(fba_one([fi("OLD", 1, D(2026, 10, 1)), fi("NOETA", 5, None)]))
+    assert all(r.inbound == 0 for r in f.msku[K])
+    got = sorted((u["shipment_id"], u["reason"], u["units"], u["seller_sku"], u["sid"]) for u in f.unallocated)
+    assert got == [("NOETA", "fba_no_eta", 5, "M", "11072"), ("OLD", "fba_overdue", 1, "M", "11072")]
+    assert all("order_period" in u and "arrive" in u for u in f.unallocated)
+
+
+def test_beyond_window_goes_to_beyond_horizon():
+    f = forecast_plan(fba_one([fi("FAR", 9, D(2027, 3, 1))]))
+    assert [(b["shipment_id"], b["reason"], b["units"]) for b in f.beyond_horizon] == [
+        ("FAR", "arrives_after_horizon", 9)]
+
+
+def test_unknown_fba_inbound_makes_msku_unknown_not_zero():
+    f = forecast_plan(fba_one(None))
+    assert {(r.state, r.reason) for r in f.msku[K]} == {("unknown", "fba_inbound_unavailable")}
+    assert all(r.closing is None for r in f.msku[K])
+    assert [r.fba_inbound for r in f.sku] == [None, None, None]
+
+
+def test_unknown_onhand_still_names_its_fba_shipments():
+    f = forecast_plan(fba_one([fi("FBA1", 7, D(2026, 11, 8))], onhand=None))
+    assert [(u["shipment_id"], u["units"]) for u in f.unallocated] == [("FBA1", 7)]
+
+
+def test_fba_inbound_shrinks_purchase_gap():
+    """★ FBA 到货必须已在第一遍基线里：采购先补缺口、余量按期望摊（allocate），
+    路上已有货的店不该再按缺口分 —— 同一场景有 / 无货件对比。"""
+    eff = (27, 26, 27)
+
+    def run(fba):
+        a = MskuInput("M", "11072", "S", True, 0, dict(zip(P, eff)), dict(zip(P, eff)), 0.9, fba_inbound=fba)
+        b = MskuInput("O", "11073", "S", True, 0, dict(zip(P, eff)), dict(zip(P, eff)), 0.9)
+        f = forecast_plan(PlanForecastInput(as_of=AS_OF_IN_OCT, periods=P, make_days=1, ship_days=1, mskus=[a, b],
+                                            purchase={("S", OCT): 40, ("S", NOV): 0, ("S", DEC): 0},
+                                            ordered_open={}))
+        return {k: sum(x["units"] for r in rows for x in r.arrivals if x.get("kind") != "fba_shipment")
+                for k, rows in f.msku.items()}
+
+    without, with_fba = run(()), run((fi("FBA1", 200, D(2026, 10, 15)),))
+    assert without[("M", "11072")] == without[("O", "11073")] == 20     # 两店缺口一样 → 平分
+    assert with_fba[("M", "11072")] < without[("M", "11072")]
+    assert with_fba[("O", "11073")] > without[("O", "11073")]
+    assert sum(with_fba.values()) == 40
+
+
+def test_sku_row_reports_fba_inbound_total():
+    f = forecast_plan(fba_one([fi("FBA1", 7, D(2026, 11, 8)), fi("OLD", 1, D(2026, 10, 1))]))
+    assert [r.fba_inbound for r in f.sku] == [7, 7, 7]
+
+
+def test_as_of_start_carries_onhand_parts():
+    f = forecast_plan(fba_one([], onhand=54, parts={"fulfillable": 52, "fc_transfers": 2}))
+    assert f.msku[K][0].as_of_start["onhand_parts"] == {"fulfillable": 52, "fc_transfers": 2}
+    assert f.msku[K][0].as_of_start["onhand_as_of"] == 54
+
+
+def _two(m1_fba, m1_onhand=52):
+    eff = (27, 26, 27)
+    m1 = MskuInput("M", "11072", "S", True, m1_onhand, dict(zip(P, eff)), dict(zip(P, eff)), 0.9, fba_inbound=m1_fba)
+    m2 = MskuInput("O", "11073", "S", True, 30, dict(zip(P, eff)), dict(zip(P, eff)), 0.9, fba_inbound=())
+    return forecast_plan(PlanForecastInput(as_of=AS_OF_IN_OCT, periods=P, make_days=1, ship_days=1, mskus=[m1, m2],
+                                           purchase={("S", OCT): 50, ("S", NOV): 0, ("S", DEC): 0}, ordered_open={}))
+
+
+def test_unknown_fba_inbound_batch_is_named_once_not_twice():
+    """终审 I-1：在途未知的 msku 正是让整批 gap_unknown 的那个 —— 不许再按 msku 列一遍。"""
+    f = _two(None)
+    assert [(u["reason"], u.get("seller_sku")) for u in f.unallocated] == [("gap_unknown", None)]
+
+
+def test_sku_fba_total_excludes_shipments_that_were_not_placed():
+    """终审 I-2：在仓未知的 msku 的货件进了 unallocated —— 货号行「已计入」不许把它算进去。"""
+    f = _two((fi("FBA1", 7, D(2026, 11, 8)),), m1_onhand=None)
+    assert [(u["shipment_id"], u["reason"]) for u in f.unallocated if u.get("kind") == "fba_shipment"] == [
+        ("FBA1", "unknown_onhand")]
+    assert {r.fba_inbound for r in f.sku} == {0}

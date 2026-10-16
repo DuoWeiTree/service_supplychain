@@ -1,0 +1,26 @@
+{
+  "cell": {
+    "line_id": 1,
+    "seller_sku": "MSKU-A",
+    "sid": "11072",
+    "from_wid": 1,
+    "channel": "fba",
+    "dest_wid": null,
+    "dest_sid": "11072",
+    "units": 30,
+    "sku": "DCC1800264G1"
+  },
+  "consignments_diff": {
+    "created": [
+      [
+        "fba",
+        "11072"
+      ]
+    ],
+    "removed": [],
+    "kept": []
+  },
+  "orphan_packing": [],
+  "watermark": 3,
+  "warnings": []
+}

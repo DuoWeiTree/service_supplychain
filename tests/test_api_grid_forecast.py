@@ -81,8 +81,9 @@ def test_changed_lead_time_recomputes_immediately(client, seed, lead_time_reset)
     assert [(r["pipeline"]["making"], r["pipeline"]["shipping"], r["pipeline"]["ordered_open"],
              r["in_transit"]) for r in sku] == [(0, 200, 200, 400), (0, 0, 200, 200),
                                                 (0, 0, 200, 200)]
-    assert sku[0]["pipeline"]["fba_inbound"] is None
-    assert sku[0]["pipeline"]["fba_inbound_reason"] == "not_fetched"
+    # spec 2026-10-14（推翻 OP-14）：FBA 货件已取 —— 夹具里没有在途货件 = 0，不是「未取」
+    assert sku[0]["pipeline"]["fba_inbound"] == 0
+    assert sku[0]["pipeline"]["fba_inbound_reason"] is None
     assert g["params"]["make_days"] == 10
 
 

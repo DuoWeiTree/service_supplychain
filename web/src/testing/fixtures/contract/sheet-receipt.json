@@ -1,0 +1,23 @@
+{
+  "sheet_id": 1,
+  "run_id": 1,
+  "archived": [],
+  "results": [
+    {
+      "ext_no": "OWS261012001",
+      "outcome": "ok",
+      "stage": "待收货",
+      "sub_status": "1",
+      "lx_msg": "success",
+      "cause": null
+    },
+    {
+      "ext_no": "OWS261012002",
+      "outcome": "ok",
+      "stage": "待发货",
+      "sub_status": null,
+      "lx_msg": "success",
+      "cause": null
+    }
+  ]
+}

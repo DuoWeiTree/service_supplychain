@@ -1,35 +1,24 @@
 import pytest
 
 from rules.purchase import (
-    NoSellerBasis,
     confirm_token,
     po_digest,
     preflight,
-    seller_caps,
+    stray_sellers,
     target_state,
     transition_path,
 )
 
 
-def test_caps_sum_to_total_and_match_sql_tie_break():
-    caps = seller_caps(24, {"A": {"units": 12, "basis": "human"}, "B": {"units": 11, "basis": "human"}})
-    assert caps == {"A": 13, "B": 11}
-    # 并列余数按 seller_id 升序拿多出来的那一件（与 012 seller_caps() 一致）
-    caps = seller_caps(1, {"B": {"units": 1, "basis": "human"}, "A": {"units": 1, "basis": "human"}})
-    assert caps == {"A": 1, "B": 0}
-
-
-@pytest.mark.parametrize("demand,named", [
-    ({}, []),
-    ({"A": {"units": 0, "basis": "human"}}, ["A"]),
-    ({"A": {"units": 3, "basis": "unknown"}, "B": {"units": 2, "basis": "human"}}, ["A"]),
-    ({"A": {"units": None, "basis": "system"}}, ["A"]),
-    ({"A": {"units": True, "basis": "human"}}, ["A"]),
+@pytest.mark.parametrize("demand,sids,named", [
+    # PB-D22：期望为空 / 0 / unknown 都不挡 —— 只看店在不在记录里
+    ({"A": {"units": None, "basis": "unknown"}}, ["A"], []),
+    ({"A": {"units": 0, "basis": "human"}, "B": {"units": 3, "basis": "system"}}, ["A", "B"], []),
+    ({"A": {"units": 5, "basis": "human"}}, ["A", "Z", "Y"], ["Y", "Z"]),
+    ({}, ["A"], ["A"]),
 ])
-def test_no_basis_names_the_sellers(demand, named):
-    with pytest.raises(NoSellerBasis) as e:
-        seller_caps(10, demand)
-    assert e.value.sellers == named
+def test_stray_sellers(demand, sids, named):
+    assert stray_sellers(demand, sids) == named
 
 
 @pytest.mark.parametrize("total,conf,ordd,want", [
@@ -89,16 +78,41 @@ def test_payload_carries_idem_key_and_lines():
           "qc_type": 2, "lines": [{"sku": "S1", "wid": 1001, "units": 30, "price": "12.5",
                                    "expect_arrive_date": "2026-12-01"}]}
     p = create_order_payload(po)
-    assert p["custom_order_sn"] == "SCM-PO-7" and p["supplier_id"] == 8085 and p["wid"] == 1001
-    assert p["product_list"] == [{"sku": "S1", "wid": 1001, "quantity_real": 30, "price": Decimal("12.5"),
+    # PB-D26：我们手里的是系统 id —— 发 wid 实收「仓库不存在」（erp_call 4）
+    assert p["custom_order_sn"] == "SCM-PO-7" and p["sys_supplier_id"] == 8085 and p["sys_wid"] == 1001
+    assert "wid" not in p and "supplier_id" not in p
+    assert p["product_list"] == [{"sku": "S1", "quantity_real": 30, "price": Decimal("12.5"),
                                   "expect_arrive_time": "2026-12-01"}]
 
 
-def test_payload_multi_warehouse_header_wid_is_zero():
+def test_payload_refuses_multi_warehouse():
+    # PB-D25：单头 wid=0 实收「仓库参数错误」（erp_call 3）—— 多仓根本不该走到组包
     po = {"custom_order_sn": "X", "supplier_id": "8085", "purchaser_id": 1, "opt_uid": 1, "qc_type": 2,
           "lines": [{"sku": "A", "wid": 1, "units": 1, "price": "1", "expect_arrive_date": None},
                     {"sku": "B", "wid": 2, "units": 1, "price": "1", "expect_arrive_date": None}]}
-    assert create_order_payload(po)["wid"] == 0      # B7：实测单头 wid=0 是多仓采购的形态
+    with pytest.raises(ValueError, match="只能一个仓"):
+        create_order_payload(po)
+
+
+def test_preflight_single_wid_gate():
+    from rules.purchase import preflight
+    base = {"supplier_id": "1", "purchaser_id": 1, "opt_uid": 1, "qc_type": 2, "source_line_states": []}
+    line = {"sku": "A", "units": 1, "sources_units": 1, "price": "1", "line_no": 1}
+    two = preflight({**base, "lines": [{**line, "wid": 1}, {**line, "line_no": 2, "wid": 2}]})
+    one = preflight({**base, "lines": [{**line, "wid": 1}, {**line, "line_no": 2, "wid": 1}]})
+    g2 = next(g for g in two if g["gate"] == "single_wid")
+    assert g2 == {"gate": "single_wid", "ok": False, "detail": {"wids": [1, 2]}}
+    assert next(g for g in one if g["gate"] == "single_wid")["ok"] is True
+
+
+@pytest.mark.parametrize("body,want", [
+    ({"code": 500, "message": "内部错误", "error_details": "仓库参数错误"}, "内部错误：仓库参数错误"),
+    ({"code": "403", "msg": "授权失效"}, "授权失效"),
+    ({"code": 1, "message": "x", "error_details": "x"}, "x"),
+])
+def test_lx_msg_keeps_error_details(body, want):
+    from erp.transport import _lx_msg
+    assert _lx_msg(body) == want
 
 
 @pytest.mark.parametrize("body,want", [
@@ -136,3 +150,13 @@ def test_sources_orderable_unloaded_states_is_not_ok():
     """★ 有来源却没带状态 = 没查过，不是「都可组单」。"""
     g = next(g for g in preflight(_po_with_source(None)) if g["gate"] == "sources_orderable")
     assert g["ok"] is False and g["detail"]["loaded"] is False
+
+
+@pytest.mark.parametrize("outcome,code,kind", [
+    ("rejected", "403", "auth"), ("rejected", 403, "auth"),
+    ("rejected", "1001", "business"), ("rejected", None, "business"),
+    ("ok", "0", None), ("unknown", None, None),
+])
+def test_rejection_kind(outcome, code, kind):
+    from erp.transport import rejection_kind
+    assert rejection_kind(outcome, code) == kind

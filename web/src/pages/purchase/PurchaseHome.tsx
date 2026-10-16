@@ -10,110 +10,123 @@ import { asApiError } from '../../api/client';
 import { KIND_LABEL } from './poStatus';
 import { planName, sellerShares } from './poEditorModel';
 
-const BLOCKED_LABEL: Record<string, string> = { no_seller_basis: '无分店依据：店铺期望销量待填' };
+// PB-D29：不显示「状态不可组单」—— 数的是旧版被替换 / 已完结的历史记录，采购员无事可做，只会越积越多
 const DROPPED_LABEL: [keyof CandidateLines['excluded'], string][] = [
-  ['fully_confirmed', '已组满'], ['state', '状态不可组单'],
+  ['fully_confirmed', '已组满'],
 ];
 
-/** R3：采购从「销售计划已提交、还没组满的记录」开始 —— 勾几条带进编辑器 */
+/** R3：采购从「销售计划已提交、还没组满的记录」开始 —— 勾几条带进编辑器（设计 PendingLines） */
 function TodoList({ cands, err, shop, sellersErr }: {
   cands: CandidateLines | null; err: ApiError | null; shop: (sid: string) => string; sellersErr: ApiError | null;
 }) {
   const navigate = useNavigate();
   const [picked, setPicked] = useState<number[]>([]);
+  const [q, setQ] = useState('');
   const toggle = (id: number) => setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
   const lines = cands?.lines ?? [];
+  const needle = q.trim().toLowerCase();
+  const shown = needle === '' ? lines : lines.filter((l) => `${l.sku} ${planName(l)}`.toLowerCase().includes(needle));
+  const chosen = lines.filter((l) => picked.includes(l.line_id));
+  const allOn = shown.length > 0 && shown.every((l) => picked.includes(l.line_id));
+  const toggleAll = () => setPicked((p) => (allOn ? p.filter((id) => !shown.some((l) => l.line_id === id))
+    : [...new Set([...p, ...shown.map((l) => l.line_id)])]));
   const go = () => {
     // 按清单顺序带过去，不按点选顺序：编辑器左栏的顺序与这里一致
-    const ids = lines.filter((l) => picked.includes(l.line_id)).map((l) => l.line_id);
+    const ids = chosen.map((l) => l.line_id);
     console.info('[purchase-home] build from todo', JSON.stringify({ lines: ids }));
     navigate(`/purchase/new?lines=${ids.join(',')}`);
   };
   const shopCell = (l: CandidateLine) => {
     const shares = sellerShares(l);
-    return Object.keys(l.sellers).sort().map((sid) => {
-      const v = l.sellers[sid]!;
-      return (
-        <div key={sid}>
-          {shop(sid)} 期望 {v.expected === null ? <Qty v={{ kind: 'unknown' }} /> : v.expected}
-          {shares ? `（占比 ${shares[sid]}%）` : ' '}
-          {v.cap !== null && `上限 ${v.cap}`}
-          {/* 上限里可能已有别的草稿占着：剩多少才是这次能组的 */}
-          {v.remaining !== null && ` 剩 ${v.remaining}`}
-        </div>
-      );
-    });
+    return (
+      <div className="pt-stores">
+        {Object.keys(l.sellers).sort().map((sid) => {
+          const v = l.sellers[sid]!;
+          return (
+            <span key={sid} className="pt-store">
+              <span className="pt-store__n">{shop(sid)}</span>{' '}
+              {v.expected === null ? <span className="pt-unknown">期望未知</span>
+                : <span>期望 {v.expected}{shares ? `（占比 ${shares[sid]}%）` : ''}</span>}{' '}
+              <span className="pt-used">已组 {v.used}</span>
+            </span>
+          );
+        })}
+      </div>
+    );
   };
+  const dropped = cands ? DROPPED_LABEL.filter(([k]) => (cands.excluded[k] ?? 0) > 0) : [];
+  const droppedN = cands ? dropped.reduce((a, [k]) => a + cands.excluded[k], 0) : 0;
 
   return (
-    <div className="panel sec" data-testid="todo">
-      <div className="panel__head bar">
-        <h2>待采购（销售计划已提交、还没组满的记录）</h2>
-        {cands !== null && lines.length > 0 && (
-          <button type="button" className="btn btn--primary" disabled={picked.length === 0} onClick={go}>
-            用选中的 {picked.length} 条建采购单
-          </button>
-        )}
-      </div>
-      <div className="panel__body">
-        {err ? <ErrorDetail err={err} /> : cands === null ? <div className="empty">正在取待采购记录…</div> : (
-          <>
-            {sellersErr && (
-              <div>
-                <span className="muted">店名取不到，按店编号显示</span>
-                <Fold summary="原因"><ErrorDetail err={sellersErr} /></Fold>
+    <section className="pl sec" data-testid="todo">
+      <h2>待采购</h2>
+      {err ? <ErrorDetail err={err} /> : cands === null ? <div className="empty">正在取待采购记录…</div> : (
+        <>
+          {sellersErr && (
+            <div>
+              <span className="muted">店名取不到，按店编号显示</span>
+              <Fold summary="原因"><ErrorDetail err={sellersErr} /></Fold>
+            </div>
+          )}
+          {lines.length === 0 ? (
+            <div className="empty">没有待采购的记录 <Link to="/">去销售计划</Link></div>
+          ) : (
+            <>
+              <div className="pm-bar">
+                <div className="pm-search-wrap">
+                  <input className="pm-search" type="search" placeholder="搜索货号、计划" aria-label="搜索待采购"
+                    value={q} onChange={(e) => setQ(e.target.value)} />
+                </div>
+                <span className="pm-bar__sp" />
+                <span className="pl-sum" data-testid="todo-sum">
+                  {chosen.length > 0
+                    ? <>已选 <b>{chosen.length}</b> 条，还可组 <b>{chosen.reduce((a, l) => a + l.remaining, 0)}</b> 件</>
+                    : '勾选要组到同一张采购单的记录'}
+                </span>
+                <button type="button" className="btn btn--primary" disabled={chosen.length === 0} onClick={go}>
+                  {chosen.length > 0 ? `用选中的 ${chosen.length} 条建采购单` : '用选中的记录建采购单'}
+                </button>
               </div>
-            )}
-            {/* 状态不可组单 数的是全库历史（撤销 / 完结 / 已下单），只增不减：总数可见，分项进折叠 */}
-            {(() => {
-              const dropped = DROPPED_LABEL.filter(([k]) => (cands.excluded[k] ?? 0) > 0);
-              const n = dropped.reduce((a, [k]) => a + cands.excluded[k], 0);
-              return n > 0 && (
-                <Fold summary={`未列入 ${n} 条`} testId="todo-dropped">
-                  {dropped.map(([k, t]) => <div className="dropline" key={k}>{t} {cands.excluded[k]} 条</div>)}
-                </Fold>
-              );
-            })()}
-            {lines.length === 0 ? (
-              <div className="empty">没有待采购的记录 <Link to="/">去销售计划</Link></div>
-            ) : (
-              <div className="table-scroll">
-                <table className="table table--dense" data-testid="todo-list">
+              <div className="pt-wrap">
+                <table className="pt" data-testid="todo-list">
                   <thead><tr>
-                    <th /><th>计划</th><th>rev</th><th>货号</th><th>月份</th>
-                    <th className="r">总量</th><th className="r">还可组</th><th>各店</th>
+                    <th className="pt-chk"><input type="checkbox" aria-label="全选" checked={allOn} onChange={toggleAll} /></th>
+                    <th>计划</th><th>货号</th><th>月份</th>
+                    <th className="r">总量</th><th className="r">还可组</th><th>各店期望与已组</th>
                   </tr></thead>
                   <tbody>
-                    {lines.map((l) => (
-                      <tr key={l.line_id} data-testid={`todo-${l.line_id}`} className={l.blocked ? 'muted' : undefined}>
-                        <td>
-                          <input type="checkbox" aria-label={`选记录 ${l.line_id}`} disabled={l.blocked !== null}
-                            checked={picked.includes(l.line_id)} onChange={() => toggle(l.line_id)} />
-                        </td>
-                        <td><Link to={`/plans/${l.plan_id}`}>{planName(l)}</Link></td>
-                        <td>rev{l.rev}</td>
-                        <td className="num">{l.sku}</td>
-                        <td>{l.period}</td>
-                        <td className="r">{l.total_units}</td>
-                        <td className="r" data-testid="todo-remaining">{l.remaining}</td>
-                        <td data-testid="todo-shops">
-                          {l.blocked ? (
-                            <span>
-                              {BLOCKED_LABEL[l.blocked.reason] ?? l.blocked.reason}
-                              {l.blocked.sellers.length > 0 && `（${l.blocked.sellers.map(shop).join('、')}）`}
-                            </span>
-                          ) : shopCell(l)}
-                        </td>
-                      </tr>
-                    ))}
+                    {shown.map((l) => {
+                      const on = picked.includes(l.line_id);
+                      return (
+                        <tr key={l.line_id} data-testid={`todo-${l.line_id}`} className={on ? 'is-on' : undefined}
+                          onClick={(e) => { const t = (e.target as HTMLElement).tagName; if (t !== 'A' && t !== 'INPUT') toggle(l.line_id); }}>
+                          <td className="pt-chk">
+                            <input type="checkbox" aria-label={`选记录 ${l.line_id}`} checked={on} onChange={() => toggle(l.line_id)} />
+                          </td>
+                          <td><Link to={`/plans/${l.plan_id}`}>{planName(l)}</Link><span className="pt-rev">rev{l.rev}</span></td>
+                          <td className="pt-sku">{l.sku}</td>
+                          <td>{l.period}</td>
+                          <td className="r num">{l.total_units}</td>
+                          <td className="r num" data-testid="todo-remaining"><b className={l.remaining === 0 ? 'pt-zero' : undefined}>{l.remaining}</b></td>
+                          <td data-testid="todo-shops">{shopCell(l)}</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
-            )}
-          </>
-        )}
-      </div>
-    </div>
+              {shown.length === 0 && <div className="muted">没有匹配「{q}」的记录</div>}
+            </>
+          )}
+          {/* 已组满的记录不列，给计数（折叠） */}
+          {droppedN > 0 && (
+            <Fold summary={`未列入 ${droppedN} 条`} testId="todo-dropped">
+              {dropped.map(([k, t]) => <div className="dropline" key={k}>{t} {cands.excluded[k]} 条</div>)}
+            </Fold>
+          )}
+        </>
+      )}
+    </section>
   );
 }
 
@@ -219,11 +232,11 @@ export function PurchaseHome() {
       ) : rows.length === 0 ? (
         <div className="empty">还没有采购单</div>
       ) : (
-        <div className="table-scroll">
-          <table className="table table--dense" data-testid="po-list">
+        <div className="pt-wrap">
+          <table className="pt" data-testid="po-list">
             <thead><tr>
-              <th>单号</th><th>供应商</th><th>状态</th><th>领星单号</th>
-              <th className="r">行</th><th className="r">件数</th><th className="r">待处理</th><th>建单人</th>
+              <th>单号</th><th>供应商</th><th>本地状态</th><th>领星单号</th>
+              <th className="r">行</th><th className="r">件数</th><th>待处理</th><th>建单人</th>
             </tr></thead>
             <tbody>
               {rows.map((p) => (
@@ -231,13 +244,14 @@ export function PurchaseHome() {
                   <td><Link to={`/purchase/${p.po_id}`}>{p.custom_order_sn}</Link></td>
                   <td>{p.supplier_name}</td>
                   <td>
-                    {p.state}{p.is_void && <> <span className="chip chip--dim">作废</span></>}
+                    <span className={`chip${p.state === '已下单' ? ' chip--ok' : ''}`}>{p.state}</span>
+                    {p.is_void && <> <span className="chip chip--dim">作废</span></>}
                   </td>
-                  <td>{p.order_sn ?? (p.state === '草稿' ? <span className="muted">未下单</span> : <Qty v={{ kind: 'unknown' }} />)}</td>
-                  <td className="r">{p.lines}</td>
-                  <td className="r">{p.units}</td>
-                  <td className="r">{p.open_attention > 0
-                    ? <span className="chip chip--bad">{p.open_attention}</span> : p.open_attention}</td>
+                  <td className="num">{p.order_sn ?? (p.state === '草稿' ? <span className="pt-unknown">未下单</span> : <Qty v={{ kind: 'unknown' }} />)}</td>
+                  <td className="r num">{p.lines}</td>
+                  <td className="r num">{p.units}</td>
+                  {/* 列表接口只给计数，不给类型 */}
+                  <td>{p.open_attention > 0 ? <span className="chip chip--bad">待处理 {p.open_attention}</span> : null}</td>
                   <td>{p.created_by}</td>
                 </tr>
               ))}

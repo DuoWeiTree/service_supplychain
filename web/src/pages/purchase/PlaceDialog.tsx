@@ -8,13 +8,15 @@ import { pushToast } from '../../shell/toastStore';
 import { refreshAttention } from '../../shell/AttentionBanner';
 import { api, ApiError } from '../../api';
 import { asApiError } from '../../api/client';
-import type { PlaceResult, PoTimeline, PurchaseOptions, PurchaseOrder } from '../../api/types';
+import type { PlaceResult, PoTimeline, PurchaseOptions, PurchaseOrder, RejectedKind } from '../../api/types';
 import { QC_LABEL } from './poEditorModel';
 import { exactTotal, fmtAt, handlerThrew, logWrite, logWriteFail, requestThrew } from './fmt';
+import { CommitButton } from './parts';
 import { isCreate, isUnknownOutcome, lastCreateId, usePoll } from './poStatus';
 
 type Res =
-  | { kind: 'rejected'; code: string | number | null; msg: string | null }
+  | { kind: 'placed'; orderSn: string | null }
+  | { kind: 'rejected'; code: string | number | null; msg: string | null; why: RejectedKind | null; where: string | null }
   | { kind: 'not_sent'; cause: string | null }
   | { kind: 'stale' }
   | { kind: 'unknown'; err: ApiError | null; note: string }
@@ -66,11 +68,19 @@ export function PlaceDialog({ po, options, onClose, onSettled, onStale }: {
     console.info('[po-place] settled by timeline', JSON.stringify({ po_id: snap.po_id, call_id: mine.call_id,
       outcome: mine.outcome, http: mine.http_status, lx_code: mine.lx_code, cause: mine.cause }));
     refreshAttention();
-    if (mine.outcome === 'rejected') { setRes({ kind: 'rejected', code: mine.lx_code, msg: mine.lx_msg }); return true; }
+    if (mine.outcome === 'rejected') {
+      setRes({ kind: 'rejected', code: mine.lx_code, msg: mine.lx_msg, why: mine.rejected_kind,
+        where: mine.host && mine.path ? `${mine.host}${mine.path}` : null });
+      return true;
+    }
     if (mine.outcome === 'not_sent') { setRes({ kind: 'not_sent', cause: mine.cause }); return true; }
     const p = await api.getPurchaseOrder(snap.po_id);
-    if (p.state === '已下单') pushToast({ kind: 'ok', text: `已下单，领星单号 ${p.order_sn ?? '未知'}` });
-    else pushToast({ kind: 'warn', text: '下单结果未知，待核实' });
+    if (p.state === '已下单') {
+      pushToast({ kind: 'ok', text: `已下单，领星单号 ${p.order_sn ?? '未知'}` });
+      setRes({ kind: 'placed', orderSn: p.order_sn });
+      return true;
+    }
+    pushToast({ kind: 'warn', text: '下单结果未知，待核实' });
     onSettled();
     return true;
   };
@@ -112,18 +122,19 @@ export function PlaceDialog({ po, options, onClose, onSettled, onStale }: {
       return;
     }
     logWrite('po-place', call, t0, { po_id: snap.po_id, outcome: r.outcome, erp_call_id: r.erp_call_id ?? null,
-      ...(r.outcome === 'rejected' ? { lx_code: r.lx_code, lx_msg: r.lx_msg } : {}),
+      ...(r.outcome === 'rejected' ? { lx_code: r.lx_code, lx_msg: r.lx_msg, rejected_kind: r.rejected_kind, path: r.path } : {}),
       ...(r.outcome === 'not_sent' ? { cause: r.cause } : {}),
       ...(r.outcome === 'needs_verify' ? { lookup_outcome: r.lookup_outcome ?? null, truncated: r.truncated ?? null } : {}) });
     refreshAttention();
     if (r.outcome === 'placed') {
       pushToast({ kind: 'ok', text: `已下单，领星单号 ${r.order_sn ?? '未知'}` });
-      onSettled();
+      // 设计稿：弹窗不关，写出领星单号，「去详情」再走
+      setRes({ kind: 'placed', orderSn: r.order_sn ?? null });
     } else if (r.outcome === 'needs_verify') {
       pushToast({ kind: 'warn', text: '下单结果未知，待核实' });
       onSettled();
     } else if (r.outcome === 'rejected') {
-      setRes({ kind: 'rejected', code: r.lx_code, msg: r.lx_msg });
+      setRes({ kind: 'rejected', code: r.lx_code, msg: r.lx_msg, why: r.rejected_kind, where: `${r.host}${r.path}` });
     } else if (r.outcome === 'not_sent') {
       setRes({ kind: 'not_sent', cause: r.cause });
     } else {
@@ -132,50 +143,59 @@ export function PlaceDialog({ po, options, onClose, onSettled, onStale }: {
     }
   };
 
+  const placed = res?.kind === 'placed';
+  const rejected = res?.kind === 'rejected';
+  const commitHint = rejected ? (res.why === 'auth' ? '等管理员开通权限' : '先改草稿') : null;
   return (
-    <Modal danger warn="这一步会在领星建出真实采购单，不可撤销" title="⛔ 下单到领星"
-      onClose={busy || unknown ? () => {} : onClose}>
-      <table className="table table--dense" data-testid="place-header">
+    <Modal danger warn="这一步会在领星建出真实采购单，不可撤销。下面就是要发出去的全部内容" title="⛔ 下单到领星"
+      className="modal--po" onClose={busy || unknown ? () => {} : placed ? onSettled : onClose}>
+      <dl className="pd-kv" data-testid="place-header">
+        <dt>供应商</dt><dd>{supplier ? `${supplier.name}（${snap.supplier_id}）` : snap.supplier_id}</dd>
+        <dt>采购方</dt><dd>{snap.purchaser_id}</dd>
+        <dt>采购员</dt><dd>{snap.opt_uid}{optUid?.name ? ` ${optUid.name}` : ''}</dd>
+        <dt>质检方式</dt><dd>{snap.qc_type} {QC_LABEL[snap.qc_type]}</dd>
+        <dt>仓库</dt><dd>{[...new Set(snap.lines.map((l) => l.wid))].map(wh).map(String).join('、') || '—'}</dd>
+        <dt>幂等键</dt><dd className="num">{snap.custom_order_sn}</dd>
+      </dl>
+      <table className="pd-t">
+        <thead><tr><th>货号</th><th className="r">数量</th><th className="r">单价</th><th className="r">其中无计划来源</th></tr></thead>
         <tbody>
-          <tr><th>供应商</th><td>{supplier ? `${supplier.name}（${snap.supplier_id}）` : snap.supplier_id}</td></tr>
-          <tr><th>采购方</th><td>{snap.purchaser_id}</td></tr>
-          <tr><th>采购员</th><td>{snap.opt_uid}{optUid?.name ? ` ${optUid.name}` : ''}</td></tr>
-          <tr><th>质检方式</th><td>{snap.qc_type} {QC_LABEL[snap.qc_type]}</td></tr>
-          <tr><th>幂等键</th><td className="num">{snap.custom_order_sn}</td></tr>
+          {snap.lines.map((l) => (
+            <tr key={l.line_no} data-testid="place-line">
+              <td className="num">{l.sku}</td>
+              <td className="r num">{l.units}</td>
+              <td className="r num">{l.price}</td>
+              <td className="r" data-testid="unplanned">{l.unplanned_units > 0 ? <Qty v={{ kind: 'num', value: l.unplanned_units }} /> : '—'}</td>
+            </tr>
+          ))}
         </tbody>
+        <tfoot>
+          <tr data-testid="place-total">
+            <td>合计</td><td className="r num">{units} 件</td>
+            <td className="r num">金额 {amount ?? <Qty v={{ kind: 'unknown' }} />}</td><td />
+          </tr>
+        </tfoot>
       </table>
-      <div className="table-scroll mt">
-        <table className="table table--dense">
-          <thead><tr><th>货号</th><th>仓</th><th className="r">数量</th><th className="r">单价</th><th className="r">其中无计划来源</th></tr></thead>
-          <tbody>
-            {snap.lines.map((l) => (
-              <tr key={l.line_no} data-testid="place-line">
-                <td className="num">{l.sku}</td>
-                <td>{wh(l.wid)}</td>
-                <td className="r num">{l.units}</td>
-                <td className="r num">{l.price}</td>
-                <td className="r" data-testid="unplanned"><Qty v={{ kind: 'num', value: l.unplanned_units }} /></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <div className="mt" data-testid="place-total">
-        合计 {units} 件，金额 {amount ?? <Qty v={{ kind: 'unknown' }} />}
-      </div>
 
       {res && (
         <div className="mt" data-testid="place-result">
+          {res.kind === 'placed' && (
+            <div className="flash flash--good" role="alert"><div className="flash__title">已下单，领星单号 {res.orderSn ?? '未知'}</div></div>
+          )}
           {res.kind === 'rejected' && (
             <div className="flash flash--bad" role="alert">
-              <div>领星拒绝了这张单，仍是草稿；改草稿后再下单</div>
-              <div className="gate__code">code {res.code ?? '无'}</div>
-              <div>{res.msg ?? '领星没有给出说明'}</div>
+              {/* 授权类改草稿无用：说清楚要谁去哪里处理，别让人去改单 */}
+              <div className="flash__title">{res.why === 'auth' ? '领星接口无权限或授权失效，没有建单，仍是草稿' : '领星拒绝了这张单，仍是草稿'}</div>
+              <div>{res.why === 'auth'
+                ? '改草稿没用 —— 请领星管理员在开放平台给本应用开通 / 续期该接口后再下单'
+                : '改草稿后再下单'}</div>
+              <div className="flash__code">code {res.code ?? '无'}{res.where ? `，接口 ${res.where}` : ''}</div>
+              <div>领星原话：{res.msg ?? '领星没有给出说明'}</div>
             </div>
           )}
           {res.kind === 'not_sent' && (
-            <div className="flash flash--bad" role="alert">
-              <div>没有发到领星，可以再次下单</div>
+            <div className="flash flash--warn" role="alert">
+              <div className="flash__title">没有发到领星，可以再次下单</div>
               <Fold summary="原因">{res.cause ?? '后端未给原因'}</Fold>
             </div>
           )}
@@ -184,8 +204,8 @@ export function PlaceDialog({ po, options, onClose, onSettled, onStale }: {
           )}
           {res.kind === 'unknown' && (
             <>
-              <div className="flash flash--bad" role="alert">
-                <div>结果未知：不要再点，正在每 3 秒查一次调用记录</div>
+              <div className="flash flash--warn" role="alert">
+                <div className="flash__title">结果未知：不要再点，正在每 3 秒查一次调用记录</div>
                 <div data-testid="place-poll">{res.note}</div>
               </div>
               {res.err && <ErrorDetail err={res.err} />}
@@ -203,12 +223,16 @@ export function PlaceDialog({ po, options, onClose, onSettled, onStale }: {
       )}
 
       <div className="btn-row mt">
-        <button type="button" className="btn btn--danger"
-          disabled={busy || baseline === null || res?.kind === 'stale' || unknown}
-          onClick={() => void confirm()}>确认下单</button>
-        {unknown
-          ? <button type="button" className="btn" onClick={onSettled}>重新载入</button>
-          : <button type="button" className="btn btn--ghost" disabled={busy} onClick={onClose}>取消</button>}
+        {placed
+          ? <button type="button" className="btn btn--primary" onClick={onSettled}>去详情</button>
+          : <button type="button" className="btn btn--ghost" disabled={busy || unknown} onClick={onClose}>取消</button>}
+        {unknown && <button type="button" className="btn" onClick={onSettled}>重新载入</button>}
+        <span className="pm-bar__sp" />
+        {!placed && (
+          <CommitButton hint={commitHint} hintTestId="commit-hint"
+            disabled={busy || baseline === null || res?.kind === 'stale' || unknown || rejected}
+            onClick={() => void confirm()}>{res?.kind === 'not_sent' ? '再次下单' : '确认下单'}</CommitButton>
+        )}
       </div>
     </Modal>
   );

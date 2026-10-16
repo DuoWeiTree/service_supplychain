@@ -23,9 +23,9 @@ async function mount(listAttention: () => Promise<AttentionQueue>) {
 describe('AttentionBanner', () => {
   it('count>0 → 红条点名张数，链到 /purchase，没有关闭按钮', async () => {
     await mount(async () => (q(3)));
-    const link = screen.getByRole('link', { name: /3 张采购单需要人工处理/ });
-    expect(link).toHaveAttribute('href', '/purchase');
-    expect(link.textContent).toContain('⛔');
+    const region = screen.getByTestId('attention-region');
+    expect(region).toHaveTextContent('⛔ 3 张采购单需要人工处理');
+    expect(screen.getByRole('link', { name: '去处理' })).toHaveAttribute('href', '/purchase');
     expect(screen.queryByRole('button')).toBeNull();
   });
 
@@ -33,7 +33,11 @@ describe('AttentionBanner', () => {
     const one = q(1);
     const item = one.items[0]!;
     await mount(async () => ({ count: 2, items: [item, { ...item, attention_id: 2, kind: 'landed_mismatch' }] }));
-    expect(screen.getByRole('link', { name: /1 张采购单需要人工处理/ })).toBeInTheDocument();
+    const region = screen.getByTestId('attention-region');
+    expect(region).toHaveTextContent('1 张采购单需要人工处理');
+    // 按类型数的是项：两项各一
+    expect(region).toHaveTextContent('下单结果待核实 1');
+    expect(region).toHaveTextContent('领星明细不一致 1');
   });
 
   it('count=0 → 什么都不渲染', async () => {
@@ -65,7 +69,7 @@ describe('AttentionBanner', () => {
     n = 2;
     await act(async () => { refreshAttention(); });
     expect(fn).toHaveBeenCalledTimes(2);
-    expect(screen.getByRole('link', { name: /2 张采购单需要人工处理/ })).toBeInTheDocument();
+    expect(screen.getByTestId('attention-region')).toHaveTextContent('2 张采购单需要人工处理');
   });
 
   it('★ 红条在 aria-live=polite 的 live region 里，且容器先于内容存在', async () => {
@@ -93,10 +97,11 @@ describe('AttentionBanner', () => {
       if (fail) throw new ApiError(502, 'bad_gateway', '网关错误');
       return q(2);
     });
-    expect(screen.getByRole('link', { name: /2 张/ })).toBeInTheDocument();
+    expect(screen.getByTestId('attention-region')).toHaveTextContent('2 张');
     fail = true;
     await act(async () => { refreshAttention(); });
     expect(screen.getByText('待处理数取不到')).toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: /2 张/ })).toBeNull();
+    expect(screen.getByTestId('attention-region')).not.toHaveTextContent('2 张');
+    expect(screen.queryByRole('link', { name: '去处理' })).toBeNull();
   });
 });

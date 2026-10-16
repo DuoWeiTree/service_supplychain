@@ -1,0 +1,20 @@
+{
+  "sheet_id": 1,
+  "state": "已取消",
+  "from": "已确认",
+  "deleted_ows": [
+    "RP261013001"
+  ],
+  "manual_void": [
+    {
+      "ext_no": "RP261013001",
+      "plans": [
+        "R2610130010"
+      ],
+      "marked": [
+        "R2610130010"
+      ],
+      "manual_void": true
+    }
+  ]
+}

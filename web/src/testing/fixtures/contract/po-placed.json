@@ -8,11 +8,21 @@
   "custom_order_sn": "SCM-PO-3",
   "order_sn": "FAKE-PO000001",
   "state": "已下单",
-  "placed_at": "2026-10-09T04:35:29.131469-04:00",
+  "placed_at": "2026-10-13T23:52:53.697837-04:00",
   "draft_version": 1,
   "created_by": "alice",
   "is_void": false,
   "discarded_at": null,
+  "lx": {
+    "status": 2,
+    "status_shipped": null,
+    "quantity_real": null,
+    "quantity_receive": null,
+    "quantity_entry": null,
+    "source": "api",
+    "captured_at": "2026-10-13T23:52:53.802005-04:00",
+    "call_id": 4
+  },
   "lines": [
     {
       "line_no": 1,
@@ -106,6 +116,15 @@
       }
     },
     {
+      "gate": "single_wid",
+      "ok": true,
+      "detail": {
+        "wids": [
+          1
+        ]
+      }
+    },
+    {
       "gate": "sources_orderable",
       "ok": false,
       "detail": {
@@ -118,5 +137,5 @@
       }
     }
   ],
-  "confirm_token": "71615a96fca13dbe475547e49971c6baef6119e49c162645ace3185b84756757"
+  "confirm_token": "d2b66305276c26492fd8d06339111149bd305370be178eaf1479cf392e1acddc"
 }

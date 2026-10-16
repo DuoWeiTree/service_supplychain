@@ -23,6 +23,7 @@ log = logging.getLogger("scm.jobs")
 
 REFRESH_JOB_ID = "refresh_dims"
 RECOVER_JOB_ID = "recover_stuck"
+RECEIPT_JOB_ID = "ows_receipt"
 #: 睡醒/重启后补跑一次（1 小时内），不补跑一串。
 MISFIRE_GRACE_S = 3600
 
@@ -107,6 +108,15 @@ def _recover_tick() -> None:
         log.warning("op=recover_stuck_job outcome=recovered n=%d results=%s", len(out), out)
 
 
+def _receipt_tick() -> None:
+    """领星备货单回执（CB-D9 · spec 2026-10-13）。★ 一轮失败只记一行、不抛：下一轮照跑。"""
+    from usecase import receipt  # 函数内 import：同 _recover_tick
+    try:
+        receipt.tick()
+    except Exception as e:  # noqa: BLE001
+        log.error("op=receipt_job outcome=fail err_type=%s cause=%s", type(e).__name__, cause_chain(e))
+
+
 def build_scheduler() -> AsyncIOScheduler | None:
     cfg = freshness()
     if not cfg.get("scheduler_enabled", True):
@@ -124,8 +134,12 @@ def build_scheduler() -> AsyncIOScheduler | None:
     stale = int(erp_config()["stale_in_flight_minutes"])
     sch.add_job(_recover_tick, id=RECOVER_JOB_ID, trigger=IntervalTrigger(minutes=stale),
                 coalesce=True, max_instances=1, replace_existing=True)
+    every = int(erp_config()["receipt_interval_minutes"])
+    sch.add_job(_receipt_tick, id=RECEIPT_JOB_ID, trigger=IntervalTrigger(minutes=every),
+                coalesce=True, max_instances=1, replace_existing=True)
     sch.add_listener(_on_error, EVENT_JOB_ERROR)
-    log.info("op=scheduler outcome=built at=%02d:%02d tz=%s recover_every_min=%d", hour, minute, tz, stale)
+    log.info("op=scheduler outcome=built at=%02d:%02d tz=%s recover_every_min=%d receipt_every_min=%d",
+             hour, minute, tz, stale, every)
     return sch
 
 

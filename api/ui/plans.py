@@ -47,6 +47,7 @@ from forecast.baseline import (
 from forecast.calendar import days_in_month, units_for_month
 from rules.effective import effective_demand
 from shared.pg_client import pg_conn, timed
+from usecase import oversea_in_transit
 
 log = logging.getLogger("scm.api")
 
@@ -761,6 +762,10 @@ def grid(plan_id: int, request: Request,
     fba_by_msku: dict[tuple[str, str], bool] = {}
     onhand_by_msku: dict[tuple[str, str], int | None] = {}
     rate_by_msku: dict[tuple[str, str], float] = {}
+    #: spec 2026-10-14：调仓中（进期初）与已发出的 FBA 货件（进台账）；源没有这两个方法时不给 = 旧口径
+    fc_by_msku: dict[tuple[str, str], int] = {}
+    inbound_by_msku: dict[tuple[str, str], list | None] = {}
+    has_fba_extra = hasattr(source, "fba_inbound") and hasattr(source, "fc_transfers")
 
     try:
         for seller_sku, sid, sku, period, sysu, extrap, expu, fba, sbasis in demand:
@@ -773,10 +778,18 @@ def grid(plan_id: int, request: Request,
             out_demand.append(row)
             if fba:
                 onhand_by_msku[k] = source.onhand_available(seller_sku, sid)
+                if has_fba_extra:
+                    fc_by_msku[k] = source.fc_transfers(seller_sku, sid)
+                    inbound_by_msku[k] = source.fba_inbound(seller_sku, sid)
 
         # ★ 采购格子 ∪ 认领的货号：没采购格子的货号，它的在途也要进推演（grid_forecast）
-        in_transit: dict[str, list] = {sku: source.purchase_in_transit(sku)
-                                       for sku in {r[0] for r in purchase} | {r[2] for r in demand}}
+        plan_sku_set = {r[0] for r in purchase} | {r[2] for r in demand}
+        in_transit: dict[str, list] = {sku: source.purchase_in_transit(sku) for sku in plan_sku_set}
+        # spec 2026-10-15：货号行「当月在途」的 FBA 部分（Σ 全部店铺，CH 货件表）
+        fba_transit = ({sku: source.fba_in_transit(sku) for sku in plan_sku_set}
+                       if hasattr(source, "fba_in_transit") else None)
+        # 10-15 裁定：货件快照可能早 as_of 一天 —— 用的是哪天要写出去
+        fba_inbound_day = source.fba_inbound_as_of() if hasattr(source, "fba_inbound_as_of") else None
         as_of_date = source.as_of()
         as_of = as_of_date.isoformat()
         # ★ OQ-5 陈旧闸：调用本身就是守卫（越线 → PurchaseTableStale）；结果写进
@@ -792,10 +805,14 @@ def grid(plan_id: int, request: Request,
     except (ChUnavailable, ChDataUnusable, PurchaseTableStale, UnknownShape) as e:
         raise _source_error(e) from e
 
+    # ★ 海外仓部分走领星实查 + 10 分钟缓存（FM-D6）；读不到 = 未知，照样出整张表
+    ows = oversea_in_transit.in_transit_by_sku()
     payload = forecast_payload(
         as_of=as_of_date, periods=periods, demand_rows=out_demand, purchase_rows=purchase,
         fba=fba_by_msku, onhand=onhand_by_msku, base_rate=rate_by_msku, in_transit=in_transit,
-        lead=lead, embargo_days=EMBARGO_DAYS, plan_id=plan_id, purchase_as_of=purchase_as_of)
+        lead=lead, embargo_days=EMBARGO_DAYS, plan_id=plan_id, purchase_as_of=purchase_as_of,
+        fba_inbound=inbound_by_msku if has_fba_extra else None, fc=fc_by_msku if has_fba_extra else None,
+        fba_transit=fba_transit, oversea_transit=ows.by_sku if ows.ok else None)
     _attach_has_image(payload["forecast_sku"])
     return {
         **payload,
@@ -806,6 +823,10 @@ def grid(plan_id: int, request: Request,
         "source_notes": {
             "as_of": as_of,
             "purchase_as_of": (purchase_as_of.isoformat() if purchase_as_of else None),
+            # spec 2026-10-15：海外仓在途是领星实查的 —— 写明查于何时 / 为什么没查到
+            "fba_inbound_as_of": fba_inbound_day.isoformat() if fba_inbound_day else None,
+            "oversea_in_transit_at": ows.fetched_at,
+            "oversea_in_transit_error": ows.reason,
             # ★ 被排除的那一侧必须出现在响应里：sid=0 的欧洲共享池实测占全部可售
             #   27.6%（键名固定 shared_pool_excluded，Task 2 裁定），没有在途预计到货日的
             #   行也在这里 —— 丢东西必须有声。

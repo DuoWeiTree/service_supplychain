@@ -61,6 +61,15 @@
       }
     },
     {
+      "gate": "single_wid",
+      "ok": true,
+      "detail": {
+        "wids": [
+          1
+        ]
+      }
+    },
+    {
       "gate": "sources_orderable",
       "ok": true,
       "detail": {

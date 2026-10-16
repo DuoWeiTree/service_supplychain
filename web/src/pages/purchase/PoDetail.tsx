@@ -6,15 +6,18 @@ import { Fold } from '../../components/Fold';
 import { Qty } from '../../components/Qty';
 import { api, ApiError } from '../../api';
 import { asApiError } from '../../api/client';
-import type { AttentionItem, LineTrace, PoId, PoTimeline, PurchaseOrder } from '../../api/types';
+import type { AttentionItem, LineTrace, PoId, PoTimeline, PurchaseOrder, ReadBackResult } from '../../api/types';
 import { AttemptTable, AttentionPanel } from './AttentionPanel';
 import { fmtAt } from './fmt';
 import { KIND_LABEL, inFlightCreate, isEditable, usePoll } from './poStatus';
 import { chainText } from './poEditorModel';
+import { StatusPair, type LocalState } from './parts';
 import { pushToast } from '../../shell/toastStore';
 import { refreshAttention } from '../../shell/AttentionBanner';
 
 type TraceState = { kind: 'loading' } | { kind: 'ok'; t: LineTrace } | { kind: 'fail'; err: ApiError };
+type ReadBack = { kind: 'idle' } | { kind: 'loading' } | { kind: 'ok'; r: ReadBackResult } | { kind: 'fail'; err: ApiError };
+
 
 /** 各读各自落地、各记各的错；返回的 promise 在这一读落地后才 resolve，写动作之后可以等它 */
 function read<T>(name: string, f: () => Promise<T>, ok: (v: T) => void, bad: (e: ApiError | null) => void): Promise<void> {
@@ -37,6 +40,7 @@ export function PoDetail({ poId, onEditable }: { poId: PoId; onEditable?: () => 
   const [queue, setQueue] = useState<AttentionItem[] | null>(null);
   const [queueErr, setQueueErr] = useState<ApiError | null>(null);
   const [traces, setTraces] = useState<Record<number, TraceState>>({});
+  const [rb, setRb] = useState<ReadBack>({ kind: 'idle' });
   const { pending, run } = useInFlight();
 
   const load = useCallback(async () => {
@@ -48,6 +52,28 @@ export function PoDetail({ poId, onEditable }: { poId: PoId; onEditable?: () => 
   }, [poId]);
 
   useEffect(() => { void load(); }, [load]);
+
+  // 已下单的单：打开即现查领星（只读），库里那条观察可能是很久以前的
+  const readBack = useCallback(async () => {
+    const t0 = performance.now();
+    setRb({ kind: 'loading' });
+    try {
+      const r = await api.readBack(poId);
+      console.info('[po-detail] read-back', JSON.stringify({ po_id: poId, checked: r.checked, read_outcome: r.read_outcome,
+        call: r.read_back_call, status: r.lx?.status ?? null, problems: r.problems.length, ms: Math.round(performance.now() - t0) }));
+      setRb({ kind: 'ok', r });
+      setPo((p) => (p ? { ...p, lx: r.lx, is_void: r.lx?.status === -1 ? true : p.is_void } : p));
+      // 核对出不一致 / 看到作废：待处理项与额度变了，整页重取
+      if (r.problems.length > 0 || r.lx?.status === -1) await load();
+    } catch (e) {
+      const err = asApiError(e);
+      console.warn('[po-detail] read-back failed', JSON.stringify({ po_id: poId, status: err.status, error: err.error,
+        fields: err.fields, ms: Math.round(performance.now() - t0) }));
+      setRb({ kind: 'fail', err });
+    }
+  }, [poId, load]);
+  const placed = po?.state === '已下单' && !!po.order_sn;
+  useEffect(() => { if (placed) void readBack(); }, [placed, readBack]);
 
   const stuck = (queue ?? []).filter((i) => i.po_id === poId && i.kind === 'stuck_call');
 
@@ -66,7 +92,9 @@ export function PoDetail({ poId, onEditable }: { poId: PoId; onEditable?: () => 
     console.info('[po-detail] in-flight create settled', JSON.stringify({ po_id: poId, call_id: done?.call_id,
       outcome: done?.outcome, lx_code: done?.lx_code, cause: done?.cause }));
     if (done?.outcome === 'rejected') {
-      pushToast({ kind: 'fail', text: `领星拒绝了这张单（code ${done.lx_code ?? '无'}）：${done.lx_msg ?? '没有说明'}` });
+      pushToast({ kind: 'fail', text: done.rejected_kind === 'auth'
+        ? `领星接口无权限或授权失效（code ${done.lx_code ?? '无'}，接口 ${done.path ?? '?'}），改草稿没用，需领星管理员开通：${done.lx_msg ?? '没有说明'}`
+        : `领星拒绝了这张单（code ${done.lx_code ?? '无'}）：${done.lx_msg ?? '没有说明'}` });
     } else if (done?.outcome === 'not_sent') {
       pushToast({ kind: 'warn', text: '没有发到领星，可以再次下单' });
     }
@@ -102,7 +130,7 @@ export function PoDetail({ poId, onEditable }: { poId: PoId; onEditable?: () => 
   }
 
   const hasAttention = po.attention.length > 0 || stuck.length > 0 || placing !== null;
-  const localState = po.discarded_at ? `${po.state}（已作废）` : po.state;
+  const localState: LocalState = po.discarded_at ? '草稿（已作废）' : po.state === '已下单' ? '已下单' : '草稿';
 
   return (
     <AppShell crumb={po.custom_order_sn}>
@@ -119,27 +147,29 @@ export function PoDetail({ poId, onEditable }: { poId: PoId; onEditable?: () => 
         </div>
       )}
 
+      <header className="pdt-head sec" data-testid="po-detail-head">
+        <div className="pdt-meta">
+          <span>供应商 <b>{po.supplier_id}</b></span>
+          <span>领星单号 <b className="num">{po.order_sn ?? (po.state === '草稿' ? '未下单' : <Qty v={{ kind: 'unknown' }} />)}</b></span>
+          {po.placed_at && <span>下单于 <b className="num">{fmtAt(po.placed_at)}</b></span>}
+          <span>幂等键 <b className="num">{po.custom_order_sn}</b></span>
+        </div>
+        <StatusPair local={localState} lx={po.lx} reading={rb.kind === 'loading'}
+          readError={rb.kind === 'ok' && !rb.r.checked ? (rb.r.read_outcome ?? '无结果') : rb.kind === 'fail' ? `读回请求失败：${rb.err.hint}` : null}
+          onReread={placed ? () => void readBack() : undefined}>
+          {rb.kind === 'ok' && !rb.r.checked && rb.r.read_cause && (
+            <div className="sp-err"><Fold summary="读回失败原因" testId="lx-fail-cause">{rb.r.read_cause}（调用 #{rb.r.read_back_call ?? '?'}）</Fold></div>
+          )}
+          {rb.kind === 'fail' && <div className="sp-err"><Fold summary="读回失败原因" testId="lx-fail-cause"><ErrorDetail err={rb.err} /></Fold></div>}
+        </StatusPair>
+      </header>
+
       {hasAttention && (
         <AttentionPanel po={po} timeline={tl} timelineErr={tlErr} stuck={stuck} placing={placing} onChanged={load} />
       )}
 
-      <div className="sec bar" data-testid="po-detail-head">
-        <span className="field" data-testid="po-axes">
-          <span className="lbl">本地状态</span><span>{localState}</span>
-          <span className="sep" />
-          <span className="lbl">领星状态</span><span>{po.is_void ? '已作废' : '未读回'}</span>
-        </span>
-        <span className="field">
-          <span className="lbl">领星单号</span>
-          <span className="num">{po.order_sn ?? (po.state === '草稿' ? '未下单' : <Qty v={{ kind: 'unknown' }} />)}</span>
-        </span>
-        <span className="field"><span className="lbl">幂等键</span><span className="num">{po.custom_order_sn}</span></span>
-        {po.placed_at && <span className="field"><span className="lbl">下单时间</span><span className="num">{fmtAt(po.placed_at)}</span></span>}
-        <span className="field"><span className="lbl">供应商</span><span>{po.supplier_id}</span></span>
-      </div>
-
-      <div className="table-scroll sec">
-        <table className="table table--dense">
+      <div className="pt-wrap sec">
+        <table className="pt">
           <thead><tr>
             <th className="r">行</th><th>货号</th><th>仓</th><th className="r">数量</th><th className="r">单价</th>
             <th className="r">无计划来源</th><th>领星行号</th><th>来源</th>
@@ -148,12 +178,12 @@ export function PoDetail({ poId, onEditable }: { poId: PoId; onEditable?: () => 
             {po.lines.map((l) => (
               <tr key={l.line_no} data-testid="detail-line">
                 <td className="r">{l.line_no}</td>
-                <td className="num">{l.sku}</td>
+                <td className="pt-sku num">{l.sku}</td>
                 <td>{l.wid}</td>
                 <td className="r num">{l.units}</td>
                 <td className="r num">{l.price}</td>
                 <td className="r"><Qty v={{ kind: 'num', value: l.unplanned_units }} />{l.unplanned_reason && <div className="muted">{l.unplanned_reason}</div>}</td>
-                <td className="num">{l.lx_item_id ?? <span className="muted">未回填</span>}</td>
+                <td className="num">{l.lx_item_id ?? <span className="pt-unknown">未回填</span>}</td>
                 <td>
                   {l.sources.length === 0 && <span className="muted">无</span>}
                   {l.sources.map((s) => {

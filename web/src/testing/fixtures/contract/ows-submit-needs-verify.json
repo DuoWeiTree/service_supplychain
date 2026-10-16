@@ -1,0 +1,115 @@
+{
+  "sheet_id": 1,
+  "results": [
+    {
+      "key": "1-1",
+      "idem_key": "SCM-CN-1-1",
+      "outcome": "needs_verify",
+      "attention_id": 1,
+      "cause": "double: TimeoutError"
+    }
+  ],
+  "dispatched": [],
+  "submission": {
+    "sheet_id": 1,
+    "state": "已确认",
+    "route": "oversea",
+    "orders": [
+      {
+        "key": "1-1",
+        "consignment_id": 1,
+        "s_wid": 1,
+        "r_wid": 2,
+        "logistics_id": 28762,
+        "channel_name": "美森快船",
+        "idem_key": "SCM-CN-1-1",
+        "product_list": [
+          {
+            "product_id": 741805,
+            "stock_num": 5,
+            "receive_num": 0,
+            "fnsku": "X00AAA",
+            "sid": "11072"
+          }
+        ],
+        "lines": [
+          {
+            "seller_sku": "MSKU-A",
+            "sid": "11072",
+            "sku": "DCC1800264G1",
+            "units": 5
+          }
+        ],
+        "ext_no": null
+      },
+      {
+        "key": "1-3",
+        "consignment_id": 1,
+        "s_wid": 3,
+        "r_wid": 2,
+        "logistics_id": 28762,
+        "channel_name": "美森快船",
+        "idem_key": "SCM-CN-1-3",
+        "product_list": [
+          {
+            "product_id": 741805,
+            "stock_num": 3,
+            "receive_num": 0,
+            "fnsku": "X00AAA",
+            "sid": "11072"
+          }
+        ],
+        "lines": [
+          {
+            "seller_sku": "MSKU-A",
+            "sid": "11072",
+            "sku": "DCC1800264G1",
+            "units": 3
+          }
+        ],
+        "ext_no": null
+      }
+    ],
+    "blockers": [],
+    "skipped_fba": [],
+    "to_lock": [],
+    "confirm_token": "fc2777b2addf9112",
+    "attention": [
+      {
+        "attention_id": 1,
+        "consignment_id": 1,
+        "from_wid": 1,
+        "idem_key": "SCM-CN-1-1",
+        "call_id": 4,
+        "detail": {
+          "payload": {
+            "r_wid": 2,
+            "s_wid": 1,
+            "remark": "scm 排货表 #1 排货单 #1",
+            "status": 40,
+            "logistics_id": 28762,
+            "product_list": [
+              {
+                "sid": "11072",
+                "fnsku": "X00AAA",
+                "stock_num": 5,
+                "product_id": 741805,
+                "receive_num": 0
+              }
+            ],
+            "inbound_order_no": "SCM-CN-1-1",
+            "head_logistics_list": {
+              "tax_fee_type": 3
+            },
+            "logistics_list_type": 1
+          },
+          "create_cause": "double: TimeoutError",
+          "lookup_cause": null,
+          "create_outcome": "unknown",
+          "lookup_outcome": "ok"
+        },
+        "opened_at": "2026-10-13T23:52:59.660508-04:00"
+      }
+    ]
+  }
+}

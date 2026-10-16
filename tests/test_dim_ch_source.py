@@ -8,7 +8,7 @@ from tests.fixtures import ch_rows as R
 
 def test_sku_catalog_drops_empty_and_counts_what_it_dropped():
     got = cs.fetch_sku_catalog(R.replay(R.SKU_CATALOG))
-    assert got.rows == [("DCC1800264G1", "猫爬架")]
+    assert got.rows == [("DCC1800264G1", "猫爬架", 9001)]
     assert got.dropped == 1 and got.drop_reasons == {"empty_sku": 1}
     assert got.source_max_captured == R.D2
 
@@ -23,9 +23,10 @@ def test_sku_catalog_sql_does_not_reference_nonexistent_local_sku_column():
 def test_msku_bridge_keeps_the_same_string_in_two_stores():
     """★ 同一 msku 字符串跨店是不同 listing —— 合并成一行就丢了一个店的库存。"""
     got = cs.fetch_msku_bridge(R.replay(R.MSKU_BRIDGE))
-    assert sorted(got.rows) == [("MSKU-A", "11072", "DCC1800264G1"),
-                                 ("MSKU-A", "11094", "DCC1800264G1")]
-    assert got.drop_reasons == {"unbound_sku": 1, "virtual_promo_group": 1}
+    assert sorted(got.rows) == [("MSKU-A", "11072", "DCC1800264G1", "X00AAA"),
+                                 ("MSKU-A", "11094", "DCC1800264G1", None)]
+    assert got.drop_reasons == {"unbound_sku": 1, "virtual_promo_group": 1, "fnsku_null": 1}
+    assert got.dropped == 2, "fnsku 空不是丢行，不进 dropped"
 
 
 def test_msku_bridge_drops_virtual_promo_groups():
@@ -45,9 +46,17 @@ def test_msku_bridge_sql_never_argmaxes_sid():
 
 def test_warehouse_kind_is_mapped_from_type_and_subtype():
     got = cs.fetch_warehouse(R.replay(R.WAREHOUSE))
-    assert [r[2] for r in got.rows] == ["local", "oversea_self", "oversea_3pl"]
-    assert [r[3] for r in got.rows] == [None, None, None], "market 无源，留 NULL 不写 ''"
-    assert got.drop_reasons.get("market_null") == 3
+    assert [r[2] for r in got.rows] == ["local", "oversea_self", "oversea_3pl", "oversea_3pl"]
+    # ★ CA-D5：海外仓 market 取 country_code（GB → UK，同 seller.market 的代码）；
+    #   本地仓无意义恒 NULL；空 country_code 留 NULL 不写 ''
+    assert [r[3] for r in got.rows] == [None, "US", "UK", None]
+    assert got.drop_reasons.get("market_null") == 2
+
+
+def test_unknown_oversea_country_code_fails_loudly():
+    with pytest.raises(cs.UnknownShape) as ei:
+        cs.fetch_warehouse(R.replay([(5, "火星仓", 3, 1, "ZZ", R.D2)]))
+    assert "ZZ" in str(ei.value)
 
 
 def test_unknown_warehouse_kind_fails_loudly():
@@ -156,7 +165,7 @@ def test_a_null_warehouse_type_fails_loudly_like_any_other_unknown_shape():
     实测今天 118 个仓的 `type` 一个 NULL 都没有，所以这是潜在缺口不是现行 bug；
     但认不出的形态必须默认可见，而不是等它出现那天才发现没人接。"""
     with pytest.raises(cs.UnknownShape) as ei:
-        cs.fetch_warehouse(R.replay([(9, "类型为空的仓", None, None, R.D2)]))
+        cs.fetch_warehouse(R.replay([(9, "类型为空的仓", None, None, "", R.D2)]))
     assert "9" in str(ei.value) and "类型为空的仓" in str(ei.value)
 
 
@@ -175,7 +184,7 @@ def test_coerced_empty_strings_are_counted_not_silent():
     assert got.drop_reasons.get("coerced_empty_name") == 1, got.drop_reasons
     assert got.drop_reasons.get("coerced_empty_market") == 1, got.drop_reasons
 
-    cat = cs.fetch_sku_catalog(R.replay([("SKU-1", None, R.D2)]))
+    cat = cs.fetch_sku_catalog(R.replay([("SKU-1", None, 7, R.D2)]))
     assert cat.drop_reasons.get("coerced_empty_name") == 1, cat.drop_reasons
 
 

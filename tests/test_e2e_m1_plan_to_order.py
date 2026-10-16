@@ -20,10 +20,11 @@ def test_plan_to_order_chain(client, seed, lingxing):
     assert cands, "提交后应有可组单的记录"
     _ok(client)
 
-    line = next(cand for cand in cands if cand["blocked"] is None)
-    sources = [{"line_id": line["line_id"], "seller_id": sid, "units": v["remaining"]}
-               for sid, v in line["sellers"].items() if v["remaining"]]
-    assert len(sources) >= 2, sources                   # 两个店铺，按店余量真的被用到
+    line = next(cand for cand in cands if len(cand["sellers"]) >= 2)
+    # PB-D22：没有分店上限，分店量由采购员定 —— 这里把余量拆给两家店
+    a, b = sorted(line["sellers"])
+    sources = [{"line_id": line["line_id"], "seller_id": a, "units": line["remaining"] - 1},
+               {"line_id": line["line_id"], "seller_id": b, "units": 1}]
     units = sum(s["units"] for s in sources)
     assert units > 0
     body = {"supplier_id": "8085", "purchaser_id": 111, "opt_uid": 10925905, "qc_type": 2,

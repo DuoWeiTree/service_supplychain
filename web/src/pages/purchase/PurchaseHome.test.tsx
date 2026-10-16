@@ -28,16 +28,14 @@ const CANDS: CandidateLines = {
   lines: [
     { line_id: 11, plan_id: 1, plan_title: '10 月计划', rev: 5, sku: 'DCC1045014AI', period: '2026-10', total_units: 200,
       demand_at_submit: 100, demand_by_seller: {}, state: '已提交', confirmed_units: 0, ordered_units: 0, remaining: 200,
-      blocked: null,
-      sellers: { '11072': { expected: 75, cap: 150, used: 0, remaining: 150 },
-                 '11094': { expected: 25, cap: 50, used: 0, remaining: 50 } } },
+      sellers: { '11072': { expected: 75, used: 0 },
+                 '11094': { expected: 25, used: 0 } } },
     { line_id: 12, plan_id: 1, plan_title: '10 月计划', rev: 5, sku: 'DCC1041294BW', period: '2026-10', total_units: 150,
       demand_at_submit: 0, demand_by_seller: {}, state: '已提交', confirmed_units: 0, ordered_units: 0, remaining: 150,
-      blocked: { reason: 'no_seller_basis', sellers: ['11072'] },
-      sellers: { '11072': { expected: null, cap: null, used: 0, remaining: null } } },
+      sellers: { '11072': { expected: null, used: 0 } } },
     { line_id: 14, plan_id: 1, plan_title: '10 月计划', rev: 5, sku: 'DCC1045014AI', period: '2026-11', total_units: 80,
       demand_at_submit: 40, demand_by_seller: {}, state: '已确认', confirmed_units: 30, ordered_units: 0, remaining: 50,
-      blocked: null, sellers: { '11072': { expected: 40, cap: 80, used: 30, remaining: 50 } } },
+      sellers: { '11072': { expected: 40, used: 30 } } },
   ],
   groups: {},
   excluded: { ...NO_EXCL, state: 3, fully_confirmed: 2 },
@@ -73,11 +71,11 @@ describe('采购首页', () => {
     await mount({});
     const table = await screen.findByTestId('po-list');
     const heads = Array.from(table.querySelectorAll('th')).map((t) => t.textContent);
-    expect(heads).toEqual(['单号', '供应商', '状态', '领星单号', '行', '件数', '待处理', '建单人']);
+    expect(heads).toEqual(['单号', '供应商', '本地状态', '领星单号', '行', '件数', '待处理', '建单人']);
     const rows = within(table).getAllByRole('row').slice(1);
     expect(rows[0]).toHaveTextContent('SCM-PO-2');
     expect(rows[0]).toHaveTextContent('PO260930001');
-    expect(within(rows[0]!).getByText('2')).toHaveClass('chip--bad');
+    expect(within(rows[0]!).getByText('待处理 2')).toHaveClass('chip--bad');   // 列表接口只给计数
     expect(rows[1]).toHaveTextContent('SCM-PO-1');
     // 草稿没有领星单号是「不适用」，不是「未知」
     expect(rows[1]).toHaveTextContent('未下单');
@@ -198,11 +196,12 @@ describe('采购首页', () => {
 });
 
 describe('采购首页：待采购（R3）', () => {
-  it('★ 第一屏是待采购：列计划、rev、货号、月份、总量、还可组、各店期望占比上限', async () => {
+  it('★ 第一屏是待采购：列计划、rev、货号、月份、总量、还可组、各店期望占比', async () => {
     await mount({});
     const t = await screen.findByTestId('todo-list');
     const heads = Array.from(t.querySelectorAll('th')).map((h) => h.textContent);
-    expect(heads).toEqual(['', '计划', 'rev', '货号', '月份', '总量', '还可组', '各店']);
+    expect(heads).toEqual(['', '计划', '货号', '月份', '总量', '还可组', '各店期望与已组']);
+    expect(within(t).getByRole('checkbox', { name: '全选' })).toBeInTheDocument();
     const row = screen.getByTestId('todo-11');
     expect(within(row).getByRole('link', { name: '10 月计划' })).toHaveAttribute('href', '/plans/1');
     expect(row).toHaveTextContent('rev5');
@@ -211,18 +210,19 @@ describe('采购首页：待采购（R3）', () => {
     expect(row).toHaveTextContent('200');
     const shops = within(row).getByTestId('todo-shops');
     // 店名取得到就写店名；取不到店名的那家写店编号
-    expect(shops).toHaveTextContent('A4Pet-BS-US-US 期望 75（占比 75%）上限 150 剩 150');
-    expect(shops).toHaveTextContent('11094 期望 25（占比 25%）上限 50 剩 50');
+    expect(shops).toHaveTextContent('A4Pet-BS-US-US 期望 75（占比 75%）');
+    expect(shops).toHaveTextContent('11094 期望 25（占比 25%）');
+    expect(shops).not.toHaveTextContent('上限');
     // ★ 待采购在采购单列表之前（第一屏）
     const po = await screen.findByTestId('po-list');
     expect(t.compareDocumentPosition(po) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByRole('heading', { name: '采购单' })).toBeInTheDocument();
   });
 
-  it('别的草稿占了该店额度：写剩多少，不只写上限', async () => {
+  it('别的草稿已组到该店：写已组多少', async () => {
     await mount({});
     const shops = within(await screen.findByTestId('todo-14')).getByTestId('todo-shops');
-    expect(shops).toHaveTextContent('上限 80 剩 50');
+    expect(shops).toHaveTextContent('已组 30');
   });
 
   it('还可组 ≠ 总量时两个数都在', async () => {
@@ -232,41 +232,60 @@ describe('采购首页：待采购（R3）', () => {
     expect(within(row).getByTestId('todo-remaining')).toHaveTextContent('50');
   });
 
-  it('★ 无分店依据：不隐藏，灰显点名原因，勾不了', async () => {
+  it('★ PB-D22 期望为空（本月断货）的记录照样能勾：期望写未知，不当 0', async () => {
     await mount({});
     const row = await screen.findByTestId('todo-12');
-    expect(row).toHaveClass('muted');
-    expect(row).toHaveTextContent('无分店依据：店铺期望销量待填');
-    expect(row).toHaveTextContent('A4Pet-BS-US-US');
-    expect(within(row).getByRole('checkbox')).toBeDisabled();
-  });
-
-  it('后端给了没见过的原因：原样点名，照样勾不了', async () => {
-    const odd = { ...CANDS, lines: [{ ...CANDS.lines[1]!, blocked: { reason: 'weird' as 'no_seller_basis', sellers: [] } }] };
-    await mount({ listCandidateLines: async () => odd });
-    const row = await screen.findByTestId('todo-12');
-    expect(row).toHaveTextContent('weird');
-    expect(within(row).getByRole('checkbox')).toBeDisabled();
+    expect(row).not.toHaveClass('muted');
+    expect(row).not.toHaveTextContent('无分店依据');
+    expect(within(row).getByRole('checkbox')).toBeEnabled();
+    expect(within(row).getByTestId('todo-shops')).not.toHaveTextContent('期望 0');
   });
 
   it('★ 勾选 → 按钮写 N；点了进 /purchase/new?lines=…', async () => {
     await mount({});
-    const btn = await screen.findByRole('button', { name: '用选中的 0 条建采购单' });
+    const btn = await screen.findByRole('button', { name: '用选中的记录建采购单' });
     expect(btn).toBeDisabled();
     await userEvent.click(within(screen.getByTestId('todo-11')).getByRole('checkbox'));
     await userEvent.click(within(screen.getByTestId('todo-14')).getByRole('checkbox'));
     const go = screen.getByRole('button', { name: '用选中的 2 条建采购单' });
     expect(go).toBeEnabled();
+    expect(screen.getByTestId('todo-sum')).toHaveTextContent('已选 2 条，还可组 250 件');
     await userEvent.click(go);
     expect(await screen.findByText('NEW-PAGE ?lines=11,14')).toBeInTheDocument();
   });
 
-  it('被滤掉的一侧要说：已组满 N 条、状态不可组单 N 条', async () => {
+  it('点整行也能勾；全选只选当前筛出来的', async () => {
+    await mount({});
+    await userEvent.click(within(await screen.findByTestId('todo-14')).getByText('2026-11'));
+    expect(screen.getByTestId('todo-14')).toHaveClass('is-on');
+    await userEvent.click(screen.getByTestId('todo-14'));
+    expect(screen.getByTestId('todo-14')).not.toHaveClass('is-on');
+    await userEvent.type(screen.getByRole('searchbox', { name: '搜索待采购' }), 'DCC1041294BW');
+    expect(screen.queryByTestId('todo-11')).toBeNull();
+    await userEvent.click(screen.getByRole('checkbox', { name: '全选' }));
+    expect(screen.getByRole('button', { name: '用选中的 1 条建采购单' })).toBeEnabled();
+  });
+
+  it('搜不到：写明没有匹配，不当成没有待采购', async () => {
+    await mount({});
+    await userEvent.type(await screen.findByRole('searchbox', { name: '搜索待采购' }), 'NOPE');
+    expect(screen.getByText('没有匹配「NOPE」的记录')).toBeInTheDocument();
+    expect(screen.queryByText('没有待采购的记录')).toBeNull();
+  });
+
+  it('已组满的给计数；★ PB-D29 状态不可组单（旧版被替换 / 已完结的历史）不显示', async () => {
     await mount({});
     const t = await screen.findByTestId('todo-dropped');
-    expect(t).toHaveTextContent('未列入 5 条');
+    expect(t).toHaveTextContent('未列入 2 条');
     expect(t).toHaveTextContent('已组满 2 条');
-    expect(t).toHaveTextContent('状态不可组单 3 条');
+    expect(document.body).not.toHaveTextContent('状态不可组单');
+  });
+
+  it('★ PB-D29 只有状态不可组单、没有已组满：整个「未列入」都不出现', async () => {
+    await mount({ listCandidateLines: async () => ({ ...CANDS, excluded: { ...NO_EXCL, state: 11 } }) });
+    await screen.findByTestId('todo-list');
+    expect(screen.queryByTestId('todo-dropped')).toBeNull();
+    expect(document.body).not.toHaveTextContent('不可组单');
   });
 
   it('★ 没有待采购：写「没有待采购的记录」并给去销售计划的链接', async () => {

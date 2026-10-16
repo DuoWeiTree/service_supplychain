@@ -52,6 +52,18 @@ def test_business_error_is_rejected_with_code():
     assert (r.outcome, r.lx_code, r.lx_msg) == ("rejected", "1001", "供应商不存在")
 
 
+def test_error_details_reaches_lx_msg():
+    # erp_call 3（2026-10-09）实收形状：message 只写「内部错误」，真因在 error_details
+    def reject(h):
+        b = json.dumps({"code": 500, "message": "内部错误", "error_details": "仓库参数错误",
+                        "request_id": "1F7C88E8", "data": None}, ensure_ascii=False).encode()
+        h.send_response(200); h.send_header("Content-Length", str(len(b))); h.end_headers(); h.wfile.write(b)
+    srv, base = _serve(reject)
+    r = post_json(base, "/x", {}, {}, 2, "t")
+    _stop(srv)
+    assert (r.outcome, r.lx_code, r.lx_msg) == ("rejected", "500", "内部错误：仓库参数错误")
+
+
 def test_5xx_after_send_is_unknown():
     def boom(h):
         h.send_response(502); h.send_header("Content-Length", "0"); h.end_headers()

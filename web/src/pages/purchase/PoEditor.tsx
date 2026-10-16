@@ -15,13 +15,14 @@ import { isEditable } from './poStatus';
 import { api, ApiError } from '../../api';
 import type { CandidateLines, LineTrace, PoId, PreflightGate, PurchaseOptions, PurchaseOrder, Seller } from '../../api/types';
 import {
-  addSource, available, baselineOf, chainText, emptyDraft, fromPo, gateText, groupCandidates, lineUnits, ownOnlyRecords,
+  baselineOf, draftWids, inDraft, setAllocation, setDraftWid, chainText, emptyDraft, fromPo, gateText, groupCandidates, lineUnits, ownOnlyRecords,
   parseLineIds, planName, preselect, QC_LABEL, sourceSummary,
   recordRemaining, removeSource, setHeader, setLineWid, sourcesUnits, toBody, unplannedUnits, updateLine, validate,
   type AddRefusal, type Baseline, type ChainRef, type Draft, type DraftHeader, type QcType, type SourceTarget,
 } from './poEditorModel';
 import { asApiError } from '../../api/client';
-import { handlerThrew } from './fmt';
+import { exactTotal, handlerThrew } from './fmt';
+import { CommitButton, GateList } from './parts';
 
 const logFail = (name: string, err: ApiError, t0: number) => {
   console.warn(`[po-editor] ${name} failed`, JSON.stringify({
@@ -29,8 +30,9 @@ const logFail = (name: string, err: ApiError, t0: number) => {
   }));
 };
 
-const EXCLUDED_LABEL: Record<keyof CandidateLines['excluded'], string> = {
-  state: '状态不可组单', sku: '货号不符', category: '品类不符', period: '月份不符', fully_confirmed: '已组满',
+// PB-D29：不列「状态不可组单」（旧版被替换 / 已完结的历史，采购员无事可做）
+const EXCLUDED_LABEL: Partial<Record<keyof CandidateLines['excluded'], string>> = {
+  sku: '货号不符', category: '品类不符', period: '月份不符', fully_confirmed: '已组满',
 };
 const fieldLabel = (k: string) => {
   const m = /^lines\[(\d+)\]\.wid$/.exec(k);
@@ -40,7 +42,7 @@ const MISSING_LABEL: Record<string, string> = {
   supplier_id: '供应商', purchaser_id: '采购方', opt_uid: '采购员', qc_type: '质检方式', lines: '明细',
 };
 const REFUSAL_TEXT: Record<Exclude<AddRefusal, 'over_remaining'>, string> = {
-  blocked: '无分店依据', no_seller: '这家店不在该记录里', bad_units: '加入数量要是正整数',
+  no_seller: '这家店不在该记录里', bad_units: '件数要是非负整数',
 };
 
 /** 带来的记录列不出时反查到的样子：组满了 / 状态走了 / 不存在 / 查不到 */
@@ -71,8 +73,8 @@ function ActorSelect({ label, value, options, loading, onChange }: {
   const [manual, setManual] = useState(false);
   const isManual = manual || (value !== '' && !known && options !== null);
   return (
-    <span className="field">
-      <span className="lbl">{label}</span>
+    <label className="pe-field">
+      <span className="pe-lbl">{label}</span>
       <select
         className="inp" aria-label={label} disabled={loading}
         value={isManual ? MANUAL : value}
@@ -91,7 +93,7 @@ function ActorSelect({ label, value, options, loading, onChange }: {
         <input className="inp" aria-label={`${label}（手填）`} inputMode="numeric" value={value}
           onChange={(e) => onChange(e.target.value)} />
       )}
-    </span>
+    </label>
   );
 }
 
@@ -103,7 +105,7 @@ function UnitsInput({ value, onChange }: { value: number; onChange: (v: number |
   useEffect(() => { if (!focused) { setText(String(value)); setBad(false); } }, [value, focused]);
   return (
     <>
-      <input className="inp inp--tiny" type="number" min={0} step={1} aria-label="数量" value={text}
+      <input className={`pe-num${bad ? ' is-bad' : ''}`} type="number" min={0} step={1} aria-label="数量" value={text}
         aria-invalid={bad}
         onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
         onChange={(e) => {
@@ -116,7 +118,7 @@ function UnitsInput({ value, onChange }: { value: number; onChange: (v: number |
           setBad(false);
           onChange(n);
         }} />
-      {bad && <span className="i-red"> 数量要是非负整数，未采用</span>}
+      {bad && <span className="pe-line__err"> 数量要是非负整数，未采用</span>}
     </>
   );
 }
@@ -173,7 +175,7 @@ export function PoRoute() {
 
 export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: () => void }) {
   const navigate = useNavigate();
-  const [search] = useSearchParams();
+  const [search, setSearch] = useSearchParams();
   const { pending, run } = useInFlight();
   const { err: actErr, fail, succeed, dismiss } = useActionError();
 
@@ -197,6 +199,9 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
   const [invalid, setInvalid] = useState<string[]>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [placing, setPlacing] = useState(false);
+  // 「保存并下单」：保存成功、后端对已保存内容的检查回来后才开确认框 —— 确认框只认已保存那一份的 token（H-1）。
+  // 新建的单保存后换路由，靠 ?place=1 把这个意图带过去
+  const [placeAfterSave, setPlaceAfterSave] = useState(() => poId !== null && search.get('place') === '1');
   const [showAll, setShowAll] = useState(false);
   const [missingInfo, setMissingInfo] = useState<Record<number, Missing>>({});
 
@@ -255,6 +260,28 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
     if (poId !== null) loadPo(poId).catch((e: unknown) => setPoErr(e as ApiError));
   }, [poId, loadCands, loadPo]);
 
+  useEffect(() => {
+    if (!search.has('place')) return;
+    const next = new URLSearchParams(search);
+    next.delete('place');
+    setSearch(next, { replace: true });   // 刷新页面不该再自动开一次确认框
+  }, []);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!placeAfterSave || dirty || po === null) return;
+    if (gatesErr) {
+      console.warn('[po-editor] save-then-place stopped: preflight unavailable', JSON.stringify({ po_id: po.po_id, error: gatesErr.error }));
+      setPlaceAfterSave(false);
+      return;
+    }
+    if (gates === null) return;
+    setPlaceAfterSave(false);
+    const failed = gates.filter((g) => !g.ok).map((g) => g.gate);
+    console.info('[po-editor] save-then-place', JSON.stringify({ po_id: po.po_id, failed }));
+    // 没过的闸由按钮旁的 place-blocked 点名，不开确认框
+    if (failed.length === 0) setPlacing(true);
+  }, [placeAfterSave, dirty, po, gates, gatesErr]);
+
   // R3：从待采购带过来的记录（只对新建有意义；已保存的单以单里的来源为准）
   const wanted = useMemo(() => (poId === null ? parseLineIds(search.get('lines')) : null), [poId, search]);
   const sel = useMemo(() => (wanted && cands ? preselect(wanted.ids, cands.lines) : null), [wanted, cands]);
@@ -296,13 +323,16 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
   const shopName = (sid: string) => sellerName.get(sid) ?? sid;
   const useLocal = poId === null || dirty;
 
-  const doAdd = (c: SourceTarget, sid: string) => {
+  /** 逐店件数：Enter / 离开输入框即采用（绝对量；空 = 0 = 去掉这条来源） */
+  const commitAlloc = (c: SourceTarget, sid: string, raw: string) => {
     const k = `${c.line_id}|${sid}`;
-    const raw = (addQty[k] ?? '').trim();
-    const r = addSource(draft, c, sid, raw === '' ? NaN : Number(raw), baseline);
+    const t = raw.trim();
+    const n = t === '' ? 0 : Number(t);
+    if (n === inDraft(draft, c.line_id, sid)) { setAddQty(({ [k]: _same, ...rest }) => rest); return; }
+    const r = setAllocation(draft, c, sid, n, baseline);
     if (!r.ok) {
       setRefusal({ ...refusal, [k]: r.reason === 'over_remaining'
-        ? `超过该店剩余，最多还能加 ${r.available ?? 0}` : REFUSAL_TEXT[r.reason] });
+        ? `超过该记录剩余，最多还能加 ${r.available ?? 0}` : REFUSAL_TEXT[r.reason] });
       return;
     }
     setAddQty(({ [k]: _drop, ...rest }) => rest);
@@ -318,7 +348,7 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
     return true;
   };
 
-  const save = () => run('save', async () => {
+  const save = (thenPlace = false) => run('save', async () => {
     const t0 = performance.now();
     try {
       const r = toBody(draft);
@@ -332,7 +362,7 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
         succeed('save');
         pushToast({ kind: 'ok', text: '已保存草稿' });
         refreshAttention();
-        navigate(`/purchase/${po_id}`);
+        navigate(`/purchase/${po_id}${thenPlace ? '?place=1' : ''}`);
         return;
       }
       if (po === null) return;
@@ -343,7 +373,8 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
       pushToast({ kind: 'ok', text: `已保存草稿 ${po.custom_order_sn}` });
       refreshAttention();
       loadCands();
-      await loadPo(poId).catch((e: unknown) => fail('reload', e as ApiError));
+      const reloaded = await loadPo(poId).then(() => true, (e: unknown) => { fail('reload', e as ApiError); return false; });
+      if (thenPlace && reloaded) setPlaceAfterSave(true);
     } catch (e) {
       const err = e instanceof ApiError ? e : handlerThrew('po-editor', 'save', e);
       logFail(poId === null ? 'createPurchaseOrder' : 'updatePurchaseOrder', err, t0);
@@ -420,125 +451,151 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
   const failing = shownGates?.filter((g) => !g.ok).length ?? 0;
   // ⛔ 只认后端对已保存内容的检查：本地校验判不了 sources_orderable，也不是将要发出去的那一份
   const failingNames = (gates ?? []).filter((g) => !g.ok).map(gateText);
-  const placeBlock: string | null = poId === null || dirty ? '先保存草稿'
+  // 未保存的改动不挡下单：按钮变成「保存并下单」（先存，再按存下的那一份确认）
+  const unsaved = poId === null || dirty;
+  // 未保存的改动不挡下单（PB-D23「保存并下单」）；但本地闸没过就不让点 —— 点名第一道和还有几道
+  const blockOf = (gs: PreflightGate[]): string | null => {
+    const bad = gs.filter((g) => !g.ok);
+    return bad.length === 0 ? null : `${gateText(bad[0]!)} 未过${bad.length > 1 ? `，另有 ${bad.length - 1} 道` : ''}`;
+  };
+  const placeBlock: string | null = unsaved ? blockOf(localGates)
+    : placeAfterSave ? '正在检查…'
     : po === null ? '正在取采购单…'
     : gatesErr ? '下单前检查取不到'
     : gates === null ? '正在检查…'
-    : failingNames.length > 0 ? `${failingNames.join('、')} 未过` : null;
+    : blockOf(gates);
   const afterPlace = () => {
     setPlacing(false);
     if (onReroute) onReroute();
     else if (poId !== null) loadPo(poId).catch((e: unknown) => fail('reload', e as ApiError));
   };
 
-  const sellerTable = (r: SourceTarget, saved?: Record<string, number>) => (
-    <table className="table table--dense">
-      <thead><tr><th>店</th>{saved && <th className="r">本单原有</th>}<th className="r">剩余</th><th>数量</th><th /></tr></thead>
-      <tbody>
-        {Object.keys(r.sellers).sort().map((sid) => {
-          const k = `${r.line_id}|${sid}`;
-          const avail = available(r, sid, draft, baseline);
-          const off = avail === null || avail <= 0;
-          return (
-            <tr key={sid} data-testid={`seller-${sid}`}>
-              <td>{shop(sid)}</td>
-              {saved && <td className="r">{saved[sid] ?? 0}</td>}
-              <td className="r" data-testid="avail">
-                {avail === null ? <Qty v={{ kind: 'unknown' }} /> : avail}
-              </td>
-              <td>
-                <input className="inp inp--tiny" type="number" min={1} step={1}
-                  aria-label={`店 ${sid} 加入数量`} disabled={off}
-                  value={addQty[k] ?? ''} onChange={(e) => setAddQty({ ...addQty, [k]: e.target.value })} />
-              </td>
-              <td>
-                <button type="button" className="btn btn--sm" disabled={off} onClick={() => doAdd(r, sid)}>加入</button>
-                {avail !== null && avail <= 0 && <span className="muted"> 已无剩余</span>}
-                {avail === null && <span className="muted"> 剩余未知</span>}
-                {refusal[k] && <span className="i-red"> {refusal[k]}</span>}
-              </td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
-  );
+  // PB-D22：没有分店上限 —— 各店共用记录剩余，期望只作参考
+  const sellerRows = (r: SourceTarget, saved?: Record<string, number>) => {
+    const rem = recordRemaining(r, draft, baseline);
+    return Object.keys(r.sellers).sort().map((sid) => {
+      const k = `${r.line_id}|${sid}`;
+      const cur = inDraft(draft, r.line_id, sid);
+      const room = rem + cur;
+      const exp = r.sellers[sid]!.expected;
+      const typing = addQty[k];
+      return (
+        <div key={sid} className={`pe-st${refusal[k] ? ' is-err' : ''}`} data-testid={`seller-${sid}`}>
+          <span className="pe-st__n">{shop(sid)}</span>
+          <span className="pe-st__exp" data-testid="expected">
+            {saved ? `本单原有 ${saved[sid] ?? 0}` : exp === null ? '期望未知' : `期望 ${exp}`}
+          </span>
+          <input className="pe-qty" inputMode="numeric" aria-label={`店 ${sid} 本单件数`}
+            placeholder={room === 0 ? '已无剩余' : '0'} disabled={room === 0 && cur === 0}
+            value={typing ?? (cur > 0 ? String(cur) : '')}
+            onChange={(e) => { setAddQty({ ...addQty, [k]: e.target.value }); if (refusal[k]) setRefusal(({ [k]: _r, ...rest }) => rest); }}
+            onBlur={(e) => { if (addQty[k] !== undefined) commitAlloc(r, sid, e.target.value); }}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commitAlloc(r, sid, e.currentTarget.value); } }} />
+          <button type="button" className="pe-fill" disabled={room === 0 || cur === room}
+            title={`把剩余 ${room} 件都给这家店`} onClick={() => commitAlloc(r, sid, String(room))}>剩余全给</button>
+          {refusal[k] && <span className="pe-st__err" role="alert">{refusal[k]}</span>}
+        </div>
+      );
+    });
+  };
+  const recHead = (label: string, r: SourceTarget, total: number | null, testId?: string) => {
+    const rem = recordRemaining(r, draft, baseline);
+    return (
+      <div className="pe-rec__head">
+        <span>{label}</span>
+        <span className={`pe-rem${rem === 0 ? ' is-zero' : ''}`} data-testid={testId}>
+          剩 <b>{rem}</b>{total !== null ? ` / ${total}` : ''}
+        </span>
+      </div>
+    );
+  };
+  const wids = draftWids(draft);
+  const totalUnits = draft.lines.reduce((a, l) => a + lineUnits(l), 0);
+  const amount = exactTotal(draft.lines.map((l) => ({ units: lineUnits(l), price: l.price })));
 
   return (
     <AppShell crumb={po ? po.custom_order_sn : '新建采购单'}>
       <div className="head">
         <div className="head__main"><h1>{title}</h1></div>
-        {dirty && <div className="head__meta">有未保存的改动</div>}
       </div>
 
-      {/* ─── 单头 ─── */}
-      {optionsErr && <ErrorDetail err={optionsErr} />}
-      <div className="sec bar" data-testid="po-header">
-        <span className="field">
-          <span className="lbl">供应商</span>
-          <select className="inp" aria-label="供应商" value={h.supplier_id} disabled={options === null && !optionsErr}
-            onChange={(e) => setH({ supplier_id: e.target.value })}>
-            <option value="">{options === null ? (optionsErr ? '选项取不到' : '正在取选项…') : '请选择'}</option>
-            {suppliers.map((s) => <option key={s.supplier_id} value={s.supplier_id}>{s.name}（{s.supplier_id}）</option>)}
-            {h.supplier_id && !suppliers.some((s) => s.supplier_id === h.supplier_id) && (
-              <option value={h.supplier_id}>{h.supplier_id}</option>
+      <div className="pe">
+        {/* ─── 单头 ─── */}
+        {optionsErr && <ErrorDetail err={optionsErr} />}
+        <section className="pe-head" data-testid="po-header">
+          <label className="pe-field">
+            <span className="pe-lbl">供应商</span>
+            <select className="inp" aria-label="供应商" value={h.supplier_id} disabled={options === null && !optionsErr}
+              onChange={(e) => setH({ supplier_id: e.target.value })}>
+              <option value="">{options === null ? (optionsErr ? '选项取不到' : '正在取选项…') : '请选择'}</option>
+              {suppliers.map((s) => <option key={s.supplier_id} value={s.supplier_id}>{s.name}（{s.supplier_id}）</option>)}
+              {h.supplier_id && !suppliers.some((s) => s.supplier_id === h.supplier_id) && (
+                <option value={h.supplier_id}>{h.supplier_id}</option>
+              )}
+            </select>
+          </label>
+          <ActorSelect label="采购方" value={h.purchaser_id} options={purchaserOpts} loading={options === null && !optionsErr}
+            onChange={(v) => setH({ purchaser_id: v })} />
+          <ActorSelect label="采购员" value={h.opt_uid} options={optUidOpts} loading={options === null && !optionsErr}
+            onChange={(v) => setH({ opt_uid: v })} />
+          <label className="pe-field">
+            <span className="pe-lbl">质检方式</span>
+            <select className="inp" aria-label="质检方式" value={h.qc_type === null ? '' : String(h.qc_type)}
+              onChange={(e) => setH({ qc_type: e.target.value === '' ? null : (Number(e.target.value) as QcType) })}>
+              <option value="">请选择</option>
+              {([0, 1, 2] as const).map((q) => <option key={q} value={q}>{q} {QC_LABEL[q]}</option>)}
+            </select>
+          </label>
+          <label className="pe-field">
+            <span className="pe-lbl">仓库（整张单一个仓）</span>
+            <select className="inp" aria-label="仓库" value={draft.wid ?? ''} onChange={(e) => edit(setDraftWid(draft, e.target.value))}>
+              <option value="">{options === null ? (optionsErr ? '仓取不到' : '正在取仓…') : '请选择'}</option>
+              {warehouses.map((w) => <option key={w.wid} value={String(w.wid)}>{w.name}（{w.wid}）</option>)}
+              {draft.wid && !warehouses.some((w) => String(w.wid) === draft.wid) && <option value={draft.wid}>{draft.wid}</option>}
+            </select>
+            {!draft.wid && wids.length > 1 && (
+              <span className="pe-warn" data-testid="mixed-wid">明细分属仓 {wids.join('、')}：选一个仓，全单统一</span>
             )}
-          </select>
-        </span>
-        <ActorSelect label="采购方" value={h.purchaser_id} options={purchaserOpts} loading={options === null && !optionsErr}
-          onChange={(v) => setH({ purchaser_id: v })} />
-        <ActorSelect label="采购员" value={h.opt_uid} options={optUidOpts} loading={options === null && !optionsErr}
-          onChange={(v) => setH({ opt_uid: v })} />
-        {options && !options.history.available && (
-          <span className="field">
-            <span className="muted" data-testid="history-unavailable">领星历史暂不可用</span>
-            <Fold summary="原因">{options.history.cause ?? '后端未给原因'}</Fold>
-          </span>
-        )}
-        {options && options.history.available && options.history.dropped > 0 && (
-          <span className="dropline">领星历史有 {options.history.dropped} 行无法识别，未列入</span>
-        )}
-        <span className="field">
-          <span className="lbl">质检方式</span>
-          <select className="inp" aria-label="质检方式" value={h.qc_type === null ? '' : String(h.qc_type)}
-            onChange={(e) => setH({ qc_type: e.target.value === '' ? null : (Number(e.target.value) as QcType) })}>
-            <option value="">请选择</option>
-            {([0, 1, 2] as const).map((q) => <option key={q} value={q}>{q} {QC_LABEL[q]}</option>)}
-          </select>
-        </span>
-      </div>
-
-      {wanted && (
-        <div className="sec" data-testid="preselect">
-          {cands !== null && sel !== null && (() => {
-            const summary = sourceSummary(sel.shown);
-            return summary && <div data-testid="source-summary"><strong>{summary}</strong></div>;
-          })()}
-          {(wanted.bad.length > 0 || (sel?.missing.length ?? 0) > 0) && (
-            <ul className="i-red" data-testid="preselect-missing">
-              {wanted.bad.map((t) => <li key={`bad-${t}`}>「{t}」不是记录号</li>)}
-              {(sel?.missing ?? []).map((id) => {
-                const m = missingInfo[id] ?? { kind: 'pending' };
-                return (
-                  <li key={id}>
-                    <span>{missingText(id, m)}</span>
-                    {m.kind === 'err' && <ErrorDetail err={m.err} />}
-                  </li>
-                );
-              })}
-            </ul>
+          </label>
+          {options && !options.history.available && (
+            <span className="pe-field">
+              <span className="pe-warn" data-testid="history-unavailable">领星历史暂不可用</span>
+              <Fold summary="原因">{options.history.cause ?? '后端未给原因'}</Fold>
+            </span>
           )}
-          {narrowed && (
-            <button type="button" className="btn btn--sm btn--ghost" onClick={() => setShowAll(true)}>加入其他待采购记录</button>
+          {options && options.history.available && options.history.dropped > 0 && (
+            <span className="dropline">领星历史有 {options.history.dropped} 行无法识别，未列入</span>
           )}
-        </div>
-      )}
+        </section>
 
-      <div className="sec twocol">
-        {/* ─── 左：可组单记录 ─── */}
-        <div className="panel" data-testid="candidates">
-          <div className="panel__head">可组单记录</div>
-          <div className="panel__body">
+        <div className="pe-cols">
+          {/* ─── 左：从计划记录分配 ─── */}
+          <section className="pe-pane" aria-label="可组单记录" data-testid="candidates">
+            <div className="pe-pane__head">
+              <span className="pe-pane__title">从计划记录分配</span>
+              {wanted && cands !== null && sel !== null && (() => {
+                const summary = sourceSummary(sel.shown);
+                return summary && <span className="pe-pane__sub" data-testid="source-summary">{summary}</span>;
+              })()}
+              <span className="pm-bar__sp" />
+              {narrowed && (
+                <button type="button" className="btn btn--sm btn--ghost" onClick={() => setShowAll(true)}>加入其他待采购记录</button>
+              )}
+            </div>
+            {wanted && (wanted.bad.length > 0 || (sel?.missing.length ?? 0) > 0) && (
+              <ul className="pe-lost" data-testid="preselect-missing">
+                {wanted.bad.map((t) => <li key={`bad-${t}`}>「{t}」不是记录号</li>)}
+                {(sel?.missing ?? []).map((id) => {
+                  const m = missingInfo[id] ?? { kind: 'pending' };
+                  return (
+                    <li key={id}>
+                      <span>{missingText(id, m)}</span>
+                      {m.kind === 'err' && <ErrorDetail err={m.err} />}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
             {candsErr && <ErrorDetail err={candsErr} />}
             {sellersErr && (
               <div data-testid="seller-names-failed">
@@ -546,143 +603,127 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
                 <Fold summary="原因"><ErrorDetail err={sellersErr} /></Fold>
               </div>
             )}
-            {cands && (Object.keys(EXCLUDED_LABEL) as (keyof CandidateLines['excluded'])[])
-              .filter((k) => (cands.excluded[k] ?? 0) > 0)
-              .map((k) => <div className="dropline" key={k}>{EXCLUDED_LABEL[k]} {cands.excluded[k]} 条</div>)}
+            {/* 同采购首页：已组满等过滤掉的给计数（折叠），不是错误 */}
+            {cands && (() => {
+              const dropped = (Object.keys(EXCLUDED_LABEL) as (keyof CandidateLines['excluded'])[])
+                .filter((k) => (cands.excluded[k] ?? 0) > 0);
+              const n = dropped.reduce((a, k) => a + (EXCLUDED_LABEL[k] ? cands.excluded[k] : 0), 0);
+              return n > 0 && (
+                <Fold summary={`未列入 ${n} 条`} testId="cand-dropped">
+                  {dropped.map((k) => <div className="dropline" key={k}>{EXCLUDED_LABEL[k]} {cands.excluded[k]} 条</div>)}
+                </Fold>
+              );
+            })()}
             {cands === null ? (!candsErr && <div className="empty">正在取可组单记录…</div>)
               : groups.length === 0 ? <div className="empty">{narrowed ? '带来的记录没有一条可组单' : '没有可组单的记录'}</div>
               : groups.map((g) => (
-                <div className="sec" key={g.sku} data-testid={`cand-sku-${g.sku}`}>
-                  <div className="sec__title"><span className="num">{g.sku}</span></div>
+                <div className="pe-grp" key={g.sku} data-testid={`cand-sku-${g.sku}`}>
+                  <div className="pe-grp__sku num">{g.sku}</div>
                   {g.records.map((r) => (
-                    <div key={r.line_id} data-testid={`cand-${r.line_id}`} className={r.blocked ? 'muted' : undefined}>
-                      <div>{planName(r)} rev{r.rev} {r.period} 剩 <span className="num">{recordRemaining(r, draft, baseline)}/{r.total_units}</span></div>
-                      {r.blocked ? (
-                        <div>无分店依据：{r.blocked.sellers.map(shop).join('、')}</div>
-                      ) : sellerTable(r)}
+                    <div className="pe-rec" key={r.line_id} data-testid={`cand-${r.line_id}`}>
+                      {recHead(`${planName(r)} rev${r.rev} ${r.period}`, r, r.total_units)}
+                      {sellerRows(r)}
                     </div>
                   ))}
                 </div>
               ))}
             {ownOnly.map((o) => (
-              <div className="sec" key={`own-${o.target.line_id}`} data-testid={`own-${o.target.line_id}`}>
-                <div className="sec__title"><span className="num">{o.target.sku}</span> 本单原有来源</div>
-                <div className="muted">记录 #{o.target.line_id}</div>
-                <Fold summary="为什么单列">本单把这条记录组满了，候选不再列出它；这里只能加回本单原有的量。</Fold>
-                {sellerTable(o.target, o.saved)}
+              <div className="pe-grp" key={`own-${o.target.line_id}`} data-testid={`own-${o.target.line_id}`}>
+                <div className="pe-grp__sku"><span className="num">{o.target.sku}</span> 本单原有来源</div>
+                <div className="pe-rec">
+                  <div className="pe-rec__head">
+                    <span>记录 #{o.target.line_id}</span>
+                    <span className="pe-rem">可加回 <b className="num" data-testid="own-avail">{recordRemaining(o.target, draft, baseline)}</b></span>
+                  </div>
+                  <Fold summary="为什么单列">本单把这条记录组满了，候选不再列出它；这里只能加回本单原有的量。</Fold>
+                  {sellerRows(o.target, o.saved)}
+                </div>
               </div>
             ))}
-          </div>
-        </div>
+          </section>
 
-        {/* ─── 右：明细 ─── */}
-        <div className="panel" data-testid="po-lines">
-          <div className="panel__head">明细</div>
-          <div className="panel__body">
-            {draft.lines.length === 0 ? <div className="empty">还没有明细</div> : draft.lines.map((l, i) => {
+          {/* ─── 右：明细 ─── */}
+          <section className="pe-pane" aria-label="明细" data-testid="po-lines">
+            <div className="pe-pane__head">
+              <span className="pe-pane__title">明细</span>
+              <span className="pe-pane__sub" data-testid="lines-sum">
+                {draft.lines.length} 行，{totalUnits} 件，金额 {amount ?? <Qty v={{ kind: 'unknown' }} />}
+              </span>
+            </div>
+            {draft.lines.length === 0 ? <div className="pm-empty">在左边给店铺填件数，这里按货号生成明细</div> : draft.lines.map((l, i) => {
               const unplanned = unplannedUnits(l);
               return (
-                <div className="sec" key={`${l.sku}#${i}`} data-testid={`po-line-${i + 1}`}>
-                  <div className="bar">
-                    <span className="num">{l.sku}</span>
-                    <span className="field"><span className="lbl">仓</span>
-                      <select className="inp" aria-label="仓" value={l.wid} onChange={(e) => edit(setLineWid(draft, i, e.target.value))}>
-                        <option value="">{options === null ? (optionsErr ? '仓取不到' : '正在取仓…') : '请选择'}</option>
-                        {warehouses.map((w) => <option key={w.wid} value={String(w.wid)}>{w.name}（{w.wid}）</option>)}
-                        {l.wid && !warehouses.some((w) => String(w.wid) === l.wid) && <option value={l.wid}>{l.wid}</option>}
-                      </select>
-                    </span>
-                    <span className="field"><span className="lbl">数量</span>
-                      <UnitsInput value={lineUnits(l)}
-                        onChange={(v) => edit(updateLine(draft, i, { units: v }))} />
-                    </span>
-                    <span className="field"><span className="lbl">单价</span>
-                      <input className="inp inp--tiny" inputMode="decimal" aria-label="单价" value={l.price}
+                <div className="pe-line" key={`${l.sku}#${i}`} data-testid={`po-line-${i + 1}`}>
+                  <div className="pe-line__top">
+                    <span className="pe-line__no">{i + 1}</span>
+                    <span className="pe-line__sku num">{l.sku}</span>
+                    <label className="pe-mini">数量
+                      <UnitsInput value={lineUnits(l)} onChange={(v) => edit(updateLine(draft, i, { units: v }))} />
+                    </label>
+                    <label className="pe-mini">单价
+                      <input className="pe-num" inputMode="decimal" aria-label="单价" placeholder="未填" value={l.price}
                         onChange={(e) => edit(updateLine(draft, i, { price: e.target.value }))} />
-                    </span>
-                    <span className="field"><span className="lbl">预计到货</span>
-                      <input className="inp" type="date" aria-label="预计到货" value={l.expect_arrive_date}
+                    </label>
+                    <label className="pe-mini">预计到货
+                      <input className="pe-date" type="date" aria-label="预计到货" value={l.expect_arrive_date}
                         onChange={(e) => edit(updateLine(draft, i, { expect_arrive_date: e.target.value }))} />
-                    </span>
+                    </label>
                   </div>
-                  <ul data-testid="sources">
+                  {unplanned < 0 && <div className="pe-line__err">少于来源合计 {sourcesUnits(l)} 件</div>}
+                  {unplanned > 0 && (
+                    <div className="pe-line__unpl">
+                      <span className="chip chip--warn">无计划来源 {unplanned} 件</span>
+                      <input className="pe-reason" aria-label="理由" placeholder="写理由（必填）" value={l.unplanned_reason}
+                        onChange={(e) => edit(updateLine(draft, i, { unplanned_reason: e.target.value }))} />
+                    </div>
+                  )}
+                  <ul className="pe-src" data-testid="sources">
                     {l.sources.map((s, j) => {
                       const c = chainRef.get(s.line_id);
                       return (
                         <li key={`${s.line_id}|${s.seller_id}`}>
                           {/* R3：一眼看出这件货是哪张计划哪一版哪条记录、哪家店的量 */}
-                          {c ? chainText(c, shopName(s.seller_id), s.units)
-                            : `记录 ${s.line_id} ${l.sku} → ${shopName(s.seller_id)} ${s.units} 件`}
-                          {' '}<button type="button" className="btn btn--sm btn--ghost"
-                            onClick={() => edit(removeSource(draft, i, j))}>移除</button>
+                          <span>{c ? chainText(c, shopName(s.seller_id), s.units)
+                            : `记录 ${s.line_id} ${l.sku} → ${shopName(s.seller_id)} ${s.units} 件`}</span>
+                          <button type="button" className="pe-x" onClick={() => edit(removeSource(draft, i, j))}>移除</button>
                         </li>
                       );
                     })}
                   </ul>
-                  {unplanned > 0 && (
-                    <div className="bar">
-                      <span className="i-red">无计划来源 {unplanned} 件</span>
-                      <span className="field"><span className="lbl">理由</span>
-                        <input className="inp inp--text" aria-label="理由" value={l.unplanned_reason}
-                          onChange={(e) => edit(updateLine(draft, i, { unplanned_reason: e.target.value }))} />
-                      </span>
-                    </div>
-                  )}
-                  {unplanned < 0 && <div className="i-red">少于来源合计 {sourcesUnits(l)} 件</div>}
                 </div>
               );
             })}
+            {!useLocal && gatesErr ? <ErrorDetail err={gatesErr} />
+              : shownGates === null ? <div className="muted">正在检查…</div>
+              : <GateList gates={shownGates} source={useLocal ? '本地检查，保存后以服务端为准' : '服务端检查'} />}
+          </section>
+        </div>
+
+        {missing && (missing.length > 0 || invalid.length > 0) && (
+          <div className="flash flash--bad" role="alert" data-testid="save-missing">
+            {missing.length > 0 && <div>保存草稿前要先填：{missing.map(fieldLabel).join('、')}</div>}
+            {invalid.length > 0 && <div data-testid="save-invalid">要填整数：{invalid.map(fieldLabel).join('、')}</div>}
           </div>
-        </div>
-      </div>
-
-      {/* ─── 下单前检查 ─── */}
-      <div className="panel sec" data-testid="preflight">
-        <div className="panel__head">下单前检查</div>
-        <div className="panel__body">
-          {useLocal && poId !== null && <div className="muted">按未保存的内容检查</div>}
-          {!useLocal && gatesErr && <ErrorDetail err={gatesErr} />}
-          {shownGates === null ? (!gatesErr && <div className="muted">正在检查…</div>) : (
-            <>
-              <div className="gate__sum">{failing === 0 ? '全部通过' : `${failing} 项未过`}</div>
-              <ul>
-                {shownGates.map((g, i) => (
-                  <li key={`${g.gate}-${i}`} className={`gate__item gate__item--${g.ok ? 'pass' : 'fail'}`}>
-                    <span>{g.ok ? '通过' : '未过'}</span>
-                    <span>{gateText(g)}</span>
-                    <span className="gate__code">{g.gate}</span>
-                  </li>
-                ))}
-              </ul>
-            </>
-          )}
-        </div>
-      </div>
-
-      {missing && (missing.length > 0 || invalid.length > 0) && (
-        <div className="flash flash--bad" role="alert" data-testid="save-missing">
-          {missing.length > 0 && <div>保存草稿前要先填：{missing.map(fieldLabel).join('、')}</div>}
-          {invalid.length > 0 && <div data-testid="save-invalid">要填整数：{invalid.map(fieldLabel).join('、')}</div>}
-        </div>
-      )}
-      {actErr && (
-        <div>
-          <ErrorDetail err={actErr} onDismiss={dismiss} />
-          {actErr.error === 'stale_draft' && (
-            <button type="button" className="btn" disabled={pending.has('reload')} onClick={() => void reload()}>重新载入</button>
-          )}
-        </div>
-      )}
-
-      <div className="sec btn-row">
-        <button type="button" className="btn btn--primary" disabled={pending.has('save')} onClick={() => void save()}>保存草稿</button>
-        {poId !== null && (
-          <button type="button" className="btn" disabled={pending.has('delete')} onClick={() => setConfirmDelete(true)}>删除草稿</button>
         )}
-        <div className="btn-row btn-row__end">
-          {placeBlock && <span className="muted" data-testid="place-blocked">{placeBlock}</span>}
-          <button type="button" className="btn btn--danger" disabled={placeBlock !== null}
-            onClick={() => setPlacing(true)}>⛔ 下单</button>
+        {actErr && (
+          <div>
+            <ErrorDetail err={actErr} onDismiss={dismiss} />
+            {actErr.error === 'stale_draft' && (
+              <button type="button" className="btn" disabled={pending.has('reload')} onClick={() => void reload()}>重新载入</button>
+            )}
+          </div>
+        )}
+
+        {/* ─── 底部动作条：普通动作在左，⛔ 单独在右 ─── */}
+        <div className="pe-bar" data-testid="po-actions">
+          <button type="button" className="btn" disabled={pending.has('save')} onClick={() => void save(false)}>保存草稿</button>
+          {poId !== null && (
+            <button type="button" className="btn btn--danger" disabled={pending.has('delete')} onClick={() => setConfirmDelete(true)}>删除草稿</button>
+          )}
+          <span className="pe-bar__state" data-testid="save-state">{unsaved ? (poId === null ? '新建，未保存' : '有未保存的改动') : '已保存'}</span>
+          <span className="pm-bar__sp" />
+          <CommitButton hint={placeBlock} disabled={placeBlock !== null || pending.has('save')}
+            onClick={() => (unsaved ? void save(true) : setPlacing(true))}>{unsaved ? '保存并下单' : '下单'}</CommitButton>
         </div>
       </div>
 

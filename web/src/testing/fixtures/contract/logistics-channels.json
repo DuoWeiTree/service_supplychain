@@ -1,0 +1,15 @@
+{
+  "channels": [
+    {
+      "logistics_id": 28762,
+      "channel_name": "美森快船",
+      "method_name": "海卡",
+      "provider_name": "厦门快驿通",
+      "receive_country_codes": [
+        "US"
+      ],
+      "enabled": true
+    }
+  ],
+  "refreshed_at": "2026-10-13T23:52:57.470814-04:00"
+}

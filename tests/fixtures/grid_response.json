@@ -782,6 +782,10 @@
             "2026-09": 130
           },
           "onhand_as_of": 300,
+          "onhand_parts": {
+            "fc_transfers": 0,
+            "fulfillable": 300
+          },
           "rate": 4.325139122267325,
           "segments": [
             {
@@ -868,6 +872,10 @@
             "2026-09": 98
           },
           "onhand_as_of": 0,
+          "onhand_parts": {
+            "fc_transfers": 0,
+            "fulfillable": 0
+          },
           "rate": 3.243854341700494,
           "segments": [
             {
@@ -954,6 +962,10 @@
             "2026-09": 65
           },
           "onhand_as_of": 25,
+          "onhand_parts": {
+            "fc_transfers": 0,
+            "fulfillable": 25
+          },
           "rate": 2.15964558760763,
           "segments": [
             {
@@ -1040,6 +1052,10 @@
             "2026-09": 33
           },
           "onhand_as_of": 40,
+          "onhand_parts": {
+            "fc_transfers": 0,
+            "fulfillable": 40
+          },
           "rate": 1.0812847805668313,
           "segments": [
             {
@@ -1277,11 +1293,18 @@
         "fba_inbound"
       ],
       "inbound_planned": 0,
+      "month_in_transit": {
+        "before_as_of": false,
+        "fba": 0,
+        "items": [],
+        "oversea": 0,
+        "total": 0
+      },
       "opening": 30,
       "period": "2026-10",
       "pipeline": {
-        "fba_inbound": null,
-        "fba_inbound_reason": "not_fetched",
+        "fba_inbound": 0,
+        "fba_inbound_reason": null,
         "making": 0,
         "ordered_open": 60,
         "ordered_open_overdue": 0,
@@ -1318,11 +1341,18 @@
         "fba_inbound"
       ],
       "inbound_planned": 0,
+      "month_in_transit": {
+        "before_as_of": false,
+        "fba": 0,
+        "items": [],
+        "oversea": 0,
+        "total": 0
+      },
       "opening": -4,
       "period": "2026-11",
       "pipeline": {
-        "fba_inbound": null,
-        "fba_inbound_reason": "not_fetched",
+        "fba_inbound": 0,
+        "fba_inbound_reason": null,
         "making": 0,
         "ordered_open": 60,
         "ordered_open_overdue": 0,
@@ -1359,11 +1389,18 @@
         "fba_inbound"
       ],
       "inbound_planned": 0,
+      "month_in_transit": {
+        "before_as_of": false,
+        "fba": 0,
+        "items": [],
+        "oversea": 0,
+        "total": 0
+      },
       "opening": -37,
       "period": "2026-12",
       "pipeline": {
-        "fba_inbound": null,
-        "fba_inbound_reason": "not_fetched",
+        "fba_inbound": 0,
+        "fba_inbound_reason": null,
         "making": 0,
         "ordered_open": 60,
         "ordered_open_overdue": 0,
@@ -1400,11 +1437,18 @@
         "fba_inbound"
       ],
       "inbound_planned": null,
+      "month_in_transit": {
+        "before_as_of": false,
+        "fba": 0,
+        "items": [],
+        "oversea": 0,
+        "total": 0
+      },
       "opening": null,
       "period": "2026-10",
       "pipeline": {
-        "fba_inbound": null,
-        "fba_inbound_reason": "not_fetched",
+        "fba_inbound": 0,
+        "fba_inbound_reason": null,
         "making": 0,
         "ordered_open": 0,
         "ordered_open_overdue": 0,
@@ -1437,11 +1481,18 @@
         "fba_inbound"
       ],
       "inbound_planned": null,
+      "month_in_transit": {
+        "before_as_of": false,
+        "fba": 0,
+        "items": [],
+        "oversea": 0,
+        "total": 0
+      },
       "opening": null,
       "period": "2026-11",
       "pipeline": {
-        "fba_inbound": null,
-        "fba_inbound_reason": "not_fetched",
+        "fba_inbound": 0,
+        "fba_inbound_reason": null,
         "making": 0,
         "ordered_open": 0,
         "ordered_open_overdue": 0,
@@ -1474,11 +1525,18 @@
         "fba_inbound"
       ],
       "inbound_planned": null,
+      "month_in_transit": {
+        "before_as_of": false,
+        "fba": 0,
+        "items": [],
+        "oversea": 0,
+        "total": 0
+      },
       "opening": null,
       "period": "2026-12",
       "pipeline": {
-        "fba_inbound": null,
-        "fba_inbound_reason": "not_fetched",
+        "fba_inbound": 0,
+        "fba_inbound_reason": null,
         "making": 0,
         "ordered_open": 0,
         "ordered_open_overdue": 0,
@@ -1511,11 +1569,18 @@
         "fba_inbound"
       ],
       "inbound_planned": 0,
+      "month_in_transit": {
+        "before_as_of": false,
+        "fba": 0,
+        "items": [],
+        "oversea": 0,
+        "total": 0
+      },
       "opening": 236,
       "period": "2026-10",
       "pipeline": {
-        "fba_inbound": null,
-        "fba_inbound_reason": "not_fetched",
+        "fba_inbound": 0,
+        "fba_inbound_reason": null,
         "making": 500,
         "ordered_open": 200,
         "ordered_open_overdue": 0,
@@ -1566,11 +1631,18 @@
         "fba_inbound"
       ],
       "inbound_planned": 0,
+      "month_in_transit": {
+        "before_as_of": false,
+        "fba": 0,
+        "items": [],
+        "oversea": 0,
+        "total": 0
+      },
       "opening": null,
       "period": "2026-11",
       "pipeline": {
-        "fba_inbound": null,
-        "fba_inbound_reason": "not_fetched",
+        "fba_inbound": 0,
+        "fba_inbound_reason": null,
         "making": 0,
         "ordered_open": 200,
         "ordered_open_overdue": 0,
@@ -1621,11 +1693,18 @@
         "fba_inbound"
       ],
       "inbound_planned": 0,
+      "month_in_transit": {
+        "before_as_of": false,
+        "fba": 0,
+        "items": [],
+        "oversea": 0,
+        "total": 0
+      },
       "opening": null,
       "period": "2026-12",
       "pipeline": {
-        "fba_inbound": null,
-        "fba_inbound_reason": "not_fetched",
+        "fba_inbound": 0,
+        "fba_inbound_reason": null,
         "making": 0,
         "ordered_open": 200,
         "ordered_open_overdue": 0,
@@ -1929,6 +2008,9 @@
   "source_notes": {
     "as_of": "2026-09-21",
     "dropped": {},
+    "fba_inbound_as_of": "2026-09-21",
+    "oversea_in_transit_at": "2026-10-15T00:00:00+00:00",
+    "oversea_in_transit_error": null,
     "purchase_as_of": null
   },
   "unallocated": []

@@ -1,7 +1,7 @@
-"""采购组单的纯判据（spec §3.2 §5，PB-D2/D3/D9）。
+"""采购组单的纯判据（spec §3.2 §5，PB-D2/D9/D22）。
 
-★ 与迁移 012 的 seller_caps() / v_check_line_state 逐字同口径：
-  最大余数法，并列按 seller_id 升序；状态判据照 04:378-380。
+★ 与迁移 014 的 assert_line_po_qty / 012 的 v_check_line_state 同口径：
+  量闸只有总量 + 店在记录里（PB-D22 取消分店上限）；状态判据照 04:378-380。
 """
 from __future__ import annotations
 
@@ -20,27 +20,9 @@ _EDGES = {
 _FORWARD = ["已提交", "已确认", "已下单"]
 
 
-class NoSellerBasis(Exception):
-    def __init__(self, sellers: list[str]):
-        self.sellers = sellers
-        super().__init__(f"期望销量无法作为分店上限依据：{sellers or '（没有任何店）'}")
-
-
-def seller_caps(total_units: int, demand_by_seller: dict) -> dict[str, int]:
-    bad = sorted(s for s, v in demand_by_seller.items()
-                 if (v or {}).get("basis") == "unknown" or type((v or {}).get("units")) is not int)
-    if bad:
-        raise NoSellerBasis(bad)
-    expected = {s: v["units"] for s, v in demand_by_seller.items()}
-    total_expected = sum(expected.values())
-    if total_expected == 0:
-        raise NoSellerBasis(sorted(expected))
-    floors = {s: total_units * e // total_expected for s, e in expected.items()}
-    extra = total_units - sum(floors.values())
-    by_remainder = sorted(expected, key=lambda s: (-(total_units * expected[s] % total_expected), s))
-    for s in by_remainder[:extra]:
-        floors[s] += 1
-    return floors
+def stray_sellers(demand_by_seller: dict, seller_ids) -> list[str]:
+    """来源店不在这条记录里（PB-D22：上限取消后，店的范围仍限于记录里的店）。"""
+    return sorted({s for s in seller_ids if s not in (demand_by_seller or {})})
 
 
 def target_state(total: int, confirmed: int, ordered: int) -> str:
@@ -96,6 +78,9 @@ def preflight(po: dict) -> list[dict]:
         gates.append(_gate("line_unplanned_reason",
                            unplanned <= 0 or (ln.get("unplanned_reason") or "").strip(),
                            line_no=n, unplanned=max(unplanned, 0)))
+    # PB-D25：领星一张采购单只有单头一个仓（createPurchaseOrder 无行级仓；单头 wid=0 实收「仓库参数错误」，erp_call 3）
+    wids = sorted({ln["wid"] for ln in po.get("lines") or [] if ln.get("wid") is not None})
+    gates.append(_gate("single_wid", len(wids) <= 1, wids=wids))
     gates.append(_sources_orderable(po))
     return gates
 
@@ -124,16 +109,23 @@ def confirm_token(po_id: int, digest: str, salt: str) -> str:
 
 def create_order_payload(po: dict) -> dict:
     """createPurchaseOrder 入参（17:50-51 · 06:186-190）。
-    ★ 多仓：单头 wid=0、仓在行上（B7，实测 55/143）。行上仓的入参名首单实调确认（spec §6.7）。
+    ★ 仓只在单头（PB-D25）：官方文档 product_list 无 wid；单头 wid=0 被拒「仓库参数错误」（erp_call 3，
+      2026-10-09）。读回里 55/143 张单头 wid=0（B7）是领星侧的多仓形态，开放接口建不出来。
+    ★ 发 sys_wid / sys_supplier_id，不发 wid / supplier_id（PB-D26）：后两者是「客户 id」，只有经开放接口建的
+      仓 / 供应商才有；我们的仓号来自仓库列表（文档：wid = 系统仓库id）、供应商号来自读回（供应商列表文档：
+      supplier_id = 系统供应商id）。发成 wid 实收「仓库不存在」（erp_call 4）。
     ★ price 转 Decimal：签名前由 erp.sign.normalize 统一成 JS 同款的数字打印（2.0000 → 2）。"""
     wids = {ln["wid"] for ln in po["lines"]}
+    if len(wids) != 1:
+        # preflight 的 single_wid 先挡；走到这里是绕过了闸，宁可炸也不发一张必被拒 / 发错仓的单
+        raise ValueError(f"一张领星采购单只能一个仓，得到 {sorted(wids, key=str)}")
     out = {"custom_order_sn": po["custom_order_sn"],
-           "supplier_id": int(po["supplier_id"]) if str(po["supplier_id"]).isdigit() else po["supplier_id"],
+           "sys_supplier_id": int(po["supplier_id"]) if str(po["supplier_id"]).isdigit() else po["supplier_id"],
            "purchaser_id": po["purchaser_id"], "opt_uid": po["opt_uid"], "qc_type": po["qc_type"],
-           "wid": next(iter(wids)) if len(wids) == 1 else 0,
+           "sys_wid": next(iter(wids)),
            "product_list": []}
     for ln in po["lines"]:
-        item = {"sku": ln["sku"], "wid": ln["wid"], "quantity_real": ln["units"], "price": Decimal(str(ln["price"]))}
+        item = {"sku": ln["sku"], "quantity_real": ln["units"], "price": Decimal(str(ln["price"]))}
         if ln.get("expect_arrive_date"):
             item["expect_arrive_time"] = ln["expect_arrive_date"]
         out["product_list"].append(item)

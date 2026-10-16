@@ -147,6 +147,22 @@
 .ps-v--est { color: var(--text-3); font-weight: 500; }
 .ps-v--none { color: var(--text-3); font-weight: 400; }
 .ps-v--todo { font-size: 12px; color: var(--warn); border-bottom: 1px dashed currentColor; line-height: 15px; }
+/* ★ 10-15 负责人：货号行填计划采购、店铺 / msku 行填计划销量，要一眼分得开 ——
+   可填数前面写名字（.ps-k，形状 + 文字，不只靠颜色）；可填格画成输入框的样子；空着写灰字提示，不写「—」 */
+.ps-main { display: inline-flex; align-items: baseline; gap: var(--space-1_5); }
+.ps-k { font-size: 11px; line-height: 14px; font-weight: 600; padding: 0 4px; border-radius: var(--radius-sm); }
+.ps-k--buy { color: var(--primary); background: var(--primary-soft); }
+.ps-k--sell { color: var(--ok); background: var(--ok-soft); }
+.ps-v--hint { font-size: 12px; font-weight: 400; color: var(--text-3); font-style: italic; }
+.ps-auto { font-style: normal; font-size: 10px; color: var(--text-3); }
+/* ★ 不设底色：偏低 / 断货的格子底色（data-stock）照常显示；只加边框与左侧色条 */
+.ps-c.is-input { box-shadow: inset 0 0 0 1px var(--control-border); }
+.ps-c.is-input.is-fill-buy { box-shadow: inset 0 0 0 1px var(--control-border), inset 3px 0 0 var(--primary); }
+.ps-c.is-input.is-fill-sell { box-shadow: inset 0 0 0 1px var(--control-border), inset 3px 0 0 var(--ok); }
+.ps-c.is-input:not(.is-pending):not(.is-edit):hover::before { content: "✎"; position: absolute; left: 6px; bottom: 2px; font-size: 10px; line-height: 12px; color: var(--text-3); }
+.ps-tag { flex: 0 0 auto; font: 600 10px/16px var(--font-sans); padding: 0 6px; border-radius: var(--radius-full); white-space: nowrap; }
+.ps-tag--buy { color: var(--primary); background: var(--primary-soft); }
+.ps-tag--sell { color: var(--ok); background: var(--ok-soft); }
 /* ★ 副数带文字标签（spec §5）。一行放不下就折行、不裁：列宽保证一行至少并排两项
    （「库存 -1,234」≈ 59px × 2 + 8px 间距 = 126px ≤ 152 − 24 内边距），
    于是货号行三项 = 两行，14 + 14 + 主数 18 = 46px ≤ 舒适行高 48。
@@ -162,13 +178,13 @@
 
 /* 整表没焦点时不画光标框和选区：离开表格去点按钮，屏上不该还留着一个「正在编辑哪格」的错觉 */
 .ps-scroll:focus-within .ps-c.is-sel { background: var(--primary-soft); }
-.ps-scroll:focus-within .ps-c.is-cur { box-shadow: inset 0 0 0 2px var(--primary); z-index: 1; }
-.ps-c.is-edit { background: var(--surface); box-shadow: inset 0 0 0 2px var(--primary), var(--shadow-pop); z-index: 3; }
+.ps-scroll:focus-within .ps-c.is-cur, .ps-scroll:focus-within .ps-c.is-input.is-cur { box-shadow: inset 0 0 0 2px var(--primary); z-index: 1; }
+.ps-c.is-edit, .ps-c.is-input.is-edit { background: var(--surface); box-shadow: inset 0 0 0 2px var(--primary), var(--shadow-pop); z-index: 3; }
 .ps-in { width: 100%; border: 0; outline: none; background: transparent; padding: 0; text-align: right; font: 600 14px/18px var(--font-sans); font-variant-numeric: tabular-nums; color: var(--text); caret-color: var(--primary); }
 .ps-c.is-pending .ps-v { opacity: .55; }
 .ps-c.is-pending::before { content: ""; position: absolute; right: 4px; top: 4px; width: 6px; height: 6px; border-radius: var(--radius-full); background: var(--primary); animation: pm-pulse 1s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) { .ps-c.is-pending::before { animation: none; } }
-.ps-c.is-err { box-shadow: inset 0 0 0 2px var(--danger); }
+.ps-c.is-err, .ps-c.is-input.is-err { box-shadow: inset 0 0 0 2px var(--danger); }
 .ps-err { max-width: 100%; overflow: hidden; text-overflow: ellipsis; font-size: 11px; line-height: 14px; color: var(--danger); }
 
 /* 紧凑：一格一行，库存挪到数字左边 */

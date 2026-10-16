@@ -46,6 +46,8 @@ def H(a):
 # ---------------------------------------------------------------------------
 
 #: 在仓批量的一行样本（sid, seller_sku, units, raw_rows）。
+#: 货件快照「当天有」：一条已取消的货件 —— 查过了、没有在途（[]），不是未知
+_FBA_INBOUND_ROWS = [("11072", "NOT-IN-PLAN", "FBA0", "CANCELLED", 1, 0, None, None)]
 _ONHAND_ROWS = [("11072", "MSKU-A", 300, 1), ("11072", "MSKU-B", 50, 1),
                 ("11094", "MSKU-C", 25, 1)]
 #: 月销量（month, units）—— 两个店各给一份，好让「窗口指错店」看得出来。
@@ -71,6 +73,15 @@ class FakeCh:
 
     def __call__(self, sql: str, parameters: dict | None = None) -> list[tuple]:
         one = " ".join(sql.split())
+        # spec 2026-10-14：调仓中 / FBA 货件 —— 按 SQL 常量认，排最前（EXTRA 也含 countIf 与 GROUP BY sid, seller_sku）
+        if sql is cs.SQL_FBA_EXTRA:
+            self.calls.append("fba_extra")
+            return []
+        if sql is cs.SQL_FBA_INBOUND_DAY:
+            return [(dt.date.fromisoformat(parameters["as_of"]),)]
+        if sql is cs.SQL_FBA_INBOUND:
+            self.calls.append("fba_inbound")
+            return list(_FBA_INBOUND_ROWS)
         # spec §3.1：预测换成 base_rate × 天数，claim 改问日销与断货日。★ 这两支必须排在
         #   最前：SQL_FBA_STOCK_DAYS 也含 `GROUP BY _captured_date`，SQL_DAILY_SALES 也含
         #   ORDERS_TABLE —— 排在后面会被 capture_days / sales 截胡。
@@ -316,6 +327,12 @@ def test_purchase_staleness_gate_fires_when_only_the_order_table_freezes(client,
 
     def q(sql: str, parameters: dict | None = None) -> list[tuple]:
         one = " ".join(sql.split())
+        if sql is cs.SQL_FBA_EXTRA:
+            return []
+        if sql is cs.SQL_FBA_INBOUND_DAY:
+            return [(dt.date.fromisoformat(parameters["as_of"]),)]
+        if sql is cs.SQL_FBA_INBOUND:
+            return list(_FBA_INBOUND_ROWS)
         # spec §3.1：claim 改问日销与断货日 —— 同 FakeCh，这两支排在最前
         if "countIf(" in one or (cs.ORDERS_TABLE in one and "GROUP BY d " in one + " "):
             return []

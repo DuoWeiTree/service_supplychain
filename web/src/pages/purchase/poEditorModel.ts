@@ -15,12 +15,13 @@ export interface DraftLine {
 }
 /** ★ 采购方 / 采购员 / 仓在稿里是**文本**（下拉值与手填框都是字符串），后端是整数：只在 fromPo / toBody 转 */
 export interface DraftHeader { supplier_id: string; purchaser_id: string; opt_uid: string; qc_type: QcType | null }
-export interface Draft { header: DraftHeader; lines: DraftLine[] }
+/** `wid`：整张单的仓（PB-D25 一单一仓，单头选、写到每一行）；'' = 还没选。没有明细时也要记得住 */
+export interface Draft { header: DraftHeader; lines: DraftLine[]; wid?: string }
 
 export const QC_LABEL: Record<QcType, string> = { 0: '仓库质检', 1: '预检', 2: '免检' };
 
 export function emptyDraft(): Draft {
-  return { header: { supplier_id: '', purchaser_id: '', opt_uid: '', qc_type: null }, lines: [] };
+  return { header: { supplier_id: '', purchaser_id: '', opt_uid: '', qc_type: null }, lines: [], wid: '' };
 }
 
 export function setHeader(d: Draft, patch: Partial<DraftHeader>): Draft {
@@ -33,7 +34,7 @@ export const unplannedUnits = (l: DraftLine): number => lineUnits(l) - sourcesUn
 
 const key = (lineId: number, sid: string) => `${lineId}|${sid}`;
 
-/** 记录级剩余，同 available 的口径：后端 remaining 已扣本单已保存的量，加回后再扣本稿 */
+/** 记录级剩余（PB-D22：只卡总量）：后端 remaining 已扣本单已保存的量，加回后再扣本稿 */
 export function recordRemaining(c: Pick<CandidateLine, 'line_id' | 'remaining'>, d: Draft, base: Baseline): number {
   let saved = 0;
   for (const [k, v] of base) if (k.startsWith(`${c.line_id}|`)) saved += v;
@@ -42,7 +43,7 @@ export function recordRemaining(c: Pick<CandidateLine, 'line_id' | 'remaining'>,
   return c.remaining + saved - now;
 }
 
-/** 已保存草稿自己占着的量。★ 后端 sellers[].used 已含本单，不加回来就会把自己算成别人 */
+/** 已保存草稿自己占着的量。★ 后端 remaining / sellers[].used 已含本单，不加回来就会把自己算成别人 */
 export type Baseline = ReadonlyMap<string, number>;
 export function baselineOf(po: Pick<PurchaseOrder, 'lines'> | null): Baseline {
   const m = new Map<string, number>();
@@ -59,14 +60,7 @@ export function inDraft(d: Draft, lineId: number, sid: string): number {
 }
 
 /** 能往里加来源的东西：候选记录，或候选里已不列出的「本单原有来源」 */
-export type SourceTarget = Pick<CandidateLine, 'line_id' | 'sku' | 'blocked' | 'sellers'>;
-
-/** null = 剩余未知（无分店依据），不是 0 */
-export function available(c: Pick<SourceTarget, 'line_id' | 'sellers'>, sid: string, d: Draft, base: Baseline): number | null {
-  const r = c.sellers[sid]?.remaining;
-  if (r === null || r === undefined) return null;
-  return r + (base.get(key(c.line_id, sid)) ?? 0) - inDraft(d, c.line_id, sid);
-}
+export type SourceTarget = Pick<CandidateLine, 'line_id' | 'sku' | 'remaining' | 'sellers'>;
 
 function mergeSources(a: DraftSource[], b: DraftSource[]): DraftSource[] {
   const out = a.map((s) => ({ ...s }));
@@ -88,16 +82,14 @@ function mergeLines(a: DraftLine, b: DraftLine): DraftLine {
   };
 }
 
-export type AddRefusal = 'blocked' | 'no_seller' | 'bad_units' | 'over_remaining';
+export type AddRefusal = 'no_seller' | 'bad_units' | 'over_remaining';
 export type AddResult = { ok: true; draft: Draft } | { ok: false; reason: AddRefusal; available?: number };
 
 /** `wid` 不给：并进该货号的第一行，没有就新开一行（仓待选） */
 export function addSource(d: Draft, c: SourceTarget, sid: string, units: number, base: Baseline, wid?: string): AddResult {
-  if (c.blocked) return { ok: false, reason: 'blocked' };
   if (!(sid in c.sellers)) return { ok: false, reason: 'no_seller' };
   if (!Number.isInteger(units) || units <= 0) return { ok: false, reason: 'bad_units' };
-  const avail = available(c, sid, d, base);
-  if (avail === null) return { ok: false, reason: 'blocked' };
+  const avail = recordRemaining(c, d, base);
   if (units > avail) return { ok: false, reason: 'over_remaining', available: avail };
   const src: DraftSource = { line_id: c.line_id, seller_id: sid, units };
   const idx = d.lines.findIndex((l) => l.sku === c.sku && (wid === undefined || l.wid === wid));
@@ -108,6 +100,48 @@ export function addSource(d: Draft, c: SourceTarget, sid: string, units: number,
   }
   const lines = d.lines.map((l, i) => (i === idx ? { ...l, sources: mergeSources(l.sources, [src]) } : l));
   return { ok: true, draft: { ...d, lines } };
+}
+
+/** 单头仓（PB-D25）：写到每一行。明细分属多个仓的旧草稿，选定后全单统一 */
+export function setDraftWid(d: Draft, wid: string): Draft {
+  return { ...d, wid, lines: d.lines.map((l) => ({ ...l, wid })) };
+}
+
+/** 明细里出现过的仓（去重排序）。多于一个 = 旧的多仓草稿，要人选一个统一 */
+export function draftWids(d: Draft): string[] {
+  return [...new Set(d.lines.map((l) => l.wid).filter((w) => w !== ''))].sort();
+}
+
+/** 把某条记录给某家店的件数**设为** units（绝对量，0 = 去掉这条来源）。
+ *  可设的上限 = 记录剩余 + 本稿已给这家店的（改量不是叠加） */
+export function setAllocation(d: Draft, c: SourceTarget, sid: string, units: number, base: Baseline): AddResult {
+  if (!(sid in c.sellers)) return { ok: false, reason: 'no_seller' };
+  if (!Number.isInteger(units) || units < 0) return { ok: false, reason: 'bad_units' };
+  const cur = inDraft(d, c.line_id, sid);
+  const room = recordRemaining(c, d, base) + cur;
+  if (units > room) return { ok: false, reason: 'over_remaining', available: room };
+  const hit = (s: DraftSource) => s.line_id === c.line_id && s.seller_id === sid;
+  const at = d.lines.findIndex((l) => l.sources.some(hit));
+  if (at >= 0) {
+    const lines: DraftLine[] = [];
+    d.lines.forEach((l, i) => {
+      if (i !== at) { lines.push(l); return; }
+      const sources = units > 0 ? l.sources.map((s) => (hit(s) ? { ...s, units } : s)) : l.sources.filter((s) => !hit(s));
+      // 同 removeSource：人改过数量的行留着（那部分是无计划来源）
+      if (sources.length === 0 && l.units === null) return;
+      lines.push({ ...l, sources });
+    });
+    return { ok: true, draft: { ...d, lines } };
+  }
+  if (units === 0) return { ok: true, draft: d };
+  const src: DraftSource = { line_id: c.line_id, seller_id: sid, units };
+  const idx = d.lines.findIndex((l) => l.sku === c.sku);
+  if (idx < 0) {
+    const line: DraftLine = { sku: c.sku, wid: d.wid ?? '', units: null, price: '', expect_arrive_date: '',
+      unplanned_reason: '', sources: [src] };
+    return { ok: true, draft: { ...d, lines: [...d.lines, line] } };
+  }
+  return { ok: true, draft: { ...d, lines: d.lines.map((l, i) => (i === idx ? { ...l, sources: [...l.sources, src] } : l)) } };
 }
 
 export function removeSource(d: Draft, lineIdx: number, srcIdx: number): Draft {
@@ -142,7 +176,10 @@ export function updateLine(
 }
 
 export function fromPo(po: Pick<PurchaseOrder, 'supplier_id' | 'purchaser_id' | 'opt_uid' | 'qc_type' | 'lines'>): Draft {
+  const wids = [...new Set(po.lines.map((l) => String(l.wid)))];
   return {
+    // 明细全同仓才算有单头仓；分属多个仓的旧草稿留空，要人选一个统一（single_wid 闸点名）
+    wid: wids.length === 1 ? wids[0]! : '',
     header: { supplier_id: String(po.supplier_id), purchaser_id: String(po.purchaser_id), opt_uid: String(po.opt_uid),
       qc_type: po.qc_type },
     lines: po.lines.map((ln) => {
@@ -179,13 +216,16 @@ export function validate(d: Draft): PreflightGate[] {
     out.push(gate('line_unplanned_reason', units - src <= 0 || !!l.unplanned_reason.trim(),
       { line_no: n, unplanned: Math.max(units - src, 0) }));
   });
+  // PB-D25：领星一张采购单只有一个仓；要发两个仓就建两张草稿
+  const wids = [...new Set(d.lines.map((l) => intOf(l.wid)).filter((w): w is number => w !== null))].sort((a, b) => a - b);
+  out.push(gate('single_wid', wids.length <= 1, { wids }));
   return out;
 }
 
 const GATE_LABEL: Record<string, string> = {
   supplier: '供应商', purchaser: '采购方', opt_uid: '采购员', qc_type: '质检方式', lines: '至少一行明细',
   line_wid: '仓', line_price: '单价', line_units: '数量不少于来源合计', line_unplanned_reason: '无计划来源的理由',
-  sources_orderable: '来源记录仍可组单',
+  sources_orderable: '来源记录仍可组单', single_wid: '全单同一个仓（领星一张单只能一个仓，分仓请建两张草稿）',
 };
 
 export function gateText(g: PreflightGate): string {
@@ -257,16 +297,16 @@ export interface OwnRecord { target: SourceTarget; saved: Record<string, number>
 
 /** 本单已保存的来源里、候选没列出的记录（本单把它组满了 ⇒ 后端按 fully_confirmed 滤掉）。
  *  ★ 不列出来，移除后到保存前就加不回去。remaining 记 0：可加的只有本单原有的量（下限，
- *  记录的完整分店余量要后端排除本单才算得出） */
+ *  记录的完整余量要后端排除本单才算得出） */
 export function ownOnlyRecords(po: Pick<PurchaseOrder, 'lines'> | null, listed: readonly { line_id: number }[]): OwnRecord[] {
   const shown = new Set(listed.map((l) => l.line_id));
   const m = new Map<number, OwnRecord>();
   for (const ln of po?.lines ?? []) for (const s of ln.sources) {
     if (shown.has(s.line_id)) continue;
     const sid = String(s.seller_id);
-    const r = m.get(s.line_id) ?? { target: { line_id: s.line_id, sku: ln.sku, blocked: null, sellers: {} }, saved: {} };
+    const r = m.get(s.line_id) ?? { target: { line_id: s.line_id, sku: ln.sku, remaining: 0, sellers: {} }, saved: {} };
     r.saved[sid] = (r.saved[sid] ?? 0) + s.units;
-    r.target.sellers[sid] = { expected: null, cap: null, used: 0, remaining: 0 };
+    r.target.sellers[sid] = { expected: null, used: 0 };
     m.set(s.line_id, r);
   }
   return [...m.values()].sort((a, b) => a.target.sku.localeCompare(b.target.sku) || a.target.line_id - b.target.line_id);
@@ -316,15 +356,14 @@ export function preselect<T extends { line_id: number }>(ids: readonly number[],
   return { shown: all.filter((c) => want.has(c.line_id)), missing: ids.filter((id) => !have.has(id)) };
 }
 
-/** 各店期望占比（%，取整）。★ 同 rules/purchase.py::seller_caps 的分母：期望合计；
- *  无分店依据或合计为 0 时不给 —— 不是 0% */
-export function sellerShares(c: Pick<CandidateLine, 'blocked' | 'sellers'>): Record<string, number> | null {
-  if (c.blocked) return null;
+/** 各店期望占比（%，取整），只作分店时的参考（PB-D22 不再据此限量）。
+ *  有店期望为空或合计为 0 时不给 —— 不是 0% */
+export function sellerShares(c: Pick<CandidateLine, 'sellers'>): Record<string, number> | null {
   const ex = Object.entries(c.sellers).map(([sid, v]) => [sid, v.expected] as const);
   if (ex.some(([, e]) => e === null)) return null;
   const sum = ex.reduce((a, [, e]) => a + (e ?? 0), 0);
   if (sum <= 0) return null;
-  // 最大余数法凑满 100（同 seller_caps 的分法）：各自四舍五入会出现 33+33+33
+  // 最大余数法凑满 100：各自四舍五入会出现 33+33+33
   const out = Object.fromEntries(ex.map(([sid, e]) => [sid, Math.floor(((e ?? 0) * 100) / sum)]));
   const extra = 100 - Object.values(out).reduce((a, b) => a + b, 0);
   const order = ex.map(([sid, e]) => [sid, ((e ?? 0) * 100) % sum] as const)

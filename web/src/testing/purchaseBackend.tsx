@@ -33,6 +33,7 @@ export const DRAFT: PurchaseOrder = {
   attention: [],
   preflight: [{ gate: 'supplier', ok: true, detail: {} }, { gate: 'sources_orderable', ok: true, detail: { offenders: [] } }],
   confirm_token: 'tok-v4',
+  lx: null,
 };
 
 export const PLACED: PurchaseOrder = {
@@ -44,7 +45,7 @@ export const PLACED: PurchaseOrder = {
 export const createAttempt = (over: Partial<PoAttempt> = {}): PoAttempt => ({
   call_id: 20, at: '2026-10-09T10:01:03+08:00', actor: 'ops.zhang', endpoint: 'create_purchase_order',
   host: 'erp.example', path: '/erp/x/createPurchaseOrder', idem_key: 'SCM-PO-1', elapsed_ms: null, outcome: 'in_flight',
-  http_status: null, lx_code: null, lx_msg: null, cause: null, retry_of: null, request: {}, response: null, ...over,
+  http_status: null, lx_code: null, lx_msg: null, rejected_kind: null, cause: null, retry_of: null, request: {}, response: null, ...over,
 });
 
 export const EMPTY_TIMELINE: PoTimeline = { po_id: 1, conclusion: null, attempts: [], events: [], attention: [] };

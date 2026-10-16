@@ -6,7 +6,7 @@ import time
 from decimal import Decimal, InvalidOperation
 
 from repo import purchase as repo
-from rules.purchase import NoSellerBasis, confirm_token, po_digest, preflight, seller_caps
+from rules.purchase import confirm_token, po_digest, preflight, stray_sellers
 from shared.config import erp
 from shared.pg_client import pg_conn, timed
 from usecase.line_state import reevaluate
@@ -65,23 +65,15 @@ def _check_quantities(cur, lines: list[dict], exclude_po: int | None) -> list[in
     used = repo.seller_used(cur, line_ids, exclude_po)
     for lid in line_ids:
         pl = plan_lines[lid]
-        try:
-            caps = seller_caps(pl["total_units"], pl["demand_by_seller"])
-        except NoSellerBasis as e:
-            raise Conflict(409, "no_seller_basis", "期望销量为 0 或 unknown 的店无法定分店上限",
-                           line_id=lid, sellers=e.sellers) from None
+        stray = stray_sellers(pl["demand_by_seller"], [sid for (l2, sid) in want if l2 == lid])
+        if stray:
+            raise Conflict(409, "seller_not_in_line", "来源店不在这条记录里（只能记到计划里认领了该货号的店）",
+                           line_id=lid, seller_ids=stray, allowed=sorted(pl["demand_by_seller"] or {}))
         total_used = sum(v for (l2, _), v in used.items() if l2 == lid)
         total_want = sum(v for (l2, _), v in want.items() if l2 == lid)
         if total_used + total_want > pl["total_units"]:
             raise Conflict(409, "over_total", "超过记录总量", line_id=lid, total=pl["total_units"],
                            used=total_used, requested=total_want)
-        for (l2, sid), req in want.items():
-            if l2 != lid:
-                continue
-            cap, u = caps.get(sid, 0), used.get((lid, sid), 0)
-            if u + req > cap:
-                raise Conflict(409, "over_seller_cap", "超过该店上限（按期望销量占比）",
-                               line_id=lid, seller_id=sid, cap=cap, used=u, requested=req)
     return line_ids
 
 

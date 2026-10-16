@@ -41,7 +41,7 @@ def test_refresh_writes_rows_and_bumps_refreshed_at(seed):
 
 
 def test_coverage_drop_refuses_the_batch_and_keeps_the_old_mirror(seed):
-    big = [(f"SKU{i}", f"名{i}", R.D2) for i in range(100)]
+    big = [(f"SKU{i}", f"名{i}", i, R.D2) for i in range(100)]
     rd.refresh_all("cli", only="sku_catalog", query=R.replay(big))
     with pg_conn() as c, c.cursor() as cur:
         before = _rows(cur, "SELECT count(*), max(refreshed_at) FROM sku_catalog")[0]
@@ -246,7 +246,7 @@ def test_a_batch_where_every_row_was_dropped_is_a_refusal_not_a_success(seed):
         before = _rows(cur, "SELECT count(*), max(refreshed_at) FROM sku_catalog")[0]
 
     got = rd.refresh_all("cli", only="sku_catalog",
-                         query=R.replay([("", "空货号", R.D2)]))
+                         query=R.replay([("", "空货号", 1, R.D2)]))
     assert [r.ok for r in got] == [False], "一行都没存活不许记成成功"
     assert "all_rows_dropped" in (got[0].error or ""), got[0].error
     assert "empty_sku" in (got[0].error or ""), f"error 没带上丢弃原因：{got[0].error}"
@@ -265,7 +265,7 @@ def test_an_all_dropped_batch_does_not_become_the_next_coverage_baseline(seed):
     当成假值，整条掉档比较被跳过 —— 全丢光的那一轮若被写成基线，下一轮就
     再也没有掉档保护了。基线只认 `ok` 的行，所以这里应当报「首轮无基线」，
     而不是拿 0 来比。"""
-    rd.refresh_all("cli", only="sku_catalog", query=R.replay([("", "空", R.D2)]))
+    rd.refresh_all("cli", only="sku_catalog", query=R.replay([("", "空", 1, R.D2)]))
     got = rd.refresh_all("cli", only="sku_catalog", query=R.replay(R.SKU_CATALOG))
     assert [r.ok for r in got] == [True]
     with pg_conn() as c, c.cursor() as cur:
@@ -279,7 +279,7 @@ def test_cli_exits_1_when_every_row_of_a_batch_was_dropped(seed, monkeypatch, ca
     """★ 走真的 `main()`：退出码是运维与调度器唯一会看的东西。"""
     monkeypatch.setattr(rd, "ch_client", lambda: object())
     monkeypatch.setattr(rd, "ch_query",
-                        lambda client: R.replay([("", "空货号", R.D2)]))
+                        lambda client: R.replay([("", "空货号", 1, R.D2)]))
     assert rd.main(["--only", "sku_catalog"]) == 1
     assert "all_rows_dropped" in capsys.readouterr().out
 
@@ -351,7 +351,7 @@ def _mixed_query_with_db_level_failure():
     second time`），而不是 `ch_source.fetch_*` 里的 Python 级 `UnknownShape`。
     """
     from dim import ch_source as cs
-    dup_sku_catalog = [("SKU-DUP", "第一份", R.D2), ("SKU-DUP", "第二份(重复主键)", R.D2)]
+    dup_sku_catalog = [("SKU-DUP", "第一份", 1, R.D2), ("SKU-DUP", "第二份(重复主键)", 2, R.D2)]
     table = {cs.SQL_SKU_CATALOG: dup_sku_catalog, cs.SQL_MSKU_BRIDGE: R.MSKU_BRIDGE,
              cs.SQL_WAREHOUSE: R.WAREHOUSE, cs.SQL_SELLER: R.SELLER,
              cs.SQL_SUPPLIER: [("8085", "01[吉信德宠物用品]", R.D2)]}

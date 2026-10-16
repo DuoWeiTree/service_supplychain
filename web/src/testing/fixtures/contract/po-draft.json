@@ -13,6 +13,7 @@
   "created_by": "alice",
   "is_void": false,
   "discarded_at": null,
+  "lx": null,
   "lines": [
     {
       "line_no": 1,
@@ -106,6 +107,15 @@
       }
     },
     {
+      "gate": "single_wid",
+      "ok": true,
+      "detail": {
+        "wids": [
+          1
+        ]
+      }
+    },
+    {
       "gate": "sources_orderable",
       "ok": true,
       "detail": {
@@ -113,5 +123,5 @@
       }
     }
   ],
-  "confirm_token": "b81e1597dc8da2dd50daabea2e20e68ed1f903126ff7be64d39e2efa2a6bcddc"
+  "confirm_token": "277f1396bbcc11e8f289e4553fc8c29fa72fc94a20cfe7fb586cfd681fefa321"
 }

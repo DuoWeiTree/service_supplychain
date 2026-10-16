@@ -19,6 +19,8 @@ from pathlib import Path
 from api.ui.purchase_options import history_query_dep
 from shared.pg_client import pg_conn
 from tests.helpers import H, advance, mint
+from tests.test_api_sheets import stock  # noqa: F401 —— dispatch_world 依赖它
+from tests.test_api_sheets import world as dispatch_world  # noqa: F401
 
 DIR = Path(__file__).resolve().parents[1] / "web" / "src" / "testing" / "fixtures" / "contract"
 WRITE = os.environ.get("SCM_WRITE_CONTRACT") == "1"
@@ -172,3 +174,76 @@ def test_skeleton_catches_string_vs_int():
     """★ 证伪：骨架真的分得开 111 与 "111"。"""
     assert skeleton({"purchaser_id": 111}) != skeleton({"purchaser_id": "111"})
     assert skeleton([{"wid": 1}]) != skeleton([{"wid": "1"}])
+
+
+def test_contract_dispatch_samples(client, seed, dispatch_world, lingxing):
+    """排货页（spec 2026-10-10 §6 / §7）的真响应：列表 · 详情 · 网格 · 写格子 · 预检 · 确认被挡。"""
+    from tests.test_api_sheets import BOX, OVERSEA, packing_url, put
+    sid = client.post("/v1/sheets", json={"plan_id": dispatch_world["plan_id"], "route": "fba"},
+                      headers=H(seed.actor)).json()["sheet_id"]
+    osid = client.post("/v1/sheets", json={"plan_id": dispatch_world["plan_id"], "route": "oversea"},
+                       headers=H(seed.actor)).json()["sheet_id"]
+    cell = put(client, seed, sid, line_id=dispatch_world["line_id"], units=30).json()
+    put(client, seed, osid, seller_sku=seed.msku_e[0], sid=seed.msku_e[1], units=3,
+        channel="oversea", dest_wid=OVERSEA)
+    blocked = client.post(f"/v1/sheets/{sid}/confirm",
+                          json={"seen_watermark": client.get(f"/v1/sheets/{sid}").json()["watermark"]},
+                          headers=H(seed.actor))
+    assert blocked.status_code == 409
+    client.put(packing_url(sid, seed), json=BOX, headers=H(seed.actor))
+    client.get("/v1/logistics-channels", headers=H(seed.actor))
+    client.put(f"/v1/sheets/{osid}/logistics/{OVERSEA}", json={"logistics_id": 28762}, headers=H(seed.actor))
+    _compare({
+        "sheet-detail-oversea": client.get(f"/v1/sheets/{osid}").json(),
+        "sheet-grid-oversea": client.get(f"/v1/sheets/{osid}/grid").json(),
+        "sheet-preflight-oversea": client.get(f"/v1/sheets/{osid}/preflight").json(),
+        "logistics-channels": client.get("/v1/logistics-channels").json(),
+        "sheet-list": client.get("/v1/sheets").json(),
+        "dispatch-plans": client.get("/v1/dispatch/plans").json(),
+        "sheet-detail": client.get(f"/v1/sheets/{sid}").json(),
+        "sheet-grid": client.get(f"/v1/sheets/{sid}/grid").json(),
+        "sheet-cell": cell,
+        "sheet-preflight": client.get(f"/v1/sheets/{sid}/preflight").json(),
+        "sheet-confirm-blocked": blocked.json(),
+    })
+
+
+def test_contract_ows_samples(client, seed, dispatch_world, stock, lingxing):  # noqa: F811
+    """提交领星（spec 2026-10-12 §5）：预览 · 待核实 · 提交结果 · 已投送的详情 · 取消删单。
+    ★ 每个列表都要有内容：先造一张待核实，再收尾建齐。"""
+    from tests.test_api_submit_ows import confirmed as _confirmed
+    sid = _confirmed.__wrapped__(client, seed, dispatch_world, stock, lingxing)
+    a = H(seed.actor)
+    lingxing.enqueue("create_ows_order", "unknown_absent")
+    tok = client.get(f"/v1/sheets/{sid}/submission").json()["confirm_token"]
+    nv = client.post(f"/v1/sheets/{sid}/submit", json={"confirm_token": tok}, headers=a).json()
+    aid = nv["results"][0]["attention_id"]
+    pending = client.get(f"/v1/sheets/{sid}/submission").json()
+    absent = client.post(f"/v1/sheets/{sid}/ext-refs/confirm-absent", json={"attention_id": aid, "reason": "契约"},
+                         headers=a).json()
+    tok = client.get(f"/v1/sheets/{sid}/submission").json()["confirm_token"]
+    done = client.post(f"/v1/sheets/{sid}/submit", json={"confirm_token": tok}, headers=a).json()
+    for no in list(lingxing._ows)[:1]:
+        lingxing.set_ows_status(no, "50", "1")                 # 一张待收货，一张仍待发货：样本里两种都有
+    rec = client.post(f"/v1/sheets/{sid}/receipt", headers=a).json()
+    detail = client.get(f"/v1/sheets/{sid}").json()
+    cancelled = client.post(f"/v1/sheets/{sid}/cancel", json={"reason": "契约"}, headers=a).json()
+    _compare({"ows-submit-needs-verify": nv, "ows-submission-pending": pending, "ows-confirm-absent": absent,
+              "ows-submit-done": done, "sheet-detail-dispatched": detail, "sheet-cancel-ows": cancelled,
+              "sheet-receipt": rec})
+
+
+def test_contract_fba_samples(client, seed, dispatch_world, stock, lingxing):  # noqa: F811
+    """C-c1 FBA 发货计划（spec 2026-10-13-dispatch-submit-fba-plan）：预览 · 锁失败 · 补锁后 · 详情 · 取消点名人工作废。"""
+    from tests.test_api_submit_fba import confirmed_fba as _c
+    sid = _c.__wrapped__(client, seed, dispatch_world, stock, lingxing)
+    a = H(seed.actor)
+    pv = client.get(f"/v1/sheets/{sid}/submission").json()
+    lingxing.enqueue("fba_plan_lock", "rejected")
+    failed = client.post(f"/v1/sheets/{sid}/submit", json={"confirm_token": pv["confirm_token"]}, headers=a).json()
+    pending = client.get(f"/v1/sheets/{sid}/submission").json()
+    relocked = client.post(f"/v1/sheets/{sid}/submit", json={"confirm_token": pending["confirm_token"]}, headers=a).json()
+    detail = client.get(f"/v1/sheets/{sid}").json()
+    cancelled = client.post(f"/v1/sheets/{sid}/cancel", json={"reason": "契约"}, headers=a).json()
+    _compare({"fba-submission": pv, "fba-submit-lock-failed": failed, "fba-submission-to-lock": pending,
+              "fba-submit-relocked": relocked, "sheet-detail-fba-dispatched": detail, "sheet-cancel-fba": cancelled})

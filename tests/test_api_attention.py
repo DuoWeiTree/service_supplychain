@@ -28,9 +28,9 @@ def stuck(client, seed, lingxing):
 
 
 def _late_order(seed, po_id, custom=None):
-    gateway.call("create_purchase_order", {"custom_order_sn": custom or f"SCM-PO-{po_id}", "supplier_id": 8085,
-                                           "purchaser_id": 111, "opt_uid": 1, "qc_type": 2, "wid": seed.wid,
-                                           "product_list": [{"sku": seed.sku_a, "wid": seed.wid,
+    gateway.call("create_purchase_order", {"custom_order_sn": custom or f"SCM-PO-{po_id}", "sys_supplier_id": 8085,
+                                           "purchaser_id": 111, "opt_uid": 1, "qc_type": 2, "sys_wid": seed.wid,
+                                           "product_list": [{"sku": seed.sku_a,
                                                              "quantity_real": 10, "price": "2"}]})
 
 
@@ -156,7 +156,8 @@ def test_last_lookup_ignores_register_lookups(client, seed, stuck):
     idem_lookup = client.get(f"/v1/purchase-orders/{po_id}/timeline").json()["attempts"][1]["call_id"]
     assert _register(client, seed, po_id, "NOPE").status_code == 409     # 留下一条窄查询
     t = client.get(f"/v1/purchase-orders/{po_id}/timeline").json()
-    assert t["attempts"][-1]["request"].get("order_sns") == "NOPE"
+    assert t["attempts"][-1]["request"].get("order_sn") == ["NOPE"]
+    assert t["attempts"][-1]["request"].get("start_date")          # 窄查询也带必填日期，仍不算查重
     assert t["conclusion"]["last_lookup"]["call_id"] == idem_lookup
     assert t["conclusion"]["last_lookup"]["window"]["start_date"]
 

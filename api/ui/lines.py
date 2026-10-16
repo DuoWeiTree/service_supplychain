@@ -14,7 +14,6 @@ from api.ui.deps import (
 )
 from api.ui.errors import ApiError
 from repo.purchase import seller_used
-from rules.purchase import NoSellerBasis, seller_caps
 from shared.pg_client import pg_conn, timed
 
 log = logging.getLogger("scm.api")
@@ -94,15 +93,9 @@ def list_lines(request: Request, who: str | None = Depends(actor_optional)):
         conf, ordd = qty.get(r["line_id"], (0, 0))
         r["confirmed_units"], r["ordered_units"] = conf, ordd
         r["remaining"] = r["total_units"] - conf
-        try:
-            caps = seller_caps(r["total_units"], r["demand_by_seller"])
-            r["blocked"] = None
-        except NoSellerBasis as e:
-            caps, r["blocked"] = {}, {"reason": "no_seller_basis", "sellers": e.sellers}
+        # PB-D22：没有分店上限；期望只作参考（空 = 没有依据，不是 0）
         r["sellers"] = {
-            sid: {"expected": (v or {}).get("units"), "cap": caps.get(sid),
-                  "used": used.get((r["line_id"], sid), 0),
-                  "remaining": None if sid not in caps else caps[sid] - used.get((r["line_id"], sid), 0)}
+            sid: {"expected": (v or {}).get("units"), "used": used.get((r["line_id"], sid), 0)}
             for sid, v in r["demand_by_seller"].items()}
 
     # ★ 每个 filter 各自在候选集上报告自己丢了多少，而不是合并成一个匿名总数——

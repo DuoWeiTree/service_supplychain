@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 
+from erp.transport import rejection_kind
 from repo import purchase as repo
 from rules.purchase import order_differences, orders_by_custom_sn
 from shared.config import erp as erp_config
@@ -26,12 +27,15 @@ def _known(d: dict) -> str:
 
 
 def _last_lookup(attempts: list[dict], after_call: int) -> dict | None:
-    """★ 只认「按幂等键的窗口查重」（请求带 search_field_time）且晚于本次 create：
-    登记已有单的窄查询、更早一轮的查重都不是「这次下单之后查过没有」的证据。"""
+    """★ 只认「按幂等键的窗口查重」且晚于本次 create：登记已有单 / 读回的按单号窄查询、更早一轮的查重
+    都不是「这次下单之后查过没有」的证据。
+    ★ 判据 = 带日期窗口且不按单号过滤：读回 / 登记自 PB-D28 起也带日期（必填），只看 search_field_time 会认错；
+      旧的查重记录没有 custom_order_sn 键，所以不拿它当判据。"""
     for a in reversed(attempts):
         if a["endpoint"] != "purchase_order_list" or a["call_id"] <= after_call:
             continue
-        if not isinstance(a["request"], dict) or "search_field_time" not in a["request"]:
+        req_ = a["request"] if isinstance(a["request"], dict) else {}
+        if "search_field_time" not in req_ or "order_sn" in req_ or "order_sns" in req_:
             continue
         resp = a["response"] if isinstance(a["response"], dict) else {}
         total, rows = resp.get("total"), resp.get("data") or []
@@ -54,6 +58,7 @@ def timeline(po_id: int) -> dict:
         for row in cur.fetchall():
             a = dict(zip(_ATTEMPT_COLS, row, strict=True))
             a["at"] = a.pop("started_at").isoformat()
+            a["rejected_kind"] = rejection_kind(a["outcome"], a["lx_code"])
             attempts.append(a)
         cur.execute("SELECT from_state, to_state, actor, reason, src, at FROM po_event WHERE po_id=%s ORDER BY seq",
                     (po_id,))
@@ -118,8 +123,12 @@ def register_existing(po_id: int, order_sn: str, actor: str) -> dict:
     if not order_sn:
         raise Conflict(400, "missing_required", "必须填领星单号", missing=["order_sn"])
     po = load_po(po_id)
-    cid, r = place_po.call_logged("purchase_order_list", {"order_sns": order_sn, "offset": 0, "length": 50},
-                                   po_id=po_id, actor=actor, retry_of=None)
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("SELECT created_at FROM po WHERE po_id=%s", (po_id,))
+        created = cur.fetchone()[0]
+    # 人工登记的单不晚于草稿建立之前出现在领星（它是本单的下单结果）：窗口 = 草稿建立日 ~ 今天
+    params = place_po.by_order_sn_params(order_sn, created.astimezone().date(), dt.datetime.now().astimezone().date())
+    cid, r = place_po.call_logged("purchase_order_list", params, po_id=po_id, actor=actor, retry_of=None)
     rows = [o for o in ((r.body or {}).get("data") or []) if o.get("order_sn") == order_sn]
     if r.outcome != "ok":
         log.error("op=po_register_existing po_id=%s order_sn=%s actor=%s outcome=lookup_failed"
@@ -155,7 +164,7 @@ def register_existing(po_id: int, order_sn: str, actor: str) -> dict:
                                    f"人工登记领星单 {order_sn}（已核对 custom_order_sn / 供应商 / 明细）")
         if n == 0:
             raise Conflict(409, "nothing_to_resolve", "待处理项刚被别人处理了", po_id=po_id)
-    place_po._read_back_safe(po_id, o, cid)
+    place_po._read_back_safe(po_id, o, cid, actor)
     log.warning("op=po_register_existing po_id=%s order_sn=%s actor=%s outcome=placed moved=%s",
                 po_id, order_sn, actor, moved)
     return {"outcome": "placed", "po_id": po_id, "order_sn": order_sn, "found_by": "manual"}

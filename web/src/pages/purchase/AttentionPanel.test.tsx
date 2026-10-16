@@ -17,7 +17,7 @@ const PENDING: PurchaseOrder = { ...DRAFT, attention: [NV_OPEN] };
 const CREATE: PoAttempt = {
   call_id: 10, at: '2026-10-09T10:01:03.120+08:00', actor: 'ops.zhang', endpoint: 'create_purchase_order',
   host: 'erp.example', path: '/erp/sc/routing/purchase/purchase/createPurchaseOrder', idem_key: 'SCM-PO-1',
-  elapsed_ms: 30012, outcome: 'unknown', http_status: null, lx_code: null, lx_msg: null,
+  elapsed_ms: 30012, outcome: 'unknown', http_status: null, lx_code: null, lx_msg: null, rejected_kind: null,
   cause: 'TimeoutError: The read operation timed out @ erp.example:443', retry_of: null,
   request: { custom_order_sn: 'SCM-PO-1', supplier_id: 'S-1001', access_token: '***' }, response: null,
 };
@@ -49,20 +49,25 @@ const panel = () => screen.findByTestId('attention-panel');
 describe('路由：有未处理项的草稿不进编辑器', () => {
   it('★ 待核实的草稿 → 详情 + 红框，没有保存 / 删除 / 下单', async () => {
     await mountPurchase('/purchase/1', purchaseRoutes(nvState()));
-    expect(await panel()).toHaveClass('panel--alert');
+    expect(await panel()).toHaveClass('ap');
+    expect(await panel()).not.toHaveClass('ap--warn');   // 待核实要人动手：danger 外框
     expect(screen.queryByRole('button', { name: '保存草稿' })).toBeNull();
     expect(screen.queryByRole('button', { name: '删除草稿' })).toBeNull();
     expect(screen.queryByRole('button', { name: '⛔ 下单' })).toBeNull();
   });
 });
 
+/** 结论是 dt/dd 键值：取某个键对应的值 */
+const fact = (c: HTMLElement, k: string) =>
+  [...c.querySelectorAll('dt')].find((d) => d.textContent === k)?.nextElementSibling?.textContent ?? null;
+
 describe('结论', () => {
   it('已知 / 未知 / 最近一次查重（时间 + 结果）+ 去领星照着搜的条件', async () => {
     await mountPurchase('/purchase/1', purchaseRoutes(nvState()));
     const c = within(await panel()).getByTestId('conclusion');
-    expect(c).toHaveTextContent('已知：请求已发到领星');
-    expect(c).toHaveTextContent('未知：领星是否已建单');
-    expect(c).toHaveTextContent('最近一次查重：2026-10-09 10:01:34 查询成功');
+    expect(fact(c, '已知')).toContain('请求已发到领星');
+    expect(fact(c, '不知道')).toBe('领星是否已建单');
+    expect(fact(c, '最近查重')).toContain('2026-10-09 10:01:34 查询成功');
     expect(c).toHaveTextContent('SCM-PO-1');
     expect(c).toHaveTextContent('2026-10-08 至 2026-10-10');
   });
@@ -70,7 +75,7 @@ describe('结论', () => {
   it('★ 空≠0：从没查过 与 查过没找到 写得不一样', async () => {
     await mountPurchase('/purchase/1', purchaseRoutes(nvState(false)));
     const c = within(await panel()).getByTestId('conclusion');
-    expect(c).toHaveTextContent('最近一次查重：还没查过');
+    expect(fact(c, '最近查重')).toBe('还没查过');
     expect(c).not.toHaveTextContent('查询成功');
   });
 });

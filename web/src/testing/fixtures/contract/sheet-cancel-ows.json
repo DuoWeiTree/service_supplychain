@@ -1,0 +1,10 @@
+{
+  "error": "ows_not_cancellable",
+  "hint": "有备货单在领星已过「待发货」，删不掉，排货表不取消",
+  "orders": [
+    {
+      "ext_no": "OWS261012001",
+      "status": "50"
+    }
+  ]
+}

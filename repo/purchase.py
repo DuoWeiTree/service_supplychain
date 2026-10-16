@@ -134,6 +134,8 @@ def read_po(cur, po_id: int) -> dict | None:
     po = dict(zip(keys, r))
     for k in ("placed_at", "discarded_at"):
         po[k] = po[k].isoformat() if po[k] else None
+    # null = 从没读回过（不是「没有状态」）；页面据此写「未读回」
+    po["lx"] = latest_snapshot(cur, po["order_sn"])
     cur.execute("SELECT line_no, sku, wid, units, price::text, expect_arrive_date, unplanned_reason,"
                 " lx_item_id FROM po_line WHERE po_id = %s ORDER BY line_no", (po_id,))
     po["lines"] = [{"line_no": a, "sku": b, "wid": c, "units": d, "price": e,
@@ -258,15 +260,56 @@ def _lx_item_id(it: dict) -> str | None:
     return None if v is None else str(v)
 
 
+def _int_or_none(x) -> int | None:
+    try:
+        return int(x)
+    except (TypeError, ValueError):
+        return None
+
+
+def insert_snapshot(cur, order: dict, source: str, call_id: int | None) -> int | None:
+    """领星单头状态的一次观察（只追加）。None = 读回里没有可用的 status，不编一个。"""
+    status = _int_or_none(order.get("status"))
+    if status is None:
+        return None
+    cur.execute("INSERT INTO po_snapshot (order_sn, status, status_shipped, quantity_real, quantity_entry,"
+                " quantity_receive, source, source_captured_at, call_id)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, now(), %s) RETURNING snap_id",
+                (order["order_sn"], status, _int_or_none(order.get("status_shipped")),
+                 _int_or_none(order.get("quantity_real")), _int_or_none(order.get("quantity_entry")),
+                 _int_or_none(order.get("quantity_receive")), source, call_id))
+    return cur.fetchone()[0]
+
+
+def latest_snapshot(cur, order_sn: str | None) -> dict | None:
+    if not order_sn:
+        return None
+    cur.execute("SELECT status, status_shipped, quantity_real, quantity_receive, quantity_entry, source,"
+                " source_captured_at, call_id FROM po_snapshot WHERE order_sn = %s"
+                " ORDER BY source_captured_at DESC, snap_id DESC LIMIT 1", (order_sn,))
+    r = cur.fetchone()
+    if r is None:
+        return None
+    keys = ("status", "status_shipped", "quantity_real", "quantity_receive", "quantity_entry", "source",
+            "captured_at", "call_id")
+    d = dict(zip(keys, r))
+    d["captured_at"] = d["captured_at"].isoformat()
+    return d
+
+
 def insert_item_obs(cur, order_sn: str, items: list[dict], source: str, call_id: int | None) -> int:
     n = 0
     for it in items:
         if str(it.get("is_delete", 0)) not in ("0", "False", "false"):
             continue
+        # ★ CA-D12：行级 已入库 / 待到货 一并存下（缺键 = NULL = 未知，不是 0）
+        entered, pending = it.get("quantity_entry"), it.get("quantity_receive")
         cur.execute("INSERT INTO po_item_obs (order_sn, lx_item_id, sku, wid, quantity_real, price, source,"
-                    " source_captured_at, call_id) VALUES (%s, %s, %s, %s, %s, %s, %s, now(), %s)",
+                    " source_captured_at, call_id, quantity_entry, quantity_receive)"
+                    " VALUES (%s, %s, %s, %s, %s, %s, %s, now(), %s, %s, %s)",
                     (order_sn, _lx_item_id(it),
-                     it["sku"], it.get("wid"), int(it["quantity_real"]), it.get("price"), source, call_id))
+                     it["sku"], it.get("wid"), int(it["quantity_real"]), it.get("price"), source, call_id,
+                     None if entered is None else int(entered), None if pending is None else int(pending)))
         n += 1
     return n
 

@@ -36,7 +36,7 @@ def test_bridge_days_are_consumed_by_forecast():
                               "segments": [{**segment_detail(120, D(2026, 9, 22),
                                                              D(2026, 9, 30)),
                                             "month": "2026-09", "month_total_raw": 120.0}],
-                              "onhand_as_of": 300, "arrivals": [], "arrival_units": 0,
+                              "onhand_as_of": 300, "onhand_parts": None, "arrivals": [], "arrival_units": 0,
                               "stockout_date": None}
     assert rows[1].bridge is None
 
@@ -88,7 +88,7 @@ def test_no_rate_falls_back_to_first_month_expected_per_day():
                               "segments": [{**segment_detail(120, D(2026, 9, 22),
                                                              D(2026, 9, 30)),
                                             "month": "2026-09", "month_total_raw": 120.0}],
-                              "onhand_as_of": 300, "arrivals": [], "arrival_units": 0,
+                              "onhand_as_of": 300, "onhand_parts": None, "arrivals": [], "arrival_units": 0,
                               "stockout_date": None}
 
 
@@ -142,7 +142,7 @@ def test_as_of_inside_first_month_starts_the_day_after():
         "partial", "as_of_inside_month", None, 20, 80)
     assert (rows[1].opening, rows[1].closing) == (80, 50)
     # ★ 依据要说得出 80 从哪来：起点是 as_of 当天可售，不是月初期初（月初那几天不在账上）
-    assert rows[0].as_of_start == {"as_of": "2026-10-10", "onhand_as_of": 100, "from": "2026-10-11",
+    assert rows[0].as_of_start == {"as_of": "2026-10-10", "onhand_as_of": 100, "onhand_parts": None, "from": "2026-10-11",
                                    "segment": segment_detail(30, D(2026, 10, 11), D(2026, 10, 31))}
     assert rows[0].as_of_start["segment"]["units"] == rows[0].demand
     assert rows[1].as_of_start is None
@@ -201,7 +201,7 @@ def test_no_rate_rows_still_show_expected_demand_and_name_the_bridge():
         (None, None, 0, None), (None, 50, 0, None)]
     assert rows[0].bridge == {"from": "2026-09-22", "to": "2026-09-30", "units": None,
                               "by": "unknown", "rate": None, "month_totals": {}, "segments": [],
-                              "onhand_as_of": 300, "arrivals": [], "arrival_units": 0,
+                              "onhand_as_of": 300, "onhand_parts": None, "arrivals": [], "arrival_units": 0,
                               "stockout_date": None}
     assert rows[1].bridge is None
 

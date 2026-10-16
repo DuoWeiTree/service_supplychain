@@ -1,0 +1,49 @@
+{
+  "sheet_id": 1,
+  "ok": true,
+  "gates": [
+    {
+      "gate": "G1",
+      "ok": true,
+      "code": "packing_incomplete",
+      "detail": [],
+      "fix": "人：在排货单上填装箱"
+    },
+    {
+      "gate": "G2",
+      "ok": true,
+      "code": "dest_incomplete",
+      "detail": [],
+      "fix": "系统：由店铺推出；仍缺则回网格重选目的地"
+    },
+    {
+      "gate": "G3",
+      "ok": true,
+      "code": "insufficient_available",
+      "detail": [],
+      "fix": "人：回网格减少安排或换来源仓"
+    },
+    {
+      "gate": "G4",
+      "ok": true,
+      "code": "ledger_moved",
+      "detail": [],
+      "fix": "人：刷新后核对别的排货表的安排再确认"
+    },
+    {
+      "gate": "G5",
+      "ok": null,
+      "code": "unlinked_shipments_pending",
+      "detail": "待裁定 · 未检查（CA-Q9）",
+      "fix": "—"
+    },
+    {
+      "gate": "G6",
+      "ok": true,
+      "code": "invalid_destination",
+      "detail": [],
+      "fix": "人：回网格改目的地"
+    }
+  ],
+  "stock_as_of": "2026-10-10"
+}

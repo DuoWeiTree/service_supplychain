@@ -5,7 +5,7 @@
       "attention_id": 1,
       "po_id": 2,
       "kind": "needs_verify",
-      "opened_at": "2026-10-09T04:35:28.901064-04:00",
+      "opened_at": "2026-10-13T23:52:53.500450-04:00",
       "custom_order_sn": "SCM-PO-2",
       "supplier_id": "8085",
       "timeline": "/v1/purchase-orders/2/timeline"

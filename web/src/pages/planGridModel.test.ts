@@ -40,7 +40,7 @@ const fk = (period: string, making: number, shipping = 0, ordered = 0): SkuForec
   demand: null, system: null, system_not_applicable: false, opening: null,
   stock_demand: null, inbound_planned: 0, closing: null, excluded_not_applicable: 1,
   pipeline: { making, shipping, ordered_open: ordered, ordered_open_overdue: 0, ordered_open_sources: [],
-              fba_inbound: null, fba_inbound_reason: 'not_fetched' },
+              fba_inbound: 0, fba_inbound_reason: null }, month_in_transit: null,
   in_transit: making + shipping + ordered, in_transit_excludes: ['fba_inbound'],
   unfilled_purchase: [], has_image: false,
 });
@@ -85,7 +85,7 @@ describe('网格模型', () => {
     expect(sumUnits([])).toEqual({ kind: 'unknown' });
   });
 
-  it('期望销量跨 msku 可以求和', () => {
+  it('计划销量跨 msku 可以求和', () => {
     const m = buildGridModel(makeGrid(), sellers);
     expect(demandAt(m.blocks[0]!, P[0]!)).toEqual({ kind: 'num', value: 220 });
     expect(demandAt(m.blocks[0]!, P[1]!)).toEqual({ kind: 'unknown' });  // MSKU-B 11 月未知

@@ -13,7 +13,7 @@ import re
 
 from erp import gateway
 from erp.endpoints import get as get_endpoint
-from erp.transport import CallResult, cause_chain
+from erp.transport import CallResult, cause_chain, rejection_kind
 from repo import purchase as repo
 from rules.purchase import (
     create_order_payload,
@@ -31,10 +31,24 @@ log = logging.getLogger("scm.usecase")
 _LOOKUP_LEN = 500
 
 
-def _lookup_params(day: dt.date) -> dict:
-    # ★ 无 custom_order_sn 过滤（erp/endpoints.py 出处）：按建单日前后各一天取，客户端筛
-    return {"search_field_time": "create_time", "start_date": (day - dt.timedelta(days=1)).isoformat(),
-            "end_date": (day + dt.timedelta(days=1)).isoformat(), "offset": 0, "length": _LOOKUP_LEN}
+def _window(day_from: dt.date, day_to: dt.date) -> dict:
+    # ★ start_date / end_date 是必填（领星 PurchaseOrderList 文档）：不传实测 64.5 s（erp_call 6），带上 1.6~10 s。
+    #   前后各放一天：领星 create_time 是北京时间无时区串，本机日期可能差一天
+    return {"search_field_time": "create_time", "start_date": (day_from - dt.timedelta(days=1)).isoformat(),
+            "end_date": (day_to + dt.timedelta(days=1)).isoformat()}
+
+
+def _lookup_params(day: dt.date, custom_sn: str | None = None) -> dict:
+    # 按幂等键服务端过滤（文档 custom_order_sn[]，2026-10-10 实测只回这一张）；客户端仍 orders_by_custom_sn 再筛一遍
+    p = {**_window(day, day), "offset": 0, "length": _LOOKUP_LEN}
+    if custom_sn:
+        p["custom_order_sn"] = [custom_sn]
+    return p
+
+
+def by_order_sn_params(order_sn: str, day_from: dt.date, day_to: dt.date) -> dict:
+    # ★ 参数名是 order_sn（数组）；曾写成 order_sns —— 领星不认、照回窗口内全部单（2026-10-10 实测）
+    return {**_window(day_from, day_to), "order_sn": [order_sn], "offset": 0, "length": 50}
 
 
 def _int_like(v) -> bool:
@@ -63,13 +77,23 @@ def _classify(name: str, r: CallResult) -> CallResult:
                                      + (f"; {r.cause}" if r.cause else ""))
 
 
-def read_back(cur, po_id: int, order: dict, call_id: int | None) -> None:
-    """落地首检的数据源（spec §11 G1）：领星明细进 po_item_obs，行号回填 po_line。"""
+def read_back(cur, po_id: int, order: dict, call_id: int | None, actor: str) -> None:
+    """落地首检的数据源（spec §11 G1）：领星明细进 po_item_obs，行号回填 po_line，单头状态进 po_snapshot。"""
     items = order.get("item_list") or []
     n = repo.insert_item_obs(cur, order["order_sn"], items, "api", call_id)
     m = repo.backfill_item_ids(cur, po_id, items)
-    log.info("op=po_read_back po_id=%s order_sn=%s items_obs=%s item_ids_backfilled=%s",
-             po_id, order["order_sn"], n, m)
+    snap = repo.insert_snapshot(cur, order, "api", call_id)
+    log.info("op=po_read_back po_id=%s order_sn=%s items_obs=%s item_ids_backfilled=%s snap=%s status=%r"
+             " status_shipped=%r", po_id, order["order_sn"], n, m, snap, order.get("status"),
+             order.get("status_shipped"))
+    if snap is None:
+        log.warning("op=po_read_back_no_status po_id=%s order_sn=%s call=%s keys=%s", po_id,
+                    order["order_sn"], call_id, sorted(order)[:20])
+    elif str(order.get("status")) == "-1":
+        # PB-D5：作废经 v_po_effective 退出量视图 —— 记录状态要跟着退回，否则 v_check_line_state 立刻报不符
+        moved = reevaluate(cur, repo.source_line_ids(cur, po_id), actor, f"po:{po_id}:void_read_back:{call_id}")
+        log.warning("op=po_void_observed po_id=%s order_sn=%s call=%s lines_moved=%s", po_id,
+                    order["order_sn"], call_id, moved)
 
 
 def call_logged(name: str, params: dict, *, po_id: int, actor: str,
@@ -115,11 +139,11 @@ def _settle_placed(cur, po_id: int, order_sn: str, actor: str, src: str, resolve
     return reevaluate(cur, line_ids, actor, f"po:{po_id}:{src}")
 
 
-def _read_back_safe(po_id: int, order: dict, call_id: int | None) -> None:
+def _read_back_safe(po_id: int, order: dict, call_id: int | None, actor: str) -> None:
     """★ 已下单之后的读回只是补证据：失败只留痕，绝不让「已下单」变成 500。"""
     try:
         with pg_conn() as c, c.cursor() as cur:
-            read_back(cur, po_id, order, call_id)
+            read_back(cur, po_id, order, call_id, actor)
     except Exception as e:  # noqa: BLE001
         log.warning("op=po_read_back po_id=%s order_sn=%s outcome=fail err_type=%s cause=%s", po_id,
                     order.get("order_sn"), type(e).__name__, cause_chain(e))
@@ -133,7 +157,7 @@ def lookup_and_settle(po_id: int, actor: str, opened_by_call: int | None, src: s
     with pg_conn() as c, c.cursor() as cur:
         started = repo.get_call(cur, opened_by_call)["started_at"] if opened_by_call else None
     day = (started or dt.datetime.now().astimezone()).astimezone().date()  # 领星 create_time 是本地无时区串
-    params = _lookup_params(day)
+    params = _lookup_params(day, po["custom_order_sn"])
     cid, r = call_logged("purchase_order_list", params, po_id=po_id, actor=actor, retry_of=opened_by_call)
     rows = (r.body or {}).get("data") or [] if r.outcome == "ok" else []
     total = (r.body or {}).get("total") if r.outcome == "ok" else None
@@ -181,7 +205,7 @@ def lookup_and_settle(po_id: int, actor: str, opened_by_call: int | None, src: s
             else:
                 _open_needs_verify(cur, po_id, opened_by_call, "self_heal", None, po["custom_order_sn"])
     if hit:
-        _read_back_safe(po_id, hit, cid)
+        _read_back_safe(po_id, hit, cid, actor)
         log.warning("op=po_found_by_lookup po_id=%s order_sn=%s lookup_call=%s moved=%s",
                     po_id, hit["order_sn"], cid, moved)
         return {"outcome": "placed", "po_id": po_id, "order_sn": hit["order_sn"],
@@ -290,8 +314,12 @@ def place(po_id: int, token: str, actor: str) -> dict:
     if not closed:
         return _lost_race(po_id, call_id, r, order_sn)
     if r.outcome == "rejected":
+        kind = rejection_kind(r.outcome, r.lx_code)
+        if kind == "auth":
+            log.warning("op=erp_auth_rejected po_id=%s call=%s host=%s path=%s ms=%s code=%s msg=%s",
+                        po_id, call_id, r.host, r.path, r.elapsed_ms, r.lx_code, r.lx_msg)
         return {"outcome": "rejected", "po_id": po_id, "lx_code": r.lx_code, "lx_msg": r.lx_msg,
-                "erp_call_id": call_id}
+                "rejected_kind": kind, "host": r.host, "path": r.path, "erp_call_id": call_id}
     if r.outcome == "not_sent":
         return {"outcome": "not_sent", "po_id": po_id, "cause": r.cause, "erp_call_id": call_id,
                 "hint": "请求没有发到领星，可以直接重试"}
@@ -364,6 +392,8 @@ def recover_stuck(minutes: int | None = None) -> list[dict]:
         log.warning("op=recover_unsettled call=%s po_id=%s result=%s", call_id, po_id, res["outcome"])
         out.append(res)
     _close_stale_reads(minutes)
+    from usecase import submit_ows  # 函数内 import：submit_ows 依赖本模块的 call_logged
+    out += submit_ows.recover_stuck(minutes)
     return out
 
 

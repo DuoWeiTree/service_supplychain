@@ -45,6 +45,9 @@ def _build(client, seed):
             (seed.sku_a, seed.sku_a))
     body = client.get(f"/v1/plans/{pid}/grid", headers={"x-actor": seed.actor}).json()
     body["plan_id"] = 1        # ★ 固化前抹掉自增主键，否则 fixture 每轮都在变
+    # ★ 海外仓在途是领星实查的（spec 2026-10-15）：实查时刻每轮都变，固化前抹成定值
+    if body["source_notes"].get("oversea_in_transit_at"):
+        body["source_notes"]["oversea_in_transit_at"] = "2026-10-15T00:00:00+00:00"
     return body
 
 

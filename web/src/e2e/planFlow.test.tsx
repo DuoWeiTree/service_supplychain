@@ -76,7 +76,7 @@ describe('判据① · 建 → 加货品 → 填两种量 → 提交 → 铸出 
     const block = await screen.findByTestId(`block-${FIRST_INV.sid}-${FIRST_INV.sku}`);
     // 多 msku 的店铺默认展开，单 msku 的店铺直接在店铺行上填 —— 都不用先点展开
 
-    // 期望销量（msku 级输入）。★ testid 带 sid（`cell-${seller_sku}-${sid}-${period}`），
+    // 计划销量（msku 级输入）。★ testid 带 sid（`cell-${seller_sku}-${sid}-${period}`），
     //   brief 一稿漏了 sid —— 同一 seller_sku 在不同 sid 下是不同 listing（CLAUDE.md 铁律）
     // ★ M5（终审）：断言钉在 closing-sku 这个点上，不打在整个 sku-cell 上 ——
     //   同一格里还有期初、as_of、预估、Σ 期望，旁边那串字会把错的期望值托住

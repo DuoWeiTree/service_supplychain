@@ -1,0 +1,51 @@
+{
+  "sheet_id": 2,
+  "state": "草稿",
+  "created_by": "alice",
+  "plan_id": 1,
+  "plan_title": "t",
+  "route": "oversea",
+  "created_at": "2026-10-13T23:52:56.798994-04:00",
+  "watermark": 4,
+  "consignments": [
+    {
+      "consignment_id": 2,
+      "channel": "oversea",
+      "dest_wid": 2,
+      "dest_sid": null,
+      "our_stage": "草稿",
+      "idem_key": "SCM-CN-2",
+      "lines": [
+        {
+          "seller_sku": "MSKU-E",
+          "sid": "11072",
+          "from_wid": 1,
+          "sku": "A4P-TOY-003",
+          "units": 3,
+          "planned": 0,
+          "unplanned": 3
+        }
+      ]
+    }
+  ],
+  "packing": [],
+  "last_gate_run": null,
+  "events": [
+    {
+      "from_state": "[*]",
+      "to_state": "草稿",
+      "actor": "alice",
+      "reason": null,
+      "at": "2026-10-13T23:52:56.798994-04:00"
+    }
+  ],
+  "logistics": [
+    {
+      "dest_wid": 2,
+      "logistics_id": 28762,
+      "channel_name": "美森快船",
+      "enabled": true
+    }
+  ],
+  "ext_refs": []
+}

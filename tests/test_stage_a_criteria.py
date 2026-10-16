@@ -149,7 +149,7 @@ def test_mirror_refresh_end_to_end(client, seed):
     assert [r.ok for r in runs] == [True]
     with pg_conn() as c, c.cursor() as cur:
         cur.execute("SELECT wid, kind FROM warehouse ORDER BY wid")
-        assert cur.fetchall() == [(1, "local"), (2, "oversea_self"), (3, "oversea_3pl")]
+        assert cur.fetchall() == [(1, "local"), (2, "oversea_self"), (3, "oversea_3pl"), (4, "oversea_3pl")]
         cur.execute("SELECT refreshed_at FROM v_mirror_freshness WHERE mirror = 'warehouse'")
         assert cur.fetchone()[0] is not None
         cur.execute("SELECT ok, drop_reasons FROM dim_refresh_run WHERE mirror = 'warehouse'")

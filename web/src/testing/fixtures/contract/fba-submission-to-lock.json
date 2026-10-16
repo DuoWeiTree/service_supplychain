@@ -1,0 +1,49 @@
+{
+  "sheet_id": 1,
+  "state": "已确认",
+  "route": "fba",
+  "orders": [
+    {
+      "key": "1-1",
+      "consignment_id": 1,
+      "s_wid": 1,
+      "r_wid": null,
+      "dest_sid": "11072",
+      "logistics_id": null,
+      "channel_name": null,
+      "idem_key": "SCM-FBA-1-1",
+      "product_list": [
+        {
+          "sid": 11072,
+          "packing_type": 2,
+          "msku": "MSKU-A",
+          "fnsku": "X00AAA",
+          "shipment_plan_quantity": 5,
+          "quantity_in_case": 15,
+          "box_num": 2,
+          "wid": 1
+        }
+      ],
+      "lines": [
+        {
+          "seller_sku": "MSKU-A",
+          "sid": "11072",
+          "sku": "DCC1800264G1",
+          "units": 5
+        }
+      ],
+      "ext_no": "RP261013001",
+      "locked": false,
+      "order_sns": [
+        "R2610130010"
+      ]
+    }
+  ],
+  "blockers": [],
+  "skipped_fba": [],
+  "to_lock": [
+    "SCM-FBA-1-1"
+  ],
+  "confirm_token": "4f53cda18c2baa0c",
+  "attention": []
+}

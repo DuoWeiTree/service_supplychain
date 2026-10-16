@@ -3,8 +3,8 @@ import { useEffect, useId, useRef, type ReactNode } from 'react';
 /** ★ 只留一套弹窗结构：.modal-backdrop > .modal（shell.css 里 dialog.modal 与 div 版并存，
  *  这里固定用 div 版，不用原生 <dialog>） */
 export function Modal({
-  title, danger = false, warn, onClose, children,
-}: { title: string; danger?: boolean; warn?: string; onClose: () => void; children: ReactNode }) {
+  title, danger = false, warn, onClose, children, className,
+}: { title: string; danger?: boolean; warn?: string; onClose: () => void; children: ReactNode; className?: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const headingId = useId();
 
@@ -21,7 +21,7 @@ export function Modal({
     <div className="modal-backdrop" role="presentation" onClick={onClose}>
       <div
         ref={ref}
-        className="modal"
+        className={className ? `modal ${className}` : 'modal'}
         role="dialog"
         aria-labelledby={headingId}
         aria-modal="true"

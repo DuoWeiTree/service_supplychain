@@ -1,11 +1,14 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react';
 import { Qty, type QtyValue } from '../components/Qty';
-import type { ForecastReason, Period, Sid } from '../api/types';
+import type { ForecastReason, OnhandParts, Period, Sid } from '../api/types';
 import {
-  closingOfLast, demandAt, mskuStockAt, stockAt, sumUnits, systemAt, totalsAt,
+  closingOfLast, demandAt, mskuOnhandAt, mskuOnhandPartsAt, mskuStockAt, onhandAt, onhandPartsAt, stockAt, sumUnits, systemAt, totalsAt,
   type GridModel, type MskuCell, type MskuRow, type SkuBlock,
 } from './planGridModel';
-import { basisTitle, FORECAST_WHY, ForecastBasis, type BasisTarget } from './ForecastBasis';
+import {
+  basisTitle, FORECAST_WHY, ForecastBasis, salesCompositionMsku, salesCompositionSku, salesCompositionStore,
+  stockComposition, transitComposition, type BasisTarget,
+} from './ForecastBasis';
 import { Modal } from '../components/Modal';
 import { SkuImagePreview } from './SkuImagePreview';
 import { useInFlight } from '../shell/useInFlight';
@@ -57,7 +60,14 @@ type Density = keyof typeof ROW_H;
 function cellOf(row: MskuRow, p: Period): MskuCell | undefined { return row.cells.find((c) => c.period === p); }
 const fmt = (n: number | null) => (n === null ? '—' : n.toLocaleString('en-US'));
 const blockKey = (b: SkuBlock) => `${b.sid}-${b.sku}`;
-const SHORT_LABEL = { 预测: '预', 库存: '存', 在途: '途' } as const;
+/** FM-D1（10-15 负责人）：三个指标写全称；紧凑密度下货号行用单字 */
+const SHORT_LABEL = { 销量预测: '销', 月末库存: '存', 当月在途: '途' } as const;
+/** OP-19：「月末」的全称 —— 运营曾把它当成现在的库存去对领星 */
+const CLOSING_TITLE = '月末预计库存（期初 − 计划销量 + 到货）';
+/** 10-15 负责人：货号行填计划采购、店铺 / msku 行填计划销量 —— 格子里写全称，紧凑时单字 */
+type Fill = 'buy' | 'sell';
+const FILL_LABEL: Record<Fill, string> = { buy: '计划采购', sell: '计划销量' };
+const FILL_SHORT: Record<Fill, string> = { buy: '采', sell: '销' };
 
 /** 库存为什么是 — 。★ 光秃秃一根 — 分不出「没在仓数」「销量待填」「到货数未知」 */
 function unknownWhy(reason: ForecastReason | undefined): string {
@@ -67,6 +77,9 @@ function unknownWhy(reason: ForecastReason | undefined): string {
 export function PlanSheet(props: PlanSheetProps) {
   const { model, pending, inputErr } = props;
   const low = props.lowStock ?? LOW_STOCK_UNITS;
+  /** 「现有」的拆分（OP-19 c）：每日采集，与领星实时数可差当天的变动 */
+  const onhandTitle = (parts: OnhandParts | null) => `${parts ? `FBA 可售 ${parts.fulfillable} + 调仓中 ${parts.fc_transfers}`
+    : 'FBA 可售 + 调仓中'}，采集于 ${model.params.as_of}（每日采集，与领星实时数可差当天的变动）`;
   const periods = model.periods;
 
   const cards = useMemo(() => buildCards(model), [model]);
@@ -377,6 +390,8 @@ export function PlanSheet(props: PlanSheetProps) {
   function editableCell(args: {
     key: string; n: NavRow; ni: number; p: Period; ci: number; label: string; testId?: string;
     stock?: string | undefined; human: boolean; title?: string | undefined; value: ReactNode; sub: ReactNode;
+    /** 这一格填的是什么（10-15 负责人：货号行填计划采购、店铺 / msku 行填计划销量，要一眼分得开） */
+    fill: Fill;
   }) {
     const k = keyOf(args.n, args.p);
     const isCur = args.ni === cr && args.ci === cur.c;
@@ -395,7 +410,7 @@ export function PlanSheet(props: PlanSheetProps) {
         data-stock={args.stock}
         data-state={args.stock}
         title={err ?? args.title}
-        className={['ps-c', selected && 'is-sel', isCur && 'is-cur', isEdit && 'is-edit',
+        className={['ps-c', 'is-input', `is-fill-${args.fill}`, selected && 'is-sel', isCur && 'is-cur', isEdit && 'is-edit',
           args.human && 'is-human', busy && 'is-pending', err && 'is-err'].filter(Boolean).join(' ')}
         onMouseDown={(e) => {
           if (isEdit) return;
@@ -424,15 +439,24 @@ export function PlanSheet(props: PlanSheetProps) {
     return n.kind === 'purchase' ? `err-purchase-${n.card.sku}-${p}` : `err-${n.row.seller_sku}-${n.row.sid}-${p}`;
   }
 
+  /** 可填数前面的名字：紧凑时单字，全称在 title */
+  function fillKey(f: Fill): ReactNode {
+    const full = FILL_LABEL[f];
+    return <span className={`ps-k ps-k--${f}`} title={full}>{density === 'compact' ? FILL_SHORT[f] : full}</span>;
+  }
+
   function demandValue(c: MskuCell | undefined, draft: string | undefined, testId?: string): ReactNode {
-    if (draft !== undefined) return <span className="ps-v ps-v--human" data-testid={testId}>{draft === '' ? '—' : draft}</span>;
-    if (!c || c.effective_units === null) return <span className="ps-v ps-v--todo" data-testid={testId}>待填</span>;
-    return (
-      <span className={`ps-v ps-v--${c.basis === 'human' ? 'human' : 'est'}`}>
-        {c.system_extrapolated && c.basis !== 'human' && <span className="pm-v__tag" aria-label="系统外推">外推</span>}
-        <span data-testid={testId}>{fmt(c.effective_units)}</span>
-      </span>
-    );
+    const v = draft !== undefined
+      ? <span className="ps-v ps-v--human" data-testid={testId}>{draft === '' ? '—' : draft}</span>
+      : !c || c.effective_units === null
+        ? <span className="ps-v ps-v--todo" data-testid={testId}>待填</span>
+        : (
+          <span className={`ps-v ps-v--${c.basis === 'human' ? 'human' : 'est'}`}>
+            {c.system_extrapolated && c.basis !== 'human' && <span className="pm-v__tag" aria-label="系统外推">外推</span>}
+            <span data-testid={testId}>{fmt(c.effective_units)}</span>
+          </span>
+        );
+    return <span className="ps-main">{fillKey('sell')}{v}</span>;
   }
 
   /** 店铺行副数：预测 + 库存。★ 断货 / 偏低是跟在库存后面的状态词，不顶掉「库存」这个标签 */
@@ -440,14 +464,20 @@ export function PlanSheet(props: PlanSheetProps) {
     const s = stockState(v, low);
     const inv = block.stock.find((r) => r.period === p);
     const btn = (inner: ReactNode) => basisBtn(`${block.seller_name} ${block.sku}`, { kind: 'store', block, period: p }, inner);
+    const onhand = onhandAt(block, p);
     return (
       <span className="ps-d">
-        <span>预测 <b data-testid={`store-system-${block.sid}-${block.sku}-${p}`}><Qty v={systemAt(block, p)} /></b></span>
+        <span title={salesCompositionStore(block, p)}>销量预测 {basisBtn(`${block.seller_name} ${block.sku}`, { kind: 'store', block, period: p, metric: 'sales' },
+          <b data-testid={`store-system-${block.sid}-${block.sku}-${p}`}><Qty v={systemAt(block, p)} /></b>)}</span>
+        {onhand !== null && <span title={onhandTitle(onhandPartsAt(block, p))}>现有 <b data-testid={`onhand-${block.sid}-${block.sku}-${p}`}>{fmt(onhand)}</b></span>}
         {v.kind === 'na'
-          ? <span>库存 {btn(<b data-testid="closing-na">无 FBA</b>)}</span>
+          ? <span title={CLOSING_TITLE}>月末库存 {btn(<b data-testid="closing-na">无 FBA</b>)}</span>
           : (
-            <span title={v.kind === 'num' ? undefined : unknownWhy(inv?.reason)}>
-              库存 {btn(<b data-testid="closing-sku">{v.kind === 'num' ? fmt(v.value) : '—'}</b>)}
+            <span title={v.kind === 'num'
+              ? stockComposition(inv?.opening ?? null, onhand, inv?.opening == null ? segDemand([block], p) : inv?.demand ?? null,
+                inv?.inbound_planned ?? null, inv?.closing ?? null, model.params.as_of) ?? CLOSING_TITLE
+              : unknownWhy(inv?.reason)}>
+              月末库存 {btn(<b data-testid="closing-sku">{v.kind === 'num' ? fmt(v.value) : '—'}</b>)}
               {(s === 'out' || s === 'low') && (
                 <em className={`ps-flag ps-flag--${s === 'out' ? 'danger' : 'warn'}`}>{s === 'out' ? '断货' : '偏低'}</em>
               )}
@@ -466,7 +496,8 @@ export function PlanSheet(props: PlanSheetProps) {
   /** 库存数字包成按钮：点开看它的依据。★ mousedown 不冒泡 —— 否则先把格子光标挪过来；
    *  不进 Tab 序（整表是一个光标，几百个按钮会让 Tab 出不去），键盘用光标格上的 I */
   const basisBtn = (label: string, target: BasisTarget, inner: ReactNode) => (
-    <button type="button" className="ps-basis" tabIndex={-1} aria-label={`依据 ${label} ${target.period}`}
+    <button type="button" className="ps-basis" tabIndex={-1}
+      aria-label={`${target.metric === 'sales' ? '销量预测' : target.metric === 'transit' ? '当月在途' : '依据'} ${label} ${target.period}`}
       onMouseDown={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}
       onClick={(e) => { e.stopPropagation(); setBasis(target); }}>{inner}</button>
   );
@@ -479,12 +510,24 @@ export function PlanSheet(props: PlanSheetProps) {
   const skuLabel = (full: keyof typeof SHORT_LABEL): ReactNode =>
     density === 'compact' ? <span title={full}>{SHORT_LABEL[full]}</span> : full;
 
+  /** as_of 所在月只扣 as_of 次日起那一段：Σ msku 推演行的 demand（行上的期望是全月，不能拿来配「现有」） */
+  const segDemand = (blocks: SkuBlock[], p: Period): number | null => {
+    const vs = blocks.flatMap((b) => b.mskus.map((r) => r.forecast.find((f) => f.period === p)?.demand ?? null));
+    return vs.length === 0 || vs.some((v) => v === null) ? null : vs.reduce<number>((a, v) => a + (v ?? 0), 0);
+  };
+
+  /** 货号行 as_of 所在月的起点（Σ 有 FBA 店铺的「现有」）；任一未知 → null */
+  const skuStart = (sku: string, p: Period): number | null => {
+    const vs = model.blocks.filter((b) => b.sku === sku && b.has_fba).map((b) => onhandAt(b, p));
+    return vs.length === 0 || vs.some((v) => v === null) ? null : vs.reduce<number>((a, v) => a + (v ?? 0), 0);
+  };
+
   function skuRow(row: Extract<SheetRow, { type: 'sku' }>, i: number): ReactNode {
     const { card } = row;
     const s = sums.get(card.sku)!;
     const folded = foldedSkus.has(card.sku);
     const buy = card.purchase;
-    const transitAt = (p: Period) => card.transit?.cells.find((c) => c.period === p)?.units ?? null;
+    const mitAt = (p: Period) => card.transit?.cells.find((c) => c.period === p)?.mit ?? null;
     const sub = (p: Period) => {
       const t = totalsAt(model, card.sku, p);
       const stockTxt = !t ? '—' : t.state === 'not_applicable' ? '无 FBA' : fmt(t.closing);
@@ -493,10 +536,15 @@ export function PlanSheet(props: PlanSheetProps) {
         : t.reason_from ? `${t.reason_from.seller_sku}：${unknownWhy(t.reason)}` : unknownWhy(t.reason);
       return (
         <span className="ps-d">
-          <span>{skuLabel('预测')} <b data-testid={`sku-system-${card.sku}-${p}`}>{t?.system_not_applicable ? '不适用' : fmt(t?.system ?? null)}</b></span>
-          <span title={stockWhy}>{skuLabel('库存')} {basisBtn(card.sku, { kind: 'sku', sku: card.sku, period: p },
-            <b data-testid={`sku-stock-${card.sku}-${p}`}>{stockTxt}</b>)}</span>
-          <span title="不含 FBA 货件（未取）">{skuLabel('在途')} <b data-testid={`transit-${card.sku}-${p}`}>{fmt(transitAt(p))}</b></span>
+          <span title={salesCompositionSku(model, card.sku, p)}>{skuLabel('销量预测')} {basisBtn(card.sku, { kind: 'sku', sku: card.sku, period: p, metric: 'sales' },
+            <b data-testid={`sku-system-${card.sku}-${p}`}>{t?.system_not_applicable ? '不适用' : fmt(t?.system ?? null)}</b>)}</span>
+          <span title={stockWhy ?? (t ? stockComposition(t.opening, skuStart(card.sku, p),
+              t.opening === null ? segDemand(model.blocks.filter((b) => b.sku === card.sku && b.has_fba), p) : t.stock_demand,
+              t.inbound_planned, t.closing, model.params.as_of) : null) ?? CLOSING_TITLE}>
+            {skuLabel('月末库存')} {basisBtn(card.sku, { kind: 'sku', sku: card.sku, period: p },
+              <b data-testid={`sku-stock-${card.sku}-${p}`}>{stockTxt}</b>)}</span>
+          <span title={transitComposition(mitAt(p))}>{skuLabel('当月在途')} {basisBtn(card.sku, { kind: 'sku', sku: card.sku, period: p, metric: 'transit' },
+            <b data-testid={`transit-${card.sku}-${p}`}>{fmt(mitAt(p)?.total ?? null)}</b>)}</span>
         </span>
       );
     };
@@ -519,7 +567,7 @@ export function PlanSheet(props: PlanSheetProps) {
                   title={s.outs.map((o) => `${o.block.seller_name} 断货 ${o.months} 个月`).join('\n')}>断 {s.outs.length}</span>
               )}
               {s.todo > 0 && <span className="ps-flag ps-flag--warn" title={`${s.todo} 格销量待填`}>待 {s.todo}</span>}
-              <span className="ps-sub">采购／预测·库存·在途</span>
+              <span className="ps-tag ps-tag--buy">填计划采购</span>
               <button
                 type="button" className="pm-rm" title={`把 ${card.sku} 连同各店的 msku 移出这张计划`}
                 disabled={pending.has(removeKey(card.sku))} onClick={() => props.onRemoveSku(card.sku)}
@@ -537,14 +585,21 @@ export function PlanSheet(props: PlanSheetProps) {
           const draft = pending.has(k) ? drafts[k] : undefined;
           const txt = draft !== undefined ? (draft === '' ? '—' : draft) : fmt(v);
           return editableCell({
-            key: p, n, ni: row.nav, p, ci, label: `计划采购量 ${card.sku}`, human: v !== null,
-            value: <span className={`ps-v ${v === null && draft === undefined ? 'ps-v--none' : 'ps-v--human'}`}>{txt}</span>,
+            key: p, n, ni: row.nav, p, ci, label: `计划采购量 ${card.sku}`, human: v !== null, fill: 'buy',
+            value: (
+              <span className="ps-main">
+                {fillKey('buy')}
+                {v === null && draft === undefined
+                  ? <span className="ps-v ps-v--hint">填采购量</span>
+                  : <span className="ps-v ps-v--human">{txt}</span>}
+              </span>
+            ),
             sub: sub(p),
           });
         })}
         <div className="ps-sum">
-          <span className="ps-v"><Qty v={known(buy?.cells.map((c) => c.planned_units) ?? [])} /></span>
-          <span className="ps-d">期望 <b>{fmt(s.demandKnown)}</b></span>
+          <span className="ps-v"><span className="ps-k ps-k--buy">计划采购</span><Qty v={known(buy?.cells.map((c) => c.planned_units) ?? [])} /></span>
+          <span className="ps-d">计划销量 <b>{fmt(s.demandKnown)}</b></span>
         </div>
       </div>
     );
@@ -573,6 +628,7 @@ export function PlanSheet(props: PlanSheetProps) {
             </div>
             <div className="ps-subline">
               <span className={`ps-sub${multi ? '' : ' ps-sub--mono'}`}>{multi ? `${block.mskus.length} 个 msku 合计` : single!.seller_sku}</span>
+              {!multi && <span className="ps-tag ps-tag--sell">填计划销量</span>}
               <button
                 type="button" className="pm-rm" title={`只移出 ${block.seller_name} 这一家店的 ${block.sku}，其它店不动（移出该店）`}
                 disabled={pending.has(removeKey(block.sku))} onClick={() => props.onRemoveStore(block)}
@@ -588,7 +644,7 @@ export function PlanSheet(props: PlanSheetProps) {
             const k = demandKey(single.seller_sku, single.sid, p);
             return editableCell({
               key: p, n: { kind: 'demand', block, row: single }, ni: row.nav, p, ci,
-              label: `期望销量 ${single.seller_sku}`, testId: `sku-cell-${p}`, stock, human: c?.basis === 'human',
+              label: `计划销量 ${single.seller_sku}`, testId: `sku-cell-${p}`, stock, human: c?.basis === 'human', fill: 'sell',
               title: stockTitle(block, p),
               value: <span data-testid={`cell-${single.seller_sku}-${single.sid}-${p}`}>{demandValue(c, pending.has(k) ? drafts[k] : undefined, `sum-expected-${p}`)}</span>,
               sub: stockLine(inv, block, p),
@@ -599,8 +655,12 @@ export function PlanSheet(props: PlanSheetProps) {
           return (
             <div key={p} className="ps-c is-ro" data-testid={`sku-cell-${p}`} data-stock={stock} data-state={stock}
               title={stockTitle(block, p)}>
-              <span className={`ps-v ps-v--${d.kind !== 'num' ? 'todo' : anyHuman ? 'human' : 'est'}`} data-testid={`sum-expected-${p}`}>
-                {d.kind === 'num' ? fmt(d.value) : '待填'}
+              <span className="ps-main" title="多个 msku 的店铺：计划销量是下面各 msku 的合计，在 msku 行填">
+                {fillKey('sell')}
+                <span className={`ps-v ps-v--${d.kind !== 'num' ? 'todo' : anyHuman ? 'human' : 'est'}`} data-testid={`sum-expected-${p}`}>
+                  {d.kind === 'num' ? fmt(d.value) : '待填'}
+                </span>
+                <em className="ps-auto">自动合计</em>
               </span>
               {stockLine(inv, block, p)}
             </div>
@@ -608,7 +668,7 @@ export function PlanSheet(props: PlanSheetProps) {
         })}
         <div className="ps-sum">
           <span className="ps-v" data-testid="sum-demand">
-            <Qty v={sumUnits(block.mskus.flatMap((r) => r.cells.map((c) => c.effective_units)))} />
+            <span className="ps-k ps-k--sell">计划销量</span><Qty v={sumUnits(block.mskus.flatMap((r) => r.cells.map((c) => c.effective_units)))} />
           </span>
           {/* ★ 存量不求和，给最后一个月的期末：onhand 是一条链，相加等于把同一批货数三遍 */}
           {block.has_fba
@@ -622,11 +682,15 @@ export function PlanSheet(props: PlanSheetProps) {
   function mskuLine(block: SkuBlock, r: MskuRow, c: MskuCell | undefined, p: Period): ReactNode {
     const v = mskuStockAt(r, p);
     const f = r.forecast.find((x) => x.period === p);
+    const onhand = mskuOnhandAt(r, p);
     return (
       <span className="ps-d">
-        <span>预测 <b data-testid={`msku-system-${r.seller_sku}-${r.sid}-${p}`}>{c?.system_na ? '不适用' : fmt(c?.system_units ?? null)}</b></span>
-        <span title={v.kind === 'unknown' ? unknownWhy(f?.reason) : undefined}>
-          库存 {basisBtn(r.seller_sku, { kind: 'msku', block, row: r, period: p },
+        <span title={salesCompositionMsku(c)}>销量预测 {basisBtn(r.seller_sku, { kind: 'msku', block, row: r, period: p, metric: 'sales' },
+          <b data-testid={`msku-system-${r.seller_sku}-${r.sid}-${p}`}>{c?.system_na ? '不适用' : fmt(c?.system_units ?? null)}</b>)}</span>
+        {onhand !== null && <span title={onhandTitle(mskuOnhandPartsAt(r, p))}>现有 <b data-testid={`msku-onhand-${r.seller_sku}-${r.sid}-${p}`}>{fmt(onhand)}</b></span>}
+        <span title={v.kind === 'unknown' ? unknownWhy(f?.reason)
+          : stockComposition(f?.opening ?? null, onhand, f?.demand ?? null, f?.inbound_planned ?? null, f?.closing ?? null, model.params.as_of) ?? CLOSING_TITLE}>
+          月末库存 {basisBtn(r.seller_sku, { kind: 'msku', block, row: r, period: p },
             <b data-testid={`msku-stock-${r.seller_sku}-${r.sid}-${p}`}>{v.kind === 'na' ? '无 FBA' : <Qty v={v} />}</b>)}
         </span>
       </span>
@@ -639,6 +703,7 @@ export function PlanSheet(props: PlanSheetProps) {
       <div key={`m|${r.seller_sku}|${r.sid}|${row.block.sku}`} className="ps-row ps-row--msku" role="row" style={rowStyle(i)}>
         <div className="ps-rh ps-rh--msku" role="rowheader">
           <span className="ps-sub--mono">{r.seller_sku}</span>
+          <span className="ps-tag ps-tag--sell">填计划销量</span>
           <button type="button" className="pm-rm" aria-label="移出 msku" title={`把 ${r.seller_sku} 移出这张计划`}
             disabled={pending.has(removeKey(row.block.sku))} onClick={() => props.onRemoveMsku(r.seller_sku, r.sid, row.block.sku)}>移出</button>
         </div>
@@ -647,13 +712,13 @@ export function PlanSheet(props: PlanSheetProps) {
           const k = demandKey(r.seller_sku, r.sid, p);
           return editableCell({
             key: p, n: { kind: 'demand', block: row.block, row: r }, ni: row.nav, p, ci,
-            label: `期望销量 ${r.seller_sku}`, testId: `cell-${r.seller_sku}-${r.sid}-${p}`, human: c?.basis === 'human',
+            label: `计划销量 ${r.seller_sku}`, testId: `cell-${r.seller_sku}-${r.sid}-${p}`, human: c?.basis === 'human', fill: 'sell',
             title: c?.system_na ? '无销量取数源，预测不适用' : c?.system_units != null ? `系统预估 ${c.system_units}` : '没有预估，需要人填',
             value: demandValue(c, pending.has(k) ? drafts[k] : undefined),
             sub: mskuLine(row.block, r, c, p),
           });
         })}
-        <div className="ps-sum"><span className="ps-v"><Qty v={sumUnits(r.cells.map((c) => c.effective_units))} /></span></div>
+        <div className="ps-sum"><span className="ps-v"><span className="ps-k ps-k--sell">计划销量</span><Qty v={sumUnits(r.cells.map((c) => c.effective_units))} /></span></div>
       </div>
     );
   }

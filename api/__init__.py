@@ -23,6 +23,7 @@ from api.ui import (
     plans,
     purchase_options,
     purchase_orders,
+    sheets,
     source_factory,
     submit,
     system,
@@ -292,4 +293,5 @@ def create_app() -> FastAPI:
     app.include_router(ops.router, prefix="/v1")
     app.include_router(lead_time.router, prefix="/v1")
     app.include_router(checks.router, prefix="/v1")
+    app.include_router(sheets.router, prefix="/v1")
     return app

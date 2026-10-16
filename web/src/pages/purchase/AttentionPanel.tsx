@@ -254,117 +254,119 @@ export function AttentionPanel({ po, timeline, timelineErr, stuck, placing, onCh
   const diffRows = [...mismatchRows(lmFacts['differences']), ...problemRows(lmFacts['problems'])];
   const sameKeySns = Array.isArray(lmFacts['order_sns']) ? (lmFacts['order_sns'] as unknown[]).map(String) : [];
 
+  // 只剩「卡住 / 在途」时用 warn 外框：那是等系统，不是要人立刻动手
+  const onlyWaiting = !nvOpen && !kinds.has('landed_mismatch');
   return (
-    <div className="panel sec panel--alert" data-testid="attention-panel">
-      <div className="panel__head i-red">⛔ 需要人工处理</div>
-      <div className="panel__body">
-        <div className="bar">
-          {placing && <span className="chip chip--bad">下单进行中</span>}
-          {[...kinds].map((k) => <span key={k} className="chip chip--bad">{KIND_LABEL[k]}</span>)}
-        </div>
+    <section className={`ap${onlyWaiting ? ' ap--warn' : ''}`} aria-label="需要人工处理" data-testid="attention-panel">
+      <div className="ap-head">
+        <span className="ap-title">⛔ 需要人工处理</span>
+        {placing && <span className="chip chip--warn">下单进行中</span>}
+        {[...kinds].map((k) => <span key={k} className={`chip ${k === 'stuck_call' ? 'chip--warn' : 'chip--bad'}`}>{KIND_LABEL[k]}</span>)}
+      </div>
 
-        {timelineErr && <ErrorDetail err={timelineErr} />}
-        {timeline === null && !timelineErr && <div className="muted">正在取时间线…</div>}
+      {timelineErr && <ErrorDetail err={timelineErr} />}
+      {timeline === null && !timelineErr && <div className="muted">正在取时间线…</div>}
 
-        {nvOpen && conclusion?.kind === 'needs_verify' && (
-          <div className="sec" data-testid="conclusion">
-            <div>已知：{conclusion.known}</div>
-            <div>未知：{conclusion.unknown}</div>
-            <div>最近一次查重：{lookupText(conclusion.last_lookup, kinds.has('landed_mismatch'))}</div>
-            {conclusion.how_to_search && (
-              <div className="muted">
-                去领星照此搜：幂等键 {conclusion.how_to_search.custom_order_sn ?? '—'}
+      {nvOpen && conclusion?.kind === 'needs_verify' && (
+        <dl className="ap-facts" data-testid="conclusion">
+          <dt>已知</dt><dd>{conclusion.known}</dd>
+          <dt>不知道</dt><dd>{conclusion.unknown}</dd>
+          <dt>最近查重</dt><dd>{lookupText(conclusion.last_lookup, kinds.has('landed_mismatch'))}</dd>
+          {conclusion.how_to_search && (
+            <>
+              <dt>去领星查</dt>
+              <dd>
+                幂等键 <span className="num">{conclusion.how_to_search.custom_order_sn ?? '—'}</span>
                 {conclusion.how_to_search.window['search_field_time'] === 'create_time' ? '，创建时间 ' : '，时间 '}
                 {String(conclusion.how_to_search.window['start_date'] ?? '—')} 至 {String(conclusion.how_to_search.window['end_date'] ?? '—')}
                 ，供应商 {po.supplier_id}，货号 {[...new Set(po.lines.map((l) => l.sku))].join('、') || '—'}
-              </div>
-            )}
-          </div>
-        )}
+              </dd>
+            </>
+          )}
+        </dl>
+      )}
 
-        {placing && (
-          <div className="sec" data-testid="attn-placing">
-            <div className="sec__title">下单进行中</div>
-            <div className="muted">开始于 {fmtAt(placing.at)}，{placing.actor} 发起；落地后自动刷新</div>
-          </div>
-        )}
-        {unknownKey && (
-          <div className="flash flash--bad" role="alert" data-testid="attn-unknown">
-            结果未知：正在每 3 秒查一次调用记录，查完自动刷新
-          </div>
-        )}
+      {placing && (
+        <div className="ap-note" data-testid="attn-placing">
+          下单进行中：开始于 {fmtAt(placing.at)}，{placing.actor} 发起；落地后自动刷新
+        </div>
+      )}
+      {unknownKey && (
+        <div className="flash flash--warn" role="alert" data-testid="attn-unknown">
+          结果未知：正在每 3 秒查一次调用记录，查完自动刷新
+        </div>
+      )}
 
-        {timeline && <div className="sec"><AttemptTable attempts={timeline.attempts} /></div>}
-
-        {nvOpen && (
-          <div className="sec" data-testid="attn-needs_verify">
-            <div className="sec__title">{KIND_LABEL.needs_verify}</div>
-            <div className="btn-row">
-              <button type="button" className="btn" disabled={busy} onClick={() => void recheck()}>重新核对</button>
-            </div>
-            <div className="btn-row mt">
-              <input className="inp" aria-label="领星单号" value={orderSn} disabled={busy}
-                onChange={(e) => setOrderSn(e.target.value)} />
-              <button type="button" className="btn" disabled={busy || orderSn.trim() === ''}
-                onClick={() => void register()}>登记已有单</button>
-            </div>
-            <div className="btn-row mt">
-              <input className="inp inp--text" aria-label="确认无此单的理由" value={absentReason} disabled={busy}
-                onChange={(e) => setAbsentReason(e.target.value)} />
-              <button type="button" className="btn" disabled={busy || absentReason.trim() === ''}
-                onClick={() => void confirmAbsent()}>确认领星无此单</button>
-            </div>
-            {nvErr.err && <div className="mt"><ActionError err={nvErr.err} onDismiss={nvErr.dismiss} /></div>}
+      {nvOpen && (
+        <div className="ap-acts" data-testid="attn-needs_verify">
+          <div className="ap-act">
+            <button type="button" className="btn" disabled={busy} onClick={() => void recheck()}>重新核对</button>
+            <span className="ap-act__d">按幂等键再查一次</span>
           </div>
-        )}
+          <div className="ap-act">
+            <input className="pe-reason" aria-label="领星单号" placeholder="领星单号，如 PO261010001" value={orderSn} disabled={busy}
+              onChange={(e) => setOrderSn(e.target.value)} />
+            <button type="button" className="btn" disabled={busy || orderSn.trim() === ''}
+              onClick={() => void register()}>登记已有单</button>
+            <span className="ap-act__d">对得上才接受</span>
+          </div>
+          <div className="ap-act">
+            <input className="pe-reason" aria-label="确认无此单的理由" placeholder="理由（必填）" value={absentReason} disabled={busy}
+              onChange={(e) => setAbsentReason(e.target.value)} />
+            <button type="button" className="btn btn--danger" disabled={busy || absentReason.trim() === ''}
+              onClick={() => void confirmAbsent()}>确认领星无此单</button>
+            <span className="ap-act__d">解锁改、删、再下单</span>
+          </div>
+          {nvErr.err && <ActionError err={nvErr.err} onDismiss={nvErr.dismiss} />}
+        </div>
+      )}
 
-        {kinds.has('landed_mismatch') && (
-          <div className="sec" data-testid="attn-landed_mismatch">
-            <div className="sec__title">{KIND_LABEL.landed_mismatch}</div>
-            {lmKnown && <div>已知：{lmKnown}</div>}
-            {lmUnknown && <div>未知：{lmUnknown}</div>}
-            {typeof lmFacts['order_sn'] === 'string' && <div>领星单 <span className="num">{lmFacts['order_sn']}</span></div>}
-            {sameKeySns.length > 0 && <div>领星里同幂等键的单：{sameKeySns.join('、')}</div>}
+      {kinds.has('landed_mismatch') && (
+        <div className="ap-acts" data-testid="attn-landed_mismatch">
+          <dl className="ap-facts">
+            {lmKnown && <><dt>已知</dt><dd>{lmKnown}</dd></>}
+            {lmUnknown && <><dt>不知道</dt><dd>{lmUnknown}</dd></>}
+            {typeof lmFacts['order_sn'] === 'string' && <><dt>领星单</dt><dd className="num">{lmFacts['order_sn']}</dd></>}
+            {sameKeySns.length > 0 && <><dt>同幂等键</dt><dd>领星里同幂等键的单：{sameKeySns.join('、')}</dd></>}
             {typeof lmFacts['also_found_order_sn'] === 'string' && (
-              <div>已记账 <span className="num">{String(lmFacts['recorded_order_sn'] ?? '—')}</span>，另查到 <span className="num">{lmFacts['also_found_order_sn']}</span></div>
+              <><dt>另查到</dt><dd>已记账 <span className="num">{String(lmFacts['recorded_order_sn'] ?? '—')}</span>，另查到 <span className="num">{lmFacts['also_found_order_sn']}</span></dd></>
             )}
-            {diffRows.length > 0 && (
-              <table className="table table--dense mt" data-testid="mismatch-rows">
-                <thead><tr><th>项</th><th>本单</th><th>领星</th></tr></thead>
-                <tbody>
-                  {diffRows.map((r) => (
-                    <tr key={r.label} data-testid="mismatch-row"><td>{r.label}</td><td>{r.ours}</td><td>{r.theirs}</td></tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-            {/* ★ PB-D16：草稿上没有「接受差异」出口（后端 409 mismatch_on_draft），只能去领星处理 */}
-            {po.state === '已下单' ? (
-              <div className="btn-row mt">
-                <input className="inp inp--text" aria-label="确认知悉的理由" value={ackReason} disabled={busy}
-                  onChange={(e) => setAckReason(e.target.value)} />
-                <button type="button" className="btn" disabled={busy || ackReason.trim() === ''}
-                  onClick={() => void acknowledge()}>确认知悉</button>
-              </div>
-            ) : (
-              <div className="mt" data-testid="pbd16">
-                {nvOpen ? '去领星改对后点重新核对，或在领星作废该单（草稿阻塞至作废回读）' : '在领星作废该单；草稿阻塞至作废回读'}
-              </div>
-            )}
-            {lmErr.err && <div className="mt"><ActionError err={lmErr.err} onDismiss={lmErr.dismiss} /></div>}
-          </div>
-        )}
-
-        {stuck.map((s) => (
-          <div className="sec" key={`stuck-${s.call_id ?? s.opened_at}`} data-testid="attn-stuck_call">
-            <div className="sec__title">{KIND_LABEL.stuck_call}</div>
-            <div>等待自动恢复</div>
-            <div className="muted">
-              开始于 {fmtAt(s.started_at ?? s.opened_at)}，{s.endpoint ?? '调用'} 超过 {s.stale_after_minutes ?? '—'} 分钟未结束
+          </dl>
+          {diffRows.length > 0 && (
+            <table className="pd-t" data-testid="mismatch-rows">
+              <thead><tr><th>项</th><th>我们发的</th><th>领星里的</th></tr></thead>
+              <tbody>
+                {diffRows.map((r) => (
+                  <tr key={r.label} data-testid="mismatch-row"><td>{r.label}</td><td>{r.ours}</td><td className="ap-theirs">{r.theirs}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {/* ★ PB-D16：草稿上没有「接受差异」出口（后端 409 mismatch_on_draft），只能去领星处理 */}
+          {po.state === '已下单' ? (
+            <div className="ap-act">
+              <input className="pe-reason" aria-label="确认知悉的理由" placeholder="理由（必填）" value={ackReason} disabled={busy}
+                onChange={(e) => setAckReason(e.target.value)} />
+              <button type="button" className="btn" disabled={busy || ackReason.trim() === ''}
+                onClick={() => void acknowledge()}>确认知悉</button>
+              <span className="ap-act__d">不改任何单</span>
             </div>
-          </div>
-        ))}
-      </div>
-    </div>
+          ) : (
+            <div className="ap-note" data-testid="pbd16">
+              {nvOpen ? '去领星改对后点重新核对，或在领星作废该单（草稿阻塞至作废回读）' : '在领星作废该单；草稿阻塞至作废回读'}
+            </div>
+          )}
+          {lmErr.err && <ActionError err={lmErr.err} onDismiss={lmErr.dismiss} />}
+        </div>
+      )}
+
+      {stuck.map((s) => (
+        <div className="ap-note" key={`stuck-${s.call_id ?? s.opened_at}`} data-testid="attn-stuck_call">
+          {KIND_LABEL.stuck_call}：等待自动恢复。开始于 {fmtAt(s.started_at ?? s.opened_at)}，{s.endpoint ?? '调用'} 超过 {s.stale_after_minutes ?? '—'} 分钟未结束
+        </div>
+      ))}
+
+      {timeline && <Fold summary={`调用记录 ${timeline.attempts.length} 次`}><AttemptTable attempts={timeline.attempts} /></Fold>}
+    </section>
   );
 }

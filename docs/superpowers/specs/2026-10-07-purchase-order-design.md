@@ -80,8 +80,8 @@
 
 | 约束 | 失败 |
 |---|---|
-| Σ_s 映射(line, s) ≤ 上限[line, s]；上限 = `total_units × 期望[s] / Σ期望`，最大余数法取整（V1） | `over_seller_cap` |
-| Σ 期望 = 0 或任一店 basis=unknown → 该记录不可组单 | `no_seller_basis` |
+| ~~Σ_s 映射(line, s) ≤ 上限[line, s]；上限 = `total_units × 期望[s] / Σ期望`，最大余数法取整（V1）~~ ★ PB-D22 取消；改为：来源店必须在记录里 | ~~`over_seller_cap`~~ → `seller_not_in_line` |
+| ~~Σ 期望 = 0 或任一店 basis=unknown → 该记录不可组单~~ ★ PB-D22 推翻 | ~~`no_seller_basis`~~ |
 | Σ 映射(line) ≤ `total_units` | `over_total`（`03:899` 已有） |
 | `po_line.units ≥ Σ 映射(po_line)`；差额 > 0 必填 `unplanned_reason` | `unplanned_reason_required` |
 | 映射只能挂在 {已提交, 已确认} 的记录上；已下单的单映射不可删 | `03:926-942` 已有 |
@@ -456,7 +456,7 @@ erp op= host= path= idem= ms= outcome= http= lx_code= lx_msg= cause=<__cause__ �
 | ③ 作废读回并退出已下单 | D5 + 新退回边 + 回读 | ✓（测试替身覆盖，G2） |
 | ④ 分批到货，首批与到齐分得开 | 首批 → 准备排货（D10）· 到齐 = 领星 9 + 量并排（§7） | ✓ |
 | ⑤ 良品 / 待检 / 次品分开 | `po_ib_obs` 三列 · D7 | ✓ |
-| ⑥ 多仓库采购 | `po.wid` 可空 + `po_line.wid`（B7） | ✓ |
+| ⑥ 多仓库采购 | `po.wid` 可空 + `po_line.wid`（B7） | ★ PB-D25：下单前闸 `single_wid`，多仓拆单 |
 
 ### 11.4 里程碑 —— 每个都能独立验收
 

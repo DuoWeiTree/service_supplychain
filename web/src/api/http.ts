@@ -7,6 +7,14 @@ import type {
 
 interface HttpOptions { base: string; timeoutMs: number }
 
+/** 读回要等后端打完领星：最坏 = 取 token + 查单，两次各受后端 timeout_s=30（shared/config.py，V6）所限，再留 5 s。
+ *  ★ 设计取值 · 未实测上限；比后端短就会出现「前端放弃了、后端其实读到了」。领星这个接口实测 1.6~10 s */
+export const READ_BACK_TIMEOUT_MS = 65_000;
+
+/** 提交领星：每张备货单最坏 = 查重 + 建 + 再查重，各受后端 30 s 所限，一次提交可能好几张。
+ *  ★ 设计取值 · 未实测。前端放弃 ≠ 后端停了：超时只能说「结果未知，刷新看」 */
+export const SUBMIT_TIMEOUT_MS = 300_000;
+
 /** ★ 三问日志：打的谁（method+path）· 多久（ms）· 怎么失败的（status+error 或 cause.code）。
  *  缺一个，下次就得重新复现一遍。 */
 function logFail(call: string, ms: number, extra: Record<string, unknown>): void {
@@ -33,7 +41,7 @@ function transportError(call_: string, ms: number, e: unknown, phase: 'connect' 
 }
 
 export function createHttpApi(opt: HttpOptions): SupplyChainApi {
-  async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+  async function call<T>(method: string, path: string, body?: unknown, timeoutMs: number = opt.timeoutMs): Promise<T> {
     const url = `${opt.base}${path}`;
     const call_ = `${method} ${url}`;
     const started = Date.now();
@@ -41,12 +49,12 @@ export function createHttpApi(opt: HttpOptions): SupplyChainApi {
     try {
       res = await fetch(url, {
         method,
-        signal: AbortSignal.timeout(opt.timeoutMs),
+        signal: AbortSignal.timeout(timeoutMs),
         headers: { 'content-type': 'application/json', 'x-actor': getActor() },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
     } catch (e) {
-      throw transportError(call_, Date.now() - started, e, 'connect', opt.timeoutMs);
+      throw transportError(call_, Date.now() - started, e, 'connect', timeoutMs);
     }
 
     const ms = Date.now() - started;
@@ -55,7 +63,7 @@ export function createHttpApi(opt: HttpOptions): SupplyChainApi {
     // ★ 读体失败时请求已到后端：必须和建连失败一样落成 status 0（结果未知），不能漏成裸异常
     let text: string;
     try { text = await res.text(); }
-    catch (e) { throw transportError(call_, Date.now() - started, e, 'body', opt.timeoutMs); }
+    catch (e) { throw transportError(call_, Date.now() - started, e, 'body', timeoutMs); }
     let parsed: unknown = null;
     if (text !== '') {
       try { parsed = JSON.parse(text); }
@@ -143,6 +151,7 @@ export function createHttpApi(opt: HttpOptions): SupplyChainApi {
       call('POST', `/purchase-orders/${encodeURIComponent(poId)}/place`, { confirm_token: confirmToken }),
     getTimeline: (poId) => call('GET', `/purchase-orders/${encodeURIComponent(poId)}/timeline`),
     recheck: (poId) => call('POST', `/purchase-orders/${encodeURIComponent(poId)}/recheck`),
+    readBack: (poId) => call('POST', `/purchase-orders/${encodeURIComponent(poId)}/read-back`, undefined, READ_BACK_TIMEOUT_MS),
     registerExisting: (poId, orderSn) =>
       call('POST', `/purchase-orders/${encodeURIComponent(poId)}/register-existing`, { order_sn: orderSn }),
     confirmAbsent: (poId, reason) =>
@@ -157,5 +166,35 @@ export function createHttpApi(opt: HttpOptions): SupplyChainApi {
       return call('GET', `/plan-lines${qs({ plan_ids: planIds, sku: params.sku, orderable: 1 })}`);
     },
     getLineTrace: (lineId) => call('GET', `/plan-lines/${encodeURIComponent(lineId)}/trace`),
+
+    listSheets: (state) => call('GET', `/sheets${qs({ state })}`),
+    listDispatchPlans: () => call('GET', '/dispatch/plans'),
+    createSheet: (planId, route) => call('POST', '/sheets', { plan_id: planId, route }),
+    getSheet: (sheetId) => call('GET', `/sheets/${encodeURIComponent(sheetId)}`),
+    getSheetGrid: (sheetId) => call('GET', `/sheets/${encodeURIComponent(sheetId)}/grid`),
+    putSheetCell: (sheetId, cell) => call('PUT', `/sheets/${encodeURIComponent(sheetId)}/cells`, cell),
+    putSheetPacking: (sheetId, k, box) =>
+      call('PUT', `/sheets/${encodeURIComponent(sheetId)}/packing/${encodeURIComponent(k.seller_sku)}/${encodeURIComponent(k.sid)}/${encodeURIComponent(k.from_wid)}`, box),
+    sheetPreflight: (sheetId) => call('GET', `/sheets/${encodeURIComponent(sheetId)}/preflight`),
+    confirmSheet: (sheetId, seen) => call('POST', `/sheets/${encodeURIComponent(sheetId)}/confirm`, { seen_watermark: seen }),
+    liveRead: (sheetId, sku) => call('POST', `/sheets/${encodeURIComponent(sheetId)}/live-read`, { sku }, READ_BACK_TIMEOUT_MS),
+    cancelSheet: (sheetId, reason) => call('POST', `/sheets/${encodeURIComponent(sheetId)}/cancel`, { reason }, SUBMIT_TIMEOUT_MS),
+    receiptSheet: (sheetId) => call('POST', `/sheets/${encodeURIComponent(sheetId)}/receipt`, undefined, SUBMIT_TIMEOUT_MS),
+    checkSkuMatch: (wid, sku) => call('GET', `/oversea-sku-match${qs({ wid, sku })}`, undefined, READ_BACK_TIMEOUT_MS),
+    reopenSheet: (sheetId, reason) => call('POST', `/sheets/${encodeURIComponent(sheetId)}/reopen`, { reason }),
+    listLogisticsChannels: () => call('GET', '/logistics-channels', undefined, READ_BACK_TIMEOUT_MS),
+    refreshLogisticsChannels: () => call('POST', '/logistics-channels/refresh', undefined, READ_BACK_TIMEOUT_MS),
+    setSheetLogistics: (sheetId, destWid, logisticsId) =>
+      call('PUT', `/sheets/${encodeURIComponent(sheetId)}/logistics/${encodeURIComponent(destWid)}`, { logistics_id: logisticsId }),
+    // ★ 预览要现查领星（海外仓三方 sku 配对实测 7.5~16 s，FBA listing）：全局 8 s 会把慢当成失败
+    getSubmission: (sheetId) => call('GET', `/sheets/${encodeURIComponent(sheetId)}/submission`, undefined, READ_BACK_TIMEOUT_MS),
+    submitSheet: (sheetId, token) =>
+      call('POST', `/sheets/${encodeURIComponent(sheetId)}/submit`, { confirm_token: token }, SUBMIT_TIMEOUT_MS),
+    verifyExtRef: (sheetId, aid) =>
+      call('POST', `/sheets/${encodeURIComponent(sheetId)}/ext-refs/verify`, { attention_id: aid }, READ_BACK_TIMEOUT_MS),
+    registerExtRef: (sheetId, aid, extNo) =>
+      call('POST', `/sheets/${encodeURIComponent(sheetId)}/ext-refs/register`, { attention_id: aid, ext_no: extNo }, READ_BACK_TIMEOUT_MS),
+    confirmExtAbsent: (sheetId, aid, reason) =>
+      call('POST', `/sheets/${encodeURIComponent(sheetId)}/ext-refs/confirm-absent`, { attention_id: aid, reason }, READ_BACK_TIMEOUT_MS),
   };
 }

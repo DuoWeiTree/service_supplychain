@@ -58,13 +58,14 @@ function makeGrid(): GridResponse {
   };
 }
 
-/** 货号级一行：在途全记在 ordered_open 上，组成与总数一致 */
+/** 货号级一行：采购管道全记在 ordered_open 上，组成与总数一致；当月在途（FM-D3）同数记在海外仓上 */
 function transitRow(sku: string, period: string, units: number): SkuForecast {
   return {
     sku, period, state: 'ok', reason: null, reason_from: null, demand: null, system: null, system_not_applicable: false,
     opening: null, stock_demand: null, inbound_planned: 0, closing: null, excluded_not_applicable: 0,
     pipeline: { making: 0, shipping: 0, ordered_open: units, ordered_open_overdue: 0, ordered_open_sources: [],
-                fba_inbound: null, fba_inbound_reason: 'not_fetched' },
+                fba_inbound: 0, fba_inbound_reason: null },
+    month_in_transit: { total: units, fba: 0, oversea: units, items: [] },
     in_transit: units, in_transit_excludes: ['fba_inbound'], unfilled_purchase: [],
     has_image: false,
   };
@@ -240,7 +241,7 @@ describe('计划整表', () => {
     await renderGrid();
     const block = await screen.findByTestId('block-90001-SKU-1');
     expect(within(block).queryByRole('button', { name: /^展开 / })).toBeNull();
-    expect(gridcell(block, '期望销量 MSKU-W 2026-10')).toHaveTextContent('60');
+    expect(gridcell(block, '计划销量 MSKU-W 2026-10')).toHaveTextContent('60');
   });
 
   it('★ 空 = 未知：写「待填」，不显示 0；库存跟着是 —', async () => {
@@ -386,7 +387,7 @@ describe('计划整表', () => {
     expect(await within(card).findByTestId('err-purchase-SKU-1-2026-11')).toHaveTextContent('-5');
   });
 
-  it('★ 期望销量走同一套校验（F1/F2：两种输入共用 parseUnits）', async () => {
+  it('★ 计划销量走同一套校验（F1/F2：两种输入共用 parseUnits）', async () => {
     const { mock } = await renderGrid();
     const block = await screen.findByTestId('block-11072-SKU-1');
     await fill(within(block).getByTestId('cell-MSKU-A-11072-2026-11'), '-3');
@@ -413,7 +414,7 @@ describe('计划整表', () => {
     await waitFor(() => expect(cell).not.toHaveAttribute('aria-busy'));
   });
 
-  it('★ 期望销量在飞时同样挡住第二次（T4 R3）', async () => {
+  it('★ 计划销量在飞时同样挡住第二次（T4 R3）', async () => {
     let resolvePut!: (v: DemandCell) => void;
     const deferred = vi.fn(() => new Promise<DemandCell>((resolve) => { resolvePut = resolve; }));
     const { mock } = await renderGrid(makeGrid(), (m) => { m.api.putDemand = deferred; });
@@ -430,7 +431,7 @@ describe('计划整表', () => {
   it('键盘：方向键移动、Tab 右移，打数字落在光标所在格', async () => {
     const { mock } = await renderGrid();
     const card = await screen.findByTestId('card-SKU-1');
-    await userEvent.click(gridcell(card, '期望销量 MSKU-A 2026-10'));
+    await userEvent.click(gridcell(card, '计划销量 MSKU-A 2026-10'));
     await userEvent.keyboard('{ArrowDown}{Tab}');            // → MSKU-B 11 月
     await userEvent.keyboard('12{Enter}');
     expect(mock.api.putDemand).toHaveBeenCalledWith(1, 'MSKU-B', '11072', '2026-11', 12);
@@ -439,7 +440,7 @@ describe('计划整表', () => {
   it('★ 从 Excel 粘贴一块：从选区左上角铺开，坏值逐格点名、其余照写', async () => {
     const { mock } = await renderGrid();
     const card = await screen.findByTestId('card-SKU-1');
-    await userEvent.click(gridcell(card, '期望销量 MSKU-A 2026-11'));
+    await userEvent.click(gridcell(card, '计划销量 MSKU-A 2026-11'));
     const grid = screen.getByRole('grid');
     fireEvent.paste(grid, { clipboardData: { getData: () => '11\t12\nx\t22\n' } });
     expect(mock.api.putDemand).toHaveBeenCalledWith(1, 'MSKU-A', '11072', '2026-11', 11);
@@ -534,7 +535,7 @@ describe('计划整表', () => {
     const block = await screen.findByTestId('block-11072-SKU-1');
     await userEvent.click(within(block).getAllByRole('button', { name: '移出 msku' })[0]!);
     const status = await screen.findByRole('status');
-    expect(status).toHaveTextContent('已移出 msku MSKU-A：丢弃期望 2 格（2026-10 180 件）');
+    expect(status).toHaveTextContent('已移出 msku MSKU-A：丢弃计划销量 2 格（2026-10 180 件）');
     expect(status).toHaveTextContent('货号 SKU-1 已无 msku，一并移出');
     expect(status).toHaveTextContent('丢弃计划采购 3 格（2026-10 24 件、2026-11 22 件）');
     expect(status.textContent).not.toContain('待处理');
@@ -545,7 +546,7 @@ describe('计划整表', () => {
     const block = await screen.findByTestId('block-11072-SKU-1');
     await userEvent.click(within(block).getAllByRole('button', { name: '移出 msku' })[0]!);
     const status = await screen.findByRole('status');
-    expect(status).toHaveTextContent('已移出 msku MSKU-A：丢弃期望 3 格（2026-10 180 件、2026-11 200 件）');
+    expect(status).toHaveTextContent('已移出 msku MSKU-A：丢弃计划销量 3 格（2026-10 180 件、2026-11 200 件）');
     expect(status.textContent).not.toContain('计划采购');
     expect(screen.getByTestId('card-SKU-1')).toBeInTheDocument();
   });
@@ -555,7 +556,7 @@ describe('计划整表', () => {
     const block = await screen.findByTestId('block-90001-SKU-1');
     await userEvent.click(within(block).getByRole('button', { name: '移出该店' }));
     const status = await screen.findByRole('status');
-    expect(status).toHaveTextContent('已移出该店 A4Pet-WM 的 SKU-1：msku 1 个，丢弃期望 3 格（MSKU-W 2026-10 60 件、');
+    expect(status).toHaveTextContent('已移出该店 A4Pet-WM 的 SKU-1：msku 1 个，丢弃计划销量 3 格（MSKU-W 2026-10 60 件、');
     expect(status.textContent).not.toContain('计划采购');
     await waitFor(() => expect(screen.queryByTestId('block-90001-SKU-1')).toBeNull());
     expect(screen.getByTestId('card-SKU-1')).toBeInTheDocument();
@@ -584,7 +585,7 @@ describe('计划整表', () => {
     expect(mock.api.removeSku).toHaveBeenCalledTimes(1);
     expect(mock.api.removeSku).toHaveBeenCalledWith(1, 'SKU-1');
     expect(mock.api.releaseClaim).not.toHaveBeenCalled();
-    expect(status).toHaveTextContent('已移出货号 SKU-1：msku 3 个，丢弃期望 9 格（MSKU-A 2026-10 180 件、');
+    expect(status).toHaveTextContent('已移出货号 SKU-1：msku 3 个，丢弃计划销量 9 格（MSKU-A 2026-10 180 件、');
     expect(status).toHaveTextContent('，丢弃计划采购 3 格（2026-10 500 件）');
     expect(status.textContent).not.toContain(' · ');
     await waitFor(() => expect(screen.queryByTestId('card-SKU-1')).toBeNull());

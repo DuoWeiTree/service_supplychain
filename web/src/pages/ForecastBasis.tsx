@@ -1,27 +1,30 @@
 import type { ReactNode } from 'react';
 import { Fold } from '../components/Fold';
 import type {
-  ForecastArrival, ForecastBridge, ForecastReason, ForecastState, MskuForecast, NoSalesSourceCause, Period, SegmentDetail,
-  StoreForecast, SystemBasis,
+  FbaShipmentRef, ForecastArrival, ForecastBridge, MonthInTransit, MonthInTransitItem, ForecastReason, ForecastState, MskuForecast, NoSalesSourceCause, Period, SegmentDetail,
+  OnhandParts, StoreForecast, SystemBasis,
 } from '../api/types';
 import type { QtyValue } from '../components/Qty';
 import { demandAt, sumUnits, totalsAt, type GridModel, type MskuCell, type MskuRow, type SkuBlock } from './planGridModel';
 
+/** 点的是哪个指标（FM-D4）：缺省 = 月末库存；`sales` 销量预测；`transit` 当月在途（只有货号行） */
+export type BasisMetric = 'stock' | 'sales' | 'transit';
 export type BasisTarget =
-  | { kind: 'msku'; block: SkuBlock; row: MskuRow; period: Period }
-  | { kind: 'store'; block: SkuBlock; period: Period }
-  | { kind: 'sku'; sku: string; period: Period };
+  | { kind: 'msku'; block: SkuBlock; row: MskuRow; period: Period; metric?: BasisMetric }
+  | { kind: 'store'; block: SkuBlock; period: Period; metric?: BasisMetric }
+  | { kind: 'sku'; sku: string; period: Period; metric?: BasisMetric };
 
 /** ★ 库存为什么没有数。格子上的 tooltip 与依据面板共用这一份，两处说法不许分叉 */
 export const FORECAST_WHY: Record<Exclude<ForecastReason, null>, string> = {
   as_of_inside_month: 'as_of 在本月中，从次日起扣',
   unknown_onhand: '无在仓数',
-  unknown_demand: '期望销量待填',
-  bridge_rate_unknown: '没有预测速率、首月期望也未填，as_of 到首月之间扣不了',
+  unknown_demand: '计划销量待填',
+  bridge_rate_unknown: '没有预测速率、首月计划销量也未填，as_of 到首月之间扣不了',
   inbound_unknown: '到货数未知（有店缺口未知，分不出去）',
   not_applicable: '无 FBA',
   elapsed: '月份已过去',
   no_msku: '无 msku',
+  fba_inbound_unavailable: 'FBA 货件当天未采到，在途未知',
 };
 
 const CAUSE: Record<NoSalesSourceCause, string> = {
@@ -54,7 +57,7 @@ function segLine(s: SegmentDetail): string {
   return `${md(s.from)}–${md(s.to)} 扣 ${s.units} = 月总量 ${s.month_total} × (${terms}) ${rawTail(s.raw, s.units)}`;
 }
 const BRIDGE_BY: Record<ForecastBridge['by'], string> = {
-  forecast: '按预测扣', first_month_expected: '按首月期望折算（无预测速率）扣', unknown: '扣',
+  forecast: '按预测扣', first_month_expected: '按首月计划销量折算（无预测速率）扣', unknown: '扣',
 };
 
 function prevMonth(p: Period): Period {
@@ -63,9 +66,64 @@ function prevMonth(p: Period): Period {
 }
 
 export function basisTitle(t: BasisTarget): string {
-  if (t.kind === 'msku') return `库存 ${t.block.seller_name} / ${t.row.seller_sku} / ${t.period}`;
-  if (t.kind === 'store') return `库存 ${t.block.seller_name} / ${t.block.sku} / ${t.period}`;
-  return `货号 ${t.sku} / ${t.period}`;
+  const head = t.metric === 'sales' ? '销量预测 ' : t.metric === 'transit' ? '当月在途 ' : '';
+  if (t.kind === 'msku') return `${head || '库存 '}${t.block.seller_name} / ${t.row.seller_sku} / ${t.period}`;
+  if (t.kind === 'store') return `${head || '库存 '}${t.block.seller_name} / ${t.block.sku} / ${t.period}`;
+  return `${head || '货号 '}${t.sku} / ${t.period}`;
+}
+
+// ── 悬停一行组成（FM-D4）。★ 格子 title 与弹窗首行共用这几条，两处说法不许分叉 ────────
+
+const sys = (v: number | null | undefined, na?: boolean) => (na ? '不适用（不计）' : n(v ?? null));
+
+/** 货号销量预测 = Σ 店铺 */
+export function salesCompositionSku(model: GridModel, sku: string, period: Period): string {
+  return model.blocks.filter((b) => b.sku === sku).map((b) => {
+    const st = b.stock.find((x) => x.period === period);
+    return `${b.seller_name} ${sys(st?.system, st?.system_not_applicable)}`;
+  }).join(' + ');
+}
+
+/** 店铺销量预测 = Σ msku */
+export function salesCompositionStore(block: SkuBlock, period: Period): string {
+  return block.mskus.map((r) => {
+    const c = r.cells.find((x) => x.period === period);
+    return `${r.seller_sku} ${sys(c?.system_units, c?.system_basis?.reason === 'not_applicable_no_sales_source')}`;
+  }).join(' + ');
+}
+
+/** msku 销量预测 = 速率 × 天数 */
+export function salesCompositionMsku(c: MskuCell | undefined): string {
+  const sb = c?.system_basis;
+  if (!sb) return '没有预测依据';
+  if (sb.reason === 'not_applicable_no_sales_source') return `不适用（${CAUSE[sb.cause]}）`;
+  if (sb.base_rate === null) return sb.reason === 'no_sales_in_window' ? '窗口内没有销量' : '没有预测速率';
+  return `${sb.base_rate.toFixed(4)} 件/天 × ${sb.days_in_month} 天`;
+}
+
+const nextDay = (iso: string) => {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+};
+
+/** 月末库存 = 期初 − 计划销量 + 到货。as_of 落在本月时起点是「现有（as_of 那天）」，计划销量只扣 as_of 次日起那一段 */
+export function stockComposition(opening: number | null, start: number | null, demand: number | null,
+                                 inbound: number | null, closing: number | null, asOf?: string): string | null {
+  if (closing === null) return null;
+  if (opening !== null) return `期初 ${opening} − 计划销量 ${n(demand)} + 到货 ${n(inbound)} = ${closing}`;
+  if (start === null) return null;
+  return asOf
+    ? `现有 ${start}（${md(asOf)}）− 计划销量 ${n(demand)}（${md(nextDay(asOf))} 起）+ 到货 ${n(inbound)} = ${closing}`
+    : `现有 ${start} − 计划销量 ${n(demand)} + 到货 ${n(inbound)} = ${closing}`;
+}
+
+/** 当月在途 = FBA 货件 + 海外仓 */
+export function transitComposition(mit: MonthInTransit | null): string {
+  if (!mit) return '这次没取当月在途';
+  if (mit.before_as_of) return 'as_of 之前的月份没有在途记录';
+  const part = (v: number | null) => (v === null ? '读不到' : String(v));
+  return `FBA 货件 ${part(mit.fba)} + 海外仓 ${part(mit.oversea)}`;
 }
 
 /** 没有期末时说为什么。★ 只说原因，不给任何数 */
@@ -76,13 +134,27 @@ function noClosing(state: ForecastState, reason: ForecastReason, since: Period |
 }
 
 function arrivalLine(a: ForecastArrival): string {
+  if (a.kind === 'fba_shipment') return `${md(a.date)} 到货 ${a.units}（${fbaRef(a)}，按结束日）`;
   if (a.units === null) return `${md(a.date)} 到货 —（${a.order_period} 下单，有店缺口未知，分不出去）`;
   return `${md(a.date)} 到货 ${a.units}（${a.order_period} 下单，${a.rule ?? '分法未给'}，这批 ${n(a.pool)}）`;
 }
 
+/** 「FBA 货件 X，送达 a–b」—— 到货、周期外、未计入三处同一说法 */
+function fbaRef(a: FbaShipmentRef): string {
+  const win = a.deliver_from && a.deliver_to ? `，送达 ${md(a.deliver_from)}–${md(a.deliver_to)}`
+    : a.deliver_to ? `，送达至 ${md(a.deliver_to)}` : '';
+  return `FBA 货件 ${a.shipment_id}${win}`;
+}
+
+/** 期初两部分（OP-19 c）。调仓中为 0 时只写可售 —— 不让每格都多一串 */
+function onhandText(onhand: number | null, parts?: OnhandParts | null): string {
+  return parts && parts.fc_transfers > 0
+    ? `现有 ${n(onhand)}（可售 ${parts.fulfillable} + 调仓中 ${parts.fc_transfers}）` : `可售 ${n(onhand)}`;
+}
+
 /** partial 月（as_of 在本月里）的起点。★ 不叫「期初」：本月 as_of 及之前的天数不在账上 */
-function asOfStartLine(asOf: string, onhand: number | null, month: Period, sigma = ''): string {
-  return `as_of ${asOf} 可售 ${n(onhand)}（${sigma}本月 ${md(month + '-01')}–${md(asOf)} 已过，不计）`;
+function asOfStartLine(asOf: string, onhand: number | null, month: Period, sigma = '', parts?: OnhandParts | null): string {
+  return `as_of ${asOf} ${onhandText(onhand, parts)}（${sigma}本月 ${md(month + '-01')}–${md(asOf)} 已过，不计）`;
 }
 
 /** Σ 一组 partial 月的 msku 行。任一缺数 ⇒ null（Σ 不当 0） */
@@ -91,17 +163,22 @@ function partialSum(rows: (MskuForecast | undefined)[]) {
     const v = rows.map((f) => (f ? g(f) ?? null : null));
     return v.length === 0 || v.some((x) => x === null) ? null : v.reduce<number>((a, b) => a + (b as number), 0);
   };
+  const ful = pick((f) => f.basis.as_of_start?.onhand_parts?.fulfillable);
+  const fc = pick((f) => f.basis.as_of_start?.onhand_parts?.fc_transfers);
   return { onhand: pick((f) => f.basis.as_of_start?.onhand_as_of), demand: pick((f) => f.demand),
-           inbound: pick((f) => f.inbound_planned) };
+           inbound: pick((f) => f.inbound_planned),
+           parts: ful === null || fc === null ? null : { fulfillable: ful, fc_transfers: fc } };
 }
 
 function openingLine(f: MskuForecast, periods: Period[], asOf: string): string {
-  if (f.basis.as_of_start) return asOfStartLine(asOf, f.basis.as_of_start.onhand_as_of, f.period);
+  if (f.basis.as_of_start) {
+    return asOfStartLine(asOf, f.basis.as_of_start.onhand_as_of, f.period, '', f.basis.as_of_start.onhand_parts);
+  }
   const i = periods.indexOf(f.period);
   const b = f.basis.bridge;
   if (b) {
     const arr = b.arrival_units ? ` + 到货 ${b.arrival_units}` : '';
-    return `期初 ${n(f.opening)}（= ${prevMonth(f.period)} 末；as_of ${asOf} 可售 ${b.onhand_as_of}`
+    return `期初 ${n(f.opening)}（= ${prevMonth(f.period)} 末；as_of ${asOf} ${onhandText(b.onhand_as_of, b.onhand_parts)}`
       + ` − ${md(b.from)}–${md(b.to)} ${BRIDGE_BY[b.by]} ${n(b.units)}${arr}）`;
   }
   if (i > 0) return `期初 ${n(f.opening)}（= ${periods[i - 1]} 期末）`;
@@ -116,7 +193,7 @@ function BridgeDetail({ b }: { b: ForecastBridge }): ReactNode {
   return (
     <>
       {b.by === 'first_month_expected' && fme
-        && <div className="fb-sub">日速率 {rate.toFixed(4)} 件/天 = {fme.period} 期望 {fme.units} ÷ {fme.days} 天</div>}
+        && <div className="fb-sub">日速率 {rate.toFixed(4)} 件/天 = {fme.period} 计划销量 {fme.units} ÷ {fme.days} 天</div>}
       {b.segments.map((s) => (
         <div key={s.month}>
           <div className="fb-sub">
@@ -129,7 +206,7 @@ function BridgeDetail({ b }: { b: ForecastBridge }): ReactNode {
   );
 }
 
-/** 期初 → − 期望 → + 到货 → = 期末 → 下月期初。★ 链是恒等式③④（14 §1.1），每一环都要看得见 */
+/** 期初 → − 计划销量 → + 到货 → = 期末 → 下月期初。★ 链是恒等式③④（14 §1.1），每一环都要看得见 */
 function MskuChain({ f, periods, asOf, firstStockout, monthExpected }: {
   f: MskuForecast | undefined; periods: Period[]; asOf: string; firstStockout: string | null;
   monthExpected: number | null;
@@ -155,10 +232,10 @@ function MskuChain({ f, periods, asOf, firstStockout, monthExpected }: {
           {f.state === 'partial'
             // ★ 这里的数只是 as_of 次日到月末那一段，不是格子上的期望 —— 标出来，否则链对不上格子
             ? <>
-                <div>− 本月 as_of 后期望 {n(f.demand)}（{md(f.basis.as_of_start?.from ?? asOf)} 起，全月期望 {n(monthExpected)} 的剩余部分）</div>
+                <div>− 本月 as_of 后计划销量 {n(f.demand)}（{md(f.basis.as_of_start?.from ?? asOf)} 起，全月计划销量 {n(monthExpected)} 的剩余部分）</div>
                 {f.basis.as_of_start?.segment && <div className="fb-sub">{segLine(f.basis.as_of_start.segment)}</div>}
               </>
-            : <div>− 期望 {n(f.demand)}</div>}
+            : <div>− 计划销量 {n(f.demand)}</div>}
           <div>+ 到货 {n(f.inbound_planned)}</div>
           {f.basis.arrivals.map((a) => <div key={`a${a.date}${a.order_period}`} className="fb-sub">{arrivalLine(a)}</div>)}
           <div>= 期末 {f.closing}{nxt ? `　→ ${nxt} 期初` : ''}</div>
@@ -232,7 +309,7 @@ function partialChain(rows: (MskuForecast | undefined)[], fullMonth: QtyValue, c
                       month: Period, nxt: Period | undefined): string {
   const p = partialSum(rows);
   const full = fullMonth.kind === 'num' ? fullMonth.value : null;
-  return `${asOfStartLine(asOf, p.onhand, month, 'Σ msku，')} − 本月 as_of 后期望 ${n(p.demand)}（全月期望 ${n(full)} 的剩余部分）`
+  return `${asOfStartLine(asOf, p.onhand, month, 'Σ msku，', p.parts)} − 本月 as_of 后计划销量 ${n(p.demand)}（全月计划销量 ${n(full)} 的剩余部分）`
     + ` + 到货 ${n(p.inbound)} = 期末 ${closing}`
     + (nxt ? `　→ ${nxt} 期初` : '');
 }
@@ -245,7 +322,7 @@ function storeChain(s: StoreForecast | undefined, block: SkuBlock, periods: Peri
     return partialChain(block.mskus.map((r) => r.forecast.find((f) => f.period === s.period)),
       demandAt(block, s.period), s.closing, asOf, s.period, nxt);
   }
-  return `期初 ${n(s.opening)} − 期望 ${n(s.demand)} + 到货 ${n(s.inbound_planned)} = 期末 ${s.closing}`
+  return `期初 ${n(s.opening)} − 计划销量 ${n(s.demand)} + 到货 ${n(s.inbound_planned)} = 期末 ${s.closing}`
     + (nxt ? `　→ ${nxt} 期初` : '');
 }
 
@@ -275,7 +352,7 @@ function StoreBody({ model, block, period }: { model: GridModel; block: SkuBlock
 
 const UNALLOCATED_WHY: Record<string, string> = {
   gap_unknown: '有店缺口未知', no_fba_msku: '没有 FBA 店', not_applicable: '无 FBA',
-  unknown_onhand: '无在仓数',
+  unknown_onhand: '无在仓数', fba_overdue: '送达时段已过未签收', fba_no_eta: '没有送达时段',
 };
 
 function SkuBody({ model, sku, period }: { model: GridModel; sku: string; period: Period }) {
@@ -291,7 +368,7 @@ function SkuBody({ model, sku, period }: { model: GridModel; sku: string; period
       ? partialChain(fba.flatMap((b) => b.mskus.map((r) => r.forecast.find((f) => f.period === period))),
         sumUnits(fba.map((b) => demandAt(b, period)).map((q) => (q.kind === 'num' ? q.value : null))),
         t.closing, model.params.as_of, period, nxt)
-      : `期初 ${n(t.opening)} − 期望 ${n(t.stock_demand)} + 到货 ${n(t.inbound_planned)} = 期末 ${t.closing}`
+      : `期初 ${n(t.opening)} − 计划销量 ${n(t.stock_demand)} + 到货 ${n(t.inbound_planned)} = 期末 ${t.closing}`
         + (nxt ? `　→ ${nxt} 期初` : '');
   const beyond = model.beyond.filter((b) => b.sku === sku);
   const unalloc = model.unallocated.filter((u) => u.sku === sku);
@@ -303,7 +380,7 @@ function SkuBody({ model, sku, period }: { model: GridModel; sku: string; period
       </div>
       <div className="fb-chain">
         <div>
-          在途 {n(t.in_transit)} = 生产中 {n(pl.making)} + 货运中 {n(pl.shipping)} + 已下单未到 {pl.ordered_open}
+          采购管道 {n(t.in_transit)}（不计入当月在途）= 生产中 {n(pl.making)} + 货运中 {n(pl.shipping)} + 已下单未到 {pl.ordered_open}
           {pl.ordered_open_overdue > 0 && `（其中已逾期 ${pl.ordered_open_overdue}）`}
         </div>
         {/* ★ period 是采购单的预计到货月（ETA），不是下单月；逾期的不改日期，照标（OQ-6） */}
@@ -312,22 +389,118 @@ function SkuBody({ model, sku, period }: { model: GridModel; sku: string; period
             {o.ref} {o.units}（预计 {o.period} 到货{o.overdue ? '，已逾期' : ''}）
           </div>
         ))}
-        <div className="fb-sub">FBA 货件 未取</div>
+        <div className="fb-sub">{pl.fba_inbound === null ? 'FBA 货件当天未采到，月末未知'
+          : `推演期内另有 FBA 货件在途 ${pl.fba_inbound} 件，按到货日计入月末`}</div>
       </div>
       {t.unfilled_purchase.length > 0 && <div>采购未填：{t.unfilled_purchase.join('、')}</div>}
       {(beyond.length > 0 || unalloc.length > 0) && (
         <ul className="fb-list">
-          {beyond.map((b) => (
-            <li key={`bh${b.order_period}`}>
-              {b.order_period} 下单 {b.units} 件 → {b.arrive} 到货（{b.reason === 'arrives_after_horizon' ? '周期外' : '早于 as_of'}）
-            </li>
-          ))}
-          {unalloc.map((u) => (
+          {beyond.map((b) => (b.kind === 'fba_shipment'
+            ? <li key={`bhf${b.shipment_id}${b.seller_sku}`}>FBA 货件 {b.shipment_id} {b.units} 件 → {b.arrive} 到货（周期外）</li>
+            : (
+              <li key={`bh${b.order_period}`}>
+                {b.order_period} 下单 {b.units} 件 → {b.arrive} 到货（{b.reason === 'arrives_after_horizon' ? '周期外' : '早于 as_of'}）
+              </li>
+            )))}
+          {unalloc.map((u) => (u.kind === 'fba_shipment'
+            ? <li key={`uaf${u.shipment_id}${u.seller_sku}`}>未计入：FBA 货件 {u.shipment_id} {u.units} 件（{u.seller_sku}，{UNALLOCATED_WHY[u.reason] ?? u.reason}）</li>
+            : (
             <li key={`ua${u.order_period}${u.scope === 'msku' ? u.seller_sku + u.sid : ''}`}>
               {u.arrive} 到货 {n(u.units)} 件{u.scope === 'msku' ? `分给 ${u.seller_sku} 但推演不了` : '没分出去'}（{UNALLOCATED_WHY[u.reason] ?? u.reason}）
             </li>
-          ))}
+            )))}
         </ul>
+      )}
+    </>
+  );
+}
+
+/** 销量预测的成分（FM-D4）：货号 = Σ 店铺 → 店铺 = Σ msku → msku = 速率 × 天数 */
+function SalesBody({ model, target }: { model: GridModel; target: BasisTarget }) {
+  const p = target.period;
+  if (target.kind === 'msku') {
+    return <div className="fb-fc">{forecastLine(target.row.cells.find((c) => c.period === p))}</div>;
+  }
+  const blocks = target.kind === 'store' ? [target.block] : model.blocks.filter((b) => b.sku === target.sku);
+  const t = target.kind === 'sku' ? totalsAt(model, target.sku, p) : undefined;
+  const head = target.kind === 'sku'
+    ? `销量预测 ${t?.system_not_applicable ? '不适用' : n(t?.system ?? null)} = ${salesCompositionSku(model, target.sku, p)}`
+    : `销量预测 ${sys(target.block.stock.find((x) => x.period === p)?.system)} = ${salesCompositionStore(target.block, p)}`;
+  return (
+    <>
+      <div className="fb-chain" data-testid="fb-chain"><div>{head}</div></div>
+      <ul className="fb-list">
+        {blocks.map((b) => {
+          const st = b.stock.find((x) => x.period === p);
+          return (
+            <li key={b.sid}>
+              {target.kind === 'sku' && <div>{b.seller_name} {sys(st?.system, st?.system_not_applicable)} = {salesCompositionStore(b, p)}</div>}
+              {b.mskus.map((r) => (
+                <div key={r.seller_sku} className="fb-sub">{r.seller_sku}：{forecastLine(r.cells.find((c) => c.period === p))}</div>
+              ))}
+            </li>
+          );
+        })}
+      </ul>
+    </>
+  );
+}
+
+const fmtSeen = (iso: string) => {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso
+    : `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+};
+
+function transitItemLine(x: MonthInTransitItem, model: GridModel): string {
+  if (x.source === 'fba') {
+    const shop = model.blocks.find((b) => b.sid === x.sid)?.seller_name ?? x.sid ?? '';
+    const win = x.deliver_from && x.eta ? `送达 ${md(x.deliver_from)}–${md(x.eta)}` : x.eta ? `送达至 ${md(x.eta)}` : '没有送达时段';
+    const only = x.current_only ? (x.eta ? '，已过送达时段未签收，只计本月' : '，只计本月') : '';
+    return `FBA 货件 ${x.ref} ${x.units} 件（${shop} ${x.msku ?? ''}，${win}${only}）`;
+  }
+  const sent = x.shipped_at ? `${md(x.shipped_at)} 发出，` : '';
+  const eta = x.eta ? `预计 ${md(x.eta)} 到达` : '没有预计到达日';
+  const only = x.current_only ? (x.eta ? '，已过预计到达未收完，只计本月' : '，只计本月') : '';
+  return `海外仓备货单 ${x.ref} ${x.units} 件（${sent}${eta}${only}）`;
+}
+
+/** 当月在途的成分（FM-D3/D4）：按来源逐条 + 采集 / 实查时刻；采购管道另列、不计入（FM-Q1） */
+function TransitBody({ model, sku, period }: { model: GridModel; sku: string; period: Period }) {
+  const mit = model.transit.find((r) => r.sku === sku)?.cells.find((c) => c.period === period)?.mit ?? null;
+  const t = totalsAt(model, sku, period);
+  const notes = model.sourceNotes;
+  const why = mit ? [mit.fba === null ? 'FBA 货件当天未采到' : null,
+    mit.oversea === null ? `海外仓读不到：${notes?.oversea_in_transit_error ?? '原因未知'}` : null].filter(Boolean).join('；') : '';
+  const head = !mit ? '当月在途 —（这次没取）'
+    : mit.before_as_of ? '当月在途 —（as_of 之前的月份没有在途记录）'
+      : mit.total === null ? `当月在途 —（${why}）` : `当月在途 ${mit.total} = ${transitComposition(mit)}`;
+  const noSku = (notes?.dropped?.['fba_inbound'] as { items_without_sku?: { units: number } } | undefined)
+    ?.items_without_sku?.units ?? 0;
+  const fba = mit?.items.filter((x) => x.source === 'fba') ?? [];
+  const ows = mit?.items.filter((x) => x.source === 'oversea') ?? [];
+  return (
+    <>
+      <div className="fb-chain" data-testid="fb-chain"><div>{head}</div></div>
+      {mit && (
+        <ul className="fb-list">
+          {mit.fba === null ? <li>FBA 货件：当天未采到</li> : fba.length === 0 ? <li>FBA 货件：没有在途</li>
+            : fba.map((x, i) => <li key={`f${i}`}>{transitItemLine(x, model)}</li>)}
+          {mit.oversea === null ? <li>海外仓：读不到</li> : ows.length === 0 ? <li>海外仓：没有在途</li>
+            : ows.map((x, i) => <li key={`o${i}`}>{transitItemLine(x, model)}</li>)}
+        </ul>
+      )}
+      <div className="fb-sub">
+        FBA 货件：采集于 {notes?.fba_inbound_as_of ?? model.params.as_of}（每日采集）
+        {notes?.oversea_in_transit_at && <>；海外仓：领星实查于 {fmtSeen(notes.oversea_in_transit_at)}</>}
+      </div>
+      {noSku > 0 && <div className="fb-sub">另有 {noSku} 件 FBA 货件明细没有货号，未计入任何货号的当月在途</div>}
+      {t && (
+        <div className="fb-chain">
+          <div>
+            采购管道 {n(t.in_transit)}（不计入当月在途）= 生产中 {n(t.pipeline.making)} + 货运中 {n(t.pipeline.shipping)} + 已下单未到 {t.pipeline.ordered_open}
+          </div>
+        </div>
       )}
     </>
   );
@@ -352,19 +525,26 @@ export function ForecastBasis({ model, target: t0 }: { model: GridModel; target:
   return (
     <>
       <div className="fb" data-testid="fb-data">
-        {target.kind === 'msku' && <MskuBody model={model} row={target.row} period={target.period} />}
-        {target.kind === 'store' && <StoreBody model={model} block={target.block} period={target.period} />}
-        {target.kind === 'sku' && <SkuBody model={model} sku={target.sku} period={target.period} />}
+        {target.metric === 'sales' && <SalesBody model={model} target={target} />}
+        {target.metric === 'transit' && target.kind === 'sku' && <TransitBody model={model} sku={target.sku} period={target.period} />}
+        {(!target.metric || target.metric === 'stock') && (
+          <>
+            {target.kind === 'msku' && <MskuBody model={model} row={target.row} period={target.period} />}
+            {target.kind === 'store' && <StoreBody model={model} block={target.block} period={target.period} />}
+            {target.kind === 'sku' && <SkuBody model={model} sku={target.sku} period={target.period} />}
+          </>
+        )}
       </div>
       <Fold summary="怎么算的">
         {sb && sb.reason !== 'not_applicable_no_sales_source' && <RateDetail sb={sb} />}
-        <p>首月期初 = as_of 当天 FBA 可售 − as_of 次日到首月前一天按预测扣的量 + 这段到货；没有预测速率时按首月期望 ÷ 当月天数折成日速率</p>
+        <p>首月期初 = as_of 当天 FBA 可售 − as_of 次日到首月前一天按预测扣的量 + 这段到货；没有预测速率时按首月计划销量 ÷ 当月天数折成日速率</p>
         <p>一段的扣减 = 月总量 × (前半月天数 ÷ 30 + 后半月天数 ÷ 2×(月长 − 15))，向上取整：前后半月各占月总量一半</p>
-        <p>as_of 落在本月里：从 as_of 当天可售起算，只扣 as_of 次日到月末那一段期望，本月已过的天数不在账上</p>
-        <p>期末 = 期初 − 期望 + 到货（负数照实显示）；下月期初 ≡ 本月期末</p>
-        <p>到货日 = 下单月 {anchor_day} 号 + 生产 {make_days} 天 + 货运 {ship_days} 天；各 msku 先补缺口；缺口比这批多就按缺口比例分，比这批少则余量按期望销量比例摊</p>
+        <p>as_of 落在本月里：从 as_of 当天可售起算，只扣 as_of 次日到月末那一段计划销量，本月已过的天数不在账上</p>
+        <p>期末 = 期初 − 计划销量 + 到货（负数照实显示）；下月期初 ≡ 本月期末</p>
+        <p>到货日 = 下单月 {anchor_day} 号 + 生产 {make_days} 天 + 货运 {ship_days} 天；各 msku 先补缺口；缺口比这批多就按缺口比例分，比这批少则余量按计划销量比例摊</p>
         <p>预测 = 基线速率 × 当月天数，向上取整；店铺 = Σ msku，货号 = Σ 店铺（无 FBA 的不进库存求和）</p>
-        <p>在途 = 生产中 + 货运中 + 已下单未到；FBA 货件未取，不计入；已下单未到的预计到货月早于 {model.params.in_transit_as_of.slice(0, 7)} 即已逾期</p>
+        <p>当月在途 = 当月任一天在路上的货（到达那天所在月也算）：已发出未签收的 FBA 货件（按送达时段结束日）+ 已发未收的海外仓备货单（按预计到达，领星实查）；到达日未知或已过还没收完的只计 as_of 所在月</p>
+        <p>采购管道 = 生产中 + 货运中 + 已下单未到（不计入当月在途）；已发出的 FBA 货件按亚马逊送达时段结束日计入月末（不在在途里重复计），送达时段已过未签收或没有送达时段的不计、单列；已下单未到的预计到货月早于 {model.params.in_transit_as_of.slice(0, 7)} 即已逾期</p>
       </Fold>
     </>
   );

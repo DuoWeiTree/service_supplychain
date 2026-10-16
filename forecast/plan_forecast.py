@@ -41,6 +41,10 @@ class MskuInput:
     # ★ False = 这个 msku 没有销量取数源（认领时记进 system_basis），预测「不适用」——
     #   与 FBA 不适用同一种排除：不进上一层的预测 Σ，不当 0，也不把上一层拖成未知
     system_applicable: bool = True
+    #: ★ spec 2026-10-14：已发出未签收的 FBA 货件（`dim.source.FbaInbound`）；None = 当天没有货件快照（未知 ≠ 0）
+    fba_inbound: tuple | None = ()
+    #: 期初的两部分 {fulfillable, fc_transfers}，只为依据回显；`onhand` 已是两者之和（OP-19 c）
+    onhand_parts: dict | None = None
 
     @property
     def key(self) -> tuple[str, str]:
@@ -126,14 +130,15 @@ def project_msku(m: MskuInput, as_of: dt.date, periods: Sequence[dt.date],
             raise ValueError(f"到货日 {x.date} 不在推演窗 [{start}, {end}] 内 —— "
                              "调用方应先把它列进 beyond_horizon")
     live = [p for p in periods if month_end(p) >= start]
-    if not m.applicable or m.onhand is None:
-        reason = "not_applicable" if not m.applicable else "unknown_onhand"
+    if not m.applicable or m.onhand is None or m.fba_inbound is None:
+        reason = ("not_applicable" if not m.applicable else "unknown_onhand" if m.onhand is None
+                  else "fba_inbound_unavailable")
         unplaced = [{**_note(x), "reason": reason} for x in sorted(arrivals, key=lambda x: x.date)]
         if not m.applicable:
             rows = [_blank(p, "not_applicable", "not_applicable") for p in periods]
         else:                            # 同 no-rate：未知的是头寸，期望销量照常回显
             rows = [_blank(p, "elapsed", "elapsed") if p not in live else
-                    MskuMonth(p, "unknown", "unknown_onhand", live[0], None, _demand(m, p, start),
+                    MskuMonth(p, "unknown", reason, live[0], None, _demand(m, p, start),
                               None, None, None, None, ()) for p in periods]
         return MskuProjection(rows, None, unplaced)
     if not live:
@@ -173,7 +178,8 @@ def project_msku(m: MskuInput, as_of: dt.date, periods: Sequence[dt.date],
                 mm = add_months(mm, 1)
         bridge = {"from": start.isoformat(), "to": (first_plan - ONE).isoformat(),
                   "units": units, "by": by, "rate": rate, **extra,
-                  "month_totals": totals, "segments": segs, "onhand_as_of": m.onhand}
+                  "month_totals": totals, "segments": segs, "onhand_as_of": m.onhand,
+                  "onhand_parts": m.onhand_parts}
     for p in live:                                           # ★ 计划月：扣期望销量
         a, eff = max(start, p), m.effective.get(p)
         if eff is None:
@@ -225,7 +231,8 @@ def project_msku(m: MskuInput, as_of: dt.date, periods: Sequence[dt.date],
         br = bridge if (p == first_plan and not partial) else None
         shown_opening = None if (partial or opening is None) else _int(opening)
         eff = m.effective.get(p)
-        start_note = ({"as_of": as_of.isoformat(), "onhand_as_of": m.onhand, "from": a.isoformat(),
+        start_note = ({"as_of": as_of.isoformat(), "onhand_as_of": m.onhand, "onhand_parts": m.onhand_parts,
+                       "from": a.isoformat(),
                        "segment": None if eff is None else segment_detail(eff, a, b)}
                       if partial else None)
         if br is not None and shown_opening is not None and shown_opening != (
@@ -297,6 +304,8 @@ class SkuMonth:
     reason: str | None = None
     reason_from: tuple[str, str] | None = None   # 未知时：让它未知的那个 msku（seller_sku, sid）
     system_not_applicable: bool = False     # 每家店的预测都不适用
+    #: 已进台账的 FBA 货件剩余 Σ（spec 2026-10-14，全表一个数，不按月切）；任一 msku 货件未知 → None
+    fba_inbound: int | None = None
 
 
 @dataclass(frozen=True)
@@ -311,6 +320,31 @@ class PlanForecast:
 def _sum(vals) -> int | None:
     vals = list(vals)
     return None if (not vals or any(v is None for v in vals)) else sum(vals)
+
+
+def _place_fba(m: MskuInput, start: dt.date, end: dt.date) -> tuple[list[Arrival], list[dict], list[dict]]:
+    """FBA 货件 → (到货, 越窗, 未计入)。到货日 = 送达结束日（OP-19 a）。
+    ★ 逾期未签收 / 没有送达时段的不挪进以后的月份，点名不计（S-34 ④ 同理，FI-Q2）。"""
+    arr: list[Arrival] = []
+    beyond: list[dict] = []
+    unplaced: list[dict] = []
+    for x in m.fba_inbound or ():
+        frm = x.deliver_from.isoformat() if x.deliver_from else None
+        to = x.deliver_to.isoformat() if x.deliver_to else None
+        named = {"sku": m.sku, "seller_sku": m.seller_sku, "sid": m.sid, "kind": "fba_shipment",
+                 "shipment_id": x.shipment_id, "status": x.status, "units": x.units, "order_period": None,
+                 "deliver_from": frm, "deliver_to": to}
+        if x.deliver_to is None:
+            unplaced.append({**named, "arrive": None, "reason": "fba_no_eta"})
+        elif x.deliver_to < start:
+            unplaced.append({**named, "arrive": to, "reason": "fba_overdue"})
+        elif x.deliver_to > end:
+            beyond.append({**named, "arrive": to, "reason": "arrives_after_horizon"})
+        else:
+            arr.append(Arrival(x.deliver_to, x.units, {
+                "kind": "fba_shipment", "shipment_id": x.shipment_id, "status": x.status,
+                "order_period": None, "deliver_from": frm, "deliver_to": to}))
+    return arr, beyond, unplaced
 
 
 def _beyond(b: Batch, reason: str) -> dict:
@@ -361,10 +395,18 @@ def forecast_plan(inp: PlanForecastInput) -> PlanForecast:
             else:
                 placeable.setdefault(sku, []).append(b)
 
-    # 第一遍 · 基线（不补货）
-    base = {m.key: project_msku(m, inp.as_of, inp.periods) for m in inp.mskus}
-    arrivals: dict[tuple[str, str], list[Arrival]] = {m.key: [] for m in inp.mskus}
+    # ★ spec 2026-10-14：FBA 货件在第一遍就进台账 —— 采购按缺口分配，缺口必须已扣掉路上的货
+    fba_arr: dict[tuple[str, str], list[Arrival]] = {}
     unallocated: list[dict] = []
+    for m in inp.mskus:
+        got, far, lost = _place_fba(m, start, end)
+        fba_arr[m.key] = got
+        beyond += far
+        unallocated += lost
+
+    # 第一遍 · 基线（不补采购）
+    base = {m.key: project_msku(m, inp.as_of, inp.periods, fba_arr[m.key]) for m in inp.mskus}
+    arrivals: dict[tuple[str, str], list[Arrival]] = {m.key: list(fba_arr[m.key]) for m in inp.mskus}
     for sku in skus:
         ms = {m.key: m for m in by_sku.get(sku, [])}
         keys = sorted((k for k, m in ms.items() if m.applicable), key=lambda k: (k[1], k[0]))
@@ -383,7 +425,8 @@ def forecast_plan(inp: PlanForecastInput) -> PlanForecast:
             # ★ OP-12：整批分不出 → 能推演的 msku 从到货日起未知。在仓未知的本来就未知，
             #   且这批已在上面批次级点名 —— 再塞给它只会经 unplaced_arrivals 重复列一遍。
             for k in keys:
-                if ms[k].onhand is not None:
+                # ★ 终审 I-1：同 project_msku 的未知分支 —— 货件未知的 msku 本来就未知，且正是它让这批 gap_unknown
+                if ms[k].onhand is not None and ms[k].fba_inbound is not None:
                     arrivals[k].append(Arrival(dt.date.fromisoformat(u["arrive"]), None,
                                                {"order_period": u["order_period"],
                                                 "reason": "gap_unknown", "pool": u["units"]}))
@@ -397,6 +440,10 @@ def forecast_plan(inp: PlanForecastInput) -> PlanForecast:
     sku_rows: list[SkuMonth] = []
     for sku in skus:
         ms_list = by_sku.get(sku, [])
+        fba_live = [m for m in ms_list if m.applicable]
+        # ★ 终审 I-2：只数真进了台账的 —— 在仓未知的 msku 的货件进了 unallocated，不算「已计入」
+        fba_total = (None if any(m.fba_inbound is None for m in fba_live)
+                     else sum(x.units for m in fba_live if m.onhand is not None for x in fba_arr[m.key]))
         groups: dict[str, list[MskuInput]] = {}
         for m in ms_list:
             groups.setdefault(m.sid, []).append(m)
@@ -454,7 +501,8 @@ def forecast_plan(inp: PlanForecastInput) -> PlanForecast:
                 stock(lambda s: s.inbound), stock(lambda s: s.closing),
                 len(month_stores) - len(live), making, shipping, ordered, ordered_overdue, refs,
                 making + shipping + ordered, tuple(unfilled[sku]), reason, reason_from,
-                system_not_applicable=bool(month_stores) and not sys_stores)
+                system_not_applicable=bool(month_stores) and not sys_stores,
+                fba_inbound=fba_total)
             if (row.state == "ok" and row.closing
                     != row.opening - row.stock_demand + row.inbound):   # ★ 恒等式③ 货号层
                 raise AssertionError(f"{sku} {p} 货号层恒等式不成立：{row}")

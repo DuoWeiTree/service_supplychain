@@ -381,12 +381,14 @@ describe('★ Task 22（业主裁定 2026-09-27）：货号没有 msku 了，货
       expect((await code(api.getPurchaseOrder(po_id))).error).toBe('po_not_found');
     });
 
-    it('★ over_seller_cap：形状同后端（line_id/seller_id/cap/used/requested）', async () => {
-      // 100 件、期望 40:20 ⇒ 最大余数法 67 / 33；11072 已被 PO1 占 30
-      const e = await code(api.createPurchaseOrder(body({}, 38, '11072')));
-      expect([e.status, e.error]).toEqual([409, 'over_seller_cap']);
-      expect(e.fields).toEqual({ line_id: 101, seller_id: '11072', cap: 67, used: 30, requested: 38 });
-      await api.createPurchaseOrder(body({}, 37, '11072'));   // 恰在上限上不拒
+    it('★ PB-D22 没有分店上限：只卡总量；店必须在记录里（形状同后端）', async () => {
+      // 100 件，PO1 已占 30：一家店拿满剩下 70 不拒，再多 1 件 over_total
+      await api.createPurchaseOrder(body({}, 70, '11072'));
+      const e = await code(api.createPurchaseOrder(body({}, 1, '11072')));
+      expect([e.status, e.error]).toEqual([409, 'over_total']);
+      const s = await code(api.createPurchaseOrder(body({}, 1, '99999')));
+      expect([s.status, s.error]).toEqual([409, 'seller_not_in_line']);
+      expect(s.fields).toMatchObject({ line_id: 101, seller_ids: ['99999'] });
     });
 
     it('★ stale_draft：draft_version 不对 ⇒ 409 点名 current_version / got', async () => {

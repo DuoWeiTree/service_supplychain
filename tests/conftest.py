@@ -77,6 +77,10 @@ FORBIDDEN_SCHEMAS = {"scm", "inv"}
 #: 每个测试之间要清空的表。★ plan_line_transition 不在其中 ——
 #: 它是白名单（迁移灌的数据），清掉它状态机就没了。
 DATA_TABLES = (
+    "dispatch_attention_close", "dispatch_attention", "ext_ref_void", "ext_ref", "consignment_logistics",
+    "logistics_channel", "stock_obs", "stock_read",
+    "sheet_gate_run", "consignment_packing", "dispatch_source_map", "consignment_line",
+    "consignment_event", "consignment", "dispatch_arrangement", "sheet_event", "sheet",
     "po_item_obs", "po_snapshot", "po_attention", "erp_call",
     "po_event", "po_source_map", "po_line", "po", "supplier",
     "dim_refresh_run",
@@ -239,10 +243,15 @@ DOUBLE = LingxingDouble()
 @pytest.fixture(autouse=True)
 def lingxing(monkeypatch):
     """领星替身。每个测试一份干净的脚本与单据。"""
+    from usecase import (
+        oversea_in_transit,  # 进程级缓存（spec 2026-10-15）：上一个测试的领星结果不许漏进来
+    )
     DOUBLE.reset()
+    oversea_in_transit.reset_cache()
     monkeypatch.setattr(gateway, "_driver", lambda: DOUBLE)
     yield DOUBLE
     DOUBLE.reset()
+    oversea_in_transit.reset_cache()
 
 
 #: ★ 测试永远不碰真 CH（PB-D17 之后产品只造 ChSource）。换的是 `make_source` 这个

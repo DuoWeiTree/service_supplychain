@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createHttpApi } from './http';
+import { READ_BACK_TIMEOUT_MS, createHttpApi } from './http';
 import { ApiError } from './client';
 import { setActor } from '../shell/actorStore';
 import gridFixture from '../testing/fixtures/grid-1.json';
@@ -35,7 +35,7 @@ describe('http 数据源', () => {
     ]);
   });
 
-  it('★ PUT 的 body 字段名按契约：期望销量 expected_units、采购量 planned_units', async () => {
+  it('★ PUT 的 body 字段名按契约：计划销量 expected_units、采购量 planned_units', async () => {
     // ★ mockResolvedValue 复用同一个 Response 实例，两次调用共享同一份 body ——
     //   第二次读就会炸 "Body has already been read"（真实 fetch 每次都发一个新对象，
     //   这里必须显式用 mockImplementation 每次构一份新的）。
@@ -120,6 +120,30 @@ describe('http 数据源', () => {
     const err = await createHttpApi({ base: '/v1', timeoutMs: 5 }).getGrid(1).catch((e) => e);
     expect((err as ApiError).error).toBe('timeout');
     expect(logged[0]!.join(' ')).toContain('TimeoutError');
+  });
+
+  it('★ 读回用自己的长超时（要等后端打完领星），其余请求仍用全局超时', async () => {
+    const spy = vi.spyOn(AbortSignal, 'timeout');
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(ok({ checked: true, read_outcome: 'ok', read_cause: null,
+      read_back_call: 1, problems: [], lx: null }));
+    await mk().readBack(3);
+    await mk().getGrid(1).catch(() => undefined);
+    expect(spy.mock.calls.map((c) => c[0])).toEqual([READ_BACK_TIMEOUT_MS, 1000]);
+    expect(READ_BACK_TIMEOUT_MS).toBeGreaterThan(60_000);   // > 后端两次各 30 s 的外呼
+  });
+
+  it('★ 提交预览也现查领星（海外仓三方配对实测 7.5~16 s）：用读回的长超时，不用全局 8 s', async () => {
+    const spy = vi.spyOn(AbortSignal, 'timeout');
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(ok({ orders: [], blockers: [] }));
+    await mk().getSubmission(6);
+    expect(spy.mock.calls.map((c) => c[0])).toEqual([READ_BACK_TIMEOUT_MS]);
+  });
+
+  it('★ 读回超时的提示写的是读回自己的时限，不是全局的', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
+    const err = await mk().readBack(3).catch((e) => e);
+    expect((err as ApiError).hint).toBe(`${READ_BACK_TIMEOUT_MS}ms 内没有响应`);
   });
 
   it('★ 提前期：putLeadTime 发 PUT /v1/lead-time，body 带 make_days，getLeadTime 发 GET', async () => {

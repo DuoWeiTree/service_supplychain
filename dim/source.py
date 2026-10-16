@@ -15,6 +15,15 @@ class InTransit(NamedTuple):
     ref: str        # 可回查的单号
 
 
+class FbaInbound(NamedTuple):
+    """已发往 FBA、还没签收完的一个货件里这个 msku 的剩余件数（spec 2026-10-14-forecast-fba-inbound §3）。"""
+    shipment_id: str
+    status: str
+    units: int
+    deliver_from: dt.date | None
+    deliver_to: dt.date | None      # ★ 到货日取它（OP-19 裁定 a：宁晚不早）
+
+
 class StockDays(NamedTuple):
     """censor 用的断货日（spec §3.2 · OP-15）。★ 三个集合分开：
     「那天断货」「那天采到了、没断」「那天没采到 / 没过掉档守卫」是三件事 ——
@@ -35,6 +44,18 @@ class Source(Protocol):
 
     def onhand_available(self, seller_sku: str, sid: str) -> int | None:
         """可售在仓。★ None = 不适用（该店铺没有 FBA），与 0 是两回事。"""
+
+    def fc_transfers(self, seller_sku: str, sid: str) -> int:
+        """调仓中预留（spec 2026-10-14 · OP-19 c：进期初）。缺行 = 0。"""
+
+    def fba_inbound_as_of(self) -> dt.date | None:
+        """货件实际用的快照日（10-15 裁定：当天没采到时用前一天，界面写明）。"""
+
+    def fba_in_transit(self, sku: str) -> list[tuple[str, str, FbaInbound]] | None:
+        """货号级 FBA 在途（全部店铺）：`(sid, msku, 货件)`；None = 当天没有货件快照（spec 2026-10-15）。"""
+
+    def fba_inbound(self, seller_sku: str, sid: str) -> list[FbaInbound] | None:
+        """已发出未签收的 FBA 货件（spec 2026-10-14）。★ None = 当天没有货件快照：未知，不当 0。"""
 
     def purchase_in_transit(self, sku: str) -> list[InTransit]:
         """采购在途（CH `quantity_receive`）。★ 返回逐笔明细，合计由调用方求和。"""

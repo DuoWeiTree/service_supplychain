@@ -18,26 +18,6 @@ import purchaseFixture from './fixtures/purchase.json';
 
 const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 
-/** 同 rules/purchase.py::seller_caps：最大余数法，余数同分按 seller_id 升序。
- *  返回 null = 无法定上限（任一店 unknown / 总期望为 0），对应后端 NoSellerBasis */
-function sellerCaps(total: number, dbs: CandidateLine['demand_by_seller']): Record<string, number> | null {
-  const ids = Object.keys(dbs);
-  const exp: Record<string, number> = {};
-  for (const id of ids) {
-    const v = dbs[id];
-    if (!v || v.basis === 'unknown' || typeof v.units !== 'number') return null;
-    exp[id] = v.units;
-  }
-  const sum = ids.reduce((a, id) => a + exp[id]!, 0);
-  if (sum === 0) return null;
-  const caps: Record<string, number> = {};
-  for (const id of ids) caps[id] = Math.floor((total * exp[id]!) / sum);
-  const extra = total - ids.reduce((a, id) => a + caps[id]!, 0);
-  const order = [...ids].sort((a, b) => (total * exp[b]! % sum) - (total * exp[a]! % sum) || a.localeCompare(b));
-  for (const id of order.slice(0, extra)) caps[id]! += 1;
-  return caps;
-}
-
 const ORDERABLE: LineState[] = ['已提交', '已确认'];
 
 export function createMemoryBackend(): SupplyChainApi {
@@ -65,7 +45,8 @@ export function createMemoryBackend(): SupplyChainApi {
   type PoRow = Omit<PurchaseOrder, 'lines'> & { lines: StoredLine[]; created_at: string };
   const pos = new Map<PoId, PoRow>(
     (clone(purchaseFixture.purchase_orders) as unknown as PoRow[]).map((p) => {
-      return [p.po_id, { ...p, attention: [], source_line_states: [], preflight: [], confirm_token: '' }];
+      // 替身不模拟领星读回：lx 一律 null（「未读回」），不编状态
+      return [p.po_id, { ...p, attention: [], source_line_states: [], preflight: [], confirm_token: '', lx: null }];
     }));
   type PlanLineRow = Pick<CandidateLine, 'line_id' | 'plan_id' | 'rev' | 'sku' | 'period' | 'total_units' |
     'demand_at_submit' | 'demand_by_seller' | 'state' | 'confirmed_units' | 'ordered_units'>;
@@ -87,18 +68,14 @@ export function createMemoryBackend(): SupplyChainApi {
   };
   const candidate = (l: PlanLineRow): CandidateLine => {
     const used = usedBy();
-    const caps = sellerCaps(l.total_units, l.demand_by_seller);
     return {
       ...l,
       // 同后端 JOIN plan：替身里计划表就是 list.plans
       plan_title: list.plans.find((p) => p.plan_id === l.plan_id)?.title ?? '',
       remaining: l.total_units - l.confirmed_units,
-      blocked: caps ? null : { reason: 'no_seller_basis', sellers: Object.keys(l.demand_by_seller) },
-      sellers: Object.fromEntries(Object.entries(l.demand_by_seller).map(([sid, v]) => {
-        const u = used.get(`${l.line_id}|${sid}`) ?? 0;
-        return [sid, { expected: v?.units ?? null, cap: caps?.[sid] ?? null, used: u,
-                       remaining: caps && sid in caps ? caps[sid]! - u : null }];
-      })),
+      // 同 api/ui/lines.py（PB-D22）：没有分店上限，期望只作参考
+      sellers: Object.fromEntries(Object.entries(l.demand_by_seller).map(([sid, v]) =>
+        [sid, { expected: v?.units ?? null, used: used.get(`${l.line_id}|${sid}`) ?? 0 }])),
     };
   };
   const gate = (g: string, ok: boolean, detail: Record<string, unknown> = {}): PreflightGate => ({ gate: g, ok, detail });
@@ -172,22 +149,16 @@ export function createMemoryBackend(): SupplyChainApi {
       if (!pl) throw poErr(404, 'line_not_found', '没有这条计划单记录', { line_id: id });
       if (!ORDERABLE.includes(pl.state))
         throw poErr(409, 'line_not_orderable', '只有 已提交/已确认 的记录能组单', { line_id: id, state: pl.state });
-      const caps = sellerCaps(pl.total_units, pl.demand_by_seller);
-      if (!caps) throw poErr(409, 'no_seller_basis', '期望销量为 0 或 unknown 的店无法定分店上限',
-                             { line_id: id, sellers: Object.keys(pl.demand_by_seller) });
       const rows = [...want].filter(([k]) => k.startsWith(`${id}|`));
+      // 同 usecase/draft_po.py（PB-D22）：店必须是这条记录里的店；量只卡总量
+      const stray = [...new Set(rows.map(([k]) => k.split('|')[1]!))].filter((sid) => !(sid in pl.demand_by_seller)).sort();
+      if (stray.length > 0)
+        throw poErr(409, 'seller_not_in_line', '来源店不在这条记录里（只能记到计划里认领了该货号的店）',
+                    { line_id: id, seller_ids: stray, allowed: Object.keys(pl.demand_by_seller).sort() });
       const totalWant = rows.reduce((a, [, v]) => a + v, 0);
       const totalUsed = [...used].filter(([k]) => k.startsWith(`${id}|`)).reduce((a, [, v]) => a + v, 0);
       if (totalUsed + totalWant > pl.total_units)
         throw poErr(409, 'over_total', '超过记录总量', { line_id: id, total: pl.total_units, used: totalUsed, requested: totalWant });
-      for (const [k, req] of rows) {
-        const sid = k.split('|')[1]!;
-        const cap = caps[sid] ?? 0;
-        const u = used.get(k) ?? 0;
-        if (u + req > cap)
-          throw poErr(409, 'over_seller_cap', '超过该店上限（按期望销量占比）',
-                      { line_id: id, seller_id: sid, cap, used: u, requested: req });
-      }
     }
     Object.assign(p, { supplier_id: body.supplier_id, purchaser_id: body.purchaser_id, opt_uid: body.opt_uid,
                        qc_type: body.qc_type, wid: lines[0]?.wid ?? null, lines });
@@ -610,7 +581,7 @@ export function createMemoryBackend(): SupplyChainApi {
       const p: PoRow = { po_id: id, supplier_id: '', purchaser_id: 0, opt_uid: 0, qc_type: 0, wid: null,
         custom_order_sn: `SCM-PO-${id}`, order_sn: null, state: '草稿', placed_at: null, draft_version: 1,
         created_by: 'ops.zhang', is_void: false, discarded_at: null, lines: [], source_line_states: [],
-        attention: [], preflight: [], confirm_token: '', created_at: new Date().toISOString() };
+        attention: [], preflight: [], confirm_token: '', lx: null, created_at: new Date().toISOString() };
       if (!purchaseFixture.options.suppliers.some((x) => x.supplier_id === body.supplier_id) && body.supplier_id)
         throw poErr(400, 'unknown_supplier', '没有这个供应商（不在供应商镜像里）', { supplier_id: body.supplier_id });
       applyBody(p, body);
@@ -641,6 +612,7 @@ export function createMemoryBackend(): SupplyChainApi {
                  : [] };
     },
     async recheck(_poId) { return notSimulated('recheck'); },
+    async readBack(_poId) { return notSimulated('readBack'); },
     async registerExisting(_poId, _orderSn) { return notSimulated('registerExisting'); },
     async confirmAbsent(_poId, _reason) { return notSimulated('confirmAbsent'); },
     async acknowledgeMismatch(_poId, _reason) { return notSimulated('acknowledgeMismatch'); },
@@ -672,5 +644,29 @@ export function createMemoryBackend(): SupplyChainApi {
         }),
       };
     },
+
+    // ★ 排货不在内存里重演（派生 / 闸是后端规则，照抄一份迟早分叉）；页面测试用 stubBackend + 契约样本
+    async listDispatchPlans() { return { plans: [] }; },
+    async listSheets() { return { sheets: [] }; },
+    async createSheet() { return notSimulated('createSheet'); },
+    async getSheet() { return notSimulated('getSheet'); },
+    async getSheetGrid() { return notSimulated('getSheetGrid'); },
+    async putSheetCell() { return notSimulated('putSheetCell'); },
+    async putSheetPacking() { return notSimulated('putSheetPacking'); },
+    async sheetPreflight() { return notSimulated('sheetPreflight'); },
+    async confirmSheet() { return notSimulated('confirmSheet'); },
+    async cancelSheet() { return notSimulated('cancelSheet'); },
+    async liveRead() { return notSimulated('liveRead'); },
+    async reopenSheet() { return notSimulated('reopenSheet'); },
+    async receiptSheet() { return notSimulated('receiptSheet'); },
+    async checkSkuMatch() { return notSimulated('checkSkuMatch'); },
+    async listLogisticsChannels() { return notSimulated('listLogisticsChannels'); },
+    async refreshLogisticsChannels() { return notSimulated('refreshLogisticsChannels'); },
+    async setSheetLogistics() { return notSimulated('setSheetLogistics'); },
+    async getSubmission() { return notSimulated('getSubmission'); },
+    async submitSheet() { return notSimulated('submitSheet'); },
+    async verifyExtRef() { return notSimulated('verifyExtRef'); },
+    async registerExtRef() { return notSimulated('registerExtRef'); },
+    async confirmExtAbsent() { return notSimulated('confirmExtAbsent'); },
   };
 }

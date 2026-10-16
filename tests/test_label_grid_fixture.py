@@ -28,6 +28,7 @@ from api.ui.lead_time import LeadTime
 from api.ui.plans import _system_basis
 from forecast.baseline import data_windows, estimate_rate
 from forecast.calendar import days_in_month, units_for_month
+from forecast.month_in_transit import TransitItem
 
 DIR = Path(__file__).resolve().parents[1] / "web" / "src" / "pages" / "__fixtures__"
 
@@ -82,7 +83,13 @@ def build(periods: list[dt.date], expected: dict[tuple[str, str], list[int]],
         # ★ PO-2026-0701 预计 7 月到、至今未到：已逾期那一形态（终审 I-2 · OQ-6）
         in_transit={"SKU-1": [SimpleNamespace(period="2026-07", units=40, ref="PO-2026-0701"),
                               SimpleNamespace(period="2026-10", units=50, ref="PO-2026-0918")]},
-        lead=LeadTime("oversea_sea", 30, 60, 15, {}), embargo_days=7, plan_id=1)
+        lead=LeadTime("oversea_sea", 30, 60, 15, {}), embargo_days=7, plan_id=1,
+        # spec 2026-10-14：调仓中 0、没有在途货件 —— 数不变，只让「期初两部分」的形状进冻结网格
+        fba_inbound={A: [], B: []}, fc={A: 0, B: 0},
+        # spec 2026-10-15：当月在途 —— 一张海外仓待收货备货单（11-05 预计到达），FBA 货件无
+        fba_transit={"SKU-1": []},
+        oversea_transit={"SKU-1": [TransitItem("oversea", "OWS-T1", 40, dt.date(2026, 11, 5),
+                                               {"from_wid": 1, "to_wid": 2, "shipped_at": "2026-09-30"})]})
     return {"periods": [p.strftime("%Y-%m") for p in periods], "demand": demand,
             "purchase": [{"sku": "SKU-1", "period": p.strftime("%Y-%m"), "planned_units": u}
                          for p, u in zip(periods, purchase, strict=True)],

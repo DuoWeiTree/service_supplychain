@@ -1,0 +1,41 @@
+{
+  "plans": [
+    {
+      "plan_id": 1,
+      "title": "t",
+      "rev": 1,
+      "lines": 1,
+      "total": 100,
+      "confirmed": 100,
+      "ordered": 100,
+      "staged": 30,
+      "dispatched": 0,
+      "pending": 70,
+      "sheets": [
+        {
+          "sheet_id": 1,
+          "state": "草稿",
+          "route": "fba"
+        },
+        {
+          "sheet_id": 2,
+          "state": "草稿",
+          "route": "oversea"
+        }
+      ],
+      "records": [
+        {
+          "line_id": 1,
+          "sku": "DCC1800264G1",
+          "sku_name": "猫爬架",
+          "period": "2026-10-01",
+          "state": "已下单",
+          "total": 100,
+          "staged": 30,
+          "dispatched": 0,
+          "pending": 70
+        }
+      ]
+    }
+  ]
+}

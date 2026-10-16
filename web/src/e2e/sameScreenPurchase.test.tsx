@@ -23,19 +23,6 @@ type Fx = { po_id: number; custom_order_sn: string; supplier_id: string; state: 
 const POS = purchaseFixture.purchase_orders as unknown as Fx[];
 
 type Dbs = Record<string, { units: number | null; basis?: string } | null>;
-/** 照 rules/purchase.py::seller_caps：basis unknown 或 units 非整数 → 点名这些店；期望合计 0 → 全部点名 */
-function sellerCaps(total: number, dbs: Dbs): { caps: Record<string, number> } | { bad: string[] } {
-  const bad = Object.keys(dbs).filter((s) => dbs[s]?.basis === 'unknown' || !Number.isInteger(dbs[s]?.units)).sort();
-  if (bad.length) return { bad };
-  const ex = Object.fromEntries(Object.entries(dbs).map(([s, v]) => [s, v!.units!]));
-  const sum = Object.values(ex).reduce((a, b) => a + b, 0);
-  if (sum === 0) return { bad: Object.keys(ex).sort() };
-  const caps = Object.fromEntries(Object.entries(ex).map(([s, e]) => [s, Math.floor((total * e) / sum)]));
-  const extra = total - Object.values(caps).reduce((a, b) => a + b, 0);
-  const order = Object.keys(ex).sort((a, b) => (total * ex[b]!) % sum - (total * ex[a]!) % sum || a.localeCompare(b));
-  for (const s of order.slice(0, extra)) caps[s]! += 1;
-  return { caps };
-}
 
 /** 照 api/ui/lines.py::list_lines（orderable=1）：JOIN plan 取标题；used 数未作废单的来源 */
 function planLines(): unknown {
@@ -47,17 +34,12 @@ function planLines(): unknown {
     }
   }
   const all = (purchaseFixture.lines as unknown as Ln[]).map((l) => {
-    const r = sellerCaps(l.total_units, l.demand_by_seller);
-    const caps = 'caps' in r ? r.caps : {};
     return {
       ...l, plan_title: plansFixture.plans.find((p) => p.plan_id === l.plan_id)!.title,
       remaining: l.total_units - l.confirmed_units,
-      blocked: 'bad' in r ? { reason: 'no_seller_basis', sellers: r.bad } : null,
-      sellers: Object.fromEntries(Object.entries(l.demand_by_seller).map(([sid, v]) => {
-        const u = used.get(`${l.line_id}|${sid}`) ?? 0;
-        return [sid, { expected: v?.units ?? null, cap: caps[sid] ?? null, used: u,
-                       remaining: sid in caps ? caps[sid]! - u : null }];
-      })),
+      // PB-D22：没有分店上限
+      sellers: Object.fromEntries(Object.entries(l.demand_by_seller).map(([sid, v]) =>
+        [sid, { expected: v?.units ?? null, used: used.get(`${l.line_id}|${sid}`) ?? 0 }])),
     };
   });
   const st = all.filter((l) => ['已提交', '已确认'].includes(l.state));
@@ -104,7 +86,7 @@ async function screenText(source: 'mock' | 'api'): Promise<string> {
   await screen.findByTestId('po-list');
   await screen.findByText('核对全部通过');
   await screen.findByTestId('todo-list');
-  await screen.findByText(/A4Pet-US 期望/);
+  await screen.findAllByText('A4Pet-US');
   const text = (document.body.textContent ?? '').replace(/\s+/g, ' ').trim();
   unmount();
   return text;

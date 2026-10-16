@@ -23,7 +23,7 @@ const data = (d: HTMLElement) => within(d).getByTestId('fb-data');
 
 // 数字全部来自 labelGrid*.json（tests/test_label_grid_fixture.py 用 forecast_payload 跑出来的）
 describe('spec §5：点开一格看依据', () => {
-  it('msku 首月：期初来自 as_of 可售 − 桥接段按预测扣，再 − 期望 + 到货 = 期末 → 下月期初', async () => {
+  it('msku 首月：期初来自 as_of 可售 − 桥接段按预测扣，再 − 计划销量 + 到货 = 期末 → 下月期初', async () => {
     renderSheet();
     const d = await open('依据 MSKU-A 2026-10');
     expect(d).toHaveTextContent('库存 A4Pet-US / MSKU-A / 2026-10');
@@ -33,7 +33,7 @@ describe('spec §5：点开一格看依据', () => {
     // 130 × 9 ÷ 30 正好 39：不说「向上取整」
     expect(d).toHaveTextContent('09-22–09-30 扣 39 = 月总量 130 × (后半月 9 天 ÷ 30) = 39');
     expect(d).not.toHaveTextContent(/= 39\.0+|39 → 向上取整/);
-    expect(d).toHaveTextContent('− 期望 100');
+    expect(d).toHaveTextContent('− 计划销量 100');
     expect(d).toHaveTextContent('+ 到货 0');
     expect(d).toHaveTextContent('= 期末 161');
     expect(d).toHaveTextContent('→ 2026-11 期初');
@@ -53,20 +53,21 @@ describe('spec §5：点开一格看依据', () => {
     const d = await open('依据 MSKU-A 2027-01');
     expect(d).toHaveTextContent('期初 -39（= 2026-12 期末）');
     expect(d).toHaveTextContent('+ 到货 189');
-    expect(d).toHaveTextContent('01-13 到货 189（2026-10 下单，缺口 159 补齐，余量按期望销量再摊 30，这批 200）');
+    expect(d).toHaveTextContent('01-13 到货 189（2026-10 下单，缺口 159 补齐，余量按计划销量再摊 30，这批 200）');
     expect(d).toHaveTextContent('= 期末 30');
     expect(d).toHaveTextContent('本月断货 2027-01-01');
     expect(d).toHaveTextContent('首次断货 2026-12-20');
   });
 
-  it('货号行：库存链 + 在途拆成 生产中 / 货运中 / 已下单未到，FBA 货件写「未取」；周期外逐笔列出', async () => {
+  it('货号行：库存链 + 在途拆成 生产中 / 货运中 / 已下单未到，FBA 货件已计入月末；周期外逐笔列出', async () => {
     renderSheet();
     const d = await open('依据 SKU-1 2026-10');
     expect(d).toHaveTextContent('货号 SKU-1 / 2026-10');
-    expect(d).toHaveTextContent('期初 271 − 期望 105 + 到货 0 = 期末 166');
+    expect(d).toHaveTextContent('期初 271 − 计划销量 105 + 到货 0 = 期末 166');
     expect(d).toHaveTextContent('不含 1 家无 FBA 店铺');
-    expect(d).toHaveTextContent('在途 290 = 生产中 200 + 货运中 0 + 已下单未到 90（其中已逾期 40）');
-    expect(d).toHaveTextContent('FBA 货件 未取');
+    expect(d).toHaveTextContent('采购管道 290（不计入当月在途）= 生产中 200 + 货运中 0 + 已下单未到 90（其中已逾期 40）');
+    expect(d).toHaveTextContent('推演期内另有 FBA 货件在途 0 件，按到货日计入月末');
+    expect(d).not.toHaveTextContent('未取');
     // ★ 终审 I-2：period 是预计到货月（ETA），不是下单月；逾期的单独标出（OQ-6）
     expect(d).toHaveTextContent('PO-2026-0701 40（预计 2026-07 到货，已逾期）');
     expect(d).toHaveTextContent('PO-2026-0918 50（预计 2026-10 到货）');
@@ -85,7 +86,7 @@ describe('spec §5：点开一格看依据', () => {
     renderSheet();
     const d = await open('依据 A4Pet-US SKU-1 2026-10');
     expect(d).toHaveTextContent('库存 A4Pet-US / SKU-1 / 2026-10');
-    expect(d).toHaveTextContent('期初 271 − 期望 105 + 到货 0 = 期末 166');
+    expect(d).toHaveTextContent('期初 271 − 计划销量 105 + 到货 0 = 期末 166');
     expect(d).toHaveTextContent('MSKU-A：期末 161');
     expect(d).toHaveTextContent('MSKU-B：期末 5');
   });
@@ -111,7 +112,7 @@ describe('spec §5：点开一格看依据', () => {
     Object.assign(r, { state: 'unknown', reason: 'unknown_demand', unknown_since: '2026-11', closing: null });
     renderSheet(g, true);
     const d = await open('依据 MSKU-B 2026-11');
-    expect(d).toHaveTextContent('未知：2026-11 起期望销量待填');
+    expect(d).toHaveTextContent('未知：2026-11 起计划销量待填');
     expect(data(d)).not.toHaveTextContent('= 期末');   // 期初照给（它有数），期末不编
   });
 
@@ -144,25 +145,25 @@ describe('spec §5：点开一格看依据', () => {
     const r = g.forecast.find((f) => f.seller_sku === 'MSKU-A' && f.period === '2026-11')!;
     Object.assign(r, { state: 'unknown', reason: 'unknown_demand', unknown_since: '2026-11', closing: null });
     rerender(<PlanSheet model={buildGridModel(g, LABEL_SELLERS)} {...props} />);
-    expect(screen.getByRole('dialog')).toHaveTextContent('未知：2026-11 起期望销量待填');
+    expect(screen.getByRole('dialog')).toHaveTextContent('未知：2026-11 起计划销量待填');
   });
 
   it('★ as_of 落在本月里：起点是 as_of 可售，期望只扣 as_of 后那一段并标明，链对得上', async () => {
     renderSheet(LABEL_GRID_PARTIAL);
     const d = await open('依据 MSKU-A 2026-10');
     expect(d).toHaveTextContent('as_of 2026-10-10 可售 300（本月 10-01–10-10 已过，不计）');
-    expect(d).toHaveTextContent('− 本月 as_of 后期望 67（10-11 起，全月期望 100 的剩余部分）');
+    expect(d).toHaveTextContent('− 本月 as_of 后计划销量 67（10-11 起，全月计划销量 100 的剩余部分）');
     expect(d).toHaveTextContent('10-11–10-31 扣 67 = 月总量 100 × (前半月 5 天 ÷ 30 + 后半月 16 天 ÷ 32) = 66.67 → 向上取整 67');
     expect(d).toHaveTextContent('+ 到货 0');
     expect(d).toHaveTextContent('= 期末 233 → 2026-11 期初');
-    expect(data(d)).not.toHaveTextContent(/期初 —|− 期望 /);
+    expect(data(d)).not.toHaveTextContent(/期初 —|− 计划销量 /);
     await userEvent.keyboard('{Escape}');
     expect(await open('依据 MSKU-A 2026-11')).toHaveTextContent('期初 233（= 2026-10 期末）');
   });
 
   it('★ partial 月的店铺 / 货号：起点与期望取 Σ msku 那一段（行上的期望是全月，不能拿来扣）', async () => {
     renderSheet(LABEL_GRID_PARTIAL);
-    const line = 'as_of 2026-10-10 可售 313（Σ msku，本月 10-01–10-10 已过，不计） − 本月 as_of 后期望 71（全月期望 105 的剩余部分）'
+    const line = 'as_of 2026-10-10 可售 313（Σ msku，本月 10-01–10-10 已过，不计） − 本月 as_of 后计划销量 71（全月计划销量 105 的剩余部分）'
       + ' + 到货 0 = 期末 242 → 2026-11 期初';
     expect(await open('依据 A4Pet-US SKU-1 2026-10')).toHaveTextContent(line);
     await userEvent.keyboard('{Escape}');
@@ -243,7 +244,7 @@ describe('spec §5：点开一格看依据', () => {
     expect(d).not.toHaveTextContent('向上取整 124');
   });
 
-  it('★ 没有预测速率：桥接段按首月期望折算，面板说清折算用的数（终审 I-5）', async () => {
+  it('★ 没有预测速率：桥接段按首月计划销量折算，面板说清折算用的数（终审 I-5）', async () => {
     const g = structuredClone(LABEL_GRID);
     const r = g.forecast.find((f) => f.seller_sku === 'MSKU-A' && f.period === '2026-10')!;
     // 形状照 forecast/plan_forecast.py 的 first_month_expected 分支：100 ÷ 31 × 30 = 96.77 → 97；× 9/30 = 29.1 → 30
@@ -255,8 +256,8 @@ describe('spec §5：点开一格看依据', () => {
     });
     renderSheet(g, true);
     const d = data(await open('依据 MSKU-A 2026-10'));
-    expect(d).toHaveTextContent('09-22–09-30 按首月期望折算（无预测速率）扣 30');
-    expect(d).toHaveTextContent('日速率 3.2258 件/天 = 2026-10 期望 100 ÷ 31 天');
+    expect(d).toHaveTextContent('09-22–09-30 按首月计划销量折算（无预测速率）扣 30');
+    expect(d).toHaveTextContent('日速率 3.2258 件/天 = 2026-10 计划销量 100 ÷ 31 天');
     expect(d).toHaveTextContent('2026-09 月总量 97 = 3.2258 件/天 × 30 天 = 96.77 → 向上取整 97');
     expect(d).toHaveTextContent('09-22–09-30 扣 30 = 月总量 97 × (后半月 9 天 ÷ 30) = 29.1 → 向上取整 30');
     expect(d).not.toHaveTextContent('按预测扣');
@@ -269,5 +270,133 @@ describe('spec §5：点开一格看依据', () => {
       expect(d.textContent).not.toContain(' · ');
       await userEvent.keyboard('{Escape}');
     }
+  });
+});
+
+// ── spec 2026-10-14：FBA 在途货件 + 调仓中 ──────────────────────────
+describe('★ OP-19：FBA 货件进月末，依据逐条说清', () => {
+  /** 冻结网格的副本上加 FBA 条目（只为展示，不改 JSON）—— 数由后端算，这里只测怎么说 */
+  function withFba(): GridResponse {
+    const g = structuredClone(LABEL_GRID_PARTIAL);
+    const nov = g.forecast.find((f) => f.seller_sku === 'MSKU-A' && f.period === '2026-11')!;
+    nov.basis.arrivals = [...nov.basis.arrivals, {
+      kind: 'fba_shipment', date: '2026-11-08', units: 7, shipment_id: 'FBA1', status: 'SHIPPED',
+      deliver_from: '2026-11-01', deliver_to: '2026-11-08', order_period: null }];
+    const oct = g.forecast.find((f) => f.seller_sku === 'MSKU-A' && f.period === '2026-10')!;
+    oct.basis.as_of_start = { ...oct.basis.as_of_start!, onhand_parts: { fulfillable: 290, fc_transfers: 10 } };
+    g.unallocated = [...g.unallocated, {
+      scope: 'msku', kind: 'fba_shipment', sku: 'SKU-1', seller_sku: 'MSKU-A', sid: '11072', shipment_id: 'OLD',
+      status: 'SHIPPED', units: 1, arrive: '2026-10-01', deliver_from: null, deliver_to: '2026-10-01',
+      order_period: null, reason: 'fba_overdue' }];
+    g.beyond_horizon = [...g.beyond_horizon, {
+      kind: 'fba_shipment', sku: 'SKU-1', seller_sku: 'MSKU-A', sid: '11072', shipment_id: 'FAR', status: 'SHIPPED',
+      units: 9, arrive: '2027-03-01', deliver_from: null, deliver_to: '2027-03-01', order_period: null,
+      reason: 'arrives_after_horizon' }];
+    for (const s of g.forecast_sku) s.pipeline = { ...s.pipeline, fba_inbound: 7 };
+    return g;
+  }
+
+  it('msku 到货：FBA 货件逐条写货件号与送达时段（按结束日）', async () => {
+    renderSheet(withFba());
+    expect(await open('依据 MSKU-A 2026-11')).toHaveTextContent('11-08 到货 7（FBA 货件 FBA1，送达 11-01–11-08，按结束日）');
+  });
+
+  it('起点拆成可售 + 调仓中', async () => {
+    renderSheet(withFba());
+    expect(await open('依据 MSKU-A 2026-10')).toHaveTextContent('as_of 2026-10-10 现有 300（可售 290 + 调仓中 10）');
+  });
+
+  it('货号行：在途旁写 FBA 货件件数；逾期的单列「未计入」，周期外的照列', async () => {
+    renderSheet(withFba());
+    const d = await open('依据 SKU-1 2026-10');
+    expect(d).toHaveTextContent('推演期内另有 FBA 货件在途 7 件，按到货日计入月末');
+    expect(d).toHaveTextContent('未计入：FBA 货件 OLD 1 件（MSKU-A，送达时段已过未签收）');
+    expect(d).toHaveTextContent('FBA 货件 FAR 9 件 → 2027-03-01 到货（周期外）');
+  });
+
+  it('货件当天没采到：说未知，不写 0', async () => {
+    const g = withFba();
+    for (const s of g.forecast_sku) s.pipeline = { ...s.pipeline, fba_inbound: null, fba_inbound_reason: 'fba_inbound_unavailable' };
+    renderSheet(g);
+    expect(await open('依据 SKU-1 2026-10')).toHaveTextContent('FBA 货件当天未采到，月末未知');
+  });
+});
+
+
+// ── spec 2026-10-15：销量预测 / 当月在途 的弹窗（FM-D4）────────────────────
+describe('★ FM：点销量预测、当月在途也能看到成分', () => {
+  it('当月在途：按来源逐条，采购管道另列不计入', async () => {
+    const g = structuredClone(LABEL_GRID);
+    g.source_notes = { as_of: '2026-09-21', purchase_as_of: null, oversea_in_transit_at: '2026-10-15T02:00:00+00:00',
+      oversea_in_transit_error: null };
+    renderSheet(g);
+    const d = await open('当月在途 SKU-1 2026-10');
+    expect(d).toHaveTextContent('当月在途 SKU-1 / 2026-10');
+    expect(d).toHaveTextContent('当月在途 40 = FBA 货件 0 + 海外仓 40');
+    expect(d).toHaveTextContent('海外仓备货单 OWS-T1 40 件（09-30 发出，预计 11-05 到达）');
+    expect(d).toHaveTextContent('FBA 货件：没有在途');
+    expect(d).toHaveTextContent('海外仓：领星实查于');
+    expect(d).toHaveTextContent('采购管道 290（不计入当月在途）= 生产中 200 + 货运中 0 + 已下单未到 90');
+  });
+
+  it('当月在途：FBA 货件逐条带店铺与送达时段；只计本月的点名', async () => {
+    const g = structuredClone(LABEL_GRID);
+    const r = g.forecast_sku[0]!;
+    r.month_in_transit = { total: 47, fba: 7, oversea: 40, items: [
+      { source: 'fba', ref: 'FBA1', units: 5, eta: '2026-11-08', current_only: false, sid: '11072', msku: 'MSKU-A',
+        status: 'SHIPPED', deliver_from: '2026-11-01' },
+      { source: 'fba', ref: 'LATE', units: 2, eta: '2026-09-01', current_only: true, sid: '11072', msku: 'MSKU-B',
+        status: 'RECEIVING', deliver_from: null },
+      ...r.month_in_transit!.items] };
+    renderSheet(g);
+    const d = await open('当月在途 SKU-1 2026-10');
+    expect(d).toHaveTextContent('FBA 货件 FBA1 5 件（A4Pet-US MSKU-A，送达 11-01–11-08）');
+    expect(d).toHaveTextContent('FBA 货件 LATE 2 件（A4Pet-US MSKU-B，送达至 09-01，已过送达时段未签收，只计本月）');
+  });
+
+  it('海外仓读不到：说原因，合计未知', async () => {
+    const g = structuredClone(LABEL_GRID);
+    for (const s of g.forecast_sku) s.month_in_transit = { ...s.month_in_transit!, total: null, oversea: null, items: [] };
+    g.source_notes = { as_of: '2026-09-21', purchase_as_of: null, oversea_in_transit_at: null,
+      oversea_in_transit_error: 'unknown: ReadTimeout' };
+    renderSheet(g);
+    const d = await open('当月在途 SKU-1 2026-10');
+    expect(d).toHaveTextContent('当月在途 —（海外仓读不到：unknown: ReadTimeout）');
+  });
+
+  it('销量预测：货号 = Σ 店铺，逐店铺列 msku', async () => {
+    renderSheet();
+    const d = await open('销量预测 SKU-1 2026-10');
+    expect(d).toHaveTextContent('销量预测 SKU-1 / 2026-10');
+    expect(d).toHaveTextContent('销量预测 145 = A4Pet-US 145 + A4Pet-WM 不适用（不计）');
+    expect(d).toHaveTextContent('A4Pet-US 145 = MSKU-A 135 + MSKU-B 10');
+  });
+
+  it('销量预测：msku 给速率 × 天数与取数窗口', async () => {
+    renderSheet();
+    const d = await open('销量预测 MSKU-A 2026-10');
+    expect(d).toHaveTextContent('预测 135 = 4.3251 件/天 × 31 天');
+  });
+});
+
+describe('★ FM 终审修正 · 10-15 货件快照回退', () => {
+  it('写明 FBA 货件用的是哪天的快照；没有货号的明细按件点名', async () => {
+    const g = structuredClone(LABEL_GRID);
+    g.source_notes = { as_of: '2026-09-21', purchase_as_of: null, fba_inbound_as_of: '2026-09-20',
+      oversea_in_transit_at: null, oversea_in_transit_error: null,
+      dropped: { fba_inbound: { items_without_sku: { rows: 1, units: 5 } } } };
+    renderSheet(g);
+    const d = await open('当月在途 SKU-1 2026-10');
+    expect(d).toHaveTextContent('FBA 货件：采集于 2026-09-20');
+    expect(d).toHaveTextContent('另有 5 件 FBA 货件明细没有货号，未计入任何货号的当月在途');
+  });
+
+  it('两个来源都读不到：两个原因都说', async () => {
+    const g = structuredClone(LABEL_GRID);
+    for (const s of g.forecast_sku) s.month_in_transit = { total: null, fba: null, oversea: null, items: [] };
+    g.source_notes = { as_of: '2026-09-21', purchase_as_of: null, oversea_in_transit_error: 'unknown: ReadTimeout' };
+    renderSheet(g);
+    expect(await open('当月在途 SKU-1 2026-10'))
+      .toHaveTextContent('当月在途 —（FBA 货件当天未采到；海外仓读不到：unknown: ReadTimeout）');
   });
 });

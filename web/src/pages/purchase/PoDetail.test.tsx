@@ -9,13 +9,72 @@ afterEach(() => { vi.doUnmock('../../api'); vi.restoreAllMocks(); });
 
 const placed = (): BackendState => ({ po: PLACED, timeline: EMPTY_TIMELINE, queue: [] });
 
+const LX = (over: Record<string, unknown> = {}) => ({ status: 2, status_shipped: 1, quantity_real: null, quantity_receive: null,
+  quantity_entry: null, source: 'api', captured_at: '2026-10-10T14:50:00+08:00', call_id: 9, ...over });
+const RB = (over: Record<string, unknown> = {}) => ({ checked: true, read_outcome: 'ok', read_cause: null, read_back_call: 9,
+  problems: [], lx: LX(), ...over });
+
+describe('★ 领星状态：打开详情即现查', () => {
+  it('已下单：打开就调 read-back，显示领星状态 + 到货状态 + 读回时间', async () => {
+    const { calls } = await mountPurchase('/purchase/1', purchaseRoutes(placed(), {
+      'POST /v1/purchase-orders/1/read-back': () => ok(RB({ lx: LX({ status: 2, status_shipped: 2 }) })),
+    }));
+    const s = await screen.findByTestId('lx-status');
+    await vi.waitFor(() => expect(s).toHaveTextContent('待到货 部分到货'));
+    expect(s).toHaveTextContent('读回于 2026-10-10 14:50');
+    expect(s).not.toHaveTextContent('未读回');
+    expect(calls.filter((c) => c.path === '/v1/purchase-orders/1/read-back')).toHaveLength(1);
+  });
+
+  it('读回失败：仍显示上次读回的状态与时间，写明这次失败，原因进折叠区', async () => {
+    const st = placed();
+    st.po = { ...PLACED, lx: LX({ status: 2, status_shipped: null, captured_at: '2026-10-09T10:00:00+08:00' }) as never };
+    await mountPurchase('/purchase/1', purchaseRoutes(st, {
+      'POST /v1/purchase-orders/1/read-back': () => ok(RB({ checked: false, read_outcome: 'not_sent',
+        read_cause: 'ConnectionRefusedError [Errno 111] @ proxy:3128', lx: st.po.lx })),
+    }));
+    const s = await screen.findByTestId('lx-status');
+    await vi.waitFor(() => expect(screen.getByTestId('po-axes')).toHaveTextContent('这次读回失败（not_sent），显示的是上次读回的状态'));
+    expect(s).toHaveTextContent('待到货');
+    expect(s).toHaveTextContent('读回于 2026-10-09 10:00');
+    expect(screen.getByTestId('lx-fail-cause')).toHaveTextContent('ConnectionRefusedError');
+  });
+
+  it('「重新读回」再查一次', async () => {
+    let n = 0;
+    const { calls } = await mountPurchase('/purchase/1', purchaseRoutes(placed(), {
+      'POST /v1/purchase-orders/1/read-back': () => { n += 1; return ok(RB({ lx: LX({ status: n === 1 ? 2 : 9, status_shipped: n === 1 ? 1 : 3 }) })); },
+    }));
+    const s = await screen.findByTestId('lx-status');
+    await vi.waitFor(() => expect(s).toHaveTextContent('待到货 未到货'));
+    await userEvent.click(screen.getByRole('button', { name: '重新读回' }));
+    await vi.waitFor(() => expect(s).toHaveTextContent('完成 全部到货'));
+    expect(calls.filter((c) => c.path === '/v1/purchase-orders/1/read-back')).toHaveLength(2);
+  });
+
+  it('认不出的状态码原样写码，不猜', async () => {
+    await mountPurchase('/purchase/1', purchaseRoutes(placed(), {
+      'POST /v1/purchase-orders/1/read-back': () => ok(RB({ lx: LX({ status: 777, status_shipped: null }) })),
+    }));
+    await vi.waitFor(async () => expect(await screen.findByTestId('lx-status')).toHaveTextContent('状态码 777'));
+  });
+
+  it('作废的待处理草稿不调 read-back', async () => {
+    const { calls } = await mountPurchase('/purchase/1', purchaseRoutes({ po: { ...DRAFT, discarded_at: '2026-10-09T10:00:00+08:00' },
+      timeline: EMPTY_TIMELINE, queue: [] }));
+    expect(await screen.findByTestId('lx-status')).toHaveTextContent('未下单');
+    expect(calls.some((c) => c.path.endsWith('/read-back'))).toBe(false);
+  });
+});
+
 describe('采购单详情', () => {
   it('头部两轴并排：本地状态 | 领星状态「未读回」；领星单号、幂等键', async () => {
     await mountPurchase('/purchase/1', purchaseRoutes(placed()));
     expect(await screen.findByRole('heading', { name: '采购单 SCM-PO-1' })).toBeInTheDocument();
     const axes = screen.getByTestId('po-axes');
-    expect(axes).toHaveTextContent('本地状态已下单');
-    expect(axes).toHaveTextContent('领星状态未读回');
+    // 两轴并排不合成（StatusPair）
+    expect(axes).toHaveTextContent('本地 已下单');
+    expect(axes).toHaveTextContent('领星 未读回');
     const head = screen.getByTestId('po-detail-head');
     expect(head).toHaveTextContent('PO261009001');
     expect(head).toHaveTextContent('SCM-PO-1');
@@ -105,6 +164,19 @@ describe('下单在途（未卡住，任何年龄）', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
     expect(await screen.findByRole('status')).toHaveTextContent('领星拒绝了这张单（code 1001）：供应商停用');
     expect(await screen.findByRole('button', { name: '保存草稿' })).toBeInTheDocument();
+  });
+
+  it('★ 在途下单落成授权类 rejected（code 403）→ toast 说改草稿没用、点名接口', async () => {
+    const st: BackendState = { po: DRAFT, queue: [], timeline: { ...EMPTY_TIMELINE, attempts: [createAttempt()] } };
+    await mountPurchase('/purchase/1', purchaseRoutes(st));
+    await screen.findByTestId('attn-placing');
+    st.timeline = { ...EMPTY_TIMELINE, attempts: [createAttempt({ outcome: 'rejected', lx_code: '403',
+      lx_msg: '授权失效，请更新授权有效期或检查权限', rejected_kind: 'auth' })] };
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+    const t = await screen.findByRole('status');
+    expect(t).toHaveTextContent('改草稿没用');
+    expect(t).toHaveTextContent('/erp/x/createPurchaseOrder');
+    expect(t).not.toHaveTextContent('领星拒绝了这张单');
   });
 });
 
