@@ -1,5 +1,8 @@
 # 排货列表页 `/dispatch` 重排 Implementation Plan
 
+> ★ **2026-10-15 负责人已裁定**：Q1 → **DL-D11**（按领星单数 = 排货单 × 来源仓，即本计划的暂定做法）；Q2 → **DL-D12**（先补锁，即本计划的暂定做法）。Q3 ~ Q6 已由主会话登记为 `docs/00` **DL-Q5 ~ DL-Q8**（暂行同本计划）—— Task 5 里「登记 docs/00」那一步**跳过**，代码注释里的「待裁定 Q1/Q2」改写成 DL-D11 / DL-D12，Q3~Q6 写成 DL-Q5~Q8。
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** `/dispatch` 首屏改成「计划抬头为主线、默认收起、展开是货号 × 月透视小表、排货表 chip 写下一步」，后端 `GET /v1/dispatch/plans` 补上只读 PG 的「下一步」事实。

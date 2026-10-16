@@ -71,7 +71,7 @@
 
 ## 5. 后端：`GET /v1/dispatch/plans` 增字段（全是 PG 查询，不出站）
 
-`sheets[]` 每张加：`in_flight`（在途写调用数）· `attention`（待核实数）· `drift[]` · `to_lock`（已建未锁张数）· `to_submit`（无领星单号的排货单数）· `packing_missing`（FBA 缺装箱行数）· `logistics_missing`（海外仓未选物流方式单数）· `consignments`（排货单数）· `all_submitted`。
+`sheets[]` 每张加：`in_flight`（在途写调用数）· `attention`（待核实数）· `drift[]` · `to_lock`（已建未锁张数）· `to_submit`（还没领星单号的 排货单 × 来源仓 数，DL-D11）· `packing_missing`（FBA 缺装箱行数）· `logistics_missing`（海外仓未选物流方式单数）· `consignments`（排货单数）· `all_submitted`。
 `records[]` 每条加：`confirmed` · `ordered`（`v_plan_line_po_qty` 已按 line 算好，`012_po_qty_checks.sql:15`）。
 受影响：`tests/test_api_sheets.py:133-157` · `tests/test_e2e_c_dispatch_draft.py`（`sheets` 全等断言）· 契约样例 `web/src/testing/fixtures/contract/dispatch-plans.json`（`SCM_WRITE_CONTRACT=1` 重生）· `docs/08`。
 日志：该查询带耗时；任一子查询失败整体 5xx 并点名哪一段（不静默把 chip 退回成「草稿」）。
