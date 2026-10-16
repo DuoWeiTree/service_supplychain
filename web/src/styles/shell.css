@@ -239,6 +239,13 @@ select.inp { padding-right: var(--space-6); }
 }
 .kpi__n { font-size: 22px; line-height: 28px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .kpi__d { font-size: 12px; font-weight: 500; color: var(--text-3); }
+/* 计划列表（UX-D11）：要动手的计数可点 = 筛选；只有它们用主色，其余状态计数是背景信息 */
+.counts .sep { align-self: center; height: 32px; }
+.counts .kpi { min-width: 104px; }
+.kpi--btn { font: inherit; text-align: left; cursor: pointer; color: inherit; }
+.kpi--btn .kpi__n { color: var(--primary); }
+.kpi--btn:hover { border-color: var(--border-strong); }
+.kpi--btn[aria-pressed="true"] { border-color: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); }
 
 .table-scroll { overflow-x: auto; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-card); }
 table.table { width: 100%; border-collapse: collapse; font-size: 14px; }

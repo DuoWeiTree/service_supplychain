@@ -17,13 +17,60 @@ const renderHome = () => render(<MemoryRouter><OpsHome /></MemoryRouter>);
 afterEach(() => { vi.resetModules(); vi.doUnmock('../api'); });
 
 describe('运营首页', () => {
-  it('只渲染够得着的三态，其余★不渲染（不是 0）', async () => {
+  it('★ UX-D13：KPI 按接口给的全集减去够不着的渲染 —— 「已确认」「已完结」都在，不是写死三态', async () => {
     renderHome();
     const counts = await screen.findByTestId('counts');
-    // ★ 穷尽相等，不是举例排除 —— 举例排除拦不住"已确认/已完结"这类漏在名单外的态悄悄混进来
+    await within(counts).findByText('已确认');
+    // ★ 穷尽相等，不是举例排除 —— 举例排除拦不住漏在名单外的态
     const labels = Array.from(counts.querySelectorAll('.kpi__d')).map((el) => el.textContent);
-    expect(new Set(labels)).toEqual(new Set(['未提交', '已提交', '已撤销']));
-    expect(counts.textContent).not.toContain('0');
+    expect(labels).toEqual(['提交后又改过', '未提交', '进行中', '已提交未确认', '已提交', '已确认', '已完结', '已撤销']);
+  });
+
+  it('★ UX-D13：状态筛选里有「已确认」；选「已完结」列出已完结的那张，而不是一张都筛不出', async () => {
+    renderHome();
+    await screen.findByTestId('plan-list');
+    const opts = Array.from((screen.getByLabelText('状态') as HTMLSelectElement).options).map((o) => o.value);
+    expect(opts).toEqual(['', 'todo', '未提交', '已提交', '已确认', '已完结', '已撤销']);
+    await userEvent.selectOptions(screen.getByLabelText('状态'), '已完结');
+    expect(within(screen.getByTestId('plan-list')).getByText('2026 Q1 首发计划')).toBeInTheDocument();
+  });
+
+  it('★ UX-D11：每行一个「下一步」chip，要动手的排前 —— 改过 → 未提交 → 其余', async () => {
+    renderHome();
+    const table = await screen.findByTestId('plan-list');
+    await within(table).findByText('提交后又改过');
+    const titles = Array.from(table.querySelectorAll('tbody tr')).map((tr) => tr.querySelector('[data-testid=plan-title]')?.textContent);
+    expect(titles).toEqual(['2026 Q3 补货计划', '2026 Q4 销售计划', '2026 Q2 清库计划']);
+    const changed = within(table).getByText('2026 Q3 补货计划').closest('tr') as HTMLElement;
+    expect(within(changed).getByText('提交后又改过')).toHaveClass('chip', 'chip--ours');
+    // ★ 一个数要能回答它是关于什么的：人改了几格、跟哪一版比
+    expect(changed).toHaveTextContent('人改了 2 格 · 比 rev 2');
+    const never = within(table).getByText('2026 Q4 销售计划').closest('tr') as HTMLElement;
+    expect(within(never).getAllByText('未提交')[0]).toHaveClass('chip', 'chip--ours');
+    const cancelled = within(table).getByText('2026 Q2 清库计划').closest('tr') as HTMLElement;
+    expect(within(cancelled).getByTestId('next')).toBeEmptyDOMElement();
+  });
+
+  it('点「提交后又改过」计数 = 只看要动手的', async () => {
+    renderHome();
+    await screen.findByTestId('plan-list');
+    await userEvent.click(await screen.findByRole('button', { name: /提交后又改过/ }));
+    const table = screen.getByTestId('plan-list');
+    expect(within(table).getByText('2026 Q3 补货计划')).toBeInTheDocument();
+    expect(within(table).queryByText('2026 Q4 销售计划')).toBeNull();
+  });
+
+  it('★ 列表没取到时底行写「正在取…」，不写「已完结 0 张」（空 ≠ 0）', async () => {
+    vi.resetModules();
+    const { ApiError } = await import('../api/client');
+    const { createMemoryBackend } = await import('../testing/memoryBackend');
+    const real = createMemoryBackend();
+    vi.doMock('../api', () => ({ ApiError, api: { ...real, listPlans: () => new Promise(() => {}) } }));
+    const { OpsHome: Fresh } = await import('./OpsHome');
+    render(<MemoryRouter><Fresh /></MemoryRouter>);
+    const hidden = await screen.findByTestId('hidden-rows');
+    expect(hidden).toHaveTextContent('正在取…');
+    expect(hidden.textContent).not.toMatch(/\d/);
   });
 
   it('计划列表里 state===null 的行渲染"未提交"芯片，不是"已撤销"或空白', async () => {
@@ -31,7 +78,9 @@ describe('运营首页', () => {
     const table = await screen.findByTestId('plan-list');
     const row = within(table).getByText('2026 Q4 销售计划').closest('tr');
     expect(row).not.toBeNull();
-    expect(within(row as HTMLElement).getByText('未提交')).toHaveClass('chip', 'chip--dim');
+    // 状态列是灰 chip；「下一步」列另有一个主色的（UX-D11）
+    const chips = within(row as HTMLElement).getAllByText('未提交');
+    expect(chips.map((c) => c.className)).toEqual(['chip chip--ours', 'chip chip--dim']);
     expect(within(row as HTMLElement).queryByText('已撤销')).toBeNull();
   });
 
@@ -51,14 +100,6 @@ describe('运营首页', () => {
     // ★ I2：这个数由替身按本次查询现算（fixture 里 1 张归档），不再是冻死的常量 2
     expect(screen.getByTestId('hidden-rows')).toHaveTextContent('已归档 1 张');
     expect(within(table).queryByText('2025 Q4 封存计划')).toBeNull();
-  });
-
-  it('两栏：未提交 / 提交后又改过（第二栏点名是跟哪一版比的）', async () => {
-    renderHome();
-    expect(await screen.findByTestId('never-submitted')).toHaveTextContent('2026 Q4 销售计划');
-    const changed = screen.getByTestId('changed-since-submit');
-    expect(changed).toHaveTextContent('2026 Q3 补货计划');
-    expect(changed).toHaveTextContent('rev 2');
   });
 
   it('按状态筛选，列表跟着变', async () => {
@@ -108,11 +149,14 @@ describe('运营首页', () => {
     render(<MemoryRouter><Fresh /></MemoryRouter>);
 
     expect(await screen.findByTestId('plan-list')).toHaveTextContent('2026 Q4 销售计划');
-    expect(screen.getByTestId('never-submitted')).toHaveTextContent('2026 Q4 销售计划');
+    expect(within(screen.getByTestId('plan-list')).getAllByText('未提交')[0]).toHaveClass('chip--ours');
     expect(screen.getByText('503 dashboard_unavailable')).toBeInTheDocument();
     // ★ 取不到的那个计数给「未知」，不落回 0 —— 「一张都没有」与「取不到」不许同形
-    const submitted = within(screen.getByTestId('counts')).getByText('已提交').closest('.kpi')!;
-    expect(within(submitted as HTMLElement).getByText('—')).toBeInTheDocument();
+    //   全集也来自这个端点 —— 取不到就不知道有哪些态，写一格「未知」，不手列一份顶上
+    const counts = screen.getByTestId('counts');
+    expect(within(counts).queryByText('已提交')).toBeNull();
+    const unknown = within(counts).getByText('各状态计数').closest('.kpi')!;
+    expect(within(unknown as HTMLElement).getByText('—')).toBeInTheDocument();
   });
 
   // ★ I3（终审）：create 是分支里仅剩的第三个无护栏写动作。阶段 A 没有删计划的
@@ -128,7 +172,7 @@ describe('运营首页', () => {
         listPlans: async () => ({ plans: [], excluded: { archived: 0 } }),
         dashboardUnsubmitted: async () => ({ never_submitted: [], changed_since_submit: [] }),
         dashboardPlans: async () => ({
-          counts: {}, scope_note: { unreachable_in_stage_a: [], never_submitted_excluded: 0 },
+          counts: {}, scope_note: { unreachable_in_stage_a: [], derived_buckets: [], never_submitted_excluded: 0 },
         }),
         createPlan: async (input: CreatePlanInput) => {
           created.push(input);

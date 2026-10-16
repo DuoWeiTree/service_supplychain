@@ -278,7 +278,8 @@ export function createMemoryBackend(): SupplyChainApi {
       return {
         counts,
         // ★ 够不着的三个态由前端不渲染，不是接口抹成 0（S-20）
-        scope_note: { unreachable_in_stage_a: ['已下单', '准备排货', '已排货'], never_submitted_excluded: neverSubmittedExcluded },
+        scope_note: { unreachable_in_stage_a: ['已下单', '准备排货', '已排货'], derived_buckets: ['进行中', '已提交未确认'],
+          never_submitted_excluded: neverSubmittedExcluded },
       };
     },
     async dashboardUnsubmitted() {
@@ -287,7 +288,8 @@ export function createMemoryBackend(): SupplyChainApi {
       return {
         never_submitted: live().filter((p) => p.state === null).map((p) => ({ plan_id: p.plan_id, title: p.title })),
         changed_since_submit: live().filter((p) => p.plan_id === 2)
-          .map((p) => ({ plan_id: p.plan_id, title: p.title, since_rev: p.state_rev ?? 0 })),
+          .map((p) => ({ plan_id: p.plan_id, title: p.title, since_rev: p.state_rev ?? 0,
+            human_cells: 2, basis: 'input_snapshot' as const })),
       };
     },
     async listSellers() { return clone(sellers); },
@@ -345,6 +347,35 @@ export function createMemoryBackend(): SupplyChainApi {
       }
       cell.planned_units = units;
       return clone(cell);
+    },
+
+    // ★ 与 api/ui/plans.py put_cells 同口径：先逐格校验、再逐格找格子，任一不过整批不写
+    async putCells(planId, batch) {
+      writable(planId);
+      const g = grid(planId);
+      const n = batch.demand.length + batch.purchase.length;
+      if (n === 0) throw new ApiError(400, 'empty_batch', '一格都没给（demand / purchase 都是空的）', {});
+      const okUnits = (u: number | null) => u === null || (Number.isInteger(u) && u >= 0);
+      const bad = [
+        ...batch.demand.filter((d) => !okUnits(d.expected_units)).map((d) => ({ kind: 'demand', seller_sku: d.seller_sku, sid: d.sid, period: d.period, got: d.expected_units, why: 'bad_units' })),
+        ...batch.purchase.filter((c) => !okUnits(c.planned_units)).map((c) => ({ kind: 'purchase', sku: c.sku, period: c.period, got: c.planned_units, why: 'bad_units' })),
+      ];
+      if (bad.length) throw new ApiError(400, 'bad_units', '有格子的数不对（必须是 ≥0 的整数或 null），这一批一格都没写', { cells: bad });
+      const dCells = batch.demand.map((d) => g.demand.find((x) => x.seller_sku === d.seller_sku && x.sid === d.sid && x.period === d.period));
+      const pCells = batch.purchase.map((c) => g.purchase.find((x) => x.sku === c.sku && x.period === c.period));
+      const missing = [
+        ...batch.demand.filter((_, i) => !dCells[i]).map((d) => ({ kind: 'demand', seller_sku: d.seller_sku, sid: d.sid, period: d.period })),
+        ...batch.purchase.filter((_, i) => !pCells[i]).map((c) => ({ kind: 'purchase', sku: c.sku, period: c.period })),
+      ];
+      if (missing.length) throw new ApiError(404, 'cell_not_found', '有格子还没长出来（先认领 msku），这一批一格都没写', { plan_id: planId, cells: missing });
+      batch.demand.forEach((d, i) => {
+        const cell = dCells[i]!;
+        cell.expected_units = d.expected_units;
+        cell.effective_units = d.expected_units ?? cell.system_units;
+        cell.basis = d.expected_units !== null ? 'human' : cell.system_units !== null ? 'system' : 'unknown';
+      });
+      batch.purchase.forEach((c, i) => { pCells[i]!.planned_units = c.planned_units; });
+      return { demand: dCells.map((c) => clone(c!)), purchase: pCells.map((c) => clone(c!)) };
     },
 
     async searchCatalog(q) {

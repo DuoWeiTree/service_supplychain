@@ -45,13 +45,22 @@ export type CountKey =
 export interface DashboardPlans {
   counts: Record<CountKey, number>;
   /** ★ 后端返回全集（诚实），由前端按阶段不渲染（S-20） */
-  scope_note: { unreachable_in_stage_a: CountKey[]; never_submitted_excluded: number };
+  scope_note: {
+    unreachable_in_stage_a: CountKey[];
+    /** UX-D13：派生口径（不是记录状态）—— 状态筛选要剔掉它们，名单由接口给 */
+    derived_buckets: CountKey[];
+    never_submitted_excluded: number;
+  };
 }
 
 export interface UnsubmittedBoard {
   never_submitted: { plan_id: PlanId; title: string }[];
-  /** 按 content_digest 判（A-2）；`since_rev` = 与哪一版比出来的 */
-  changed_since_submit: { plan_id: PlanId; title: string; since_rev: number }[];
+  /** `since_rev` = 与哪一版比出来的。★ UX-D12：只算人改的 —— `basis = 'input_snapshot'` 时
+   *  `human_cells` = 人改了几格；028 之前提交的版本没有快照，退回整份摘要（含预估），`human_cells = null` */
+  changed_since_submit: {
+    plan_id: PlanId; title: string; since_rev: number;
+    human_cells: number | null; basis: 'input_snapshot' | 'content_digest';
+  }[];
 }
 
 export interface Seller {
@@ -128,6 +137,13 @@ export interface PurchaseCell {
  *  `Awaited<ReturnType<SupplyChainApi['putPurchase']>>` 只是把接口签名"声称"的类型
  *  抄一遍，真实响应少发了键也照样通过。这半边此前没跟着改。 */
 export interface PutPurchaseResult { cell: PurchaseCell }
+
+/** UX-D14 `PUT /plans/{id}/cells`：一个事务，全有或全无；成功逐格回执（demand 与 grid 同十键） */
+export interface CellsBatch {
+  demand: { seller_sku: string; sid: Sid; period: Period; expected_units: number | null }[];
+  purchase: { sku: string; period: Period; planned_units: number | null }[];
+}
+export interface PutCellsResult { demand: DemandCell[]; purchase: PurchaseCell[] }
 
 export interface GridResponse {
   plan_id: PlanId;
