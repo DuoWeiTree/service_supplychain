@@ -121,12 +121,29 @@ dd.ds-kv__big.ds-done { color: var(--ok) !important; }
 .ds-attn .pe-reason { width: 160px; }
 .ds-results { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-2); }
 
-/* /dispatch：计划下的产品行 */
-.ds-plan-rec td { color: var(--text-2); border-top: none; }
-.ds-plan-rec__sku { padding-left: var(--space-3); }
-
 /* CA-D13 去向徽标 */
 .ds-route--fba { background: var(--surface); border: 1px solid var(--border); }
 .ds-route--os { background: var(--surface); border: 1px solid var(--warn); }
 .ds-lx-missing { padding: var(--space-2); border: 1px solid var(--warn); border-radius: 6px; }
 .ds-tp-hint { flex-basis: 100%; font-size: 12px; color: var(--text-2); padding-top: var(--space-2); }
+
+/* /dispatch：计划抬头为主线（DL-D1 / D5）+ 每个计划自带的货号 × 月小表（DL-D2） */
+.dh-plans { display: grid; gap: var(--space-2); }
+.dh-plan { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-card); overflow: hidden; }
+.dh-plan__head { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-2) var(--space-4); align-items: center; padding: var(--space-3) var(--space-4); cursor: pointer; }
+.dh-plan__head:hover { background: var(--surface-2); }
+.dh-plan__id { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-3); min-width: 0; }
+.dh-plan__title { appearance: none; border: 0; background: transparent; padding: 0; display: inline-flex; align-items: baseline; gap: var(--space-2); font: 650 15px/20px var(--font-sans); color: var(--text); cursor: pointer; text-align: left; }
+.dh-plan__title::before { content: "›"; display: inline-block; color: var(--text-3); transition: transform .15s; }
+.dh-plan__title[aria-expanded="true"]::before { transform: rotate(90deg); }
+.dh-plan__title:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: var(--radius-sm); }
+.dh-plan__count { font-size: 12px; color: var(--text-3); }
+.dh-plan__kpis { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: flex-end; gap: var(--space-4); }
+.dh-plan__row2 { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.dh-plan__acts { margin-left: auto; display: flex; gap: var(--space-2); }
+.dh-plan__body { border-top: 1px solid var(--border); }
+.dh-plan__body .pt-wrap { border: 0; border-radius: 0; box-shadow: none; }
+.dh-name { max-width: 0; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
+.dh-cell { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.dh-more { margin-left: var(--space-1); font-weight: 600; }
+.dh-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
