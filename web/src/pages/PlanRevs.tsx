@@ -6,7 +6,7 @@ import { useInFlight } from '../shell/useInFlight';
 import { ErrorDetail } from '../components/ErrorDetail';
 import { Modal } from '../components/Modal';
 import { api, ApiError } from '../api';
-import type { PlanDiff, RevList } from '../api/types';
+import type { PlanDiff, PlanSummary, RevList } from '../api/types';
 
 const CANCEL_KEY = 'cancel';
 const currentKey = (rev: number) => `current:${rev}`;
@@ -26,16 +26,24 @@ export function PlanRevs() {
   //   防双击对同一个 rev 发出重复的「设为当前使用」/「确认撤销」请求
   const { pending, run } = useInFlight();
 
+  // h1 带计划名（评审 P2）。★ 抬头另取、另记错 —— 抬头挂了不许把版本表一起换成错误块（同 I6）
+  const [plan, setPlan] = useState<PlanSummary | null>(null);
+  const [planErr, setPlanErr] = useState<ApiError | null>(null);
+  const title = plan ? `版本 · ${plan.title}` : '版本';
+
   const load = () => api.listRevs(planId)
     .then((r) => { setList(r); setErr(null); })
     .catch((e: ApiError) => setErr(e));
-  useEffect(() => { void load(); }, [planId]);
+  useEffect(() => {
+    void load();
+    api.getPlan(planId).then(setPlan).catch((e: ApiError) => setPlanErr(e));
+  }, [planId]);
 
   // ★ M8：加载态不是一个字都没有的空框。★ 而且它与「取到了、但一版都没有」是两种成因，
   //   两句话分开写 —— 合成一句就会在还没取到的时候说「还没有版本」，那是编的
   if (!list) {
     return (
-      <AppShell crumb="版本">
+      <AppShell crumb={title}>
         {err ? <ErrorDetail err={err} />
              : <div className="empty"><p className="empty__title">正在取版本…</p></div>}
       </AppShell>
@@ -86,13 +94,17 @@ export function PlanRevs() {
   }
 
   return (
-    <AppShell crumb="版本">
+    <AppShell crumb={title}>
       <div className="head">
-        <div className="head__main"><h1>版本</h1></div>
+        <div className="head__main"><h1>{title}</h1></div>
         {/* ★ parked（M10）：本页内部导航一律走 Router 的 Link，不用 <a> —— 整页刷新
             会把在飞的护栏、未看完的错误、刚填的输入一起冲掉 */}
         <div className="head__act"><Link className="btn btn--ghost" to={`/plans/${planId}`}>返回网格</Link></div>
       </div>
+      {planErr && <ErrorDetail err={planErr} />}
+      {list.in_flight_rev === null && list.revs.length > 0 && (
+        <div className="muted" data-testid="no-in-flight">没有流转中的版本</div>
+      )}
 
       <div className="table-scroll">
         <table className="table table--dense">
@@ -109,7 +121,8 @@ export function PlanRevs() {
                 <td>{r.submitted_by}</td>
                 <td className="muted">{r.submitted_at.slice(0, 16).replace('T', ' ')}</td>
                 <td className="r">{r.lines}</td>
-                <td className="gate__code">{r.content_digest}</td>
+                {/* 摘要是排障用的：收起，不常驻（屏幕给数据，文档给论证） */}
+                <td><details><summary className="muted">查看</summary><span className="gate__code">{r.content_digest}</span></details></td>
                 <td>
                   {/* ★ 两个标记分开：流转中由采购/排货消费，当前使用由算需求读（06 §1.3）——
                       合成一个标记就分不清「为什么改了当前使用，采购那边还是老的」 */}
@@ -119,11 +132,15 @@ export function PlanRevs() {
                 <td>
                   {r.rev !== list.current_rev && (
                     <button
-                      type="button" className="btn btn--sm" disabled={pending.has(currentKey(r.rev))}
+                      type="button" className="btn btn--sm btn--ghost" disabled={pending.has(currentKey(r.rev))}
                       onClick={() => void setCurrent(r.rev)}
                     >设为当前使用</button>
                   )}{' '}
-                  <button type="button" className="btn btn--sm btn--danger" onClick={() => setCancelling(r.rev)}>撤销</button>
+                  {/* ★ 只给流转中的那一版：撤的是 rev 列仍是它、且非终态的记录（cancel_rev）——
+                      不在流转 = 一条非终态记录都没有（open_rev_if_live 同一判据），撤了也是 0 条 */}
+                  {r.rev === list.in_flight_rev && (
+                    <button type="button" className="btn btn--sm btn--danger" onClick={() => setCancelling(r.rev)}>撤销</button>
+                  )}
                 </td>
               </tr>
             ))}
