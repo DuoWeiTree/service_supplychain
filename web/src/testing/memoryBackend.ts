@@ -645,6 +645,8 @@ export function createMemoryBackend(): SupplyChainApi {
       lines = lines.filter((l) => l.remaining > 0);
       return { lines, groups: {}, excluded };
     },
+    // 分组汇总是后端规则（lines.orderable 一处），内存里不重演；页面测试用 stubBackend + 契约样本
+    async listPurchasePlans() { return notSimulated('listPurchasePlans'); },
     async getLineTrace(lineId) {
       const l = planLines.find((x) => x.line_id === lineId);
       if (!l) throw poErr(404, 'line_not_found', '没有这条记录', { line_id: lineId });
