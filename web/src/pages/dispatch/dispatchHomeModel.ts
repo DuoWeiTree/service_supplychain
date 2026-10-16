@@ -88,3 +88,30 @@ export function filterPlans(plans: DispatchPlan[], q: string): { shown: Dispatch
   }
   return { shown, autoOpen };
 }
+
+const SHEET_FIELDS = ['in_flight', 'attention', 'drift', 'to_lock', 'to_submit', 'packing_missing',
+  'logistics_missing', 'consignments', 'all_submitted'] as const;
+const RECORD_FIELDS = ['confirmed', 'ordered'] as const;
+
+type Loose = Record<string, unknown>;
+const absent = (o: Loose, ks: readonly string[]) => ks.filter((k) => o[k] === undefined);
+
+/** ★ spec §6：旧后端缺新字段时点名哪张表 / 哪条记录缺什么。不给默认值 —— `?? []` 会让「没算」长得像「没有」 */
+export function missingPlanFields(body: unknown): string[] {
+  const plans = (body as Loose | null)?.plans;
+  if (!Array.isArray(plans)) return ['响应缺字段 plans'];
+  const out: string[] = [];
+  for (const p of plans as Loose[]) {
+    const arrays = ['sheets', 'records'].filter((k) => !Array.isArray(p[k]));
+    if (arrays.length) { out.push(`计划 #${String(p.plan_id)} 缺字段 ${arrays.join(', ')}`); continue; }
+    for (const sh of p.sheets as Loose[]) {
+      const miss = absent(sh, SHEET_FIELDS);
+      if (miss.length) out.push(`排货表 #${String(sh.sheet_id)} 缺字段 ${miss.join(', ')}`);
+    }
+    for (const r of p.records as Loose[]) {
+      const miss = absent(r, RECORD_FIELDS);
+      if (miss.length) out.push(`记录 #${String(r.line_id)} 缺字段 ${miss.join(', ')}`);
+    }
+  }
+  return out;
+}

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useParams } from 'react-router-dom';
 import list from '../../testing/fixtures/contract/sheet-list.json';
@@ -73,6 +73,13 @@ describe('DispatchHome · 计划抬头（DL-D1 · DL-D5）', () => {
     await userEvent.click(within(screen.getByTestId('plan-5')).getByRole('button', { name: '海外仓备货' }));
     expect(screen.getByText('计划已归档')).toBeInTheDocument();
     expect(screen.queryByTestId('pivot-5')).toBeNull();
+  });
+
+  it('同一批里点两下：展开再收起（切换从上一个状态算，不从渲染时的快照算）', async () => {
+    await mount(plansOf({ ...PLAN, records: [rec({})] }));
+    const t = within(screen.getByTestId('plan-5')).getByRole('button', { name: /10 月计划/ });
+    act(() => { fireEvent.click(t); fireEvent.click(t); });
+    expect(t).toHaveAttribute('aria-expanded', 'false');
   });
 
   it('还差 0 写「已满足」，不给动作按钮', async () => {
@@ -182,6 +189,18 @@ describe('DispatchHome · 搜索（DL-D10）', () => {
     await userEvent.clear(box);
     await userEvent.type(box, 'zzz');
     expect(screen.getByText('没有匹配的计划或货号')).toBeInTheDocument();
+  });
+});
+
+describe('DispatchHome · 响应形状不符（spec §6：两块各自点名，互不拖垮）', () => {
+  it('★ 某张表缺 drift：计划区点名缺什么、控制台留痕；全部排货表照常', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { drift: _d, ...noDrift } = sh({ sheet_id: 3 });
+    await mount({ ...plansOf({ ...PLAN, sheets: [noDrift] }), 'GET /v1/sheets': () => ok(list) });
+    expect(screen.getByRole('alert')).toHaveTextContent('排货表 #3 缺字段 drift —— 后端版本与页面不一致');
+    expect(screen.queryByTestId('plan-5')).toBeNull();
+    expect(screen.getByTestId('all-sheets')).toBeInTheDocument();
+    expect(err).toHaveBeenCalledWith('[dispatch] plans shape mismatch', expect.stringContaining('排货表 #3 缺字段 drift'));
   });
 });
 

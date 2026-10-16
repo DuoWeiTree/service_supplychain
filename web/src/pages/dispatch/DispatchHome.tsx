@@ -7,7 +7,7 @@ import { api, ApiError } from '../../api';
 import { asApiError } from '../../api/client';
 import type { DispatchPlan, DispatchPlanSheet, DispatchPlans, DispatchRoute, SheetList } from '../../api/types';
 import { ROUTE_SHORT } from './dispatchGridModel';
-import { TONE_CLASS, cellTitle, filterPlans, pivotRecords, sheetNextStep, skuHit, type Pivot } from './dispatchHomeModel';
+import { TONE_CLASS, cellTitle, filterPlans, missingPlanFields, pivotRecords, sheetNextStep, skuHit, type Pivot } from './dispatchHomeModel';
 import { fmtAt } from '../purchase/fmt';
 
 const ROUTES = ['fba', 'oversea'] as const;
@@ -26,14 +26,20 @@ export function DispatchHome() {
   const [override, setOverride] = useState<Map<number, boolean>>(() => new Map());
 
   useEffect(() => {
-    api.listDispatchPlans().then(setPlans, (e: unknown) => setPlansErr(asApiError(e)));
+    api.listDispatchPlans().then((body) => {
+      const miss = missingPlanFields(body);
+      if (miss.length === 0) { setPlans(body); return; }
+      console.error('[dispatch] plans shape mismatch', JSON.stringify({ call: 'GET /v1/dispatch/plans', missing: miss }));
+      setPlansErr(new ApiError(200, 'contract_mismatch',
+        `${miss[0]}${miss.length > 1 ? ` 等 ${miss.length} 处` : ''} —— 后端版本与页面不一致`, { missing: miss }));
+    }, (e: unknown) => setPlansErr(asApiError(e)));
     api.listSheets().then(setList, (e: unknown) => setErr(asApiError(e)));
   }, []);
 
   const { shown, autoOpen } = useMemo(() => filterPlans(plans?.plans ?? [], q), [plans, q]);
   const auto = useMemo(() => new Set(autoOpen), [autoOpen]);
   const isOpen = (id: number) => override.get(id) ?? auto.has(id);
-  const toggle = (id: number) => setOverride((prev) => new Map(prev).set(id, !isOpen(id)));
+  const toggle = (id: number) => setOverride((prev) => new Map(prev).set(id, !(prev.get(id) ?? auto.has(id))));
   const search = (v: string) => {
     setQ(v);
     // 新命中的计划让搜索说了算，不被之前的手动收起挡住

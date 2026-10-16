@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { DispatchPlan, DispatchPlanRecord, DispatchPlanSheet } from '../../api/types';
-import { TONE_CLASS, cellTitle, filterPlans, pivotRecords, sheetNextStep, skuHit, type ChipTone } from './dispatchHomeModel';
+import { TONE_CLASS, cellTitle, filterPlans, missingPlanFields, pivotRecords, sheetNextStep, skuHit, type ChipTone } from './dispatchHomeModel';
 
 const S: DispatchPlanSheet = {
   sheet_id: 11, state: '草稿', route: 'fba', in_flight: 0, attention: 0, drift: [], to_lock: 0, to_submit: 0,
@@ -121,5 +121,23 @@ describe('filterPlans / skuHit（DL-D10：计划名 / 货号，纯前端）', ()
 
   it('都没命中：空', () => {
     expect(filterPlans(plans, 'zzz')).toEqual({ shown: [], autoOpen: [] });
+  });
+});
+
+describe('missingPlanFields（spec §6：后端版本与页面不一致要点名，不默认）', () => {
+  const R = { line_id: 9, sku: 'A', sku_name: null, period: '2026-10-01', state: '已确认', total: 1, confirmed: 0, ordered: 0, staged: 0, dispatched: 0, pending: 1 };
+  const P = { plan_id: 5, title: 'p', rev: 1, lines: 1, total: 1, confirmed: 0, ordered: 0, staged: 0, dispatched: 0, pending: 1, sheets: [S], records: [R] };
+  const omit = (o: Record<string, unknown>, ...ks: string[]) => Object.fromEntries(Object.entries(o).filter(([k]) => !ks.includes(k)));
+
+  it('形状齐全：空', () => {
+    expect(missingPlanFields({ plans: [P] })).toEqual([]);
+  });
+  it('点名哪张表 / 哪条记录缺哪些字段', () => {
+    expect(missingPlanFields({ plans: [{ ...P, sheets: [omit({ ...S }, 'drift', 'to_lock')], records: [omit(R, 'confirmed')] }] }))
+      .toEqual(['排货表 #11 缺字段 drift, to_lock', '记录 #9 缺字段 confirmed']);
+  });
+  it('plans / sheets / records 本身不是数组也点名', () => {
+    expect(missingPlanFields({})).toEqual(['响应缺字段 plans']);
+    expect(missingPlanFields({ plans: [omit(P, 'sheets')] })).toEqual(['计划 #5 缺字段 sheets']);
   });
 });
