@@ -143,27 +143,34 @@ def dispatch_plans() -> list[dict]:
             progress = repo.sheets_submit_progress(cur, ids)
         with _part("draft_gaps"):
             gaps = repo.sheets_draft_gaps(cur, ids)
+        with _part("archived"):
+            archived = repo.sheets_archived(cur, ids)
     drift: dict[int, list[str]] = {}
     for sid, ours, lx in stages:
         d = receipt_rules.drift(ours, lx)
         if d:
             drift.setdefault(sid, []).append(d)
     for p in plans:
-        p["sheets"] = [_sheet_facts(s, in_flight, attention, drift, progress, gaps) for s in p["sheets"]]
-    log.info("op=dispatch_plans plans=%d sheets=%d records=%d in_flight=%d attention=%d drift=%d elapsed_ms=%d",
-             len(plans), len(ids), sum(len(p["records"]) for p in plans), sum(in_flight.values()),
-             sum(attention.values()), sum(len(v) for v in drift.values()), (time.perf_counter() - t0) * 1000)
+        p["sheets"] = [_sheet_facts(s, in_flight, attention, drift, progress, gaps, archived) for s in p["sheets"]]
+    log.info("op=dispatch_plans plans=%d sheets=%d records=%d in_flight=%d attention=%d drift=%d archived=%d"
+             " elapsed_ms=%d", len(plans), len(ids), sum(len(p["records"]) for p in plans), sum(in_flight.values()),
+             sum(attention.values()), sum(len(v) for v in drift.values()), sum(archived.values()),
+             (time.perf_counter() - t0) * 1000)
     return plans
 
 
-def _sheet_facts(s: dict, in_flight: dict, attention: dict, drift: dict, progress: dict, gaps: dict) -> dict:
-    """查询按 sheet_ids 全量 GROUP BY，不在结果里 = 真没有（不是没算进来）。"""
+def _sheet_facts(s: dict, in_flight: dict, attention: dict, drift: dict, progress: dict, gaps: dict,
+                 archived: dict) -> dict:
+    """查询按 sheet_ids 全量 GROUP BY，不在结果里 = 真没有（不是没算进来）。
+    all_archived（DL-D13）：活的排货单（不含已取消 / 已放弃，同 consignments）至少一张，且张张已归档。"""
     sid = s["sheet_id"]
     pg = progress.get(sid, {"orders": 0, "to_submit": 0, "to_lock": 0})
+    gp = gaps.get(sid, {"consignments": 0, "packing_missing": 0, "logistics_missing": 0})
+    n_arch = archived.get(sid, 0)
     return {**s, "in_flight": in_flight.get(sid, 0), "attention": attention.get(sid, 0), "drift": drift.get(sid, []),
-            "to_lock": pg["to_lock"], "to_submit": pg["to_submit"],
-            **gaps.get(sid, {"consignments": 0, "packing_missing": 0, "logistics_missing": 0}),
-            "all_submitted": pg["orders"] > 0 and pg["to_submit"] == 0 and pg["to_lock"] == 0}
+            "to_lock": pg["to_lock"], "to_submit": pg["to_submit"], **gp,
+            "all_submitted": pg["orders"] > 0 and pg["to_submit"] == 0 and pg["to_lock"] == 0,
+            "archived": n_arch, "all_archived": gp["consignments"] > 0 and n_arch == gp["consignments"]}
 
 
 def list_sheets(state: str | None) -> list[dict]:

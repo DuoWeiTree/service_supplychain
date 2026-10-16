@@ -63,6 +63,7 @@
 | 9 | 草稿、以上都没有 | 草稿 | primary | 现状 |
 | 10 | 海外仓全部已提交 | 海外仓备货单已全部提交领星 | 中性 | SP:371 |
 | 11 | FBA 全部已提交 | 已提交领星 FBA 发货计划 | 中性 | SP:351（截前半句） |
+| 12 | 活的排货单张张被回执归档（领星已完成，`all_archived`） | 领星已完成，已归档 | 中性 | SP:96 flash（★ DL-D13） |
 | 0 | 有在途写调用 `erp_call outcome='in_flight'`（排最前） | 正在提交… | 中性 | ★ 新词（DL-D8），详情页同步加 |
 
 - ★ **「已确认」不再单独出现、不再用绿色** —— 它不是终点，下一步才是（评审 P1）。色只给要人动手的（设计系统 Chip README）。
@@ -71,7 +72,7 @@
 
 ## 5. 后端：`GET /v1/dispatch/plans` 增字段（全是 PG 查询，不出站）
 
-`sheets[]` 每张加：`in_flight`（在途写调用数）· `attention`（待核实数）· `drift[]` · `to_lock`（已建未锁张数）· `to_submit`（还没领星单号的 排货单 × 来源仓 数，DL-D11）· `packing_missing`（FBA 缺装箱行数）· `logistics_missing`（海外仓未选物流方式单数）· `consignments`（排货单数）· `all_submitted`。
+`sheets[]` 每张加：`in_flight`（在途写调用数）· `attention`（待核实数）· `drift[]` · `to_lock`（已建未锁张数）· `to_submit`（还没领星单号的 排货单 × 来源仓 数，DL-D11）· `packing_missing`（FBA 缺装箱行数）· `logistics_missing`（海外仓未选物流方式单数）· `consignments`（排货单数）· `all_submitted` · `archived`（被回执归档的排货单数）· `all_archived`（活的排货单至少一张且张张已归档，DL-D13）。
 `records[]` 每条加：`confirmed` · `ordered`（`v_plan_line_po_qty` 已按 line 算好，`012_po_qty_checks.sql:15`）。
 受影响：`tests/test_api_sheets.py:133-157` · `tests/test_e2e_c_dispatch_draft.py`（`sheets` 全等断言）· 契约样例 `web/src/testing/fixtures/contract/dispatch-plans.json`（`SCM_WRITE_CONTRACT=1` 重生）· `docs/08`。
 日志：该查询带耗时；任一子查询失败整体 5xx 并点名哪一段（不静默把 chip 退回成「草稿」）。

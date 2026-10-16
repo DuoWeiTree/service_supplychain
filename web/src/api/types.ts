@@ -809,6 +809,8 @@ export interface DispatchPlanSheet {
   sheet_id: number; state: SheetState; route: DispatchRoute | null;
   in_flight: number; attention: number; drift: string[]; to_lock: number; to_submit: number;
   packing_missing: number; logistics_missing: number; consignments: number; all_submitted: boolean;
+  /** DL-D13：被回执归档的排货单数；all_archived = 活的排货单至少一张且张张已归档 */
+  archived: number; all_archived: boolean;
 }
 export interface DispatchPlanRecord {
   line_id: number; sku: string; sku_name: string | null; period: string; state: string;

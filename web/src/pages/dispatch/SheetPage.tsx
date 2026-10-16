@@ -59,6 +59,10 @@ export function SheetPage() {
     try {
       const [d_, g] = await Promise.all([api.getSheet(sheetId), api.getSheetGrid(sheetId)]);
       d = d_;
+      // 旧后端没有 in_flight：读成 undefined 会被 `> 0` 当成「没在提交」—— 点名，不默认（同列表 missingPlanFields）
+      if (d.in_flight === undefined) {
+        console.error('[sheet] detail shape mismatch', JSON.stringify({ call: `GET /v1/sheets/${sheetId}`, missing: ['in_flight'] }));
+      }
       setDetail(d);
       setGrid(g);
       setLoadErr(null);
@@ -373,6 +377,9 @@ export function SheetPage() {
           )}
           {/* DL-D8/DL-Q7：只写状态字，不禁用提交按钮；后端在途时本就 409 submitting */}
           {detail.in_flight > 0 && <span className="pe-bar__state" data-testid="in-flight">正在提交…</span>}
+          {detail.in_flight === undefined && (
+            <span className="pe-bar__state" data-testid="in-flight-missing">读不到在途写调用：后端缺字段 in_flight</span>
+          )}
           {detail.state === '已确认' && <span className="pe-bar__state">已确认，整表冻结</span>}
           {detail.state === '已取消' && <span className="pe-bar__state">已取消</span>}
         </div>

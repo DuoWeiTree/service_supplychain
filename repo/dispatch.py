@@ -666,6 +666,14 @@ def sheets_submit_progress(cur, sheet_ids: list[int]) -> dict[int, dict]:
     return {r[0]: {"orders": r[1], "to_submit": r[2], "to_lock": r[3]} for r in cur.fetchall()}
 
 
+def sheets_archived(cur, sheet_ids: list[int]) -> dict[int, int]:
+    """被回执归档（领星已完成，已投送 → 已归档）的排货单数。DL-D13：情形 5/10/11 的 pairs 只看已确认·已投送，
+    全部归档的表在那里是 0 张 —— 不另数就会落到 DL-Q6 兜底。"""
+    cur.execute("SELECT sheet_id, count(*)::int FROM consignment"
+                " WHERE sheet_id = ANY(%s) AND our_stage = '已归档' GROUP BY sheet_id", (sheet_ids,))
+    return dict(cur.fetchall())
+
+
 def sheets_draft_gaps(cur, sheet_ids: list[int]) -> dict[int, dict]:
     """活的排货单数 · FBA 缺装箱行数（同前端 missingPacking：没有装箱行或六项有空）· 海外仓没选物流方式的单数（G7）。"""
     box_missing = " OR ".join(f"p.{k} IS NULL" for k in PACKING_COLS)

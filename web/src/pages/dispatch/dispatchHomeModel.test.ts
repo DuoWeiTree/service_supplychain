@@ -4,7 +4,7 @@ import { TONE_CLASS, cellTitle, filterPlans, missingPlanFields, pivotRecords, sh
 
 const S: DispatchPlanSheet = {
   sheet_id: 11, state: '草稿', route: 'fba', in_flight: 0, attention: 0, drift: [], to_lock: 0, to_submit: 0,
-  packing_missing: 0, logistics_missing: 0, consignments: 1, all_submitted: false,
+  packing_missing: 0, logistics_missing: 0, consignments: 1, all_submitted: false, archived: 0, all_archived: false,
 };
 const step = (o: Partial<DispatchPlanSheet>) => sheetNextStep({ ...S, ...o });
 
@@ -22,6 +22,7 @@ describe('sheetNextStep（spec §4 · DL-D7 / D8）', () => {
     ['9 草稿 以上都没有', {}, '草稿', 'primary', 0],
     ['10 海外仓全部已提交', { state: '已确认', route: 'oversea', all_submitted: true }, '海外仓备货单已全部提交领星', 'neutral', 0],
     ['11 FBA 全部已提交', { state: '已确认', all_submitted: true }, '已提交领星 FBA 发货计划', 'neutral', 0],
+    ['12 排货单全部归档（DL-D13）', { state: '已确认', archived: 1, all_archived: true }, '领星已完成，已归档', 'neutral', 0],
   ];
   it.each(CASES)('%s', (_name, o, text, tone, more) => {
     expect(step(o)).toEqual({ text, tone, more, unmatched: false });
@@ -44,6 +45,18 @@ describe('sheetNextStep（spec §4 · DL-D7 / D8）', () => {
       .toEqual({ text: '⚠ 领星已撤销', tone: 'danger', more: 1, unmatched: false });
     expect(step({ state: '已确认', route: null, attention: 1 }))
       .toEqual({ text: '旧版混合表：只能取消', tone: 'neutral', more: 1, unmatched: false });
+  });
+
+  it('★ DL-D13：全部归档只在没有要人动手的事时才出现（⚠ 两轴不一致照样先说）', () => {
+    expect(step({ state: '已确认', drift: ['领星已撤销'], archived: 1, all_archived: true }))
+      .toEqual({ text: '⚠ 领星已撤销', tone: 'danger', more: 1, unmatched: false });
+    expect(step({ state: '已确认', in_flight: 1, archived: 1, all_archived: true }))
+      .toEqual({ text: '正在提交…', tone: 'neutral', more: 1, unmatched: false });
+  });
+
+  it('只归档了一部分：不说「已归档」', () => {
+    expect(step({ state: '已确认', consignments: 2, archived: 1, all_submitted: true }))
+      .toEqual({ text: '已提交领星 FBA 发货计划', tone: 'neutral', more: 0, unmatched: false });
   });
 
   it('★ 一条都不命中：写表状态原文、标 unmatched，不写「草稿」也不空着（Review Focus · DL-Q6）', () => {
@@ -135,6 +148,10 @@ describe('missingPlanFields（spec §6：后端版本与页面不一致要点名
   it('点名哪张表 / 哪条记录缺哪些字段', () => {
     expect(missingPlanFields({ plans: [{ ...P, sheets: [omit({ ...S }, 'drift', 'to_lock')], records: [omit(R, 'confirmed')] }] }))
       .toEqual(['排货表 #11 缺字段 drift, to_lock', '记录 #9 缺字段 confirmed']);
+  });
+  it('旧后端没有归档事实（DL-D13）也点名', () => {
+    expect(missingPlanFields({ plans: [{ ...P, sheets: [omit({ ...S }, 'archived', 'all_archived')] }] }))
+      .toEqual(['排货表 #11 缺字段 archived, all_archived']);
   });
   it('plans / sheets / records 本身不是数组也点名', () => {
     expect(missingPlanFields({})).toEqual(['响应缺字段 plans']);

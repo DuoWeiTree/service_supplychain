@@ -2,14 +2,23 @@
 from repo import dispatch as dispatch_repo
 from shared.pg_client import pg_conn
 from tests.helpers import H
-from tests.test_api_sheets import BOX, OVERSEA, add_line, new_sheet, packing_url, put, stock, world  # noqa: F401
+from tests.test_api_sheets import (  # noqa: F401
+    BOX,
+    OVERSEA,
+    add_line,
+    new_sheet,
+    packing_url,
+    put,
+    stock,
+    world,
+)
 from tests.test_api_submit_fba import confirmed_fba  # noqa: F401
 from tests.test_api_submit_ows import confirmed, submit  # noqa: F401
 
 FACTS = ("in_flight", "attention", "drift", "to_lock", "to_submit", "packing_missing", "logistics_missing",
-         "consignments", "all_submitted")
+         "consignments", "all_submitted", "archived", "all_archived")
 ZERO = {"in_flight": 0, "attention": 0, "drift": [], "to_lock": 0, "to_submit": 0, "packing_missing": 0,
-        "logistics_missing": 0, "consignments": 0, "all_submitted": False}
+        "logistics_missing": 0, "consignments": 0, "all_submitted": False, "archived": 0, "all_archived": False}
 
 
 def facts(client, sheet_id):
@@ -56,7 +65,7 @@ def test_unknown_create_result_is_counted_as_attention(client, seed, confirmed, 
 
 def test_drift_is_named_per_live_order(client, seed, confirmed, lingxing):
     submit(client, seed, confirmed)
-    del lingxing._ows[sorted(lingxing._ows)[0]]
+    del lingxing._ows[min(lingxing._ows)]
     assert client.post(f"/v1/sheets/{confirmed}/receipt", headers=H(seed.actor)).status_code == 200
     assert facts(client, confirmed)["drift"] == ["领星里没有这张单"]
 
@@ -79,6 +88,44 @@ def test_fba_plan_built_but_not_locked_is_to_lock_not_to_submit(client, seed, co
     assert facts(client, confirmed_fba) == {**ZERO, "consignments": 1, "to_lock": 1}
     submit(client, seed, confirmed_fba)                      # 只补锁，不重建（CC-D3）
     assert facts(client, confirmed_fba) == {**ZERO, "consignments": 1, "all_submitted": True}
+
+
+def test_all_consignments_archived_by_receipt_is_its_own_fact(client, seed, confirmed, lingxing):
+    """DL-D13：回执把排货单全部归档（领星已完成）—— 正常的终点，不能落到 DL-Q6 兜底。"""
+    submit(client, seed, confirmed)
+    for no in list(lingxing._ows):
+        lingxing.set_ows_status(no, "60")
+    assert client.post(f"/v1/sheets/{confirmed}/receipt", headers=H(seed.actor)).json()["archived"]
+    assert facts(client, confirmed) == {**ZERO, "consignments": 1, "archived": 1, "all_archived": True}
+
+
+OVERSEA_B = 4
+
+
+def test_partially_archived_sheet_is_not_all_archived(client, seed, world, lingxing):
+    """两张排货单（两个海外仓目的地）只归档一张：archived=1，all_archived=False，其余事实照旧（另一张已提交）。"""
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("INSERT INTO warehouse (wid, name, kind, market, refreshed_at)"
+                    " VALUES (%s, '31-NJ自有海外仓', 'oversea_self', 'US', now())", (OVERSEA_B,))
+        cur.execute("UPDATE sku_catalog SET product_id = 741805 WHERE sku=%s", (seed.sku_a,))
+    sid = new_sheet(client, seed, route="oversea")
+    for dest in (OVERSEA, OVERSEA_B):
+        put(client, seed, sid, line_id=world["line_id"], units=2, channel="oversea", dest_wid=dest)
+    client.get("/v1/logistics-channels", headers=H(seed.actor))
+    for dest in (OVERSEA, OVERSEA_B):
+        assert client.put(f"/v1/sheets/{sid}/logistics/{dest}", json={"logistics_id": 28762},
+                          headers=H(seed.actor)).status_code == 200
+    seen = client.get(f"/v1/sheets/{sid}").json()["watermark"]
+    r = client.post(f"/v1/sheets/{sid}/confirm", json={"seen_watermark": seen}, headers=H(seed.actor))
+    assert r.status_code == 200, r.text
+    assert submit(client, seed, sid).status_code == 200
+    refs = client.get(f"/v1/sheets/{sid}").json()["ext_refs"]
+    assert len({e["consignment_id"] for e in refs}) == 2
+    first = min(refs, key=lambda e: e["consignment_id"])
+    lingxing.set_ows_status(first["ext_no"], "60")
+    assert client.post(f"/v1/sheets/{sid}/receipt", headers=H(seed.actor)).json()["archived"] == [
+        first["consignment_id"]]
+    assert facts(client, sid) == {**ZERO, "consignments": 2, "archived": 1, "all_submitted": True}
 
 
 def test_records_carry_confirmed_and_ordered(client, seed, world):

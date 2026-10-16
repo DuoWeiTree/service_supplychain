@@ -24,7 +24,9 @@
           "consignments": 1,
           "packing_missing": 0,
           "logistics_missing": 0,
-          "all_submitted": false
+          "all_submitted": false,
+          "archived": 0,
+          "all_archived": false
         },
         {
           "sheet_id": 2,
@@ -38,7 +40,9 @@
           "consignments": 1,
           "packing_missing": 0,
           "logistics_missing": 0,
-          "all_submitted": false
+          "all_submitted": false,
+          "archived": 0,
+          "all_archived": false
         }
       ],
       "records": [

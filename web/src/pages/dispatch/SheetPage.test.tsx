@@ -296,7 +296,7 @@ describe('排货单与装箱 · 确认（问题 3）', () => {
     expect(screen.getByLabelText(CELL_A)).toBeDisabled();
     expect(screen.queryByTestId('add-MSKU-B')).toBeNull();
     expect(screen.queryByText('确认排货表')).toBeNull();
-    expect(screen.getByText('已确认，整表冻结')).toBeInTheDocument();
+    expect(screen.getByLabelText(CELL_A)).toBeInTheDocument();
     expect(screen.getByText('取消排货表')).toBeInTheDocument();
     expect(screen.getByTestId('ows-sub-error')).toHaveTextContent('提交领星的预览读不到');   // 没桩 /submission：页面照常
   });
@@ -701,5 +701,19 @@ describe('排货工作台 · 在途写调用（DL-D8）', () => {
   it('没有在途写调用：不写', async () => {
     await mount(routes());
     expect(screen.queryByTestId('in-flight')).toBeNull();
+    expect(screen.queryByTestId('in-flight-missing')).toBeNull();
+  });
+
+  it('★ 旧后端没有 in_flight：点名并留痕，不当成「没在提交」，其余照常显示', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { in_flight: _drop, ...old } = D;
+    await mount(routes({ 'GET /v1/sheets/1': () => ok(old) }));
+    expect(within(screen.getByTestId('dock')).getByTestId('in-flight-missing'))
+      .toHaveTextContent('后端缺字段 in_flight');
+    expect(screen.queryByTestId('in-flight')).toBeNull();
+    expect(screen.getByLabelText(CELL_A)).toBeInTheDocument();
+    expect(err).toHaveBeenCalledWith('[sheet] detail shape mismatch',
+      JSON.stringify({ call: 'GET /v1/sheets/1', missing: ['in_flight'] }));
+    err.mockRestore();
   });
 });

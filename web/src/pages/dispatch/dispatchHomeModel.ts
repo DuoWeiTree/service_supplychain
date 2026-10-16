@@ -30,6 +30,8 @@ export function sheetNextStep(s: DispatchPlanSheet): NextStep {
   if (s.state === '已确认' && s.all_submitted) {
     hits.push({ text: s.route === 'oversea' ? '海外仓备货单已全部提交领星' : '已提交领星 FBA 发货计划', tone: 'neutral' });
   }
+  // DL-D13：表的正常终点，排最后 —— 归档后仍有待核实 / drift / 在途时先说那些
+  if (s.all_archived) hits.push({ text: '领星已完成，已归档', tone: 'neutral' });
   const first = hits[0];
   // ★ DL-Q6：不命中时写表状态原文；调用方负责在控制台留痕
   if (first === undefined) return { text: s.state, tone: 'neutral', more: 0, unmatched: true };
@@ -90,7 +92,7 @@ export function filterPlans(plans: DispatchPlan[], q: string): { shown: Dispatch
 }
 
 const SHEET_FIELDS = ['in_flight', 'attention', 'drift', 'to_lock', 'to_submit', 'packing_missing',
-  'logistics_missing', 'consignments', 'all_submitted'] as const;
+  'logistics_missing', 'consignments', 'all_submitted', 'archived', 'all_archived'] as const;
 const RECORD_FIELDS = ['confirmed', 'ordered'] as const;
 
 type Loose = Record<string, unknown>;

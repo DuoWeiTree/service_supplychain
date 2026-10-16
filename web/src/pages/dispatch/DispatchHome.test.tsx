@@ -12,7 +12,8 @@ afterEach(() => { vi.doUnmock('../../api'); vi.restoreAllMocks(); });
 function Sheet() { return <div>SHEET {useParams().sheetId}</div>; }
 
 const SH = { sheet_id: 0, state: '草稿', route: 'fba', in_flight: 0, attention: 0, drift: [], to_lock: 0, to_submit: 0,
-  packing_missing: 0, logistics_missing: 0, consignments: 1, all_submitted: false };
+  packing_missing: 0, logistics_missing: 0, consignments: 1, all_submitted: false,
+  archived: 0, all_archived: false };
 const sh = (o: Record<string, unknown>) => ({ ...SH, ...o });
 const rec = (o: Record<string, unknown>) => ({ line_id: 1, sku: 'DCC1045014AI', sku_name: '围栏', period: '2026-10-01',
   state: '已确认', total: 200, confirmed: 0, ordered: 0, staged: 5, dispatched: 0, pending: 195, ...o });
