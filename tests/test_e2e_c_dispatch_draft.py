@@ -36,14 +36,24 @@ def test_plan_to_dispatch_draft_chain(client, seed, lingxing, stock):  # noqa: F
     plans = client.get("/v1/dispatch/plans").json()["plans"]
     assert [p["plan_id"] for p in plans] == [plan_id]          # CA-D11 入口：先选未完成的计划
     # ★ CA-D13：同一计划，平台仓 · FBA 表与海外仓表各一张，各自确认、各自提交，还差共用
-    sid = client.post("/v1/sheets", json={"plan_id": plan_id, "route": "fba"}, headers=H(seed.actor)).json()["sheet_id"]
-    osid = client.post("/v1/sheets", json={"plan_id": plan_id, "route": "oversea"},
-                       headers=H(seed.actor)).json()["sheet_id"]
+    created = client.post("/v1/sheets", json={"plan_id": plan_id, "route": "fba"}, headers=H(seed.actor)).json()
+    sid = created["sheet_id"]
+    osid_body = client.post("/v1/sheets", json={"plan_id": plan_id, "route": "oversea"}, headers=H(seed.actor)).json()
+    osid = osid_body["sheet_id"]
     g = client.get(f"/v1/sheets/{sid}/grid").json()
     row = next(r for r in g["demand"] if r["line_id"] == line["line_id"])
     assert row["purchase_orders"][0]["po_id"] == po_id
     assert [s["sid"] for s in row["stores"]] == sorted([seed.seller_a, seed.seller_b])   # 计划里的两家店
+    # ★ UX-D7：FBA 表新建即按还差 × 各店期望自动填一次（填进去就是人的格子）；海外仓表不填（UX-D10）
+    assert created["autofill"]["outcome"] == "done" and osid_body["autofill"] is None
+    auto = client.get(f"/v1/sheets/{sid}").json()["autofill"]["filled"]
+    assert {f["sid"] for f in auto} == {seed.seller_a, seed.seller_b}
+    assert sum(f["units"] for f in auto) == sum(r["total"] for r in g["demand"]) == created["autofill"]["units"]
     _ok(client)
+    for f in auto:                       # 员工审核：这一轮只给店 A 发，把系统给店 B 的那格撤掉
+        if f["sid"] != seed.seller_a:
+            assert put(client, seed, sid, line_id=f["line_id"], seller_sku=f["seller_sku"], sid=f["sid"],
+                       units=0).status_code == 200
 
     assert put(client, seed, sid, line_id=line["line_id"], units=40).status_code == 200
     assert put(client, seed, osid, line_id=line["line_id"], units=10, channel="oversea",

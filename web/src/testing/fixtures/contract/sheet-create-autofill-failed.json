@@ -1,0 +1,22 @@
+{
+  "sheet_id": 2,
+  "autofill": {
+    "outcome": "failed",
+    "filled": 0,
+    "units": 0,
+    "skipped": 0,
+    "error": {
+      "stage": "stock",
+      "error": "stock_unavailable",
+      "hint": "本地库存读不到，没法按可安排封顶",
+      "fields": {
+        "target": "jxd_raw.erp_inventory_warehouse",
+        "cause": {
+          "kind": "connect_timeout",
+          "code": "ETIMEDOUT"
+        }
+      }
+    },
+    "event_written": true
+  }
+}

@@ -1,0 +1,145 @@
+{
+  "sheet_id": 1,
+  "state": "草稿",
+  "created_by": "alice",
+  "plan_id": 1,
+  "plan_title": "t",
+  "route": "fba",
+  "created_at": "2026-10-16T06:25:33.804824-04:00",
+  "watermark": 3,
+  "in_flight": 0,
+  "consignments": [
+    {
+      "consignment_id": 1,
+      "channel": "fba",
+      "dest_wid": null,
+      "dest_sid": "11072",
+      "our_stage": "草稿",
+      "idem_key": "SCM-CN-1",
+      "lines": [
+        {
+          "seller_sku": "MSKU-A",
+          "sid": "11072",
+          "from_wid": 1,
+          "sku": "DCC1800264G1",
+          "units": 75,
+          "planned": 75,
+          "unplanned": 0
+        }
+      ]
+    },
+    {
+      "consignment_id": 2,
+      "channel": "fba",
+      "dest_wid": null,
+      "dest_sid": "11094",
+      "our_stage": "草稿",
+      "idem_key": "SCM-CN-2",
+      "lines": [
+        {
+          "seller_sku": "MSKU-C",
+          "sid": "11094",
+          "from_wid": 1,
+          "sku": "DCC1800264G1",
+          "units": 10,
+          "planned": 10,
+          "unplanned": 0
+        }
+      ]
+    }
+  ],
+  "packing": [],
+  "last_gate_run": null,
+  "events": [
+    {
+      "from_state": "[*]",
+      "to_state": "草稿",
+      "actor": "alice",
+      "reason": null,
+      "at": "2026-10-16T06:25:33.804824-04:00"
+    }
+  ],
+  "logistics": [],
+  "ext_refs": [],
+  "autofill": {
+    "rule": "UX-D8/D9 v1",
+    "outcome": "done",
+    "inputs": {
+      "lines": [
+        {
+          "sku": "DCC1800264G1",
+          "period": "2026-10-01",
+          "line_id": 1,
+          "pending": 100,
+          "demand_by_seller": {
+            "11072": {
+              "basis": "human",
+              "mskus": [
+                {
+                  "basis": "human",
+                  "units": 60,
+                  "seller_sku": "MSKU-A"
+                }
+              ],
+              "units": 60
+            },
+            "11094": {
+              "basis": "human",
+              "mskus": [
+                {
+                  "basis": "human",
+                  "units": 20,
+                  "seller_sku": "MSKU-C"
+                }
+              ],
+              "units": 20
+            }
+          }
+        }
+      ],
+      "buckets": [
+        {
+          "sku": "DCC1800264G1",
+          "wid": 1,
+          "buckets": {
+            "11072": 5,
+            "shared": 80
+          }
+        }
+      ],
+      "committed": [],
+      "stock_as_of": "2026-10-10",
+      "buckets_not_local": 0
+    },
+    "filled": [
+      {
+        "sid": "11072",
+        "units": 75,
+        "line_id": 1,
+        "from_wid": 1,
+        "seller_sku": "MSKU-A",
+        "arrangement_id": 1
+      },
+      {
+        "sid": "11094",
+        "units": 10,
+        "line_id": 1,
+        "from_wid": 1,
+        "seller_sku": "MSKU-C",
+        "arrangement_id": 2
+      }
+    ],
+    "skipped": [
+      {
+        "filled": 85,
+        "reason": "stock_short",
+        "wanted": 100,
+        "line_id": 1
+      }
+    ],
+    "error": null,
+    "elapsed_ms": 106,
+    "actor": "alice",
+    "at": "2026-10-16T06:25:33.893695-04:00"
+  }
+}

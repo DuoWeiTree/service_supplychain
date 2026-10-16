@@ -43,6 +43,7 @@
       "dispatched": 0,
       "pending": 70,
       "staged_here": 30,
+      "dispatched_here": 0,
       "confirmed": 100,
       "ordered": 100,
       "staged_other": 0,
@@ -166,7 +167,7 @@
         "11072": 30
       },
       "source": "api",
-      "as_of": "2026-10-13T23:52:57.207685-04:00",
+      "as_of": "2026-10-16T06:24:42.467241-04:00",
       "available": {
         "11072": 55,
         "11094": 55

@@ -12,6 +12,7 @@ import time
 
 from dim.ch_source import ChDataUnusable, ChUnavailable, UnknownShape
 from repo import dispatch as repo
+from rules import autofill as autofill_rules
 from rules import dispatch as rules
 from rules import receipt as receipt_rules
 from shared.pg_client import pg_conn, pg_error_fields, timed
@@ -88,7 +89,7 @@ def _local_and_known(cur):
 ROUTES = ("fba", "oversea")      # ★ CA-D13：平台仓 · 亚马逊 FBA / 海外仓（日后 wfs 另加）
 
 
-def create(body: dict, actor: str) -> int:
+def create(body: dict, actor: str, make_stock) -> dict:
     plan_id = (body or {}).get("plan_id")
     route = (body or {}).get("route")
     if not isinstance(plan_id, int) or isinstance(plan_id, bool):
@@ -111,7 +112,139 @@ def create(body: dict, actor: str) -> int:
                            plan_id=plan_id, route=route)
         sid = repo.insert_sheet(cur, actor, plan_id, route)
     log.info("op=sheet_create sheet=%s plan=%s route=%s actor=%s", sid, plan_id, route, actor)
-    return sid
+    # ★ UX-D10：海外仓表没有「店 → 默认海外仓」数据，不自动填。建表事务已提交：默认分配失败不拖垮建表
+    return {"sheet_id": sid, "autofill": _autofill(sid, plan_id, actor, make_stock) if route == "fba" else None}
+
+
+# ── UX-D7 ~ D10：新建 FBA 表时自动填一次默认排货量（spec 2026-10-16 §1）────────────
+
+class _AutofillFailed(Exception):
+    def __init__(self, stage: str, error: str, hint: str, fields: dict):
+        self.stage, self.error, self.hint, self.fields = stage, error, hint, fields
+        super().__init__(f"{stage} {error}: {hint}")
+
+
+def _autofill_inputs(lines: list[dict], buckets: dict | None, committed: dict, stock_as_of, dropped: int) -> dict:
+    """输入快照：拿它能复算出 filled（事件只追加，日后规则改了也知道当时凭什么填的）。"""
+    return {
+        "lines": [{"line_id": ln["line_id"], "sku": ln["sku"], "period": _iso(ln["period"]), "pending": ln["pending"],
+                   "demand_by_seller": ln["demand_by_seller"]} for ln in lines],
+        "stock_as_of": stock_as_of,
+        "buckets": None if buckets is None else [{"sku": k[0], "wid": k[1], "buckets": v}
+                                                 for k, v in sorted(buckets.items())],
+        "committed": [{"sku": k[0], "wid": k[1], "by_sid": v} for k, v in sorted(committed.items())],
+        "buckets_not_local": dropped,
+    }
+
+
+def _autofill(sheet_id: int, plan_id: int, actor: str, make_stock) -> dict:
+    """★ 填进去的就是人的格子（UX-D7），逐格走 PUT /cells 那套闸；「是系统填的」只记在事件表（铁律 6）。
+    ★ 任何一步失败都不静默退回「全空」：事件写 failed + 原因，响应与日志同样点名。"""
+    t0 = time.perf_counter()
+    stage, inputs, result = "read", {}, {"filled": [], "skipped": []}
+    try:
+        with pg_conn() as c, c.cursor() as cur:
+            whs, local, sellers = _local_and_known(cur)
+            lines = [ln for ln in repo.dispatchable_lines(cur, sheet_id, plan_id) if ln["state"] not in TERMINAL]
+            skus = sorted({ln["sku"] for ln in lines})
+            claimed = sorted({(m["seller_sku"], sid) for ln in lines for sid, v in (ln["demand_by_seller"] or {}).items()
+                              for m in (v or {}).get("mskus") or []})
+            bridge = repo.bridge_skus(cur, claimed)
+            committed = repo.committed(cur, skus) if skus else {}
+        inputs = _autofill_inputs(lines, None, committed, None, 0)
+        stage = "allocate"
+        # ★ 先不带库存跑一遍：没有一条记录需要库存（都没认领 / 都已满足）就不去读 CH
+        dry = autofill_rules.allocate(lines, sellers, bridge, {}, committed)
+        if any(x["reason"] == "no_stock" for x in dry["skipped"]):
+            stage = "stock"
+            snap, err = _read_stock(make_stock, local, set(sellers), set(skus))
+            if err is not None:
+                raise _AutofillFailed("stock", "stock_unavailable", "本地库存读不到，没法按可安排封顶", err)
+            with pg_conn() as c, c.cursor() as cur:
+                live, _meta = _overlay_live(cur, snap, skus)
+            live = live or {}
+            buckets = {k: v for k, v in live.items() if k[1] in local and k[0] in skus}
+            dropped = sum(1 for k in live if k[0] in skus and k[1] not in local)
+            inputs = _autofill_inputs(lines, buckets, committed, _iso(snap.as_of) if snap else None, dropped)
+            stage = "allocate"
+            result = autofill_rules.allocate(lines, sellers, bridge, buckets, committed)
+        else:
+            result = dry
+        stage = "write"
+        filled = _write_autofill(sheet_id, plan_id, actor, whs, result, inputs, t0)
+    except Exception as e:  # noqa: BLE001 —— 任何失败都要落成 failed 事件并点名，不吞
+        err = (e if isinstance(e, _AutofillFailed) else
+               _AutofillFailed(stage, e.error, e.hint, e.fields) if isinstance(e, Conflict) else
+               _AutofillFailed(stage, type(e).__name__, str(e)[:500], pg_error_fields(e)))
+        return _autofill_failed(sheet_id, actor, err, inputs, t0)
+    ms = int((time.perf_counter() - t0) * 1000)
+    by_reason: dict[str, int] = {}
+    for x in result["skipped"]:
+        by_reason[x["reason"]] = by_reason.get(x["reason"], 0) + 1
+    units = sum(f["units"] for f in filled)
+    log.info("op=sheet_autofill sheet=%s outcome=done rule=%s lines=%d stores=%d stock_rows=%s filled=%d units=%d"
+             " skipped=%d skipped_by_reason=%s elapsed_ms=%d actor=%s",
+             sheet_id, autofill_rules.RULE, len(inputs["lines"]),
+             len({(x["line_id"], sid) for x in inputs["lines"] for sid in (x["demand_by_seller"] or {})}),
+             "not_read" if inputs["buckets"] is None else len(inputs["buckets"]), len(filled), units,
+             len(result["skipped"]), by_reason, ms, actor)
+    return {"outcome": "done", "filled": len(filled), "units": units, "skipped": len(result["skipped"]),
+            "error": None, "event_written": True}
+
+
+def _write_autofill(sheet_id: int, plan_id: int, actor: str, whs: dict, result: dict, inputs: dict, t0) -> list:
+    """一个事务：逐格过闸写入 → 整表重派生 → 写事件。任一格被挡 → 全部回滚（不留一半）。"""
+    with timed("sheet_autofill_write", sheet=sheet_id, actor=actor), pg_conn() as c, c.cursor() as cur:
+        s = repo.lock_sheet(cur, sheet_id)
+        if s is None or s["state"] != "草稿":
+            raise Conflict(409, "sheet_frozen", "排货表已不是草稿，不再自动填", sheet_id=sheet_id,
+                           state=s and s["state"])
+        repo.lock_lines(cur, [f["line_id"] for f in result["filled"]])
+        tally: dict[int, int] = {}
+        for f in result["filled"]:
+            cell = {"line_id": f["line_id"], "seller_sku": f["seller_sku"], "sid": f["sid"], "from_wid": f["from_wid"],
+                    "channel": "fba", "dest_wid": None, "dest_sid": f["sid"], "units": f["units"]}
+            key = {k: cell[k] for k in ("line_id", "seller_sku", "sid", "from_wid")}
+            _check_cell(cur, cell, whs)
+            existing = repo.find_cell(cur, sheet_id, cell["line_id"], cell["seller_sku"], cell["sid"],
+                                      cell["from_wid"], "fba", None, cell["sid"])
+            if existing is not None:
+                raise Conflict(409, "cell_exists", "目标格子已有安排，不覆盖人填的量",
+                               arrangement_id=existing["arrangement_id"], **key)
+            _check_line(cur, cell, None, plan_id)
+            # ★ 同一事务里刚写的格子还没派生出映射，line_used_excluding 看不见它们 —— 自己累计再判一次 over_total
+            pl = repo.lock_plan_line(cur, cell["line_id"])
+            used = repo.line_used_excluding(cur, cell["line_id"], None) + tally.get(cell["line_id"], 0)
+            if used + cell["units"] > pl["total_units"]:
+                raise Conflict(409, "over_total", "超过记录总量（含别的排货表已排未发）", total=pl["total_units"],
+                               used=used, requested=cell["units"], **key)
+            tally[cell["line_id"]] = tally.get(cell["line_id"], 0) + cell["units"]
+            repo.upsert_cell(cur, None, sheet_id, cell, actor)
+        if result["filled"]:
+            _rederive(cur, sheet_id, actor)
+        ids = {(x["line_id"], x["seller_sku"], x["sid"], x["from_wid"]): x["arrangement_id"]
+               for x in repo.sheet_cells(cur, sheet_id) if x["channel"] == "fba"}
+        filled = [{"arrangement_id": ids[(f["line_id"], f["seller_sku"], f["sid"], f["from_wid"])],
+                   **{k: f[k] for k in ("line_id", "seller_sku", "sid", "from_wid", "units")}} for f in result["filled"]]
+        repo.insert_autofill(cur, sheet_id, autofill_rules.RULE, "done", inputs, filled, result["skipped"], None,
+                             int((time.perf_counter() - t0) * 1000), actor)
+    return filled
+
+
+def _autofill_failed(sheet_id: int, actor: str, err: _AutofillFailed, inputs: dict, t0) -> dict:
+    ms = int((time.perf_counter() - t0) * 1000)
+    error = {"stage": err.stage, "error": err.error, "hint": err.hint, "fields": err.fields}
+    written = True
+    try:
+        with pg_conn() as c, c.cursor() as cur:
+            repo.insert_autofill(cur, sheet_id, autofill_rules.RULE, "failed", inputs or {}, [], [], error, ms, actor)
+    except Exception as e:  # noqa: BLE001 —— 留痕本身失败也要有声；建表已成，不再往上抛
+        written = False
+        log.error("op=sheet_autofill sheet=%s outcome=event_write_failed err_type=%s %s", sheet_id,
+                  type(e).__name__, pg_error_fields(e))
+    log.warning("op=sheet_autofill sheet=%s outcome=failed stage=%s error=%s hint=%s fields=%s event_written=%s"
+                " elapsed_ms=%d actor=%s", sheet_id, err.stage, err.error, err.hint, err.fields, written, ms, actor)
+    return {"outcome": "failed", "filled": 0, "units": 0, "skipped": 0, "error": error, "event_written": written}
 
 
 @contextlib.contextmanager
@@ -197,6 +330,7 @@ def load(sheet_id: int) -> dict:
         stages = repo.ext_stages(cur, sheet_id)
         events = repo.sheet_events(cur, sheet_id)
         in_flight = repo.sheets_in_flight(cur, [sheet_id]).get(sheet_id, 0)
+        af = repo.autofill(cur, sheet_id)
     fba_lines = {(ln["seller_sku"], ln["sid"], ln["from_wid"]) for c_ in cons if c_["channel"] == "fba"
                  for ln in c_["lines"]}
     return {
@@ -212,6 +346,7 @@ def load(sheet_id: int) -> dict:
         "events": [{**e, "at": _iso(e["at"])} for e in events],
         "logistics": [{"dest_wid": w, **v} for w, v in sorted(lg.items())],
         "ext_refs": [_with_stage(e, stages.get(e["ext_ref_id"]), cons) for e in refs],
+        "autofill": None if af is None else {**af, "at": _iso(af["at"])},
     }
 
 
@@ -279,8 +414,8 @@ def grid(sheet_id: int, make_stock) -> dict:
         unknown = any(p["entered"] is None for p in placed)
         demand.append({
             **{k: ln[k] for k in ("line_id", "plan_id", "plan_title", "rev", "sku", "sku_name", "state",
-                                  "total", "staged", "dispatched", "pending", "staged_here", "confirmed",
-                                  "ordered")},
+                                  "total", "staged", "dispatched", "pending", "staged_here", "dispatched_here",
+                                  "confirmed", "ordered")},
             "staged_other": ln["staged"] - ln["staged_here"],
             "entered": None if unknown else sum(p["entered"] for p in placed),
             "arriving": None if unknown else sum(p["pending"] for p in placed),
