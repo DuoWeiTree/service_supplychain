@@ -465,7 +465,12 @@ function SubmitModal({ sheetId, grid, sub, orders, route, onClose }: {
   onClose: () => void;
 }) {
   const fba = route === 'fba';
-  const relockOnly = orders.length === 0 && (sub.to_lock ?? []).length > 0;
+  const toLock = sub.to_lock ?? [];
+  // ★ CC-D1 退回边「建了没锁上 → 补锁」：没有要新建的单时，弹窗列的是要补锁的那几张，按它们放行
+  const relockOnly = orders.length === 0 && toLock.length > 0;
+  const shown = relockOnly ? sub.orders.filter((o) => toLock.includes(o.idem_key)) : orders;
+  const noun = fba ? 'FBA 发货计划' : '海外仓备货单';
+  const title = relockOnly ? `⛔ 补锁库存：${toLock.length} 张 ${noun}` : `⛔ 提交领星：建 ${orders.length} 张 ${noun}`;
   const [busy, setBusy] = useState(false);
   const [results, setResults] = useState<OwsResult[] | null>(null);
   const [err, setErr] = useState<ApiError | null>(null);
@@ -481,18 +486,17 @@ function SubmitModal({ sheetId, grid, sub, orders, route, onClose }: {
     }
   };
   return (
-    <Modal title={`⛔ 提交领星：建 ${orders.length} 张海外仓备货单`} onClose={busy ? () => {} : onClose}>
+    <Modal title={title} onClose={busy ? () => {} : onClose}>
       <div className="modal__body">
         {results === null ? (
           <>
-            {fba
+            {relockOnly ? <div>上次建成了但库存没锁上：这次只补锁 {toLock.join('、')}，不会重建</div> : fba
               ? <div>在领星建 FBA 发货计划（参考号写批次备注），建后锁定本地仓库存；STA 建货件 / 发货在领星里做。取消时释放库存，计划需在领星手工作废</div>
               : <div>在领星建为「待发货」，会锁定本地仓库存；取消排货表时可删除（已发货的删不掉）</div>}
-            {relockOnly && <div>上次建成了但库存没锁上：这次只补锁 {(sub.to_lock ?? []).join('、')}，不会重建</div>}
             <table className="pd-t" data-testid="ows-orders">
               <thead><tr><th>参考号</th><th>来源仓 → 目的地</th><th>{fba ? '装箱' : '物流方式'}</th><th className="r">件数</th><th className="r">产品行</th></tr></thead>
               <tbody>
-                {orders.map((o) => (
+                {shown.map((o) => (
                   <tr key={o.key}>
                     <td><code>{o.idem_key}</code></td>
                     <td>{whName(grid, o.s_wid)} → {o.r_wid !== null ? whName(grid, o.r_wid) : `FBA 店 ${o.dest_sid ?? '?'}`}</td>
@@ -516,7 +520,7 @@ function SubmitModal({ sheetId, grid, sub, orders, route, onClose }: {
                 {r.cause && <span className="pt-used">（{r.cause}）</span>}
               </li>
             ))}
-            {results.length < orders.length && <li className="pt-used">其余 {orders.length - results.length} 张没有发：先看上面那一张</li>}
+            {results.length < shown.length && <li className="pt-used">其余 {shown.length - results.length} 张没有发：先看上面那一张</li>}
           </ul>
         )}
         {err && (
@@ -530,8 +534,8 @@ function SubmitModal({ sheetId, grid, sub, orders, route, onClose }: {
         {results === null ? (
           <>
             <button type="button" className="btn btn--ghost" disabled={busy} onClick={onClose}>不提交</button>
-            <button type="button" className="btn btn--danger" disabled={busy || orders.length === 0} onClick={() => void go()}>
-              {busy ? '提交中…' : '确认提交'}
+            <button type="button" className="btn btn--danger" disabled={busy || shown.length === 0} onClick={() => void go()}>
+              {busy ? '提交中…' : relockOnly ? '确认补锁' : '确认提交'}
             </button>
           </>
         ) : <button type="button" className="btn btn--primary" onClick={onClose}>关闭</button>}

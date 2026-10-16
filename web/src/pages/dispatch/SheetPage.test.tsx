@@ -617,6 +617,27 @@ describe('★ C-c1 FBA 发货计划提交', () => {
     expect(screen.getByRole('button', { name: '补锁库存（1 张）' })).toBeEnabled();
   });
 
+  it('★ P0 只需补锁：弹窗里「确认提交」点得下去，发出 submit；标题与正文写补锁、列出要补锁的那张', async () => {
+    const calls = await mount(confirmedRoutes(FBA_CONFIRMED, fbaToLock as unknown as OwsSubmission,
+      { 'POST /v1/sheets/1/submit': () => ok(fbaRelocked) }));
+    await userEvent.click(screen.getByRole('button', { name: '补锁库存（1 张）' }));
+    const dlg = screen.getByRole('dialog');
+    expect(dlg).toHaveTextContent('补锁库存：1 张 FBA 发货计划');
+    expect(dlg).not.toHaveTextContent('海外仓备货单');
+    expect(within(dlg).getByTestId('ows-orders')).toHaveTextContent('SCM-FBA-1-1');
+    const go = within(dlg).getByRole('button', { name: '确认补锁' });
+    expect(go).toBeEnabled();
+    await userEvent.click(go);
+    expect(calls.filter((c) => c.method === 'POST' && c.path === '/v1/sheets/1/submit')).toHaveLength(1);
+    expect(await within(dlg).findByTestId('ows-results')).toHaveTextContent('已补锁库存');
+  });
+
+  it('FBA 提交弹窗标题写 FBA 发货计划，不写海外仓备货单', async () => {
+    await mount(confirmedRoutes(FBA_CONFIRMED, fbaSub as unknown as OwsSubmission));
+    await userEvent.click(screen.getByRole('button', { name: '提交领星（1 张）' }));
+    expect(screen.getByRole('dialog')).toHaveTextContent('提交领星：建 1 张 FBA 发货计划');
+  });
+
   it('已投送：排货单写出批次号、计划号、已锁库存；底部提示去领星做 STA', async () => {
     await mount(confirmedRoutes(FD, { ...(fbaSub as unknown as OwsSubmission), orders: [] }));
     await userEvent.click(screen.getByRole('tab', { name: /排货单与装箱/ }));
