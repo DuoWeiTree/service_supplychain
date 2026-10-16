@@ -32,6 +32,20 @@ describe('sheetNextStep（spec §4 · DL-D7 / D8）', () => {
       .toEqual({ text: '正在提交…', tone: 'neutral', more: 3, unmatched: false });
   });
 
+  it('★ DL-D12：补锁排在提交之前（两者并存）', () => {
+    expect(step({ state: '已确认', route: 'fba', to_lock: 1, to_submit: 2 }))
+      .toEqual({ text: '补锁库存（1 张）', tone: 'warn', more: 1, unmatched: false });
+  });
+
+  it('★ 行 1/2/3 的相对优先级：旧版混合表 > 待核实 > ⚠ 两轴不一致 > 补锁 > 提交', () => {
+    expect(step({ state: '已确认', attention: 1, drift: ['领星已撤销'], to_lock: 1, to_submit: 2 }))
+      .toEqual({ text: '提交结果未知，先核实再继续', tone: 'warn', more: 3, unmatched: false });
+    expect(step({ state: '已确认', drift: ['领星已撤销'], to_lock: 1 }))
+      .toEqual({ text: '⚠ 领星已撤销', tone: 'danger', more: 1, unmatched: false });
+    expect(step({ state: '已确认', route: null, attention: 1 }))
+      .toEqual({ text: '旧版混合表：只能取消', tone: 'neutral', more: 1, unmatched: false });
+  });
+
   it('★ 一条都不命中：写表状态原文、标 unmatched，不写「草稿」也不空着（Review Focus · DL-Q6）', () => {
     expect(step({ state: '已确认' })).toEqual({ text: '已确认', tone: 'neutral', more: 0, unmatched: true });
   });

@@ -17,7 +17,7 @@ export function sheetNextStep(s: DispatchPlanSheet): NextStep {
   if (s.attention > 0) hits.push({ text: '提交结果未知，先核实再继续', tone: 'warn' });
   const drift = s.drift[0];
   if (drift !== undefined) hits.push({ text: `⚠ ${drift}`, tone: 'danger' });
-  
+
   // DL-D12：补锁排在提交之前（详情页按钮两者并存时的顺序以此为准）
   if (s.route === 'fba' && s.to_lock > 0) hits.push({ text: `补锁库存（${s.to_lock} 张）`, tone: 'warn' });
   if (s.state === '已确认' && s.to_submit > 0) hits.push({ text: `提交领星（${s.to_submit} 张）`, tone: 'primary' });
@@ -82,7 +82,7 @@ export function filterPlans(plans: DispatchPlan[], q: string): { shown: Dispatch
   const shown: DispatchPlan[] = [];
   const autoOpen: number[] = [];
   for (const p of plans) {
-    const bySku = p.records.some((r) => r.sku.toLowerCase().includes(k));
+    const bySku = p.records.some((r) => skuHit(r.sku, k));
     if (bySku) autoOpen.push(p.plan_id);
     if (bySku || p.title.toLowerCase().includes(k)) shown.push(p);
   }
