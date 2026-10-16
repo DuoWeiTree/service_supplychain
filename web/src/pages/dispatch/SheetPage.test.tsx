@@ -267,14 +267,14 @@ describe('排货单与装箱 · 确认（问题 3）', () => {
     expect(items[0]).toHaveTextContent('G1');
     expect(items[0]).toHaveTextContent('1 行没填齐');
     expect(screen.getByTestId('gate-G5')).toHaveTextContent('？');
-    expect(screen.getByTestId('blocking')).toHaveTextContent('G1 未过');
+    expect(screen.getByTestId('blocking')).toHaveTextContent('未过：G1 FBA 行装箱填齐');
   });
 
   it('预检有未过 / 无法判定的闸（G5 除外）：确认按钮不可用，并点名是哪几道', async () => {
     const gates = preflight.gates.map((g) => (g.gate === 'G3' ? { ...g, ok: null } : g));
     await mount(routes({ 'GET /v1/sheets/1/preflight': () => ok({ ...preflight, ok: false, gates }) }));
     expect(screen.getByText('确认排货表')).toBeDisabled();
-    expect(screen.getByTestId('blocking')).toHaveTextContent('G3 未过');
+    expect(screen.getByTestId('blocking')).toHaveTextContent('未过：G3 本地可发够');
   });
 
   it('确认带上看到的水位', async () => {

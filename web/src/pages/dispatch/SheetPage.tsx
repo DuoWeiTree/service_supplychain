@@ -16,7 +16,7 @@ import {
   AUTOFILL_REASON, ROUTE_LABEL, addOptions, autofillMarks, autofillSummary, blockingGates, destKey, destLabel, destOptions, filterRecords, fillFor, fmtLocal, missingPacking, parseUnits,
   planTotals, stockFor, whName, type RecordFilter,
 } from './dispatchGridModel';
-import { TriGateList } from './TriGateList';
+import { GATE_LABEL, TriGateList } from './TriGateList';
 
 type Flash = { tone: 'ok' | 'warn' | 'danger' | 'info'; text: string; err?: ApiError };
 type View = 'arrange' | 'cons' | 'gates';
@@ -347,7 +347,7 @@ export function SheetPage() {
             <button type="button" className="btn btn--ghost" onClick={() => setReopenReason('')}>退回修改</button>
           )}
           {!frozen && blocking.length > 0 && (
-            <span className="sc-commit__hint" data-testid="blocking">{blocking.map((x) => x.gate).join('、')} 未过</span>
+            <span className="sc-commit__hint" data-testid="blocking">未过：{blocking.map((x) => `${x.gate} ${GATE_LABEL[x.gate] ?? ''}`.trim()).join('、')}</span>
           )}
           {!frozen && (
             <button type="button" className="btn btn--primary" disabled={confirming || blocking.length > 0 || live.length === 0}
