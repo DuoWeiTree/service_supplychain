@@ -691,3 +691,15 @@ describe('选第三方海外仓：当场提示要配对，并现查配对状态'
     expect(calls.filter((c) => c.path === '/v1/oversea-sku-match')).toEqual([]);
   });
 });
+
+describe('排货工作台 · 在途写调用（DL-D8）', () => {
+  it('有在途写调用：底部写「正在提交…」', async () => {
+    await mount(routes({ 'GET /v1/sheets/1': () => ok({ ...D, in_flight: 1 }) }));
+    expect(within(screen.getByTestId('dock')).getByTestId('in-flight')).toHaveTextContent('正在提交…');
+  });
+
+  it('没有在途写调用：不写', async () => {
+    await mount(routes());
+    expect(screen.queryByTestId('in-flight')).toBeNull();
+  });
+});

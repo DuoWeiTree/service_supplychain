@@ -371,6 +371,8 @@ export function SheetPage() {
           {detail.state === '已确认' && detail.route === 'oversea' && sub && sub.orders.length > 0 && toCreate.length === 0 && (
             <span className="pe-bar__state">海外仓备货单已全部提交领星</span>
           )}
+          {/* DL-D8/DL-Q7：只写状态字，不禁用提交按钮；后端在途时本就 409 submitting */}
+          {detail.in_flight > 0 && <span className="pe-bar__state" data-testid="in-flight">正在提交…</span>}
           {detail.state === '已确认' && <span className="pe-bar__state">已确认，整表冻结</span>}
           {detail.state === '已取消' && <span className="pe-bar__state">已取消</span>}
         </div>
