@@ -44,3 +44,11 @@ describe('样式表不写颜色字面量', () => {
     expect(text.match(/#[0-9a-fA-F]{3,8}\b|rgba?\(/g) ?? []).toEqual([]);
   });
 });
+
+describe('样式表的注释成对', () => {
+  // 少一个 /* 时，注释尾会把紧跟的那条规则吞成非法选择器，整条静默失效，不会报任何错
+  it.each(['tokens.css', 'shell.css', 'app.css', 'purchase.css', 'dispatch.css'])('%s', (file) => {
+    const text = readFileSync(resolve(webRoot(), 'src/styles', file), 'utf8');
+    expect((text.match(/\/\*/g) ?? []).length).toBe((text.match(/\*\//g) ?? []).length);
+  });
+});

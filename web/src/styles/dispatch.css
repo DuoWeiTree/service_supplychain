@@ -9,6 +9,7 @@
 .pm-kpi { display: grid; text-align: right; }
 .pm-kpi__l { font: 600 11px/14px var(--font-sans); letter-spacing: .04em; color: var(--text-3); }
 .pm-kpi__v { font-size: 15px; line-height: 20px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+/* ============================================================
    排货
    ============================================================ */
 .gl-list--one { grid-template-columns: 1fr; }
