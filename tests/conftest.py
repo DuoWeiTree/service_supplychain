@@ -71,7 +71,10 @@ def _pure_tests_stay_offline(request, monkeypatch):
 
 CONFIG_TOML = ROOT / "config.toml"
 
-TEST_SCHEMA = "scm_test"
+# ★ 并行跑测试（多个 worktree）时各用各的 schema：会话结束会 DROP 它，共用一个就互相毁库。
+#   只许 scm_test 前缀，生产 schema 进不来。
+TEST_SCHEMA = os.environ.get("SCM_TEST_SCHEMA", "scm_test")
+assert TEST_SCHEMA.startswith("scm_test"), f"SCM_TEST_SCHEMA 必须以 scm_test 开头，收到 {TEST_SCHEMA!r}"
 FORBIDDEN_SCHEMAS = {"scm", "inv"}
 
 #: 每个测试之间要清空的表。★ plan_line_transition 不在其中 ——
