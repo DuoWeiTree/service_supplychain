@@ -13,7 +13,7 @@ from api.ui.deps import (
     require_fresh_mirrors,
 )
 from api.ui.errors import ApiError
-from repo.purchase import seller_used
+from repo.purchase import purchase_plans, seller_used
 from shared.pg_client import pg_conn, timed
 
 log = logging.getLogger("scm.api")
@@ -22,6 +22,12 @@ router = APIRouter(dependencies=[Depends(require_fresh_mirrors)])
 
 TERMINAL = ("已完结", "已撤销")
 DERIVED_STATES = ("已确认", "已下单", "准备排货")
+ORDERABLE_STATES = ("已提交", "已确认")
+
+
+def orderable(state: str, remaining: int) -> bool:
+    """★ 「还能组单」只有这一处：/plan-lines?orderable=1 与 /purchase/plans 都用它，两处分叉 = 同一条记录列表里能勾、编辑器里没有。"""
+    return state in ORDERABLE_STATES and remaining > 0
 
 
 def _allowed_next(cur, state: str) -> list[str]:
@@ -114,10 +120,10 @@ def list_lines(request: Request, who: str | None = Depends(actor_optional)):
         lines = [r for r in lines if r["period"] == q["period"]]
     excluded["fully_confirmed"] = 0
     if q.get("orderable") == "1":
-        excluded["state"] += sum(1 for r in lines if r["state"] not in ("已提交", "已确认"))
-        lines = [r for r in lines if r["state"] in ("已提交", "已确认")]
-        excluded["fully_confirmed"] = sum(1 for r in lines if r["remaining"] <= 0)
-        lines = [r for r in lines if r["remaining"] > 0]
+        excluded["state"] += sum(1 for r in lines if r["state"] not in ORDERABLE_STATES)
+        lines = [r for r in lines if r["state"] in ORDERABLE_STATES]
+        excluded["fully_confirmed"] = sum(1 for r in lines if not orderable(r["state"], r["remaining"]))
+        lines = [r for r in lines if orderable(r["state"], r["remaining"])]
     # ★ category 恒为 0：给了这个参数在函数开头就已经 400 了，走不到这里。
 
     groups: dict[str, dict] = {}
@@ -130,6 +136,33 @@ def list_lines(request: Request, who: str | None = Depends(actor_optional)):
             slot["total_units"] += row["total_units"]
             slot["demand_at_submit"] += row["demand_at_submit"]
     return {"lines": lines, "groups": groups, "excluded": excluded}
+
+
+@router.get("/purchase/plans")
+def list_purchase_plans(request: Request, who: str | None = Depends(actor_optional)):
+    """UX-D1 / D2：待采购按销售计划分组。列出 = 有可组记录或挂着草稿；其余点名进 excluded，不悄悄消失。"""
+    declared(request)
+    with timed("purchase_plans", actor=who), pg_conn() as c, c.cursor() as cur:
+        raw = purchase_plans(cur)
+    plans, quiet = [], []
+    for pid in sorted(set(raw["records"]) | set(raw["drafts"]), reverse=True):
+        recs = raw["records"].get(pid, [])
+        for r in recs:
+            r["orderable"] = orderable(r["state"], r["remaining"])
+        ok = [r for r in recs if r["orderable"]]
+        p = {"plan_id": pid, "title": raw["titles"][pid], "rev": max((r["rev"] for r in recs), default=None),
+             "lines": len(recs), "total": sum(r["total"] for r in recs),
+             "confirmed": sum(r["confirmed"] for r in recs), "ordered": sum(r["ordered"] for r in recs),
+             "orderable_units": sum(r["remaining"] for r in ok), "orderable_lines": len(ok),
+             "drafts": raw["drafts"].get(pid, []), "records": recs}
+        if ok or p["drafts"]:
+            plans.append(p)
+        else:
+            quiet.append({"plan_id": pid, "title": p["title"], "rev": p["rev"]})
+    log.info("op=purchase_plans plans=%d records=%d drafts=%d unplanned_drafts=%d nothing_to_order=%d",
+             len(plans), sum(p["lines"] for p in plans), sum(len(p["drafts"]) for p in plans),
+             len(raw["unplanned_drafts"]), len(quiet))
+    return {"plans": plans, "unplanned_drafts": raw["unplanned_drafts"], "excluded": {"nothing_to_order": quiet}}
 
 
 def _transition(line_id: int, to_state: str, reason: str, who: str, src: str) -> tuple[int, str, str]:

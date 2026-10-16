@@ -17,7 +17,7 @@
       DCC1041294BW   …             已组满 180               0
       DCC1045014AI   …             ☐ 20 /200               20
 不来自计划的草稿：SCM-PO-9 接着编辑                                     （有才出）
-另有 2 个计划已全部组单下单，未列入（折叠，点名计划）                       （有才出）
+另有 2 个计划没有可组的记录、也没有草稿（折叠，点名计划）                （有才出）
 需要人工处理（同现状）
 ▸ 全部采购单（4 张，含作废 0）                                             默认收起
 ```
@@ -27,7 +27,7 @@
 | 计划抬头（主线） | 计划名 · rev · 「N 个货号 · M 条记录」· 需求 · **已组单（含草稿）** · **已下单** · ★ 还可组（最大字号） | UX-D1 / D2 |
 | 草稿 chip | 涉及这个计划的每张草稿采购单一个 chip：`SCM-PO-x 草稿 · 本计划 N 件 · 接着编辑`；有未处理项写「待处理」 | UX-D2 / D3 |
 | 哪些计划列出 | 有活记录（非已撤销 / 已完结）且（还可组 > 0 **或** 挂着草稿）的计划 | UX-D2：被草稿组满的计划不能消失 |
-| 不列出的 | 全部组单且全部下单的计划 → 「另有 N 个计划已全部组单下单」折叠点名；后端 `excluded.all_placed` | 「被丢掉的一侧必须看得见」 |
+| 不列出的 | 没有可组记录、也没挂草稿的计划（如全部已下单）→ 「另有 N 个计划没有可组的记录、也没有草稿」折叠点名；后端 `excluded.nothing_to_order` | 「被丢掉的一侧必须看得见」 |
 | 默认 | 全部收起；`?plan=<id>` 进来时展开那一组并滚到它（UX-D6） | DL-D5 |
 | 展开体 | 每计划一张货号 × 月小表，只列有记录的月。格子：可组 → 勾选框 + `还可组 /需求`；组满 →「已组满」；状态不可组 → 状态原文；没记录 →「—」 | DL-D2 / D6 / D10；空 ≠ 0 |
 | 勾选 | 格子勾 = 那一格里可组的记录；抬头一个勾 = 本计划全部可组记录；★ 不再有跨计划的全局全选；跨计划组单仍允许（PO-6 实测跨计划） | 评审 P2 |
@@ -65,7 +65,7 @@
             drafts: [{ po_id, custom_order_sn, units, open_attention }],
             records: [{ line_id, sku, sku_name, period, state, total, confirmed, ordered, remaining, orderable }] }],
   unplanned_drafts: [{ po_id, custom_order_sn, units, open_attention }],
-  excluded: { all_placed: [{ plan_id, title, rev }] } }
+  excluded: { nothing_to_order: [{ plan_id, title, rev }] } }
 ```
 
 - `orderable` 与 `/plan-lines?orderable=1` 同一判据（状态 ∈ 已提交 / 已确认 且 remaining > 0），代码共用一处。
@@ -75,6 +75,6 @@
 
 ## 5. 测试点
 
-- 后端：草稿组满的计划仍列出且挂草稿；全部下单的计划进 `excluded.all_placed`；`orderable` 与 `/plan-lines?orderable=1` 一致；跨计划草稿两边各一次、件数分开；无来源草稿进 `unplanned_drafts`；契约样本 `purchase-plans.json`。
+- 后端：草稿组满的计划仍列出且挂草稿；全部下单的计划进 `excluded.nothing_to_order`；`orderable` 与 `/plan-lines?orderable=1` 一致；跨计划草稿两边各一次、件数分开；无来源草稿进 `unplanned_drafts`；契约样本 `purchase-plans.json`。
 - 前端模型：透视（同格多记录相加、组满 / 不可组 / 无记录三态分开）；搜索自动展开；计划勾选只勾可组记录。
 - 页面：两个按钮只有一个 primary；没有全局全选；`?plan=` 展开该组；折叠标题带张数；dirty 时跳转被拦；新建保存后 replace；续编左栏只列来源计划；详情写名字与合计。
