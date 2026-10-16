@@ -2,7 +2,7 @@
 import type {
   DispatchRoute,
   ConsignmentView, DemandRow, DispatchCell, DispatchChannel, DispatchGate, DispatchMsku, DispatchWarehouse, PackingRow,
-  SheetDetail, SheetGrid,
+  SheetAutofill, SheetDetail, SheetGrid,
 } from '../../api/types';
 
 export interface GridRow {
@@ -169,4 +169,30 @@ export function fmtLocal(iso: string | null | undefined): string {
   if (Number.isNaN(d.getTime())) return iso;
   const p = (n: number) => String(n).padStart(2, '0');
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+// ── UX-D7 默认分配（dispatch_autofill）──────────────────────────
+
+export const AUTOFILL_REASON: Record<string, string> = {
+  satisfied: '已满足，不用排', seller_not_in_mirror: '店铺不在镜像里', no_fba: '店铺没有 FBA',
+  no_claimed_msku: '计划里这家店没认领 msku', fbm_msku: '自发货 msku（-FBM）不进 FBA 表',
+  msku_not_in_bridge: 'msku 不在镜像里', msku_not_this_sku: 'msku 对应的是别的货号',
+  expected_unknown: '期望未知，没法按比例分', no_eligible_store: '没有能分的店',
+  no_stock: '库存已被前面的月份用完 / 本地无货', stock_short: '库存不够，没排满',
+};
+
+/** ★ 「哪格是系统填的」只来自事件表（铁律 6）：arrangement_id 在 filled 里就标；现件数 ≠ 事件值 = 人改过 */
+export function autofillMarks(af: SheetAutofill | null, cells: DispatchCell[]): Map<number, { units: number; changed: boolean }> {
+  const out = new Map<number, { units: number; changed: boolean }>();
+  if (!af) return out;
+  const by = new Map(af.filled.map((f) => [f.arrangement_id, f.units]));
+  for (const c of cells) {
+    const u = by.get(c.arrangement_id);
+    if (u !== undefined) out.set(c.arrangement_id, { units: u, changed: u !== c.units });
+  }
+  return out;
+}
+
+export function autofillSummary(af: SheetAutofill): { cells: number; units: number; skipped: number } {
+  return { cells: af.filled.length, units: af.filled.reduce((a, f) => a + f.units, 0), skipped: af.skipped.length };
 }

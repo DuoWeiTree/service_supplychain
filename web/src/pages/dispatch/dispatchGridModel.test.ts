@@ -4,8 +4,9 @@ import grid from '../../testing/fixtures/contract/sheet-grid.json';
 import detail from '../../testing/fixtures/contract/sheet-detail.json';
 import gridOs from '../../testing/fixtures/contract/sheet-grid-oversea.json';
 import detailOs from '../../testing/fixtures/contract/sheet-detail-oversea.json';
+import autofillDone from '../../testing/fixtures/contract/sheet-detail-autofill.json';
 import {
-  addOptions, availableFor, fmtLocal, blockingGates, cellsFor, filterRecords, fillFor, missingPacking, planTotals, stockFor, destLabel, destOptions, demandRows, identityHolds, parseUnits, unplannedRows,
+  AUTOFILL_REASON, addOptions, autofillMarks, autofillSummary, availableFor, fmtLocal, blockingGates, cellsFor, filterRecords, fillFor, missingPacking, planTotals, stockFor, destLabel, destOptions, demandRows, identityHolds, parseUnits, unplannedRows,
 } from './dispatchGridModel';
 
 const g = grid as unknown as SheetGrid;
@@ -125,5 +126,27 @@ describe('dispatchGridModel', () => {
     expect(fmtLocal('2026-10-10')).toBe('2026-10-10');
     expect(fmtLocal(null)).toBe('—');
     expect(fmtLocal('垃圾')).toBe('垃圾');
+  });
+});
+
+describe('UX-D7 默认分配标记（来自 dispatch_autofill，不是格子上的列）', () => {
+  const af = (autofillDone as unknown as SheetDetail).autofill!;
+
+  it('格子 id 在事件 filled 里 → 标默认；件数与事件值不同 → 已改；不在里面 → 不标', () => {
+    const marks = autofillMarks(af, [
+      { ...g.cells[0]!, arrangement_id: 1, units: 75 }, { ...g.cells[0]!, arrangement_id: 2, units: 3 },
+      { ...g.cells[0]!, arrangement_id: 9, units: 5 }]);
+    expect(marks.get(1)).toEqual({ units: 75, changed: false });
+    expect(marks.get(2)).toEqual({ units: 10, changed: true });
+    expect(marks.has(9)).toBe(false);
+  });
+
+  it('没有事件 → 空标记', () => {
+    expect(autofillMarks(null, g.cells).size).toBe(0);
+  });
+
+  it('跳过原因写成人话；汇总格数 / 件数 / 跳过条数', () => {
+    expect(AUTOFILL_REASON['stock_short']).toBe('库存不够，没排满');
+    expect(autofillSummary(af)).toEqual({ cells: 2, units: 85, skipped: 1 });
   });
 });

@@ -22,6 +22,8 @@ import fbaToLock from '../../testing/fixtures/contract/fba-submission-to-lock.js
 import fbaRelocked from '../../testing/fixtures/contract/fba-submit-relocked.json';
 import fbaDetail from '../../testing/fixtures/contract/sheet-detail-fba-dispatched.json';
 import fbaCancel from '../../testing/fixtures/contract/sheet-cancel-fba.json';
+import autofillDone from '../../testing/fixtures/contract/sheet-detail-autofill.json';
+import autofillFailed from '../../testing/fixtures/contract/sheet-detail-autofill-failed.json';
 import { fail, ok, stubBackend, type Handler } from '../../testing/backendStub';
 
 beforeEach(() => { vi.resetModules(); });
@@ -710,6 +712,44 @@ describe('选第三方海外仓：当场提示要配对，并现查配对状态'
     await userEvent.selectOptions(within(add).getByRole('combobox', { name: /目的地/ }), 'oversea/2');
     expect(within(add).queryByTestId('tp-hint')).toBeNull();
     expect(calls.filter((c) => c.path === '/v1/oversea-sku-match')).toEqual([]);
+  });
+});
+
+describe('★ UX-D7 新建时的默认分配', () => {
+  const AF = (autofillDone as unknown as SheetDetail).autofill!;
+  /** 网格里那一格（arrangement_id 1）就是系统填的那格 */
+  const withAf = (units: number): SheetDetail => ({ ...D, autofill: { ...AF,
+    filled: [{ arrangement_id: 1, line_id: 1, seller_sku: 'MSKU-A', sid: '11072', from_wid: 1, units }] } });
+
+  it('系统填的格子标「默认」；页头写填了几格几件、跳过几条，规则与跳过清单在折叠区、默认收起', async () => {
+    await mount(routes({ 'GET /v1/sheets/1': () => ok(withAf(30)) }));
+    expect(screen.getByTestId('cell-1')).toHaveTextContent('默认');
+    expect(screen.getByTestId('cell-1')).not.toHaveTextContent('已改');
+    const note = screen.getByTestId('autofill');
+    expect(note).toHaveTextContent('新建时系统填了 1 格 30 件默认排货量，跳过 1 条');
+    const fold = within(note).getByTestId('autofill-fold');
+    expect(fold).not.toHaveAttribute('open');
+    expect(fold).toHaveTextContent('库存不够，没排满');
+    expect(fold).toHaveTextContent('按各店期望比例');
+  });
+
+  it('人改过件数：写「默认 N，已改」', async () => {
+    await mount(routes({ 'GET /v1/sheets/1': () => ok(withAf(75)) }));
+    expect(screen.getByTestId('cell-1')).toHaveTextContent('默认 75，已改');
+  });
+
+  it('★ 没做成：不折叠，点名原因与错误码 —— 不当成「系统没填」', async () => {
+    const F = (autofillFailed as unknown as SheetDetail).autofill!;
+    await mount(routes({ 'GET /v1/sheets/1': () => ok({ ...D, autofill: F }) }));
+    const note = screen.getByTestId('autofill');
+    expect(note).toHaveTextContent('默认分配没做成：本地库存读不到，没法按可安排封顶');
+    expect(note).toHaveTextContent('stock_unavailable');
+    expect(screen.getByTestId('cell-1')).not.toHaveTextContent('默认');
+  });
+
+  it('没有默认分配记录（海外仓表 / 迁移前的表）：什么都不写', async () => {
+    await mount(routes({ 'GET /v1/sheets/1': () => ok({ ...D, autofill: null }) }));
+    expect(screen.queryByTestId('autofill')).toBeNull();
   });
 });
 
