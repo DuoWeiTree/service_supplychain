@@ -50,11 +50,13 @@ def dispatch_plans(cur) -> list[dict]:
     # 每个产品（活记录）一行：/dispatch 要回答「哪个产品还没排完」，不只是计划的合计
     cur.execute(
         "SELECT l.plan_id, l.line_id, l.sku, k.name, l.period_start, l.state, d.total_units, d.staged_units,"
-        "       d.dispatched_units, d.pending_units"
-        "  FROM plan_line l JOIN v_plan_line_dispatch_qty d USING (line_id) LEFT JOIN sku_catalog k USING (sku)"
+        "       d.dispatched_units, d.pending_units, po.confirmed_units, po.ordered_units"
+        "  FROM plan_line l JOIN v_plan_line_dispatch_qty d USING (line_id)"
+        "  JOIN v_plan_line_po_qty po USING (line_id) LEFT JOIN sku_catalog k USING (sku)"
         f" WHERE l.plan_id = ANY(%s) AND {LIVE_LINE} ORDER BY l.plan_id, d.pending_units DESC, l.sku, l.line_id",
         ([p["plan_id"] for p in plans],))
-    rcols = ("line_id", "sku", "sku_name", "period", "state", "total", "staged", "dispatched", "pending")
+    rcols = ("line_id", "sku", "sku_name", "period", "state", "total", "staged", "dispatched", "pending",
+             "confirmed", "ordered")
     records: dict = {}
     for pid, *rest in cur.fetchall():
         r = dict(zip(rcols, rest))
@@ -613,3 +615,70 @@ def consignment_dest_sid(cur, consignment_id: int) -> str | None:
     cur.execute("SELECT dest_sid FROM consignment WHERE consignment_id = %s", (consignment_id,))
     r = cur.fetchone()
     return None if r is None else r[0]
+
+
+# ── /dispatch 排货表 chip 的「下一步」（spec 2026-10-15 §5 · DL-D7：只读本地事实）──────────
+
+def sheets_in_flight(cur, sheet_ids: list[int]) -> dict[int, int]:
+    """在途写调用数。判据同 020 erp_call_one_write_in_flight_per_consignment（side_effect <> 'read'）。"""
+    cur.execute("SELECT c.sheet_id, count(*)::int FROM erp_call e JOIN consignment c USING (consignment_id)"
+                " WHERE c.sheet_id = ANY(%s) AND e.outcome = 'in_flight' AND e.side_effect <> 'read'"
+                " GROUP BY c.sheet_id", (sheet_ids,))
+    return dict(cur.fetchall())
+
+
+def sheets_open_attention(cur, sheet_ids: list[int]) -> dict[int, int]:
+    cur.execute("SELECT c.sheet_id, count(*)::int FROM dispatch_attention a JOIN consignment c USING (consignment_id)"
+                " WHERE c.sheet_id = ANY(%s) AND NOT EXISTS"
+                "       (SELECT 1 FROM dispatch_attention_close x WHERE x.attention_id = a.attention_id)"
+                " GROUP BY c.sheet_id", (sheet_ids,))
+    return dict(cur.fetchall())
+
+
+def sheets_ext_stages(cur, sheet_ids: list[int]) -> list[tuple[int, str, str | None]]:
+    """未作废领星单的 (sheet_id, 我方进度, 领星当前进度)；两轴不一致由 rules.receipt.drift 判（同详情 _with_stage）。"""
+    cur.execute("SELECT c.sheet_id, c.our_stage, s.stage FROM ext_ref e JOIN consignment c USING (consignment_id)"
+                "  LEFT JOIN v_ext_stage s USING (ext_ref_id)"
+                " WHERE c.sheet_id = ANY(%s)"
+                "   AND NOT EXISTS (SELECT 1 FROM ext_ref_void v WHERE v.ext_ref_id = e.ext_ref_id)"
+                " ORDER BY c.sheet_id, e.ext_ref_id", (sheet_ids,))
+    return [tuple(r) for r in cur.fetchall()]
+
+
+def sheets_submit_progress(cur, sheet_ids: list[int]) -> dict[int, dict]:
+    """可提交的 排货单 × 来源仓（= 一张领星单，CB-D5；同 rules/ows · rules/fba_plan 的 orders 粒度与 SUBMITTABLE）：
+    共几张 · 还没领星单号几张 · FBA 已建未锁几张。★ channel 按表去向取，旧版混合表同详情走海外仓那条（submit_ows._plan）。
+    ★ DL-D11：to_submit 按 排货单 × 来源仓 计（与详情「提交领星（N 张）」同一个 N）。"""
+    cur.execute(
+        "WITH pairs AS ("
+        "  SELECT DISTINCT c.sheet_id, l.consignment_id, l.from_wid"
+        "    FROM consignment c JOIN sheet s USING (sheet_id) JOIN consignment_line l USING (consignment_id)"
+        "   WHERE c.sheet_id = ANY(%s) AND c.our_stage IN ('已确认','已投送')"
+        "     AND c.channel = coalesce(s.route, 'oversea')),"
+        " live AS ("
+        "  SELECT e.ext_ref_id, e.consignment_id, e.from_wid, e.kind, k.locked"
+        "    FROM ext_ref e LEFT JOIN v_fba_plan_lock k USING (ext_ref_id)"
+        "   WHERE NOT EXISTS (SELECT 1 FROM ext_ref_void v WHERE v.ext_ref_id = e.ext_ref_id))"
+        " SELECT p.sheet_id, count(*)::int, count(*) FILTER (WHERE x.ext_ref_id IS NULL)::int,"
+        "        count(*) FILTER (WHERE x.kind = 'fba_plan' AND x.locked IS NOT TRUE)::int"
+        "   FROM pairs p LEFT JOIN live x ON x.consignment_id = p.consignment_id AND x.from_wid = p.from_wid"
+        "  GROUP BY p.sheet_id", (sheet_ids,))
+    return {r[0]: {"orders": r[1], "to_submit": r[2], "to_lock": r[3]} for r in cur.fetchall()}
+
+
+def sheets_draft_gaps(cur, sheet_ids: list[int]) -> dict[int, dict]:
+    """活的排货单数 · FBA 缺装箱行数（同前端 missingPacking：没有装箱行或六项有空）· 海外仓没选物流方式的单数（G7）。"""
+    box_missing = " OR ".join(f"p.{k} IS NULL" for k in PACKING_COLS)
+    cur.execute(
+        "SELECT c.sheet_id, count(DISTINCT c.consignment_id)::int,"
+        "       count(*) FILTER (WHERE c.channel = 'fba' AND l.consignment_id IS NOT NULL"
+        f"                        AND (p.sheet_id IS NULL OR {box_missing}))::int,"
+        "       count(DISTINCT c.consignment_id) FILTER (WHERE c.channel = 'oversea' AND g.sheet_id IS NULL)::int"
+        "  FROM consignment c"
+        "  LEFT JOIN consignment_line l ON l.consignment_id = c.consignment_id"
+        "  LEFT JOIN consignment_packing p"
+        "    ON (p.sheet_id, p.seller_sku, p.sid, p.from_wid) = (c.sheet_id, l.seller_sku, l.sid, l.from_wid)"
+        "  LEFT JOIN consignment_logistics g ON (g.sheet_id, g.dest_wid) = (c.sheet_id, c.dest_wid)"
+        " WHERE c.sheet_id = ANY(%s) AND c.our_stage NOT IN ('已放弃','已取消')"
+        " GROUP BY c.sheet_id", (sheet_ids,))
+    return {r[0]: {"consignments": r[1], "packing_missing": r[2], "logistics_missing": r[3]} for r in cur.fetchall()}

@@ -5,8 +5,9 @@
   "plan_id": 1,
   "plan_title": "t",
   "route": "oversea",
-  "created_at": "2026-10-13T23:52:58.628263-04:00",
+  "created_at": "2026-10-15T20:58:21.474022-04:00",
   "watermark": 7,
+  "in_flight": 0,
   "consignments": [
     {
       "consignment_id": 1,
@@ -79,7 +80,7 @@
       }
     ],
     "stock_as_of": "2026-10-10",
-    "at": "2026-10-13T23:52:59.269470-04:00",
+    "at": "2026-10-15T20:58:22.124479-04:00",
     "actor": "alice"
   },
   "events": [
@@ -88,14 +89,14 @@
       "to_state": "草稿",
       "actor": "alice",
       "reason": null,
-      "at": "2026-10-13T23:52:58.628263-04:00"
+      "at": "2026-10-15T20:58:21.474022-04:00"
     },
     {
       "from_state": "草稿",
       "to_state": "已确认",
       "actor": "alice",
       "reason": null,
-      "at": "2026-10-13T23:52:59.269470-04:00"
+      "at": "2026-10-15T20:58:22.124479-04:00"
     }
   ],
   "logistics": [
@@ -116,13 +117,13 @@
       "ext_no": "OWS261012001",
       "found_by": "create",
       "actor": "alice",
-      "at": "2026-10-13T23:53:00.317010-04:00",
+      "at": "2026-10-15T20:58:23.127854-04:00",
       "voided_at": null,
       "void_reason": null,
       "order_sns": null,
       "locked": null,
       "erp_stage": "待收货",
-      "stage_observed_at": "2026-10-13T23:53:00.686191-04:00",
+      "stage_observed_at": "2026-10-15T20:58:23.460047-04:00",
       "drift": null
     },
     {
@@ -134,13 +135,13 @@
       "ext_no": "OWS261012002",
       "found_by": "create",
       "actor": "alice",
-      "at": "2026-10-13T23:53:00.440151-04:00",
+      "at": "2026-10-15T20:58:23.249552-04:00",
       "voided_at": null,
       "void_reason": null,
       "order_sns": null,
       "locked": null,
       "erp_stage": "待发货",
-      "stage_observed_at": "2026-10-13T23:53:00.686191-04:00",
+      "stage_observed_at": "2026-10-15T20:58:23.460047-04:00",
       "drift": null
     }
   ]

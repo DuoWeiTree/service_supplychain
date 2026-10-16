@@ -15,12 +15,30 @@
         {
           "sheet_id": 1,
           "state": "草稿",
-          "route": "fba"
+          "route": "fba",
+          "in_flight": 0,
+          "attention": 0,
+          "drift": [],
+          "to_lock": 0,
+          "to_submit": 0,
+          "consignments": 1,
+          "packing_missing": 0,
+          "logistics_missing": 0,
+          "all_submitted": false
         },
         {
           "sheet_id": 2,
           "state": "草稿",
-          "route": "oversea"
+          "route": "oversea",
+          "in_flight": 0,
+          "attention": 0,
+          "drift": [],
+          "to_lock": 0,
+          "to_submit": 0,
+          "consignments": 1,
+          "packing_missing": 0,
+          "logistics_missing": 0,
+          "all_submitted": false
         }
       ],
       "records": [
@@ -33,7 +51,9 @@
           "total": 100,
           "staged": 30,
           "dispatched": 0,
-          "pending": 70
+          "pending": 70,
+          "confirmed": 100,
+          "ordered": 100
         }
       ]
     }

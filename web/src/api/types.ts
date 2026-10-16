@@ -800,13 +800,19 @@ export type DispatchRoute = 'fba' | 'oversea';
 /** CA-D11 入口：未完成的销售计划（需求侧的量，PG 内可得） */
 export interface DispatchPlan {
   plan_id: PlanId; title: string; rev: number; lines: number; total: number; confirmed: number; ordered: number;
-  staged: number; dispatched: number; pending: number; sheets: { sheet_id: number; state: SheetState; route: DispatchRoute | null }[];
+  staged: number; dispatched: number; pending: number; sheets: DispatchPlanSheet[];
   /** 每个产品（活记录）一行，还差多的在前 */
   records: DispatchPlanRecord[];
 }
+/** chip「下一步」的本地事实（DL-D7：只读 PG，列表不现查领星） */
+export interface DispatchPlanSheet {
+  sheet_id: number; state: SheetState; route: DispatchRoute | null;
+  in_flight: number; attention: number; drift: string[]; to_lock: number; to_submit: number;
+  packing_missing: number; logistics_missing: number; consignments: number; all_submitted: boolean;
+}
 export interface DispatchPlanRecord {
   line_id: number; sku: string; sku_name: string | null; period: string; state: string;
-  total: number; staged: number; dispatched: number; pending: number;
+  total: number; confirmed: number; ordered: number; staged: number; dispatched: number; pending: number;
 }
 export interface DispatchPlans { plans: DispatchPlan[] }
 
@@ -839,6 +845,8 @@ export interface DispatchGate {
 }
 export interface SheetDetail {
   sheet_id: number; state: SheetState; created_by: string; created_at: string; watermark: number;
+  /** 在途写调用数（DL-D8） */
+  in_flight: number;
   plan_id: PlanId | null; plan_title: string | null; route: DispatchRoute | null;
   consignments: ConsignmentView[]; packing: PackingRow[];
   last_gate_run: { run_id: number; ok: boolean; gates: DispatchGate[]; stock_as_of: string | null; at: string; actor: string } | null;

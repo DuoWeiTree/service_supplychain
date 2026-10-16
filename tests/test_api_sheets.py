@@ -140,7 +140,8 @@ def test_dispatch_plans_lists_unfinished_plans_with_progress(client, seed, world
                               "staged", "dispatched", "pending")} == \
         {"plan_id": world["plan_id"], "title": "t", "rev": 1, "lines": 1, "total": 100, "confirmed": 100,
          "ordered": 100, "staged": 30, "dispatched": 0, "pending": 70}
-    assert p["sheets"] == [{"sheet_id": sid, "state": "草稿", "route": "fba"}]
+    assert [{k: s[k] for k in ("sheet_id", "state", "route")} for s in p["sheets"]] == \
+        [{"sheet_id": sid, "state": "草稿", "route": "fba"}]
 
 
 def test_dispatch_plans_list_each_product_and_cancel_gives_it_back(client, seed, world):
@@ -518,7 +519,8 @@ def test_create_needs_route_and_one_draft_per_plan_route(client, seed, world):
     assert client.get(f"/v1/sheets/{b}/grid").json()["sheet"]["route"] == "oversea"
     assert {(x["sheet_id"], x["route"]) for x in client.get("/v1/sheets").json()["sheets"]} == {(a, "fba"), (b, "oversea")}
     [p] = client.get("/v1/dispatch/plans").json()["plans"]
-    assert p["sheets"] == [{"sheet_id": a, "state": "草稿", "route": "fba"}, {"sheet_id": b, "state": "草稿", "route": "oversea"}]
+    assert [{k: s[k] for k in ("sheet_id", "state", "route")} for s in p["sheets"]] == \
+        [{"sheet_id": a, "state": "草稿", "route": "fba"}, {"sheet_id": b, "state": "草稿", "route": "oversea"}]
 
 
 def test_cell_outside_the_sheet_route_is_409(client, seed, world):

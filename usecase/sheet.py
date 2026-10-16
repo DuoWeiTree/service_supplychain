@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import json
 import logging
@@ -13,7 +14,7 @@ from dim.ch_source import ChDataUnusable, ChUnavailable, UnknownShape
 from repo import dispatch as repo
 from rules import dispatch as rules
 from rules import receipt as receipt_rules
-from shared.pg_client import pg_conn, timed
+from shared.pg_client import pg_conn, pg_error_fields, timed
 from usecase import live_read
 
 log = logging.getLogger("scm.usecase")
@@ -113,9 +114,56 @@ def create(body: dict, actor: str) -> int:
     return sid
 
 
+@contextlib.contextmanager
+def _part(name: str):
+    """spec §5：任一段读不到整体 500 并点名哪一段 —— 不把 chip 退回成「草稿」。"""
+    try:
+        with timed(f"dispatch_plans.{name}"):
+            yield
+    except Conflict:
+        raise
+    except Exception as e:                    # 点名后照样以 500 冒出去（不吞）
+        raise Conflict(500, "dispatch_plans_failed", f"排货列表读不到「{name}」这一段", part=name,
+                       err_type=type(e).__name__, **pg_error_fields(e)) from e
+
+
 def dispatch_plans() -> list[dict]:
+    t0 = time.perf_counter()
     with timed("dispatch_plans"), pg_conn() as c, c.cursor() as cur:
-        return repo.dispatch_plans(cur)
+        with _part("plans"):
+            plans = repo.dispatch_plans(cur)
+        ids = [s["sheet_id"] for p in plans for s in p["sheets"]]
+        with _part("in_flight"):
+            in_flight = repo.sheets_in_flight(cur, ids)
+        with _part("attention"):
+            attention = repo.sheets_open_attention(cur, ids)
+        with _part("drift"):
+            stages = repo.sheets_ext_stages(cur, ids)
+        with _part("submit_progress"):
+            progress = repo.sheets_submit_progress(cur, ids)
+        with _part("draft_gaps"):
+            gaps = repo.sheets_draft_gaps(cur, ids)
+    drift: dict[int, list[str]] = {}
+    for sid, ours, lx in stages:
+        d = receipt_rules.drift(ours, lx)
+        if d:
+            drift.setdefault(sid, []).append(d)
+    for p in plans:
+        p["sheets"] = [_sheet_facts(s, in_flight, attention, drift, progress, gaps) for s in p["sheets"]]
+    log.info("op=dispatch_plans plans=%d sheets=%d records=%d in_flight=%d attention=%d drift=%d elapsed_ms=%d",
+             len(plans), len(ids), sum(len(p["records"]) for p in plans), sum(in_flight.values()),
+             sum(attention.values()), sum(len(v) for v in drift.values()), (time.perf_counter() - t0) * 1000)
+    return plans
+
+
+def _sheet_facts(s: dict, in_flight: dict, attention: dict, drift: dict, progress: dict, gaps: dict) -> dict:
+    """查询按 sheet_ids 全量 GROUP BY，不在结果里 = 真没有（不是没算进来）。"""
+    sid = s["sheet_id"]
+    pg = progress.get(sid, {"orders": 0, "to_submit": 0, "to_lock": 0})
+    return {**s, "in_flight": in_flight.get(sid, 0), "attention": attention.get(sid, 0), "drift": drift.get(sid, []),
+            "to_lock": pg["to_lock"], "to_submit": pg["to_submit"],
+            **gaps.get(sid, {"consignments": 0, "packing_missing": 0, "logistics_missing": 0}),
+            "all_submitted": pg["orders"] > 0 and pg["to_submit"] == 0 and pg["to_lock"] == 0}
 
 
 def list_sheets(state: str | None) -> list[dict]:
@@ -141,12 +189,14 @@ def load(sheet_id: int) -> dict:
         refs = repo.ext_refs(cur, sheet_id)
         stages = repo.ext_stages(cur, sheet_id)
         events = repo.sheet_events(cur, sheet_id)
+        in_flight = repo.sheets_in_flight(cur, [sheet_id]).get(sheet_id, 0)
     fba_lines = {(ln["seller_sku"], ln["sid"], ln["from_wid"]) for c_ in cons if c_["channel"] == "fba"
                  for ln in c_["lines"]}
     return {
         "sheet_id": s["sheet_id"], "state": s["state"], "created_by": s["created_by"],
         "plan_id": s["plan_id"], "plan_title": s["plan_title"], "route": s["route"],
         "created_at": _iso(s["created_at"]), "watermark": s["ledger_now"],
+        "in_flight": in_flight,
         "consignments": cons,
         "packing": [{"seller_sku": k[0], "sid": k[1], "from_wid": k[2], **v, "orphan": k not in fba_lines}
                     for k, v in sorted(pack.items())],
