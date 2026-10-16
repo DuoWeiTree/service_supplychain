@@ -1,5 +1,5 @@
 import type {
-  CancelRevResult, CatalogQuery, CatalogResult, ClaimResult, ClaimTarget, CreatePlanInput,
+  CancelRevResult, CatalogQuery, CatalogResult, RecentCatalogResult, ClaimResult, ClaimTarget, CreatePlanInput,
   DashboardPlans, DemandCell, GridResponse, LeadTime, LeadTimeInput, LeadTimeResult,
   ListPlansQuery, Period, PlanDiff, PlanId,
   PlanList, PlanSummary, PurchaseCell, RecomputeResult, ReleaseResult, RemoveSkuResult, RevList, Seller, Sid,
@@ -61,6 +61,8 @@ export interface SupplyChainApi {
   putPurchase(planId: PlanId, sku: string, period: Period, units: number | null): Promise<PurchaseCell>;
 
   searchCatalog(q: CatalogQuery): Promise<CatalogResult>;
+  /** 以前计划里用过的货号（任一计划认领过，含已释放），最近认领在前 */
+  recentCatalog(q: { limit?: number }): Promise<RecentCatalogResult>;
   /** ★ 一次一个 msku（后端只有单条端点）；页面循环并逐条收集 409 */
   claim(planId: PlanId, target: ClaimTarget): Promise<ClaimResult>;
   releaseClaim(planId: PlanId, sellerSku: string, sid: Sid): Promise<ReleaseResult>;

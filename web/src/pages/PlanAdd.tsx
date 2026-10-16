@@ -5,7 +5,8 @@ import { pushToast } from '../shell/toastStore';
 import { useInFlight } from '../shell/useInFlight';
 import { ErrorDetail } from '../components/ErrorDetail';
 import { api, ApiError } from '../api';
-import type { CatalogMsku, CatalogResult, ClaimHolder } from '../api/types';
+import type { CatalogItem, CatalogMsku, ClaimHolder } from '../api/types';
+import { SkuPicker } from './SkuPicker';
 
 const ADD_KEY = 'add';
 
@@ -19,12 +20,10 @@ interface Outcome {
   holder: ClaimHolder | null;
 }
 
-const EMPTY: CatalogResult = { need_query: true, truncated: false, limit: 0, items: [] };
-
 export function PlanAdd() {
   const planId = Number(useParams().planId);
-  const [q, setQ] = useState('');
-  const [result, setResult] = useState<CatalogResult>(EMPTY);
+  // 从下拉选进来的货号，最近选的在最上面
+  const [chosen, setChosen] = useState<CatalogItem[]>([]);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [report, setReport] = useState<Outcome[] | null>(null);
   const [err, setErr] = useState<ApiError | null>(null);
@@ -46,9 +45,31 @@ export function PlanAdd() {
     return claimedBy && typeof claimedBy === 'object' ? (claimedBy as ClaimHolder) : null;
   }
 
-  async function search() {
-    try { setResult(await api.searchCatalog(q.trim() === '' ? {} : { q: q.trim() })); setErr(null); }
-    catch (e) { setErr(e as ApiError); }
+  function choose(item: CatalogItem) {
+    if (chosen.some((c) => c.sku === item.sku)) return;
+    setChosen((cs) => [item, ...cs]);
+    // 选货号就是要它：可认领的 msku 默认全勾，不要的人自己取消
+    setPicked((s) => { const n = new Set(s); item.mskus.filter((m) => m.selectable).forEach((m) => n.add(key(m))); return n; });
+  }
+
+  function unchoose(sku: string) {
+    const item = chosen.find((c) => c.sku === sku);
+    setChosen((cs) => cs.filter((c) => c.sku !== sku));
+    if (item) setPicked((s) => { const n = new Set(s); item.mskus.forEach((m) => n.delete(key(m))); return n; });
+  }
+
+  /** 认领之后占用变了：已选的货号逐个按货号重取一遍 */
+  async function refreshChosen(skus: string[]) {
+    try {
+      const fresh = await Promise.all(skus.map(async (sku) => {
+        const r = await api.searchCatalog({ q: sku });
+        const hit = r.items.find((x) => x.sku === sku);
+        if (!hit) console.warn('PlanAdd: 重取货号 %s 没有命中，保留认领前的占用', sku);
+        return hit;
+      }));
+      setChosen((cs) => cs.map((c) => fresh.find((f) => f?.sku === c.sku) ?? c));
+      setErr(null);
+    } catch (e) { setErr(e as ApiError); }
   }
 
   function toggle(m: CatalogMsku) {
@@ -58,7 +79,7 @@ export function PlanAdd() {
   async function add() {
     // ★ 入口早退：与 PlanGrid.tsx 的 pending 早退同一形状，防双击并发发出重复认领请求
     await run(ADD_KEY, async () => {
-      const targets = result.items.flatMap((s) => s.mskus).filter((m) => picked.has(key(m)));
+      const targets = chosen.flatMap((s) => s.mskus).filter((m) => picked.has(key(m)));
       const out: Outcome[] = [];
       const freshNoHistory: string[] = [];
       for (const m of targets) {
@@ -79,7 +100,7 @@ export function PlanAdd() {
       if (freshNoHistory.length > 0) {
         setNoHistory((s) => { const n = new Set(s); freshNoHistory.forEach((k) => n.add(k)); return n; });
       }
-      await search();
+      await refreshChosen(chosen.map((c) => c.sku));
       const bad = out.filter((o) => !o.ok).length;
       const ok = out.length - bad;
       // ★ 页面文案不用西式中点拼句 —— 分句用中文标点，占用方另起结构化片段
@@ -90,7 +111,7 @@ export function PlanAdd() {
     });
   }
 
-  const unbuildable = result.items.flatMap((s) => s.unbuildable_sellers.map((u) => ({ ...u, sku: s.sku })));
+  const unbuildable = chosen.flatMap((s) => s.unbuildable_sellers.map((u) => ({ ...u, sku: s.sku })));
 
   return (
     <AppShell crumb="添加货品">
@@ -103,25 +124,10 @@ export function PlanAdd() {
         </div>
       </div>
 
-      <form className="bar" onSubmit={(e) => { e.preventDefault(); void search(); }}>
-        <label className="bar__grp"><span className="bar__lbl">搜货号</span>
-          <input className="inp inp--text" aria-label="搜货号" value={q} onChange={(e) => setQ(e.target.value)} /></label>
-        <button type="submit" className="btn">搜索</button>
-      </form>
+      <SkuPicker chosen={new Set(chosen.map((c) => c.sku))} onPick={choose} />
 
-      {/* ★ 两种空屏，两套字 —— 合成一种就分不清「还没搜」和「搜了没有」 */}
-      {result.need_query && (
-        <div className="empty" data-testid="need-query"><p className="empty__title">输入货号后搜索</p></div>
-      )}
-      {/* ★ 判空只用 items.length：matched 是可选字段，缺了就会把「搜了没有」显示成「还没搜」 */}
-      {!result.need_query && result.items.length === 0 && (
-        <div className="empty" data-testid="no-hit"><p className="empty__title">没有命中的货号</p></div>
-      )}
-
-      {result.truncated && (
-        <div className="flash flash--bad">
-          命中{result.matched === undefined ? '' : ` ${result.matched} 条`}，只列前 {result.limit} 条，缩小搜索条件
-        </div>
+      {chosen.length === 0 && (
+        <div className="empty" data-testid="need-query"><p className="empty__title">还没选货号</p></div>
       )}
 
       {unbuildable.length > 0 && (
@@ -137,8 +143,8 @@ export function PlanAdd() {
         </div>
       )}
 
-      {result.items.map((item) => (
-        <div className="sec" key={item.sku}>
+      {chosen.map((item) => (
+        <div className="sec" key={item.sku} data-testid={`chosen-${item.sku}`}>
           <div className="sec__title">
             <span>{item.sku}</span>
             <span className="muted">{item.name}</span>
@@ -148,6 +154,8 @@ export function PlanAdd() {
                 {item.claimed_by_plans.map((p) => p.title).join('、')}
               </span>
             )}
+            <button type="button" className="btn btn--ghost btn--sm sec__act" disabled={adding}
+              onClick={() => unchoose(item.sku)}>不选这个货号</button>
           </div>
           <div className="table-scroll">
             <table className="table table--dense">

@@ -349,6 +349,17 @@ export interface CatalogResult {
   matched?: number;
 }
 
+/** 以前计划里用过的货号（S-25b）：形状同搜索的 item，多一个最近一次认领时间 */
+export interface RecentCatalogItem extends CatalogItem { last_claimed_at: string }
+
+export interface RecentCatalogResult {
+  items: RecentCatalogItem[];
+  limit: number;
+  truncated: boolean;
+  /** ★ msku 已不在 msku_bridge 里的认领记录条数 —— 对不上货号，列不出来，但要点名 */
+  unmapped_claims: number;
+}
+
 export interface ClaimTarget { seller_sku: string; sid: Sid }
 /** ★ 没有历史 ≠ 预估 0：格子照建，`system_units` 留 null 并点名，
  *  不能让「拿不到历史」悄悄长得跟「预估出来是 0」一样。

@@ -99,10 +99,11 @@ describe('文案纪律', () => {
 
   it('★ 添加货品：按钮说「添加」，报告也说「已添加」', async () => {
     await app('/plans/1/add');
-    await userEvent.type(screen.getByLabelText('搜货号'), 'MSKU');
-    await userEvent.click(screen.getByRole('button', { name: '搜索' }));
-    const boxes = await screen.findAllByRole('checkbox');
-    await userEvent.click(boxes.find((b) => !(b as HTMLInputElement).disabled)!);
+    await userEvent.type(screen.getByRole('combobox', { name: '搜货号' }), 'MSKU');
+    const list = await screen.findByRole('listbox', { name: '命中的货号' });
+    // 选中货号即默认勾上它可认领的 msku
+    await userEvent.click(within(list).getAllByRole('option')[0]!);
+    await screen.findAllByRole('checkbox', { checked: true });
     await userEvent.click(screen.getByRole('button', { name: '添加' }));
     const report = await screen.findByTestId('claim-report');
     expect(report).toHaveTextContent('已添加');

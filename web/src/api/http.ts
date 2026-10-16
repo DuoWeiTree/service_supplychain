@@ -1,7 +1,7 @@
 import { ApiError, type SupplyChainApi } from './client';
 import { getActor } from '../shell/actorStore';
 import type {
-  CatalogResult, LeadTime, LeadTimeResult, PlanList, PlanSummary, PutDemandResult,
+  CatalogResult, RecentCatalogResult, LeadTime, LeadTimeResult, PlanList, PlanSummary, PutDemandResult,
   PutPurchaseResult, Seller,
 } from './types';
 
@@ -125,6 +125,7 @@ export function createHttpApi(opt: HttpOptions): SupplyChainApi {
     putLeadTime: (input) => call<LeadTimeResult>('PUT', '/lead-time', input),
 
     searchCatalog: (q) => call<CatalogResult>('GET', `/catalog/skus${qs({ q: q.q, limit: q.limit })}`),
+    recentCatalog: (q) => call<RecentCatalogResult>('GET', `/catalog/skus/recent${qs({ limit: q.limit })}`),
     claim: (planId, target) => call('POST', `/plans/${planId}/claims`, target),
     // ★ M15：sid 也要转义 —— putDemand 那一行补上了，这一行当时漏了，
     //   而「下一个人照抄旁边那段」正是这种漏活下去的方式

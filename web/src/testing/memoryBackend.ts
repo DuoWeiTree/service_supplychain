@@ -26,6 +26,8 @@ export function createMemoryBackend(): SupplyChainApi {
   const list = { plans: clone(plansFixture.plans) as PlanSummary[] };
   const grids = new Map<number, GridResponse>([[1, clone(gridFixture) as GridResponse]]);
   const catalog = clone(catalogFixture) as CatalogResult;
+  // 认领流水（含后来释放的）：「以前计划里用过的」按它排，与后端读 msku_claim 全历史同口径
+  const claimLog: { sku: string; at: number }[] = [];
   const revs = new Map<number, RevList>([[2, clone(revsFixture) as RevList]]);
   const sellers = (clone(sellersFixture) as { sellers: Seller[] }).sellers;
   const inFlight = new Map<number, number | null>([[1, null], [2, 2], [3, null], [4, null]]);
@@ -355,6 +357,18 @@ export function createMemoryBackend(): SupplyChainApi {
       return { need_query: false, truncated: items.length > limit, limit, items: clone(items), matched: items.length };
     },
 
+    async recentCatalog(q) {
+      const limit = q.limit ?? 50;
+      const last = new Map<string, number>();
+      for (const e of claimLog) last.set(e.sku, Math.max(last.get(e.sku) ?? 0, e.at));
+      const ranked = [...last.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+      const items = ranked.slice(0, limit).flatMap(([sku, at]) => {
+        const item = catalog.items.find((x) => x.sku === sku);
+        return item ? [{ ...clone(item), last_claimed_at: new Date(at).toISOString() }] : [];
+      });
+      return { items, limit, truncated: ranked.length > limit, unmapped_claims: 0 };
+    },
+
     async claim(planId, target) {
       writable(planId);
       const item = catalog.items.find((s) => s.mskus.some((m) => m.seller_sku === target.seller_sku && m.sid === target.sid));
@@ -376,6 +390,7 @@ export function createMemoryBackend(): SupplyChainApi {
       }
       msku.selectable = false;
       msku.claimed_by = { plan_id: planId, title: plan(planId).title, actor: 'ops.zhang' };
+      claimLog.push({ sku: item.sku, at: Date.now() + claimLog.length });
       // ★ team-lead 09-22 裁定：种出的格子数与「没有销售历史」都要点名（api/ui/plans.py:163-186）。
       //   替身没有真的重新播种格子，用 plan 的 months 代表种出的月份数（与真实播种的行数一致）；
       //   no_history 从这张计划已有的 grid 里现查 —— 这个 msku 名下各月 system_units

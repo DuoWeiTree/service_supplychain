@@ -74,6 +74,73 @@ def test_truncation_is_reported_with_the_limit(client, seed):
     assert body["truncated"] is True and body["limit"] == 1 and len(body["items"]) == 1
 
 
+def _claim(client, seed, plan, msku):
+    r = client.post(f"/v1/plans/{plan}/claims", json={"seller_sku": msku[0], "sid": msku[1]},
+                    headers=H(seed.actor))
+    assert r.status_code == 200, r.text
+
+
+def _age(msku, days):
+    """把认领时间往前拨 —— 排序靠 claimed_at，同一秒内连发两次会撞成同一时刻。"""
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("UPDATE msku_claim SET claimed_at = now() - make_interval(days => %s)"
+                    " WHERE seller_sku = %s AND sid = %s", (days, *msku))
+
+
+def test_recent_lists_skus_any_plan_claimed_newest_first(client, seed):
+    """常用 = 历史上任一计划认领过的货号，按最近一次认领倒序；货号只出一次。"""
+    p1, p2 = mk(client, seed), mk(client, seed, title="另一张")
+    _claim(client, seed, p1, seed.msku_a)
+    _claim(client, seed, p2, seed.msku_c)
+    _claim(client, seed, p1, seed.msku_d)
+    _age(seed.msku_a, 3)
+    _age(seed.msku_c, 1)          # sku_a 最近一次 = 1 天前
+    _age(seed.msku_d, 2)          # sku_b = 2 天前
+    body = client.get("/v1/catalog/skus/recent", headers=H(seed.actor)).json()
+    assert [x["sku"] for x in body["items"]] == [seed.sku_a, seed.sku_b]
+    assert body["items"][0]["last_claimed_at"] > body["items"][1]["last_claimed_at"]
+    # ★ 与搜索同一形状：每个货号带全部 msku 与占用，前端共用一套渲染
+    item = body["items"][0]
+    assert {m["seller_sku"] for m in item["mskus"]} == {"MSKU-A", "MSKU-B", "MSKU-C"}
+    assert item["claimed_by_plans"] and body["unmapped_claims"] == 0
+
+
+def test_recent_keeps_released_claims(client, seed):
+    """释放不删行（002_plan.sql:27）—— 用过就是用过，释放了也算。"""
+    p = mk(client, seed)
+    _claim(client, seed, p, seed.msku_e)
+    r = client.delete(f"/v1/plans/{p}/claims/{seed.msku_e[0]}/{seed.msku_e[1]}",
+                      headers=H(seed.actor))
+    assert r.status_code == 200, r.text
+    body = client.get("/v1/catalog/skus/recent", headers=H(seed.actor)).json()
+    assert [x["sku"] for x in body["items"]] == [seed.sku_e]
+    assert body["items"][0]["mskus"][0]["selectable"] is True
+
+
+def test_recent_limit_and_empty(client, seed):
+    empty = client.get("/v1/catalog/skus/recent", headers=H(seed.actor)).json()
+    assert empty == {"items": [], "limit": 50, "truncated": False, "unmapped_claims": 0}
+    p = mk(client, seed)
+    _claim(client, seed, p, seed.msku_a)
+    _claim(client, seed, p, seed.msku_d)
+    body = client.get("/v1/catalog/skus/recent", params={"limit": 1},
+                      headers=H(seed.actor)).json()
+    assert len(body["items"]) == 1 and body["truncated"] is True and body["limit"] == 1
+    bad = client.get("/v1/catalog/skus/recent", params={"limit": "x"}, headers=H(seed.actor))
+    assert bad.status_code == 400 and bad.json()["error"] == "bad_limit"
+
+
+def test_recent_counts_claims_whose_msku_left_the_bridge(client, seed):
+    """★ join 丢掉的那一侧要点数：msku 从镜像里没了，认领记录就对不上货号。"""
+    p = mk(client, seed)
+    # 有格子引用的 bridge 行删不掉（plan_demand_cell_bridge_fk），直接造一条对不上的认领
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("INSERT INTO msku_claim (plan_id, seller_sku, sid, claimed_by)"
+                    " VALUES (%s, 'MSKU-GONE', '11072', %s)", (p, seed.actor))
+    body = client.get("/v1/catalog/skus/recent", headers=H(seed.actor)).json()
+    assert body["items"] == [] and body["unmapped_claims"] == 1
+
+
 def test_sellers_dimension_carries_market_and_has_fba(client, seed):
     rows = client.get("/v1/sellers", headers=H(seed.actor)).json()["sellers"]
     wm = next(r for r in rows if r["seller_id"] == seed.seller_nofba)

@@ -58,11 +58,11 @@ describe('判据① · 建 → 加货品 → 填两种量 → 提交 → 铸出 
 
   it('② 加货品：认领 msku 后可返回网格', async () => {
     await app('/plans/1/add');
-    await userEvent.type(screen.getByLabelText('搜货号'), 'MSKU');
-    await userEvent.click(screen.getByRole('button', { name: '搜索' }));
-    const boxes = await screen.findAllByRole('checkbox');
-    const free = boxes.find((b) => !(b as HTMLInputElement).disabled)!;
-    await userEvent.click(free);
+    await userEvent.type(screen.getByRole('combobox', { name: '搜货号' }), 'MSKU');
+    const list = await screen.findByRole('listbox', { name: '命中的货号' });
+    // 选中货号即默认勾上它可认领的 msku
+    await userEvent.click(within(list).getAllByRole('option')[0]!);
+    await screen.findAllByRole('checkbox', { checked: true });
     await userEvent.click(screen.getByRole('button', { name: '添加' }));
     // ★ 实现里的动词是「已添加」（PlanAdd.tsx：按钮「添加」→ toast/报告都叫「已添加」），
     //   不是 brief 一稿写的「成功」——查实现，不查旧文档（team-lead 裁定）
