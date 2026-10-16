@@ -16,7 +16,7 @@ from api.ui.deps import (
     require_fresh_mirrors,
 )
 from api.ui.errors import ApiError
-from rules.digest import content_digest
+from rules.digest import content_digest, input_snapshot
 from rules.submit import (
     DemandCell,
     PrevLine,
@@ -165,8 +165,10 @@ def submit(plan_id: int, request: Request, who: str = Depends(actor)):
 
         # ★ 先以「不在流转」立起来：保留的记录还挂在旧版上，旧版此刻仍占着部分唯一索引；
         #   带走它们之后旧版由 close_rev_if_settled 让位，最后 open_rev_if_live 判新版。
-        cur.execute("INSERT INTO plan_rev (plan_id, rev, content_digest, submitted_by, in_flight)"
-                    " VALUES (%s, %s, %s, %s, false)", (plan_id, rev, digest, who))
+        cur.execute("INSERT INTO plan_rev (plan_id, rev, content_digest, submitted_by, in_flight,"
+                    " input_snapshot) VALUES (%s, %s, %s, %s, false, %s::jsonb)",
+                    (plan_id, rev, digest, who,
+                     json.dumps(input_snapshot(purchase, demand), ensure_ascii=False)))
         for p in rec.kept:
             cur.execute("INSERT INTO plan_line_carry (line_id, plan_id, from_rev, to_rev, actor, src)"
                         " SELECT line_id, plan_id, rev, %s, %s, %s FROM plan_line WHERE line_id = %s",
