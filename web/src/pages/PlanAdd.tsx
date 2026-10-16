@@ -58,6 +58,17 @@ export function PlanAdd() {
     if (item) setPicked((s) => { const n = new Set(s); item.mskus.forEach((m) => n.delete(key(m))); return n; });
   }
 
+  // 被占用的勾不上，不参与反选
+  const selectable = chosen.flatMap((c) => c.mskus).filter((m) => m.selectable);
+
+  function invert() {
+    setPicked((s) => {
+      const n = new Set(s);
+      selectable.forEach((m) => { const k = key(m); n.has(k) ? n.delete(k) : n.add(k); });
+      return n;
+    });
+  }
+
   /** 认领之后占用变了：已选的货号逐个按货号重取一遍 */
   async function refreshChosen(skus: string[]) {
     try {
@@ -119,6 +130,7 @@ export function PlanAdd() {
         <div className="head__main"><h1>添加货品</h1></div>
         <div className="head__act">
           <span className="muted" data-testid="picked">已选 {picked.size}</span>
+          <button type="button" className="btn btn--ghost" disabled={selectable.length === 0 || adding} onClick={invert}>反选</button>
           <button type="button" className="btn btn--primary" disabled={picked.size === 0 || adding} onClick={() => void add()}>添加</button>
           <Link className="btn btn--ghost" to={`/plans/${planId}`}>返回网格</Link>
         </div>

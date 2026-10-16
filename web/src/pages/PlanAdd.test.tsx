@@ -390,6 +390,25 @@ describe('输入提示', () => {
     expect(await screen.findByRole('option', { name: /SKU-1/ })).toHaveTextContent('已选');
   });
 
+  it('反选：跨所有已选货号翻转，被占用的不参与', async () => {
+    await renderAdd();
+    await search('SKU', 'SKU-1');
+    await search('SKU', 'SKU-2');
+    await userEvent.click(within(screen.getByTestId('msku-MSKU-A-11072')).getByRole('checkbox'));
+    expect(screen.getByTestId('picked')).toHaveTextContent('已选 2');   // W、B
+    await userEvent.click(screen.getByRole('button', { name: '反选' }));
+    expect(screen.getByTestId('picked')).toHaveTextContent('已选 1');   // 只剩 A
+    expect(within(screen.getByTestId('msku-MSKU-A-11072')).getByRole('checkbox')).toBeChecked();
+    expect(within(screen.getByTestId('msku-MSKU-W-90001')).getByRole('checkbox')).not.toBeChecked();
+    expect(within(screen.getByTestId('msku-MSKU-B-11072')).getByRole('checkbox')).not.toBeChecked();
+    expect(within(screen.getByTestId('msku-MSKU-C-11094')).getByRole('checkbox')).not.toBeChecked();
+  });
+
+  it('还没选货号时反选不可点', async () => {
+    await renderAdd();
+    expect(screen.getByRole('button', { name: '反选' })).toBeDisabled();
+  });
+
   it('移出已选货号：它的勾选一起去掉', async () => {
     await renderAdd();
     await search('SKU', 'SKU-1');
