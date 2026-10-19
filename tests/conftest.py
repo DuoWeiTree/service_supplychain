@@ -82,7 +82,7 @@ FORBIDDEN_SCHEMAS = {"scm", "inv"}
 DATA_TABLES = (
     "dispatch_attention_close", "dispatch_attention", "ext_ref_void", "ext_ref", "consignment_logistics",
     "logistics_channel", "stock_obs", "stock_read",
-    "sheet_gate_run", "consignment_packing", "dispatch_source_map", "consignment_line",
+    "dispatch_autofill", "sheet_gate_run", "consignment_packing", "dispatch_source_map", "consignment_line",
     "consignment_event", "consignment", "dispatch_arrangement", "sheet_event", "sheet",
     "po_item_obs", "po_snapshot", "po_attention", "erp_call",
     "po_event", "po_source_map", "po_line", "po", "supplier",

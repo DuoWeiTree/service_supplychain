@@ -19,9 +19,9 @@ def _call(fn, *a):
 
 
 @router.post("/sheets", status_code=201)
-def create(body: dict, request: Request, who: str = Depends(actor)):
+def create(body: dict, request: Request, who: str = Depends(actor), make_stock=Depends(stock_dep)):
     declared(request)
-    return {"sheet_id": _call(sheet.create, body or {}, who)}
+    return _call(sheet.create, body or {}, who, make_stock)
 
 
 @router.get("/dispatch/plans")

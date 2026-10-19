@@ -119,7 +119,8 @@ def gates(*, consignments: list[dict], packing: dict, stock: dict | None, stock_
               "人：刷新后核对别的排货表的安排再确认"),
         _gate("G5", None, "unlinked_shipments_pending", "待裁定 · 未检查（CA-Q9）", "—"),
         _gate("G6", bool(consignments) and not g6, "invalid_destination",
-              g6 if consignments else "没有任何排货单", "人：回网格改目的地"),
+              g6 if consignments else "还没排任何格子",
+              "人：回网格改目的地" if consignments else "人：在「安排」里至少排一格"),
         _gate("G7", not g7, "logistics_missing", g7, "人：在海外仓排货单上选物流方式"),
     ]
 

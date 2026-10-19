@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import type { DispatchGate } from '../../api/types';
 
-const LABEL: Record<DispatchGate['gate'], string> = {
+export const GATE_LABEL: Record<DispatchGate['gate'], string> = {
   G1: 'FBA 行装箱填齐', G2: 'FBA 排货单有店铺', G3: '本地可发够',
   G4: '打开后别的排货表没改过同一货号 × 来源仓', G5: '疑似未关联的发货', G6: '目的地合法', G7: '海外仓排货单选了物流方式',
 };
@@ -53,7 +53,7 @@ export function TriGateList({ gates, source, actions }: {
               <span className="gl-mark" aria-label={g.ok === true ? '通过' : g.ok === false ? '未过' : '无法判定'}>
                 {g.ok === true ? '✓' : g.ok === false ? '✕' : '？'}
               </span>
-              <span className="gl-label"><b className="gl-g">{g.gate}</b> {LABEL[g.gate]}</span>
+              <span className="gl-label"><b className="gl-g">{g.gate}</b> {GATE_LABEL[g.gate]}</span>
               {g.ok !== true && (detail || g.fix) && (
                 <span className="gl-detail">{[detail, g.fix && g.fix !== '—' ? `→ ${g.fix}` : ''].filter(Boolean).join('　')}</span>
               )}

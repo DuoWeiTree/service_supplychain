@@ -1,0 +1,84 @@
+{
+  "sheet_id": 2,
+  "state": "草稿",
+  "created_by": "alice",
+  "plan_id": 1,
+  "plan_title": "t",
+  "route": "fba",
+  "created_at": "2026-10-16T06:25:34.198621-04:00",
+  "watermark": 4,
+  "in_flight": 0,
+  "consignments": [],
+  "packing": [],
+  "last_gate_run": null,
+  "events": [
+    {
+      "from_state": "[*]",
+      "to_state": "草稿",
+      "actor": "alice",
+      "reason": null,
+      "at": "2026-10-16T06:25:34.198621-04:00"
+    }
+  ],
+  "logistics": [],
+  "ext_refs": [],
+  "autofill": {
+    "rule": "UX-D8/D9 v1",
+    "outcome": "failed",
+    "inputs": {
+      "lines": [
+        {
+          "sku": "DCC1800264G1",
+          "period": "2026-10-01",
+          "line_id": 1,
+          "pending": 100,
+          "demand_by_seller": {
+            "11072": {
+              "basis": "human",
+              "mskus": [
+                {
+                  "basis": "human",
+                  "units": 60,
+                  "seller_sku": "MSKU-A"
+                }
+              ],
+              "units": 60
+            },
+            "11094": {
+              "basis": "human",
+              "mskus": [
+                {
+                  "basis": "human",
+                  "units": 20,
+                  "seller_sku": "MSKU-C"
+                }
+              ],
+              "units": 20
+            }
+          }
+        }
+      ],
+      "buckets": null,
+      "committed": [],
+      "stock_as_of": null,
+      "buckets_not_local": 0
+    },
+    "filled": [],
+    "skipped": [],
+    "error": {
+      "hint": "本地库存读不到，没法按可安排封顶",
+      "error": "stock_unavailable",
+      "stage": "stock",
+      "fields": {
+        "cause": {
+          "code": "ETIMEDOUT",
+          "kind": "connect_timeout"
+        },
+        "target": "jxd_raw.erp_inventory_warehouse"
+      }
+    },
+    "elapsed_ms": 42,
+    "actor": "alice",
+    "at": "2026-10-16T06:25:34.262496-04:00"
+  }
+}

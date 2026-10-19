@@ -868,6 +868,26 @@ export interface SheetDetail {
   logistics: { dest_wid: number; logistics_id: number; channel_name: string; enabled: boolean }[];
   /** 在领星建过的备货单（含已作废的） */
   ext_refs: ExtRef[];
+  /** UX-D7：新建 FBA 表时的默认分配留痕（dispatch_autofill）；海外仓表 / 迁移前的表 = null */
+  autofill: SheetAutofill | null;
+}
+
+/** 默认分配跳过的原因（rules/autofill.py） */
+export type AutofillSkipReason = 'satisfied' | 'seller_not_in_mirror' | 'no_fba' | 'no_claimed_msku' | 'fbm_msku'
+  | 'msku_not_in_bridge' | 'msku_not_this_sku' | 'expected_unknown' | 'no_eligible_store' | 'no_stock' | 'stock_short';
+export interface AutofillError { stage: string; error: string; hint: string; fields: Record<string, unknown> }
+export interface SheetAutofill {
+  rule: string; outcome: 'done' | 'failed';
+  inputs: Record<string, unknown>;
+  filled: { arrangement_id: number; line_id: number; seller_sku: string; sid: Sid; from_wid: number; units: number }[];
+  skipped: { line_id: number; reason: AutofillSkipReason | string; sid?: Sid; seller_sku?: string; pending?: number;
+    wanted?: number; filled?: number }[];
+  error: AutofillError | null; elapsed_ms: number; actor: string; at: string;
+}
+export interface SheetCreated {
+  sheet_id: number;
+  autofill: { outcome: 'done' | 'failed'; filled: number; units: number; skipped: number; error: AutofillError | null;
+    event_written: boolean } | null;
 }
 
 // ───── 提交领星备货单（C-b，spec 2026-10-12；形状照 usecase/submit_ows.py）─────
@@ -953,6 +973,8 @@ export interface DemandRow {
   line_id: number; plan_id: PlanId; plan_title: string; rev: number; sku: string; sku_name: string;
   state: LineState; period: string; total: number; staged: number; dispatched: number; pending: number;
   staged_here: number; staged_other: number;
+  /** 本表已投送 / 已归档的（staged_here 只算未发的，与 staged 同口径） */
+  dispatched_here: number;
   /** 承重墙①：已组单（含草稿）/ 已下单 —— 只展示，不拦排货（CA-D10） */
   confirmed: number; ordered: number;
   /** 关联已下单采购单同货号行项的 已入库 / 待到货（不摊回记录，C4）；null = 读不到 */

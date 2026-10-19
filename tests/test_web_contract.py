@@ -208,6 +208,25 @@ def test_contract_dispatch_samples(client, seed, dispatch_world, lingxing):
     })
 
 
+def test_contract_autofill_samples(client, seed, dispatch_world, stock):  # noqa: F811
+    """UX-D7：新建 FBA 表的默认分配 —— 填成了（filled / skipped 都有内容）与没做成（库存读不到）两种形状。"""
+    from tests.test_api_autofill import claim
+    from tests.test_api_sheets import FakeStock
+    a = H(seed.actor)
+    claim(seed, dispatch_world["line_id"], {seed.seller_a: (60, [(seed.msku_a[0], 60)]),
+                                            seed.seller_b: (20, [(seed.msku_c[0], 20)])})
+    done = client.post("/v1/sheets", json={"plan_id": dispatch_world["plan_id"], "route": "fba"}, headers=a).json()
+    detail = client.get(f"/v1/sheets/{done['sheet_id']}").json()
+    assert detail["autofill"]["filled"] and detail["autofill"]["skipped"]
+    client.post(f"/v1/sheets/{done['sheet_id']}/cancel", json={"reason": "契约"}, headers=a)
+    stock["s"] = FakeStock(fail=True)
+    failed = client.post("/v1/sheets", json={"plan_id": dispatch_world["plan_id"], "route": "fba"}, headers=a).json()
+    assert failed["autofill"]["outcome"] == "failed"
+    _compare({"sheet-create-autofill": done, "sheet-detail-autofill": detail,
+              "sheet-create-autofill-failed": failed,
+              "sheet-detail-autofill-failed": client.get(f"/v1/sheets/{failed['sheet_id']}").json()})
+
+
 def test_contract_ows_samples(client, seed, dispatch_world, stock, lingxing):  # noqa: F811
     """提交领星（spec 2026-10-12 §5）：预览 · 待核实 · 提交结果 · 已投送的详情 · 取消删单。
     ★ 每个列表都要有内容：先造一张待核实，再收尾建齐。"""

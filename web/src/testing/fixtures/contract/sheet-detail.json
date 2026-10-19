@@ -5,7 +5,7 @@
   "plan_id": 1,
   "plan_title": "t",
   "route": "fba",
-  "created_at": "2026-10-15T20:58:19.626644-04:00",
+  "created_at": "2026-10-16T06:24:41.959027-04:00",
   "watermark": 4,
   "in_flight": 0,
   "consignments": [
@@ -105,7 +105,7 @@
       }
     ],
     "stock_as_of": "2026-10-10",
-    "at": "2026-10-15T20:58:20.074875-04:00",
+    "at": "2026-10-16T06:24:42.482522-04:00",
     "actor": "alice"
   },
   "events": [
@@ -114,9 +114,50 @@
       "to_state": "草稿",
       "actor": "alice",
       "reason": null,
-      "at": "2026-10-15T20:58:19.626644-04:00"
+      "at": "2026-10-16T06:24:41.959027-04:00"
     }
   ],
   "logistics": [],
-  "ext_refs": []
+  "ext_refs": [],
+  "autofill": {
+    "rule": "UX-D8/D9 v1",
+    "outcome": "done",
+    "inputs": {
+      "lines": [
+        {
+          "sku": "DCC1800264G1",
+          "period": "2026-10-01",
+          "line_id": 1,
+          "pending": 100,
+          "demand_by_seller": {
+            "11072": {
+              "basis": "human",
+              "units": 60
+            }
+          }
+        }
+      ],
+      "buckets": null,
+      "committed": [],
+      "stock_as_of": null,
+      "buckets_not_local": 0
+    },
+    "filled": [],
+    "skipped": [
+      {
+        "sid": "11072",
+        "reason": "no_claimed_msku",
+        "line_id": 1
+      },
+      {
+        "reason": "no_eligible_store",
+        "line_id": 1,
+        "pending": 100
+      }
+    ],
+    "error": null,
+    "elapsed_ms": 63,
+    "actor": "alice",
+    "at": "2026-10-16T06:24:42.031312-04:00"
+  }
 }

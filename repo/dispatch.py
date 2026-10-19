@@ -257,16 +257,24 @@ def dispatchable_lines(cur, sheet_id: int, plan_id: int | None) -> list[dict]:
         "SELECT l.line_id, l.plan_id, p.title, l.rev, l.sku, k.name, l.period_start, l.state,"
         "       q.total_units, q.staged_units, q.dispatched_units, q.pending_units, l.demand_by_seller,"
         "       po.confirmed_units, po.ordered_units,"
-        "       coalesce((SELECT sum(m.units) FROM dispatch_arrangement a"
-        "                   JOIN dispatch_source_map m USING (arrangement_id)"
+        # ★ 与 v_plan_line_dispatch_qty 同口径分成「未发 / 已投送」：staged 不含已投送，本表那份也不许含，
+        #   否则「别的表已排未发」= staged − staged_here 会出负数（评审 P1 #11，sheet 11 实测 −1）
+        "       coalesce((SELECT sum(m.units) FILTER (WHERE c.our_stage IN ('草稿','已确认'))"
+        "                   FROM dispatch_arrangement a JOIN dispatch_source_map m USING (arrangement_id)"
+        "                   JOIN consignment c ON c.consignment_id = m.consignment_id"
+        "                  WHERE a.sheet_id = %s AND a.line_id = l.line_id), 0)::int,"
+        "       coalesce((SELECT sum(m.units) FILTER (WHERE c.our_stage IN ('已投送','已归档'))"
+        "                   FROM dispatch_arrangement a JOIN dispatch_source_map m USING (arrangement_id)"
+        "                   JOIN consignment c ON c.consignment_id = m.consignment_id"
         "                  WHERE a.sheet_id = %s AND a.line_id = l.line_id), 0)::int"
         "  FROM plan_line l JOIN plan p USING (plan_id) JOIN sku_catalog k USING (sku)"
         "  JOIN v_plan_line_dispatch_qty q USING (line_id) JOIN v_plan_line_po_qty po USING (line_id)"
         f" WHERE (l.plan_id = %s AND {LIVE_LINE})"
         "    OR EXISTS (SELECT 1 FROM dispatch_arrangement a WHERE a.sheet_id = %s AND a.line_id = l.line_id)"
-        " ORDER BY l.sku, l.period_start, l.line_id", (sheet_id, plan_id, sheet_id))
+        " ORDER BY l.sku, l.period_start, l.line_id", (sheet_id, sheet_id, plan_id, sheet_id))
     cols = ("line_id", "plan_id", "plan_title", "rev", "sku", "sku_name", "period", "state", "total",
-            "staged", "dispatched", "pending", "demand_by_seller", "confirmed", "ordered", "staged_here")
+            "staged", "dispatched", "pending", "demand_by_seller", "confirmed", "ordered", "staged_here",
+            "dispatched_here")
     return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
@@ -368,6 +376,42 @@ def sheet_events(cur, sheet_id: int) -> list[dict]:
     cur.execute("SELECT from_state, to_state, actor, reason, at FROM sheet_event WHERE sheet_id = %s"
                 " ORDER BY seq", (sheet_id,))
     return [dict(zip(("from_state", "to_state", "actor", "reason", "at"), r)) for r in cur.fetchall()]
+
+
+# ── UX-D7：新建 FBA 表时的默认分配（迁移 026）────────────────────────
+
+def bridge_skus(cur, keys: list[tuple[str, str]]) -> dict[tuple[str, str], str]:
+    """(seller_sku, sid) → 镜像里的货号；不在镜像里的键不出现（调用方点名 msku_not_in_bridge）。"""
+    if not keys:
+        return {}
+    cur.execute("SELECT seller_sku, sid, sku FROM msku_bridge"
+                " WHERE (seller_sku, sid) IN (SELECT * FROM unnest(%s::text[], %s::text[]))",
+                ([k[0] for k in keys], [k[1] for k in keys]))
+    return {(r[0], r[1]): r[2] for r in cur.fetchall()}
+
+
+def lock_lines(cur, line_ids: list[int]) -> None:
+    """★ 同 lock_sheet_lines：按 line_id 升序一次锁全，不按分配顺序（月份序）逐条锁 —— 交叉写会成环。"""
+    cur.execute("SELECT line_id FROM plan_line WHERE line_id = ANY(%s) ORDER BY line_id FOR NO KEY UPDATE",
+                (sorted(line_ids),))
+
+
+AUTOFILL_COLS = ("rule", "outcome", "inputs", "filled", "skipped", "error", "elapsed_ms", "actor", "at")
+
+
+def insert_autofill(cur, sheet_id: int, rule: str, outcome: str, inputs: dict, filled: list, skipped: list,
+                    error: dict | None, elapsed_ms: int, actor: str) -> None:
+    def dump(v):
+        return None if v is None else json.dumps(v, ensure_ascii=False, default=str)
+    cur.execute("INSERT INTO dispatch_autofill (sheet_id, rule, outcome, inputs, filled, skipped, error, elapsed_ms,"
+                " actor) VALUES (%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s)",
+                (sheet_id, rule, outcome, dump(inputs), dump(filled), dump(skipped), dump(error), elapsed_ms, actor))
+
+
+def autofill(cur, sheet_id: int) -> dict | None:
+    cur.execute(f"SELECT {', '.join(AUTOFILL_COLS)} FROM dispatch_autofill WHERE sheet_id = %s", (sheet_id,))
+    r = cur.fetchone()
+    return None if r is None else dict(zip(AUTOFILL_COLS, r))
 
 
 # ── CA-D12：领星现读 ─────────────────────────────────────────

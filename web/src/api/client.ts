@@ -7,7 +7,7 @@ import type {
   AcknowledgeResult, AttentionQueue, CandidateLineQuery, CandidateLines, ConfirmAbsentResult, LineTrace,
   PlaceResult, PoBody, PoId, PoList, PoState, PoTimeline, PreflightResult, PurchaseChecks,
   PurchaseOptions, PurchaseOrder, ReadBackResult, RecheckResult, RegisterResult,
-  CellPut, CellResult, DispatchPlans, LiveReadResult, PackingBox, PackingRow, SheetConfirmResult, SheetDetail, SheetGrid, SheetList,
+  CellPut, CellResult, DispatchPlans, LiveReadResult, PackingBox, PackingRow, SheetConfirmResult, SheetCreated, SheetDetail, SheetGrid, SheetList,
   SheetPreflight, SheetState, DispatchRoute, SheetReceiptResult, SkuMatchStatus, LogisticsChannels, OwsSubmission, OwsSubmitResult, SheetCancelResult,
 } from './types';
 
@@ -112,7 +112,7 @@ export interface SupplyChainApi {
   listDispatchPlans(): Promise<DispatchPlans>;
   listSheets(state?: SheetState): Promise<SheetList>;
   /** ★ CA-D13：建表就定去向；同计划同去向已有草稿 → 409 draft_exists（带 sheet_id） */
-  createSheet(planId: PlanId, route: DispatchRoute): Promise<{ sheet_id: number }>;
+  createSheet(planId: PlanId, route: DispatchRoute): Promise<SheetCreated>;
   getSheet(sheetId: number): Promise<SheetDetail>;
   getSheetGrid(sheetId: number): Promise<SheetGrid>;
   /** ★ 唯一的安排原语：units 0 / null = 撤回。同事务重派生排货单 */

@@ -404,3 +404,11 @@ def test_reopened_after_rejection_can_move_destination_and_back(client, seed, co
     move(7, OVERSEA)                                                  # 改回原目的地：新开一张，不撞已放弃的
     stages_ = {(c_["dest_wid"], c_["our_stage"]) for c_ in client.get(f"/v1/sheets/{confirmed}").json()["consignments"]}
     assert (OVERSEA, "已放弃") in stages_ and (OVERSEA, "草稿") in stages_
+
+
+def test_after_dispatch_this_sheet_is_not_counted_as_staged_elsewhere(client, seed, confirmed):
+    """评审 P1 #11：staged 不含已投送，staged_here 也不许含 —— 否则「别的表已排未发」= −已投送。"""
+    assert submit(client, seed, confirmed).status_code == 200
+    [row] = client.get(f"/v1/sheets/{confirmed}/grid").json()["demand"]
+    assert {k: row[k] for k in ("staged", "staged_here", "staged_other", "dispatched", "dispatched_here")} == \
+        {"staged": 0, "staged_here": 0, "staged_other": 0, "dispatched": 8, "dispatched_here": 8}

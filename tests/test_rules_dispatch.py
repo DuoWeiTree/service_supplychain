@@ -153,7 +153,8 @@ def test_g2_and_g6_destination_checks():
 def test_empty_sheet_cannot_be_confirmed():
     gs = gates(consignments=[], packing={}, committed={})
     assert d.confirmable(gs) is False
-    assert by(gs)["G6"]["ok"] is False and by(gs)["G6"]["detail"] == "没有任何排货单"
+    assert by(gs)["G6"]["ok"] is False and by(gs)["G6"]["detail"] == "还没排任何格子"
+    assert by(gs)["G6"]["fix"] == "人：在「安排」里至少排一格"      # 评审：空表时别让人去「改目的地」
 
 
 def test_g7_every_oversea_consignment_needs_an_enabled_logistics_channel():

@@ -8,15 +8,15 @@ import { api, ApiError } from '../../api';
 import { asApiError } from '../../api/client';
 import { pushToast } from '../../shell/toastStore';
 import type {
-  CellPut, ConsignmentView, DemandRow, DispatchAttention, DispatchCell, DispatchGate, DispatchRoute, DispatchStore, LogisticsChannel,
+  CellPut, ConsignmentView, SheetAutofill, DemandRow, DispatchAttention, DispatchCell, DispatchGate, DispatchRoute, DispatchStore, LogisticsChannel,
   OwsBlocker, OwsResult, OwsSubmission, PackingBox, PackingRow, SheetDetail, SheetGrid, SheetPreflight, SheetReceiptResult, SkuMatchStatus,
   UnplannedSku,
 } from '../../api/types';
 import {
-  ROUTE_LABEL, addOptions, blockingGates, destKey, destLabel, destOptions, filterRecords, fillFor, fmtLocal, missingPacking, parseUnits,
+  AUTOFILL_REASON, ROUTE_LABEL, addOptions, autofillMarks, autofillSummary, blockingGates, destKey, destLabel, destOptions, filterRecords, fillFor, fmtLocal, missingPacking, parseUnits,
   planTotals, stockFor, whName, type RecordFilter,
 } from './dispatchGridModel';
-import { TriGateList } from './TriGateList';
+import { GATE_LABEL, TriGateList } from './TriGateList';
 
 type Flash = { tone: 'ok' | 'warn' | 'danger' | 'info'; text: string; err?: ApiError };
 type View = 'arrange' | 'cons' | 'gates';
@@ -281,6 +281,8 @@ export function SheetPage() {
           </div>
         )}
 
+        {detail.autofill && <AutofillNote af={detail.autofill} grid={grid} />}
+
         {manualVoid.length > 0 && (
           <div className="flash flash--bad" role="alert" data-testid="manual-void">
             已取消。领星发货计划需在领星手工作废（领星没有作废接口；库存已释放）：
@@ -306,6 +308,7 @@ export function SheetPage() {
             </div>
             {view === 'arrange' && (
               <Arrange grid={grid} side={side} filter={filter} q={q} selKey={selKey} frozen={frozen} put={put}
+                marks={autofillMarks(detail.autofill ?? null, grid.cells)}
                 reading={reading} onLiveRead={(sku) => void liveRead(sku)} />
             )}
             {view === 'cons' && (
@@ -344,7 +347,7 @@ export function SheetPage() {
             <button type="button" className="btn btn--ghost" onClick={() => setReopenReason('')}>退回修改</button>
           )}
           {!frozen && blocking.length > 0 && (
-            <span className="sc-commit__hint" data-testid="blocking">{blocking.map((x) => x.gate).join('、')} 未过</span>
+            <span className="sc-commit__hint" data-testid="blocking">未过：{blocking.map((x) => `${x.gate} ${GATE_LABEL[x.gate] ?? ''}`.trim()).join('、')}</span>
           )}
           {!frozen && (
             <button type="button" className="btn btn--primary" disabled={confirming || blocking.length > 0 || live.length === 0}
@@ -435,6 +438,44 @@ export function SheetPage() {
   );
 }
 
+const AF_STAGE: Record<string, string> = { read: '读计划与镜像', allocate: '计算', stock: '读本地库存', write: '写格子' };
+
+/** UX-D7：新建时系统填的那一版。成功只写结果，规则与跳过清单进折叠区；没做成不折叠、点名原因 */
+function AutofillNote({ af, grid }: { af: SheetAutofill; grid: SheetGrid }) {
+  if (af.outcome === 'failed') {
+    const e = af.error;
+    return (
+      <div className="ds-flash ds-flash--warn" role="alert" data-testid="autofill">
+        <span>默认分配没做成：{e?.hint ?? '原因未知'}{e ? `（${AF_STAGE[e.stage] ?? e.stage}）` : ''}，格子要人填</span>
+        {e && <code>{e.error}</code>}
+        {e && Object.keys(e.fields).length > 0 && <Fold summary="点名"><pre className="pt-used">{JSON.stringify(e.fields, null, 1)}</pre></Fold>}
+      </div>
+    );
+  }
+  const s = autofillSummary(af);
+  const line = (id: number) => grid.demand.find((l) => l.line_id === id);
+  const store = (sid?: string) => (sid ? grid.demand.flatMap((l) => l.stores).find((x) => x.sid === sid)?.seller_name ?? sid : '');
+  return (
+    <div className="ds-flash ds-flash--info" role="status" data-testid="autofill">
+      <span>{s.cells > 0 ? `新建时系统填了 ${s.cells} 格 ${n(s.units)} 件默认排货量` : '新建时没有可默认填的格子'}{s.skipped > 0 ? `，跳过 ${s.skipped} 条` : ''}</span>
+      <Fold summary="规则与跳过" testId="autofill-fold">
+        <div>每条记录的还差按各店期望比例拆到店、店内按认领 msku 期望拆，封顶到可安排；按月份先后，库存用完为止（{af.rule}）。填进去就是普通格子，改了不会重填。</div>
+        {af.skipped.length > 0 && (
+          <ul className="pl-ex">
+            {af.skipped.map((x, i) => {
+              const l = line(x.line_id);
+              return (
+                <li key={i}>{l ? `${l.sku} ${l.period.slice(0, 7)}` : `记录 ${x.line_id}`} {store(x.sid)} {x.seller_sku ?? ''}：{AUTOFILL_REASON[x.reason] ?? x.reason}
+                  {x.wanted !== undefined && `（还差 ${n(x.wanted)}，填了 ${n(x.filled ?? 0)}）`}</li>
+              );
+            })}
+          </ul>
+        )}
+      </Fold>
+    </div>
+  );
+}
+
 const wh = (grid: SheetGrid, b: OwsBlocker) => (b.dest_wid != null ? whName(grid, b.dest_wid) : '目的仓');
 
 const blockerText = (grid: SheetGrid) => (b: OwsBlocker): string =>
@@ -465,7 +506,12 @@ function SubmitModal({ sheetId, grid, sub, orders, route, onClose }: {
   onClose: () => void;
 }) {
   const fba = route === 'fba';
-  const relockOnly = orders.length === 0 && (sub.to_lock ?? []).length > 0;
+  const toLock = sub.to_lock ?? [];
+  // ★ CC-D1 退回边「建了没锁上 → 补锁」：没有要新建的单时，弹窗列的是要补锁的那几张，按它们放行
+  const relockOnly = orders.length === 0 && toLock.length > 0;
+  const shown = relockOnly ? sub.orders.filter((o) => toLock.includes(o.idem_key)) : orders;
+  const noun = fba ? 'FBA 发货计划' : '海外仓备货单';
+  const title = relockOnly ? `⛔ 补锁库存：${toLock.length} 张 ${noun}` : `⛔ 提交领星：建 ${orders.length} 张 ${noun}`;
   const [busy, setBusy] = useState(false);
   const [results, setResults] = useState<OwsResult[] | null>(null);
   const [err, setErr] = useState<ApiError | null>(null);
@@ -481,18 +527,17 @@ function SubmitModal({ sheetId, grid, sub, orders, route, onClose }: {
     }
   };
   return (
-    <Modal title={`⛔ 提交领星：建 ${orders.length} 张海外仓备货单`} onClose={busy ? () => {} : onClose}>
+    <Modal title={title} onClose={busy ? () => {} : onClose}>
       <div className="modal__body">
         {results === null ? (
           <>
-            {fba
+            {relockOnly ? <div>上次建成了但库存没锁上：这次只补锁 {toLock.join('、')}，不会重建</div> : fba
               ? <div>在领星建 FBA 发货计划（参考号写批次备注），建后锁定本地仓库存；STA 建货件 / 发货在领星里做。取消时释放库存，计划需在领星手工作废</div>
               : <div>在领星建为「待发货」，会锁定本地仓库存；取消排货表时可删除（已发货的删不掉）</div>}
-            {relockOnly && <div>上次建成了但库存没锁上：这次只补锁 {(sub.to_lock ?? []).join('、')}，不会重建</div>}
             <table className="pd-t" data-testid="ows-orders">
               <thead><tr><th>参考号</th><th>来源仓 → 目的地</th><th>{fba ? '装箱' : '物流方式'}</th><th className="r">件数</th><th className="r">产品行</th></tr></thead>
               <tbody>
-                {orders.map((o) => (
+                {shown.map((o) => (
                   <tr key={o.key}>
                     <td><code>{o.idem_key}</code></td>
                     <td>{whName(grid, o.s_wid)} → {o.r_wid !== null ? whName(grid, o.r_wid) : `FBA 店 ${o.dest_sid ?? '?'}`}</td>
@@ -516,7 +561,7 @@ function SubmitModal({ sheetId, grid, sub, orders, route, onClose }: {
                 {r.cause && <span className="pt-used">（{r.cause}）</span>}
               </li>
             ))}
-            {results.length < orders.length && <li className="pt-used">其余 {orders.length - results.length} 张没有发：先看上面那一张</li>}
+            {results.length < shown.length && <li className="pt-used">其余 {shown.length - results.length} 张没有发：先看上面那一张</li>}
           </ul>
         )}
         {err && (
@@ -530,8 +575,8 @@ function SubmitModal({ sheetId, grid, sub, orders, route, onClose }: {
         {results === null ? (
           <>
             <button type="button" className="btn btn--ghost" disabled={busy} onClick={onClose}>不提交</button>
-            <button type="button" className="btn btn--danger" disabled={busy || orders.length === 0} onClick={() => void go()}>
-              {busy ? '提交中…' : '确认提交'}
+            <button type="button" className="btn btn--danger" disabled={busy || shown.length === 0} onClick={() => void go()}>
+              {busy ? '提交中…' : relockOnly ? '确认补锁' : '确认提交'}
             </button>
           </>
         ) : <button type="button" className="btn btn--primary" onClick={onClose}>关闭</button>}
@@ -672,8 +717,10 @@ function selectedKey(grid: SheetGrid, side: 'plan' | 'unplanned', filter: Record
 
 // ── 右栏 · 安排 ─────────────────────────────────────────
 
-function Arrange({ grid, side, filter, q, selKey, frozen, put, reading, onLiveRead }: {
-  grid: SheetGrid; side: 'plan' | 'unplanned'; filter: RecordFilter; q: string; selKey: string | null; frozen: boolean;
+type Marks = ReturnType<typeof autofillMarks>;
+
+function Arrange({ grid, side, filter, q, selKey, frozen, put, marks, reading, onLiveRead }: {
+  grid: SheetGrid; side: 'plan' | 'unplanned'; filter: RecordFilter; q: string; selKey: string | null; frozen: boolean; marks: Marks;
   put: (b: CellPut, label: string) => Promise<boolean>; reading: string | null; onLiveRead: (sku: string) => void;
 }) {
   const key = selectedKey(grid, side, filter, q, selKey);
@@ -757,7 +804,8 @@ function Arrange({ grid, side, filter, q, selKey, frozen, put, reading, onLiveRe
                 <div key={m.seller_sku} className="ds-msku" data-testid={`msku-${m.seller_sku}`}>
                   <div className="ds-msku__id"><code>{m.seller_sku}</code>{m.fnsku && <span className="pt-used">{m.fnsku}</span>}</div>
                   <div className="ds-msku__cells">
-                    {mine.map((c) => <CellRow key={`${c.arrangement_id}/${c.units}`} grid={grid} cell={c} store={st} frozen={frozen} put={put} />)}
+                    {mine.map((c) => <CellRow key={`${c.arrangement_id}/${c.units}`} grid={grid} cell={c} store={st} frozen={frozen} put={put}
+                      mark={marks.get(c.arrangement_id)} />)}
                     {!frozen && live && grid.sheet.route !== null && (
                       <AddCell grid={grid} sku={sku} store={st} msku={m.seller_sku} lineId={line?.line_id ?? null}
                         left={line ? Math.max(0, line.pending) : null} existing={mine} put={put} />
@@ -814,8 +862,8 @@ function StockTable({ grid, sku, stores }: { grid: SheetGrid; sku: string; store
   );
 }
 
-function CellRow({ grid, cell, store, frozen, put }: { grid: SheetGrid; cell: DispatchCell; store: StoreLike; frozen: boolean;
-  put: (b: CellPut, label: string) => Promise<boolean> }) {
+function CellRow({ grid, cell, store, frozen, put, mark }: { grid: SheetGrid; cell: DispatchCell; store: StoreLike; frozen: boolean;
+  put: (b: CellPut, label: string) => Promise<boolean>; mark: { units: number; changed: boolean } | undefined }) {
   // ★ CA-D14：确认后选错仓库，退回修改后在这里改目的地 —— 同一事务挪格，件数不变（不用撤了重加）
   const dests = grid.sheet.route === 'oversea' ? destOptions(store, grid.warehouses.oversea, 'oversea') : [];
   const move = async (key: string) => {
@@ -853,6 +901,8 @@ function CellRow({ grid, cell, store, frozen, put }: { grid: SheetGrid; cell: Di
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => { if (e.key === 'Enter') void commit(); }} onBlur={() => void commit()} />
       <span className="ds-cell__u">件</span>
+      {mark && <span className="pt-used ds-auto" data-testid={`auto-${cell.arrangement_id}`}>
+        {mark.changed ? `默认 ${n(mark.units)}，已改` : '默认'}</span>}
       {avail !== null && avail < 0 && <span className="ds-cell__warn">超出可安排 {n(-avail)}</span>}
       {!frozen && <button type="button" className="pe-x" onClick={() => void put(body(0), label)}>撤回</button>}
     </div>
