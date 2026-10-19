@@ -372,3 +372,40 @@ def unsettled_drafts(cur) -> list[tuple[int, int, str]]:
         "                                                AND a.resolved_at > c.finished_at)))"
         " ORDER BY c.call_id")
     return cur.fetchall()
+
+
+_LIVE = "l.state NOT IN ('已撤销','已完结')"
+_OPEN_DRAFT = "e.state = '草稿' AND NOT e.is_void AND e.discarded_at IS NULL"
+_ATTN = "(SELECT count(*) FROM po_attention a WHERE a.po_id = e.po_id AND a.resolved_at IS NULL)::int"
+
+
+def purchase_plans(cur) -> dict:
+    """UX-D1/D2：活记录按计划 + 挂在计划上的草稿。orderable 判据不在这里（api/ui/lines.py 一处）。"""
+    cur.execute(
+        "SELECT l.plan_id, l.line_id, l.rev, l.sku, k.name, l.period_start, l.state,"
+        "       q.total_units, q.confirmed_units, q.ordered_units"
+        "  FROM plan_line l JOIN v_plan_line_po_qty q USING (line_id) LEFT JOIN sku_catalog k USING (sku)"
+        f" WHERE {_LIVE} ORDER BY l.plan_id, l.sku, l.period_start, l.line_id")
+    records: dict[int, list[dict]] = {}
+    for pid, lid, rev, sku, name, period, state, total, conf, ordd in cur.fetchall():
+        records.setdefault(pid, []).append({
+            "line_id": lid, "rev": rev, "sku": sku, "sku_name": name, "period": period.strftime("%Y-%m"),
+            "state": state, "total": total, "confirmed": conf, "ordered": ordd, "remaining": total - conf})
+    # 一张跨计划草稿在每个计划下各一行，件数只算来自该计划的来源
+    cur.execute(
+        f"SELECT l.plan_id, e.po_id, e.custom_order_sn, sum(m.units)::int, {_ATTN}"
+        "  FROM po_source_map m JOIN plan_line l USING (line_id) JOIN v_po_effective e ON e.po_id = m.po_id"
+        f" WHERE {_OPEN_DRAFT} GROUP BY l.plan_id, e.po_id, e.custom_order_sn ORDER BY e.po_id")
+    drafts: dict[int, list[dict]] = {}
+    for pid, po_id, sn, units, attn in cur.fetchall():
+        drafts.setdefault(pid, []).append({"po_id": po_id, "custom_order_sn": sn, "units": units,
+                                           "open_attention": attn})
+    cur.execute(
+        "SELECT e.po_id, e.custom_order_sn,"
+        f"      (SELECT coalesce(sum(units), 0) FROM po_line pl WHERE pl.po_id = e.po_id)::int, {_ATTN}"
+        "  FROM v_po_effective e"
+        f" WHERE {_OPEN_DRAFT} AND NOT EXISTS (SELECT 1 FROM po_source_map m WHERE m.po_id = e.po_id)"
+        " ORDER BY e.po_id")
+    unplanned = [{"po_id": a, "custom_order_sn": b, "units": c, "open_attention": d} for a, b, c, d in cur.fetchall()]
+    cur.execute("SELECT plan_id, title FROM plan WHERE plan_id = ANY(%s)", (sorted(set(records) | set(drafts)),))
+    return {"records": records, "drafts": drafts, "titles": dict(cur.fetchall()), "unplanned_drafts": unplanned}

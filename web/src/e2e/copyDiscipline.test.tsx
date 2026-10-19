@@ -64,7 +64,7 @@ describe('文案纪律', () => {
       const { unmount } = await app(entry);
       // 等这一屏真的出了内容再扫 —— 空屏上扫不出元串，那是假绿
       await screen.findAllByRole('heading');   // 采购首页有 h1 + 待采购 / 采购单两个 h2
-      if (entry === '/purchase') { await screen.findByTestId('po-list'); await screen.findByTestId('todo-list'); }
+      if (entry === '/purchase') { await screen.findByTestId('po-list'); await screen.findByTestId('purchase-plans'); }
       if (entry.startsWith('/purchase/new?')) { await screen.findByTestId('source-summary'); await screen.findByText('记录 999 不存在'); }
       if (entry === '/purchase/new' || entry === '/purchase/1') await screen.findByTestId('cand-sku-A4P-TOY-002');
       if (entry === '/purchase/1') await screen.findByTestId('po-line-1');
@@ -129,6 +129,9 @@ describe('文案纪律', () => {
 
   it('★ 逐店分配：直接打件数 +「剩余全给」，不再混一个「加入」', async () => {
     await app('/purchase/new');
+    // UX-D5：多货号时默认收起，先展开
+    const grp = await screen.findByTestId('cand-sku-A4P-TOY-002');
+    await userEvent.click(within(grp).getByRole('button', { name: /^A4P-TOY-002/ }));
     const rec = await screen.findByTestId('cand-101');
     expect(within(rec).getAllByRole('button', { name: '剩余全给' }).length).toBeGreaterThan(0);
     expect(within(rec).queryByRole('button', { name: '加入' })).toBeNull();

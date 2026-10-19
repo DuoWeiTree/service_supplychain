@@ -4,7 +4,7 @@ import type {
   ListPlansQuery, Period, PlanDiff, PlanId,
   PlanList, PlanSummary, PurchaseCell, RecomputeResult, ReleaseResult, RemoveSkuResult, RevList, Seller, Sid,
   SubmitResult, UnsubmittedBoard,
-  AcknowledgeResult, AttentionQueue, CandidateLineQuery, CandidateLines, ConfirmAbsentResult, LineTrace,
+  AcknowledgeResult, AttentionQueue, CandidateLineQuery, CandidateLines, ConfirmAbsentResult, LineTrace, PurchasePlans,
   PlaceResult, PoBody, PoId, PoList, PoState, PoTimeline, PreflightResult, PurchaseChecks,
   PurchaseOptions, PurchaseOrder, ReadBackResult, RecheckResult, RegisterResult,
   CellPut, CellResult, DispatchPlans, LiveReadResult, PackingBox, PackingRow, SheetConfirmResult, SheetCreated, SheetDetail, SheetGrid, SheetList,
@@ -106,6 +106,8 @@ export interface SupplyChainApi {
   /** 固定带 orderable=1：只要还能组单的记录 */
   listCandidateLines(params: CandidateLineQuery): Promise<CandidateLines>;
   getLineTrace(lineId: number): Promise<LineTrace>;
+  /** UX-D1/D2：采购首页待采购按销售计划分组 */
+  listPurchasePlans(): Promise<PurchasePlans>;
 
   // ───── 排货（阶段 C-a）─────
   /** CA-D11 入口：未完成的销售计划 */

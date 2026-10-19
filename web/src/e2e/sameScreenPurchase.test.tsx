@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import purchaseFixture from '../testing/fixtures/purchase.json';
 import plansFixture from '../testing/fixtures/plans.json';
 import sellersFixture from '../testing/fixtures/sellers.json';
+import catalogFixture from '../testing/fixtures/catalog.json';
 
 /** 判据⑥ 的采购屏：mock 与 http 打桩渲染同一屏。
  *
@@ -48,7 +49,43 @@ function planLines(): unknown {
                                           fully_confirmed: st.length - lines.length } };
 }
 
+/** 照 api/ui/lines.py::list_purchase_plans：活记录（非已撤销 / 已完结）按计划，plan_id 倒序；
+ *  草稿 = 未作废、未丢弃的草稿，件数只算来自该计划的来源；列出 = 有可组记录或挂着草稿 */
+function purchasePlans(): unknown {
+  type Ln = { line_id: number; plan_id: number; rev: number; sku: string; period: string; total_units: number;
+    confirmed_units: number; ordered_units: number; state: string };
+  type Src = { line_id: number; units: number };
+  const lines = purchaseFixture.lines as unknown as Ln[];
+  const live = lines.filter((l) => !['已撤销', '已完结'].includes(l.state));
+  const drafts = POS.filter((p) => p.state === '草稿' && !p.is_void && p.discarded_at === null);
+  const srcs = (p: Fx) => (p.lines as unknown as { sources: Src[] }[]).flatMap((l) => l.sources);
+  const planOf = (lineId: number) => lines.find((l) => l.line_id === lineId)!.plan_id;
+  const title = (pid: number) => plansFixture.plans.find((x) => x.plan_id === pid)!.title;
+  const ids = [...new Set([...live.map((l) => l.plan_id), ...drafts.flatMap((p) => srcs(p).map((x) => planOf(x.line_id)))])]
+    .sort((a, b) => b - a);
+  const plans: unknown[] = [];
+  const quiet: unknown[] = [];
+  for (const pid of ids) {
+    const records = live.filter((l) => l.plan_id === pid).sort((a, b) => a.sku.localeCompare(b.sku) || a.period.localeCompare(b.period))
+      .map((l) => ({ line_id: l.line_id, rev: l.rev, sku: l.sku,
+        sku_name: catalogFixture.items.find((x) => x.sku === l.sku)?.name ?? null, period: l.period, state: l.state,
+        total: l.total_units, confirmed: l.confirmed_units, ordered: l.ordered_units, remaining: l.total_units - l.confirmed_units,
+        orderable: ['已提交', '已确认'].includes(l.state) && l.total_units - l.confirmed_units > 0 }));
+    const mine = drafts.map((p) => ({ po_id: p.po_id, custom_order_sn: p.custom_order_sn, open_attention: 0,
+      units: srcs(p).filter((x) => planOf(x.line_id) === pid).reduce((a, x) => a + x.units, 0) })).filter((d) => d.units > 0);
+    const ok = records.filter((r) => r.orderable);
+    const rev = records.length ? Math.max(...records.map((r) => r.rev)) : null;
+    if (!ok.length && !mine.length) { quiet.push({ plan_id: pid, title: title(pid), rev }); continue; }
+    plans.push({ plan_id: pid, title: title(pid), rev, lines: records.length,
+      total: records.reduce((a, r) => a + r.total, 0), confirmed: records.reduce((a, r) => a + r.confirmed, 0),
+      ordered: records.reduce((a, r) => a + r.ordered, 0), orderable_units: ok.reduce((a, r) => a + r.remaining, 0),
+      orderable_lines: ok.length, drafts: mine, records });
+  }
+  return { plans, unplanned_drafts: [], excluded: { nothing_to_order: quiet } };
+}
+
 function backendBody(url: string): unknown {
+  if (url.includes('/purchase/plans')) return purchasePlans();
   if (url.includes('/attention')) return { count: 0, items: [] };
   if (url.includes('/checks/purchase')) return purchaseFixture.checks;
   if (url.includes('/plan-lines')) return planLines();
@@ -85,8 +122,7 @@ async function screenText(source: 'mock' | 'api'): Promise<string> {
   const { unmount } = render(<MemoryRouter><PurchaseHome /></MemoryRouter>);
   await screen.findByTestId('po-list');
   await screen.findByText('核对全部通过');
-  await screen.findByTestId('todo-list');
-  await screen.findAllByText('A4Pet-US');
+  await screen.findByTestId('purchase-plans');
   const text = (document.body.textContent ?? '').replace(/\s+/g, ' ').trim();
   unmount();
   return text;

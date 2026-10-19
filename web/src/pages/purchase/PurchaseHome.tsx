@@ -1,155 +1,60 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { AppShell } from '../../shell/AppShell';
 import { ErrorDetail } from '../../components/ErrorDetail';
 import { Fold } from '../../components/Fold';
-import { Qty, type QtyValue } from '../../components/Qty';
+import { Qty } from '../../components/Qty';
 import { api, ApiError } from '../../api';
-import type { AttentionKind, AttentionQueue, CandidateLine, CandidateLines, PoList, PurchaseChecks, Seller } from '../../api/types';
+import type { AttentionKind, AttentionQueue, PoList, PurchaseChecks, PurchasePlan, PurchasePlanDraft, PurchasePlans } from '../../api/types';
 import { asApiError } from '../../api/client';
 import { KIND_LABEL } from './poStatus';
-import { planName, sellerShares } from './poEditorModel';
+import {
+  cellKind, cellTitle, filterPlans, pickState, pivotPlan, planPick, skuHit, toggleIds, togglePlan, type Pick, type PickPivot,
+} from './purchaseHomeModel';
 
-// PB-D29：不显示「状态不可组单」—— 数的是旧版被替换 / 已完结的历史记录，采购员无事可做，只会越积越多
-const DROPPED_LABEL: [keyof CandidateLines['excluded'], string][] = [
-  ['fully_confirmed', '已组满'],
-];
+/** indeterminate 只能经 DOM 设 */
+function TriCheck({ state, label, disabled, onChange }: { state: Pick; label: string; disabled?: boolean; onChange: () => void }) {
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => { if (ref.current) ref.current.indeterminate = state === 'some'; }, [state]);
+  return <input ref={ref} type="checkbox" aria-label={label} checked={state === 'all'} disabled={disabled} onChange={onChange} />;
+}
 
-/** R3：采购从「销售计划已提交、还没组满的记录」开始 —— 勾几条带进编辑器（设计 PendingLines） */
-function TodoList({ cands, err, shop, sellersErr }: {
-  cands: CandidateLines | null; err: ApiError | null; shop: (sid: string) => string; sellersErr: ApiError | null;
-}) {
-  const navigate = useNavigate();
-  const [picked, setPicked] = useState<number[]>([]);
-  const [q, setQ] = useState('');
-  const toggle = (id: number) => setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
-  const lines = cands?.lines ?? [];
-  const needle = q.trim().toLowerCase();
-  const shown = needle === '' ? lines : lines.filter((l) => `${l.sku} ${planName(l)}`.toLowerCase().includes(needle));
-  const chosen = lines.filter((l) => picked.includes(l.line_id));
-  const allOn = shown.length > 0 && shown.every((l) => picked.includes(l.line_id));
-  const toggleAll = () => setPicked((p) => (allOn ? p.filter((id) => !shown.some((l) => l.line_id === id))
-    : [...new Set([...p, ...shown.map((l) => l.line_id)])]));
-  const go = () => {
-    // 按清单顺序带过去，不按点选顺序：编辑器左栏的顺序与这里一致
-    const ids = chosen.map((l) => l.line_id);
-    console.info('[purchase-home] build from todo', JSON.stringify({ lines: ids }));
-    navigate(`/purchase/new?lines=${ids.join(',')}`);
-  };
-  const shopCell = (l: CandidateLine) => {
-    const shares = sellerShares(l);
-    return (
-      <div className="pt-stores">
-        {Object.keys(l.sellers).sort().map((sid) => {
-          const v = l.sellers[sid]!;
-          return (
-            <span key={sid} className="pt-store">
-              <span className="pt-store__n">{shop(sid)}</span>{' '}
-              {v.expected === null ? <span className="pt-unknown">期望未知</span>
-                : <span>期望 {v.expected}{shares ? `（占比 ${shares[sid]}%）` : ''}</span>}{' '}
-              <span className="pt-used">已组 {v.used}</span>
-            </span>
-          );
-        })}
-      </div>
-    );
-  };
-  const dropped = cands ? DROPPED_LABEL.filter(([k]) => (cands.excluded[k] ?? 0) > 0) : [];
-  const droppedN = cands ? dropped.reduce((a, [k]) => a + cands.excluded[k], 0) : 0;
-
+function DraftChip({ d }: { d: PurchasePlanDraft }) {
   return (
-    <section className="pl sec" data-testid="todo">
-      <h2>待采购</h2>
-      {err ? <ErrorDetail err={err} /> : cands === null ? <div className="empty">正在取待采购记录…</div> : (
-        <>
-          {sellersErr && (
-            <div>
-              <span className="muted">店名取不到，按店编号显示</span>
-              <Fold summary="原因"><ErrorDetail err={sellersErr} /></Fold>
-            </div>
-          )}
-          {lines.length === 0 ? (
-            <div className="empty">没有待采购的记录 <Link to="/">去销售计划</Link></div>
-          ) : (
-            <>
-              <div className="pm-bar">
-                <div className="pm-search-wrap">
-                  <input className="pm-search" type="search" placeholder="搜索货号、计划" aria-label="搜索待采购"
-                    value={q} onChange={(e) => setQ(e.target.value)} />
-                </div>
-                <span className="pm-bar__sp" />
-                <span className="pl-sum" data-testid="todo-sum">
-                  {chosen.length > 0
-                    ? <>已选 <b>{chosen.length}</b> 条，还可组 <b>{chosen.reduce((a, l) => a + l.remaining, 0)}</b> 件</>
-                    : '勾选要组到同一张采购单的记录'}
-                </span>
-                <button type="button" className="btn btn--primary" disabled={chosen.length === 0} onClick={go}>
-                  {chosen.length > 0 ? `用选中的 ${chosen.length} 条建采购单` : '用选中的记录建采购单'}
-                </button>
-              </div>
-              <div className="pt-wrap">
-                <table className="pt" data-testid="todo-list">
-                  <thead><tr>
-                    <th className="pt-chk"><input type="checkbox" aria-label="全选" checked={allOn} onChange={toggleAll} /></th>
-                    <th>计划</th><th>货号</th><th>月份</th>
-                    <th className="r">总量</th><th className="r">还可组</th><th>各店期望与已组</th>
-                  </tr></thead>
-                  <tbody>
-                    {shown.map((l) => {
-                      const on = picked.includes(l.line_id);
-                      return (
-                        <tr key={l.line_id} data-testid={`todo-${l.line_id}`} className={on ? 'is-on' : undefined}
-                          onClick={(e) => { const t = (e.target as HTMLElement).tagName; if (t !== 'A' && t !== 'INPUT') toggle(l.line_id); }}>
-                          <td className="pt-chk">
-                            <input type="checkbox" aria-label={`选记录 ${l.line_id}`} checked={on} onChange={() => toggle(l.line_id)} />
-                          </td>
-                          <td><Link to={`/plans/${l.plan_id}`}>{planName(l)}</Link><span className="pt-rev">rev{l.rev}</span></td>
-                          <td className="pt-sku">{l.sku}</td>
-                          <td>{l.period}</td>
-                          <td className="r num">{l.total_units}</td>
-                          <td className="r num" data-testid="todo-remaining"><b className={l.remaining === 0 ? 'pt-zero' : undefined}>{l.remaining}</b></td>
-                          <td data-testid="todo-shops">{shopCell(l)}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-              {shown.length === 0 && <div className="muted">没有匹配「{q}」的记录</div>}
-            </>
-          )}
-          {/* 已组满的记录不列，给计数（折叠） */}
-          {droppedN > 0 && (
-            <Fold summary={`未列入 ${droppedN} 条`} testId="todo-dropped">
-              {dropped.map(([k, t]) => <div className="dropline" key={k}>{t} {cands.excluded[k]} 条</div>)}
-            </Fold>
-          )}
-        </>
-      )}
-    </section>
+    <Link to={`/purchase/${d.po_id}`} className={d.open_attention > 0 ? 'chip chip--bad' : 'chip chip--ours'}
+      data-testid={`draft-chip-${d.po_id}`}>
+      {d.custom_order_sn} {d.open_attention > 0 ? `待处理 ${d.open_attention} 项` : `草稿 ${d.units} 件，接着编辑`}
+    </Link>
   );
 }
 
+/** R3 / UX-D1：采购从计划开始 —— 计划抬头为主线、默认收起，展开是货号 × 月小表，格子可勾 */
 export function PurchaseHome() {
   const navigate = useNavigate();
+  const [search] = useSearchParams();
+  const focus = Number(search.get('plan')) || null;
   const [attn, setAttn] = useState<AttentionQueue | null>(null);
   const [list, setList] = useState<PoList | null>(null);
   const [checks, setChecks] = useState<PurchaseChecks | null>(null);
-  // 三个读各记各的错：一个挂了另外两个照样出数
+  const [plans, setPlans] = useState<PurchasePlans | null>(null);
+  // 各读各记各的错：一个挂了另外几个照样出数
   const [attnErr, setAttnErr] = useState<ApiError | null>(null);
   const [listErr, setListErr] = useState<ApiError | null>(null);
   const [checksErr, setChecksErr] = useState<ApiError | null>(null);
-  const [cands, setCands] = useState<CandidateLines | null>(null);
-  const [candsErr, setCandsErr] = useState<ApiError | null>(null);
-  const [sellers, setSellers] = useState<Seller[] | null>(null);
-  const [sellersErr, setSellersErr] = useState<ApiError | null>(null);
+  const [plansErr, setPlansErr] = useState<ApiError | null>(null);
+  const [q, setQ] = useState('');
+  const [picked, setPicked] = useState<number[]>([]);
+  /** 人点过的展开 / 收起；没点过的跟着搜索与 ?plan= 走 */
+  const [override, setOverride] = useState<Map<number, boolean>>(() => new Map());
 
   useEffect(() => {
-    // 各读各自落地：慢的或超时的那个不许拖住另外两块
+    // 慢的或超时的那个不许拖住另外几块
     const load = <T,>(name: string, f: () => Promise<T>, ok: (v: T) => void, bad: (e: ApiError) => void) => {
       const t0 = performance.now();
-      // api 同步抛（桩缺方法）也要落进各自的错，不能让整页白屏
-      Promise.resolve().then(f).then(ok, (e: unknown) => {
+      Promise.resolve().then(f).then((v) => {
+        console.info(`[purchase-home] ${name} ok`, JSON.stringify({ ms: Math.round(performance.now() - t0) }));
+        ok(v);
+      }, (e: unknown) => {
         const err = asApiError(e);
         console.warn(`[purchase-home] ${name} failed`, JSON.stringify({
           status: err.status, error: err.error, fields: err.fields, ms: Math.round(performance.now() - t0),
@@ -157,31 +62,107 @@ export function PurchaseHome() {
         bad(err);
       });
     };
+    load('listPurchasePlans', () => api.listPurchasePlans(), setPlans, setPlansErr);
     load('listAttention', () => api.listAttention(), setAttn, setAttnErr);
     load('listPurchaseOrders', () => api.listPurchaseOrders(), setList, setListErr);
     load('getPurchaseChecks', () => api.getPurchaseChecks(), setChecks, setChecksErr);
-    load('listCandidateLines', () => api.listCandidateLines({}), setCands, setCandsErr);
-    load('listSellers', () => api.listSellers(), setSellers, setSellersErr);
   }, []);
-  const sellerName = useMemo(() => new Map((sellers ?? []).map((x) => [x.seller_id, x.name])), [sellers]);
-  const shop = (sid: string) => sellerName.get(sid) ?? sid;
 
-  const rows = list?.purchase_orders ?? [];
-  const countOf = (state: '草稿' | '已下单'): QtyValue =>
-    list === null ? { kind: 'unknown' } : { kind: 'num', value: rows.filter((p) => p.state === state).length };
-  const draftN = useMemo(() => countOf('草稿'), [list]);        // eslint-disable-line react-hooks/exhaustive-deps
-  const placedN = useMemo(() => countOf('已下单'), [list]);     // eslint-disable-line react-hooks/exhaustive-deps
+  const all = plans?.plans ?? [];
+  const { shown, autoOpen } = useMemo(() => filterPlans(all, q), [all, q]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const auto = useMemo(() => new Set(focus === null ? autoOpen : [...autoOpen, focus]), [autoOpen, focus]);
+  const isOpen = (id: number) => override.get(id) ?? auto.has(id);
+  const toggleOpen = (id: number) => setOverride((m) => new Map(m).set(id, !(m.get(id) ?? auto.has(id))));
+  const onSearch = (v: string) => {
+    setQ(v);
+    // 新命中的计划让搜索说了算，不被之前的手动收起挡住
+    const hit = filterPlans(all, v).autoOpen;
+    if (hit.length) setOverride((m) => { const n = new Map(m); hit.forEach((id) => n.delete(id)); return n; });
+  };
+
+  // UX-D6：从采购单回来，滚到那一组
+  const focusMissing = plans !== null && focus !== null && !all.some((p) => p.plan_id === focus);
+  useEffect(() => {
+    if (plans === null || focus === null) return;
+    const el = document.getElementById(`plan-${focus}`);
+    if (el) el.scrollIntoView?.({ block: 'start' });
+    else console.info('[purchase-home] focus plan not listed', JSON.stringify({ plan_id: focus }));
+  }, [plans, focus]);
+
+  // 按清单顺序带过去，不按点选顺序：编辑器左栏的顺序与这里一致
+  const order = all.flatMap((p) => p.records.filter((r) => r.orderable));
+  const chosen = order.filter((r) => picked.includes(r.line_id));
+  const go = () => {
+    const ids = chosen.map((r) => r.line_id);
+    console.info('[purchase-home] build from todo', JSON.stringify({ lines: ids }));
+    navigate(`/purchase/new?lines=${ids.join(',')}`);
+  };
+  const quiet = plans?.excluded.nothing_to_order ?? [];
 
   return (
     <AppShell crumb="采购">
       <div className="head">
         <div className="head__main"><h1>采购</h1></div>
         <div className="head__act">
-          <button type="button" className="btn btn--primary" onClick={() => navigate('/purchase/new')}>新建采购单</button>
+          <span className="pm-search-wrap">
+            <input className="pm-search" type="search" aria-label="搜计划名或货号" placeholder="搜 计划 / 货号"
+              value={q} onChange={(e) => onSearch(e.target.value)} />
+          </span>
+          <button type="button" className="btn" onClick={() => navigate('/purchase/new')}>新建空白采购单</button>
         </div>
       </div>
 
-      <TodoList cands={cands} err={candsErr} shop={shop} sellersErr={sellersErr} />
+      <section className="sec" data-testid="todo">
+        <div className="pm-bar">
+          <h2 className="sec__title">待采购{plans && all.length > 0 && <span className="muted">（{all.length} 个计划）</span>}</h2>
+          <span className="pm-bar__sp" />
+          {all.length > 0 && (
+            <>
+              <span className="pl-sum" data-testid="todo-sum">
+                {chosen.length > 0
+                  ? <>已选 <b>{chosen.length}</b> 条，还可组 <b>{chosen.reduce((a, r) => a + r.remaining, 0)}</b> 件</>
+                  : '勾选要组到同一张采购单的记录'}
+              </span>
+              <button type="button" className="btn btn--primary" disabled={chosen.length === 0} onClick={go}>
+                {chosen.length > 0 ? `用选中的 ${chosen.length} 条建采购单` : '用选中的记录建采购单'}
+              </button>
+            </>
+          )}
+        </div>
+        {plansErr ? <ErrorDetail err={plansErr} /> : plans === null ? <div className="empty">正在取待采购记录…</div>
+          : all.length === 0 ? <div className="empty">没有待采购的记录 <Link to="/">去销售计划</Link></div>
+          : shown.length === 0 ? <div className="empty">没有匹配「{q}」的计划或货号</div> : (
+            <div className="dh-plans" data-testid="purchase-plans">
+              {shown.map((p) => (
+                <PlanBlock key={p.plan_id} p={p} open={isOpen(p.plan_id)} q={q} picked={picked} focused={p.plan_id === focus}
+                  onToggle={() => toggleOpen(p.plan_id)} onPick={setPicked} />
+              ))}
+            </div>
+          )}
+        {focusMissing && (
+          <div className="muted" data-testid="focus-missing">
+            {(() => {
+              const hit = quiet.find((x) => x.plan_id === focus);
+              return hit ? `「${hit.title}」没有可组的记录、也没有草稿，不在列表里` : `计划 #${focus} 不在待采购里`;
+            })()}
+          </div>
+        )}
+        {plans && plans.unplanned_drafts.length > 0 && (
+          <div className="dh-plan__row2 sec" data-testid="unplanned-drafts">
+            <span className="muted">不来自计划的草稿</span>
+            {plans.unplanned_drafts.map((d) => <DraftChip key={d.po_id} d={d} />)}
+          </div>
+        )}
+        {quiet.length > 0 && (
+          <Fold summary={`另有 ${quiet.length} 个计划没有可组的记录、也没有草稿`} testId="todo-dropped">
+            {quiet.map((x) => (
+              <div className="dropline" key={x.plan_id}>
+                <Link to={`/plans/${x.plan_id}`}>{x.title}</Link>{x.rev !== null && <span className="pt-rev">rev {x.rev}</span>}
+              </div>
+            ))}
+          </Fold>
+        )}
+      </section>
 
       {attnErr && <ErrorDetail err={attnErr} />}
       {attn !== null && attn.items.length > 0 && (
@@ -207,58 +188,140 @@ export function PurchaseHome() {
         </div>
       )}
 
-      <div className="sec bar" data-testid="counts">
-        <div className="kpi"><span className="kpi__n"><Qty v={draftN} /></span><span className="kpi__d">草稿</span></div>
-        <div className="kpi"><span className="kpi__n"><Qty v={placedN} /></span><span className="kpi__d">已下单</span></div>
-      </div>
-
       {checksErr && <ErrorDetail err={checksErr} />}
-      {checks !== null && (checks.ok
-        ? <div className="muted">核对全部通过</div>
-        : (
-          <>
-            <div><span className="chip chip--bad">核对有 {checks.violations.length} 项不一致</span></div>
-            <Fold summary="不一致明细">
-              <ul>
-                {checks.violations.map((v, i) => <li key={i}>{v.check_name} {v.ref}</li>)}
-              </ul>
-            </Fold>
-          </>
-        ))}
-
-      <h2 className="sec">采购单</h2>
-      {listErr ? <ErrorDetail err={listErr} /> : list === null ? (
-        <div className="empty">正在取采购单…</div>
-      ) : rows.length === 0 ? (
-        <div className="empty">还没有采购单</div>
-      ) : (
-        <div className="pt-wrap">
-          <table className="pt" data-testid="po-list">
-            <thead><tr>
-              <th>单号</th><th>供应商</th><th>本地状态</th><th>领星单号</th>
-              <th className="r">行</th><th className="r">件数</th><th>待处理</th><th>建单人</th>
-            </tr></thead>
-            <tbody>
-              {rows.map((p) => (
-                <tr key={p.po_id}>
-                  <td><Link to={`/purchase/${p.po_id}`}>{p.custom_order_sn}</Link></td>
-                  <td>{p.supplier_name}</td>
-                  <td>
-                    <span className={`chip${p.state === '已下单' ? ' chip--ok' : ''}`}>{p.state}</span>
-                    {p.is_void && <> <span className="chip chip--dim">作废</span></>}
-                  </td>
-                  <td className="num">{p.order_sn ?? (p.state === '草稿' ? <span className="pt-unknown">未下单</span> : <Qty v={{ kind: 'unknown' }} />)}</td>
-                  <td className="r num">{p.lines}</td>
-                  <td className="r num">{p.units}</td>
-                  {/* 列表接口只给计数，不给类型 */}
-                  <td>{p.open_attention > 0 ? <span className="chip chip--bad">待处理 {p.open_attention}</span> : null}</td>
-                  <td>{p.created_by}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {checks !== null && !checks.ok && (
+        <div className="sec">
+          <span className="chip chip--bad">核对有 {checks.violations.length} 项不一致</span>
+          <Fold summary="不一致明细">
+            <ul>{checks.violations.map((v, i) => <li key={i}>{v.check_name} {v.ref}</li>)}</ul>
+          </Fold>
         </div>
       )}
+
+      <AllPos list={list} err={listErr} checksOk={checks?.ok === true} />
     </AppShell>
+  );
+}
+
+function PlanBlock({ p, open, q, picked, focused, onToggle, onPick }: {
+  p: PurchasePlan; open: boolean; q: string; picked: number[]; focused: boolean;
+  onToggle: () => void; onPick: (f: (prev: number[]) => number[]) => void;
+}) {
+  const pivot = useMemo(() => pivotPlan(p.records), [p.records]);
+  const bodyId = `plan-body-${p.plan_id}`;
+  const onHead = (e: MouseEvent<HTMLDivElement>) => {
+    if ((e.target as HTMLElement).closest('a, button, input, select, label')) return;
+    onToggle();
+  };
+  return (
+    <article className={`dh-plan${focused ? ' is-focus' : ''}`} id={`plan-${p.plan_id}`} data-testid={`plan-${p.plan_id}`}>
+      <div className="dh-plan__head" onClick={onHead}>
+        <div className="dh-plan__id">
+          <TriCheck state={planPick(p, picked)} label={`选「${p.title}」全部可组记录`} disabled={p.orderable_lines === 0}
+            onChange={() => onPick((prev) => togglePlan(prev, p))} />
+          <button type="button" className="dh-plan__title" aria-expanded={open} aria-controls={open ? bodyId : undefined}
+            onClick={onToggle}>
+            {p.title}{p.rev !== null && <span className="pt-rev">rev {p.rev}</span>}
+          </button>
+          <span className="dh-plan__count">{pivot.rows.length} 个货号，{p.lines} 条记录</span>
+        </div>
+        <div className="dh-plan__kpis">
+          {([['需求', p.total], ['已组单（含草稿）', p.confirmed], ['已下单', p.ordered]] as const).map(([l, v]) => (
+            <div key={l} className="pm-kpi"><span className="pm-kpi__l">{l}</span><span className="pm-kpi__v">{v}</span></div>
+          ))}
+          <div className="pm-kpi ds-kpi--left"><span className="pm-kpi__l">还可组</span>
+            <span className={`pm-kpi__v${p.orderable_units === 0 ? ' pt-zero' : ''}`} data-testid={`plan-left-${p.plan_id}`}>
+              {p.orderable_units}
+            </span>
+          </div>
+        </div>
+        {p.drafts.length > 0 && (
+          <div className="dh-plan__row2">{p.drafts.map((d) => <DraftChip key={d.po_id} d={d} />)}</div>
+        )}
+      </div>
+      {open && <div className="dh-plan__body" id={bodyId}><PickTable planId={p.plan_id} pivot={pivot} q={q} picked={picked} onPick={onPick} /></div>}
+    </article>
+  );
+}
+
+function PickTable({ planId, pivot, q, picked, onPick }: {
+  planId: number; pivot: PickPivot; q: string; picked: number[]; onPick: (f: (prev: number[]) => number[]) => void;
+}) {
+  return (
+    <div className="pt-wrap">
+      <table className="pt" data-testid={`pivot-${planId}`}>
+        <thead>
+          <tr><th>货号</th><th>品名</th>{pivot.months.map((m) => <th key={m} className="r">{m}</th>)}<th className="r">还可组</th></tr>
+        </thead>
+        <tbody>
+          {pivot.rows.map((r) => (
+            <tr key={r.sku} className={skuHit(r.sku, q) ? 'is-on' : undefined} data-testid={`pivot-row-${planId}-${r.sku}`}>
+              <td className="pt-sku">{r.sku}</td>
+              <td className="dh-name" title={r.sku_name ?? undefined}>{r.sku_name ?? ''}</td>
+              {pivot.months.map((m) => {
+                const c = r.cells.get(m);
+                const testId = `cell-${planId}-${r.sku}-${m}`;
+                if (!c) return <td key={m} className="r dh-cell" data-testid={testId}><span className="pt-zero">—</span></td>;
+                const k = cellKind(c);
+                return (
+                  <td key={m} className="r dh-cell" data-testid={testId} title={cellTitle(r.sku, m, c)}>
+                    {k.kind === 'full' ? <span className="ds-done">已组满</span>
+                      : k.kind === 'state' ? <span className="muted">{k.state}</span> : (
+                        <label className="ph-pick">
+                          <TriCheck state={pickState(c.ids, picked)} label={`选 ${r.sku} ${m}`}
+                            onChange={() => onPick((prev) => toggleIds(prev, c.ids))} />
+                          <b>{c.remaining}</b><span className="pt-rev">/{c.total}</span>
+                        </label>
+                      )}
+                  </td>
+                );
+              })}
+              <td className="r dh-cell"><b className={r.orderable_sum === 0 ? 'pt-zero' : undefined}>{r.orderable_sum}</b></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function AllPos({ list, err, checksOk }: { list: PoList | null; err: ApiError | null; checksOk: boolean }) {
+  if (err) return <section className="sec"><h2 className="sec__title">全部采购单</h2><ErrorDetail err={err} /></section>;
+  const rows = list?.purchase_orders ?? [];
+  const voided = rows.filter((p) => p.is_void).length;
+  return (
+    <section className="sec">
+      <Fold summary={list === null ? '全部采购单（正在取…）' : `全部采购单（${rows.length} 张，含作废 ${voided}）`} testId="all-pos">
+        {checksOk && <div className="muted">核对全部通过</div>}
+        {list === null ? <div className="empty">正在取采购单…</div> : rows.length === 0 ? <div className="empty">还没有采购单</div> : (
+          <div className="pt-wrap">
+            <table className="pt" data-testid="po-list">
+              <thead><tr>
+                <th>单号</th><th>供应商</th><th>本地状态</th><th>领星单号</th>
+                <th className="r">行</th><th className="r">件数</th><th>建单人</th>
+              </tr></thead>
+              <tbody>
+                {rows.map((p) => (
+                  <tr key={p.po_id}>
+                    <td><Link to={`/purchase/${p.po_id}`}>{p.custom_order_sn}</Link></td>
+                    <td>{p.supplier_name}</td>
+                    <td>
+                      <span className={`chip${p.state === '已下单' ? ' chip--ok' : ''}`}>{p.state}</span>
+                      {p.is_void && <> <span className="chip chip--dim">作废</span></>}
+                      {/* 列表接口只给计数，不给类型 */}
+                      {p.open_attention > 0 && <> <span className="chip chip--bad">待处理 {p.open_attention}</span></>}
+                    </td>
+                    <td className="num">{p.order_sn ?? (p.state === '草稿' ? <span className="pt-unknown">未下单</span> : <Qty v={{ kind: 'unknown' }} />)}</td>
+                    <td className="r num">{p.lines}</td>
+                    <td className="r num">{p.units}</td>
+                    <td>{p.created_by}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Fold>
+    </section>
   );
 }

@@ -175,3 +175,8 @@ table.pd-t { width: 100%; border-collapse: collapse; font-size: 13px; }
 .pdt-meta b { color: var(--text-2); font-weight: 500; }
 .pdt-log { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; }
 .pdt-log__t { color: var(--text-3); margin-right: var(--space-2); font-variant-numeric: tabular-nums; }
+
+/* 采购首页（UX-D1）：计划抬头复用 dispatch.css 的 dh-*，这里只补可勾的格子与定位高亮 */
+.dh-plan.is-focus { border-color: var(--primary); }
+.dh-plan__id input[type="checkbox"], .ph-pick input { accent-color: var(--primary); width: 16px; height: 16px; }
+.ph-pick { display: inline-flex; align-items: center; gap: var(--space-2); cursor: pointer; }

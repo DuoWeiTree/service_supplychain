@@ -73,6 +73,10 @@ def test_contract_samples_match_backend_types(client, seed, lingxing):
         cur.execute("INSERT INTO supplier VALUES ('8085','01[吉信德]',now())")
         l_draft, l_nv, l_placed = _line(cur, seed), _line(cur, seed), _line(cur, seed)
     post = lambda b: client.post("/v1/purchase-orders", json=b, headers=H(seed.actor)).json()["po_id"]
+    # 无计划来源的草稿：purchase-plans 的 unplanned_drafts 要有内容才约束得了骨架。
+    # 最先建：po-list 按 po_id 倒序，排在最后才不改动已提交样本的骨架顺序
+    post({**_body(seed, l_draft, 1), "lines": [{"sku": seed.sku_a, "wid": seed.wid, "units": 2, "price": "1",
+                                                "unplanned_reason": "补货", "sources": []}]})
     draft = post(_body(seed, l_draft, 4))
     nv = post(_body(seed, l_nv, 10))
     placed = post(_body(seed, l_placed, 10))
@@ -93,10 +97,14 @@ def test_contract_samples_match_backend_types(client, seed, lingxing):
         "purchase-options": client.get("/v1/purchase-options").json(),
         "plan-lines": client.get("/v1/plan-lines?orderable=1").json(),
         "line-trace": client.get(f"/v1/plan-lines/{l_draft}/trace").json(),
+        "purchase-plans": client.get("/v1/purchase/plans").json(),
     }
     # 样本本身要有内容：空表的骨架什么也约束不了
     assert got["po-list"]["purchase_orders"] and got["plan-lines"]["lines"] and got["attention"]["items"]
     assert got["timeline-needs-verify"]["conclusion"] and got["purchase-options"]["purchasers"]
+    pp = got["purchase-plans"]
+    assert pp["plans"][0]["records"] and pp["plans"][0]["drafts"] and pp["unplanned_drafts"]
+    assert pp["excluded"]["nothing_to_order"]
 
     _compare(got)
 

@@ -1,0 +1,89 @@
+{
+  "plans": [
+    {
+      "plan_id": 2,
+      "title": "t",
+      "rev": 1,
+      "lines": 1,
+      "total": 10,
+      "confirmed": 10,
+      "ordered": 0,
+      "orderable_units": 0,
+      "orderable_lines": 0,
+      "drafts": [
+        {
+          "po_id": 3,
+          "custom_order_sn": "SCM-PO-3",
+          "units": 10,
+          "open_attention": 1
+        }
+      ],
+      "records": [
+        {
+          "line_id": 2,
+          "rev": 1,
+          "sku": "DCC1800264G1",
+          "sku_name": "猫爬架",
+          "period": "2026-10",
+          "state": "已确认",
+          "total": 10,
+          "confirmed": 10,
+          "ordered": 0,
+          "remaining": 0,
+          "orderable": false
+        }
+      ]
+    },
+    {
+      "plan_id": 1,
+      "title": "t",
+      "rev": 1,
+      "lines": 1,
+      "total": 10,
+      "confirmed": 4,
+      "ordered": 0,
+      "orderable_units": 6,
+      "orderable_lines": 1,
+      "drafts": [
+        {
+          "po_id": 2,
+          "custom_order_sn": "SCM-PO-2",
+          "units": 4,
+          "open_attention": 0
+        }
+      ],
+      "records": [
+        {
+          "line_id": 1,
+          "rev": 1,
+          "sku": "DCC1800264G1",
+          "sku_name": "猫爬架",
+          "period": "2026-10",
+          "state": "已提交",
+          "total": 10,
+          "confirmed": 4,
+          "ordered": 0,
+          "remaining": 6,
+          "orderable": true
+        }
+      ]
+    }
+  ],
+  "unplanned_drafts": [
+    {
+      "po_id": 1,
+      "custom_order_sn": "SCM-PO-1",
+      "units": 2,
+      "open_attention": 0
+    }
+  ],
+  "excluded": {
+    "nothing_to_order": [
+      {
+        "plan_id": 3,
+        "title": "t",
+        "rev": 1
+      }
+    ]
+  }
+}

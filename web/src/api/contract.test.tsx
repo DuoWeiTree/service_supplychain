@@ -3,7 +3,7 @@ import { render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
 import type {
-  AttentionQueue, CandidateLines, LineInPurchase, LineTrace, PoList, PoTimeline, PreflightResult, PurchaseOptions,
+  AttentionQueue, CandidateLines, LineInPurchase, LineTrace, PoList, PurchasePlans, PoTimeline, PreflightResult, PurchaseOptions,
   PurchaseOrder, SubmitResult, CellResult, DispatchGate, DispatchPlans, SheetDetail, SheetGrid, SheetList, SheetPreflight,
 } from './types';
 import submitResubmit from '../testing/fixtures/contract/submit-resubmit.json';
@@ -20,6 +20,7 @@ import attention from '../testing/fixtures/contract/attention.json';
 import options from '../testing/fixtures/contract/purchase-options.json';
 import planLines from '../testing/fixtures/contract/plan-lines.json';
 import lineTrace from '../testing/fixtures/contract/line-trace.json';
+import purchasePlans from '../testing/fixtures/contract/purchase-plans.json';
 import sheetList from '../testing/fixtures/contract/sheet-list.json';
 import dispatchPlans from '../testing/fixtures/contract/dispatch-plans.json';
 import sheetDetail from '../testing/fixtures/contract/sheet-detail.json';
@@ -28,7 +29,7 @@ import sheetCell from '../testing/fixtures/contract/sheet-cell.json';
 import sheetPreflight from '../testing/fixtures/contract/sheet-preflight.json';
 import sheetBlocked from '../testing/fixtures/contract/sheet-confirm-blocked.json';
 import { fromPo, toBody, updateLine } from '../pages/purchase/poEditorModel';
-import { ok, type Handler } from '../testing/backendStub';
+import { ok, stubBackend, type Handler } from '../testing/backendStub';
 import { mountPurchase } from '../testing/purchaseBackend';
 
 /** ★ 契约：这些 JSON 是真后端吐出来的（tests/test_web_contract.py 写、并按类型骨架守着）。
@@ -51,6 +52,7 @@ const typed = {
   options: options satisfies Widen<PurchaseOptions>,
   planLines: planLines satisfies Widen<CandidateLines>,
   lineTrace: lineTrace satisfies Widen<LineTrace>,
+  purchasePlans: purchasePlans satisfies Widen<PurchasePlans>,
   submitResubmit: submitResubmit satisfies Widen<SubmitResult>,
   submitBlocked: submitBlocked satisfies Widen<{ error: string; hint: string; plan_id: number; lines: LineInPurchase[] }>,
   sheetList: sheetList satisfies Widen<SheetList>,
@@ -133,6 +135,22 @@ describe('契约样本 · 页面', () => {
     expect(await screen.findByTestId('source-summary'))
       .toHaveTextContent(`来自 销售计划「${l.plan_title}」rev${l.rev} 的 1 条记录`);
     expect(screen.getByTestId(`cand-${l.line_id}`)).toHaveTextContent(`${l.plan_title} rev${l.rev} ${l.period}`);
+  });
+
+  it('★ 真后端的 purchase/plans：计划抬头出数，草稿 chip 链到草稿，无事可做的计划点名', async () => {
+    const pp = typed.purchasePlans as unknown as PurchasePlans;
+    stubBackend({ ...routes(), 'GET /v1/purchase/plans': () => ok(pp), 'GET /v1/purchase-orders': () => ok(poList),
+      'GET /v1/checks/purchase': () => ok({ ok: true, counts: {}, violations: [] }) });
+    const { ApiError: E } = await import('./client');
+    const { createHttpApi } = await import('./http');
+    vi.doMock('../api', () => ({ api: createHttpApi({ base: '/v1', timeoutMs: 1000 }), ApiError: E }));
+    const { PurchaseHome } = await import('../pages/purchase/PurchaseHome');
+    render(<MemoryRouter initialEntries={['/purchase']}><PurchaseHome /></MemoryRouter>);
+    const p = pp.plans[0]!;
+    expect(await screen.findByTestId(`plan-${p.plan_id}`)).toHaveTextContent(`已组单（含草稿）${p.confirmed}`);
+    expect(screen.getByTestId(`draft-chip-${p.drafts[0]!.po_id}`)).toHaveAttribute('href', `/purchase/${p.drafts[0]!.po_id}`);
+    expect(screen.getByTestId('todo-dropped')).toHaveTextContent(`另有 ${pp.excluded.nothing_to_order.length} 个计划`);
+    expect(within(screen.getByTestId('unplanned-drafts')).getAllByRole('link')).toHaveLength(pp.unplanned_drafts.length);
   });
 
   it('已下单的单：详情两轴、领星单号', async () => {

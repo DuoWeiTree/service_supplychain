@@ -7,7 +7,7 @@ import type {
   CatalogResult, CountKey, DroppedPurchaseCell, GridResponse, LeadTime,
   LeadTimeResult, NoHistoryEntry, PlanSummary, RevList, Seller, Sid, SkippedCell, SubmitResult, SystemBasisNoSource,
   CandidateLine, LineState, PoBody, PoId, PoLine, PoSource, PoSummary, PurchaseOptions, PurchaseOrder,
-  PurchaseChecks, PreflightGate,
+  PurchaseChecks, PreflightGate, PurchasePlan, PurchasePlans,
 } from '../api/types';
 import plansFixture from './fixtures/plans.json';
 import gridFixture from './fixtures/grid-1.json';
@@ -644,6 +644,40 @@ export function createMemoryBackend(): SupplyChainApi {
       excluded.fully_confirmed = lines.filter((l) => l.remaining <= 0).length;
       lines = lines.filter((l) => l.remaining > 0);
       return { lines, groups: {}, excluded };
+    },
+    // 同 api/ui/lines.py::list_purchase_plans：活记录按计划；列出 = 有可组记录或挂着草稿，其余点名
+    async listPurchasePlans() {
+      const live = planLines.filter((l) => l.state !== '已撤销' && l.state !== '已完结');
+      const drafts = [...pos.values()].filter((p) => p.state === '草稿' && !p.is_void && !p.discarded_at);
+      const name = (sku: string) => catalog.items.find((x) => x.sku === sku)?.name ?? null;
+      const title = (pid: number) => list.plans.find((x) => x.plan_id === pid)?.title ?? '';
+      const pids = [...new Set([...live.map((l) => l.plan_id), ...drafts.flatMap((p) => p.lines.flatMap((ln) =>
+        ln.sources.map((sc) => planLines.find((l) => l.line_id === sc.line_id)!.plan_id)))])].sort((a, b) => b - a);
+      const plans: PurchasePlan[] = [];
+      const quiet: PurchasePlans['excluded']['nothing_to_order'] = [];
+      for (const pid of pids) {
+        const records = live.filter((l) => l.plan_id === pid).map((l) => {
+          const remaining = l.total_units - l.confirmed_units;
+          return { line_id: l.line_id, rev: l.rev, sku: l.sku, sku_name: name(l.sku), period: l.period, state: l.state,
+            total: l.total_units, confirmed: l.confirmed_units, ordered: l.ordered_units, remaining,
+            orderable: ORDERABLE.includes(l.state) && remaining > 0 };
+        });
+        const mine = drafts.flatMap((p) => {
+          const units = p.lines.flatMap((ln) => ln.sources)
+            .filter((sc) => planLines.find((l) => l.line_id === sc.line_id)?.plan_id === pid).reduce((a, sc) => a + sc.units, 0);
+          return units > 0 ? [{ po_id: p.po_id, custom_order_sn: p.custom_order_sn, units, open_attention: 0 }] : [];
+        });
+        const ok = records.filter((r) => r.orderable);
+        const rev = records.length ? Math.max(...records.map((r) => r.rev)) : null;
+        if (ok.length === 0 && mine.length === 0) { quiet.push({ plan_id: pid, title: title(pid), rev }); continue; }
+        plans.push({ plan_id: pid, title: title(pid), rev, lines: records.length,
+          total: records.reduce((a, r) => a + r.total, 0), confirmed: records.reduce((a, r) => a + r.confirmed, 0),
+          ordered: records.reduce((a, r) => a + r.ordered, 0), orderable_units: ok.reduce((a, r) => a + r.remaining, 0),
+          orderable_lines: ok.length, drafts: mine, records });
+      }
+      const unplanned = drafts.filter((p) => p.lines.every((ln) => ln.sources.length === 0))
+        .map((p) => ({ po_id: p.po_id, custom_order_sn: p.custom_order_sn, units: p.lines.reduce((a, ln) => a + ln.units, 0), open_attention: 0 }));
+      return { plans, unplanned_drafts: unplanned, excluded: { nothing_to_order: quiet } };
     },
     async getLineTrace(lineId) {
       const l = planLines.find((x) => x.line_id === lineId);

@@ -1,4 +1,5 @@
 import { useId, type ButtonHTMLAttributes, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 import type { LxObservation, PreflightGate } from '../../api/types';
 import { fmtAt } from './fmt';
 import { gateText } from './poEditorModel';
@@ -124,5 +125,14 @@ export function GateList({ gates, source }: { gates: PreflightGate[]; source: st
         ))}
       </ol>
     </section>
+  );
+}
+
+/** UX-D6：页内面包屑「采购 / 单号」，「采购」回列表并定位到来源计划（AppShell 的 crumb 只是一段字） */
+export function PoCrumbs({ home, here }: { home: string; here: string }) {
+  return (
+    <nav className="pe-crumbs" aria-label="面包屑" data-testid="po-crumbs">
+      <Link to={home}>采购</Link><span className="pe-crumbs__sep" aria-hidden="true">/</span><span>{here}</span>
+    </nav>
   );
 }

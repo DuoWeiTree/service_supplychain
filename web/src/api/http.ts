@@ -167,6 +167,7 @@ export function createHttpApi(opt: HttpOptions): SupplyChainApi {
       return call('GET', `/plan-lines${qs({ plan_ids: planIds, sku: params.sku, orderable: 1 })}`);
     },
     getLineTrace: (lineId) => call('GET', `/plan-lines/${encodeURIComponent(lineId)}/trace`),
+    listPurchasePlans: () => call('GET', '/purchase/plans'),
 
     listSheets: (state) => call('GET', `/sheets${qs({ state })}`),
     listDispatchPlans: () => call('GET', '/dispatch/plans'),

@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, RouterProvider, Routes, createMemoryRouter } from 'react-router-dom';
 import type { CandidateLines, PurchaseOptions, PurchaseOrder } from '../../api/types';
 
 beforeEach(() => { vi.resetModules(); });
-afterEach(() => { vi.doUnmock('../../api'); vi.restoreAllMocks(); });
+afterEach(() => { vi.doUnmock('../../api'); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 const OPTIONS: PurchaseOptions = {
   suppliers: [{ supplier_id: 'S-1001', name: '东莞宏达' }],
@@ -41,7 +41,8 @@ const DRAFT: PurchaseOrder = {
   lx: null,
 };
 
-async function mount(entry: string, over: Record<string, unknown> = {}) {
+/** `history`：给了就用 data router（离开保护的 useBlocker 只在 data router 里生效），entry 是栈顶 */
+async function mount(entry: string, over: Record<string, unknown> = {}, history?: string[]) {
   const { ApiError } = await import('../../api/client');
   const api = {
     listAttention: vi.fn(async () => ({ count: 0, items: [] })),
@@ -64,6 +65,24 @@ async function mount(entry: string, over: Record<string, unknown> = {}) {
   };
   vi.doMock('../../api', () => ({ api, ApiError }));
   const { PoEditor, PoRoute } = await import('./PoEditor');
+  if (history) {
+    // data router 每次导航 new Request({ signal })：jsdom 的 AbortSignal 过不了 node 的 Request 校验。
+    // 路由只读 url / method / signal，给它一个只带这三样的 Request
+    vi.stubGlobal('Request', class {
+      url: string; method: string; signal: AbortSignal | undefined;
+      constructor(url: string | URL, init?: { method?: string; signal?: AbortSignal }) {
+        this.url = String(url); this.method = init?.method ?? 'GET'; this.signal = init?.signal;
+      }
+    });
+    const router = createMemoryRouter([
+      { path: '/purchase', element: <div>HOME-PAGE</div> },
+      { path: '/purchase/new', element: <PoEditor poId={null} /> },
+      { path: '/purchase/:poId', element: <PoRoute /> },
+    ], { initialEntries: [...history, entry], initialIndex: history.length });
+    render(<RouterProvider router={router} />);
+    await act(async () => {});
+    return { api, ApiError, router };
+  }
   render(
     <MemoryRouter initialEntries={[entry]}>
       <Routes>
@@ -74,11 +93,20 @@ async function mount(entry: string, over: Record<string, unknown> = {}) {
     </MemoryRouter>,
   );
   await act(async () => {});
-  return { api, ApiError };
+  return { api, ApiError, router: null };
 }
 
+/** UX-D5：左栏货号默认收起（带记录进来 / 本单已填的除外）；要看某条记录先全部展开 */
+const showRec = async (lineId: number) => {
+  await screen.findByTestId('candidates');
+  if (!screen.queryByTestId(`cand-${lineId}`)) {
+    const btn = await screen.findByRole('button', { name: '全部展开' });
+    await userEvent.click(btn);
+  }
+  return screen.findByTestId(`cand-${lineId}`);
+};
 const sellerRow = async (lineId: number, sid: string) =>
-  within(await screen.findByTestId(`cand-${lineId}`)).getByTestId(`seller-${sid}`);
+  within(await showRec(lineId)).getByTestId(`seller-${sid}`);
 /** 设计稿：在店铺行的件数框里直接打数，Enter 采用（绝对量） */
 const allot = async (row: HTMLElement, n: string) => {
   const box = within(row).getByRole('textbox');
@@ -134,7 +162,7 @@ describe('采购单编辑器：新建', () => {
 
   it('★ PB-D22 期望为空（本月断货）的记录：不灰显、期望写未知、照样能加', async () => {
     await mount('/purchase/new');
-    const rec = await screen.findByTestId('cand-103');
+    const rec = await showRec(103);
     expect(rec).not.toHaveClass('muted');
     expect(rec).not.toHaveTextContent('无分店依据');
     const row = within(rec).getByTestId('seller-11072');
@@ -401,7 +429,7 @@ describe('店名', () => {
     const box = await screen.findByTestId('seller-names-failed');
     expect(box).toHaveTextContent('店名取不到，按店编号显示');
     expect(box).toHaveTextContent('店铺取不到');
-    expect(within(await screen.findByTestId('cand-103')).getByTestId('seller-11072')).toHaveTextContent('11072');
+    expect(within(await showRec(103)).getByTestId('seller-11072')).toHaveTextContent('11072');
   });
 });
 
@@ -468,7 +496,10 @@ describe('★ 从待采购带过来（?lines=，R3）', () => {
     await mount('/purchase/new?lines=101');
     await screen.findByTestId('cand-101');
     await userEvent.click(screen.getByRole('button', { name: '加入其他待采购记录' }));
-    expect(await screen.findByTestId('cand-103')).toBeInTheDocument();
+    // 带来的那条仍展开；新放开的货号默认收起，货号行写得出它有几条
+    expect(screen.getByTestId('cand-101')).toBeInTheDocument();
+    expect(await screen.findByTestId('cand-sku-SKU-B')).toHaveTextContent('1 条记录，剩 80，本单已填 0');
+    expect(await showRec(103)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '加入其他待采购记录' })).toBeNull();
   });
 
@@ -512,7 +543,7 @@ describe('★ 从待采购带过来（?lines=，R3）', () => {
 
   it('没带 ?lines=：列全部，不出摘要', async () => {
     await mount('/purchase/new');
-    expect(await screen.findByTestId('cand-103')).toBeInTheDocument();
+    expect(await showRec(103)).toBeInTheDocument();
     expect(screen.queryByTestId('source-summary')).toBeNull();
   });
 });
@@ -538,5 +569,118 @@ describe('★ 明细里的来源链：不展开就看得到', () => {
     await mount('/purchase/1');
     const src = within(await screen.findByTestId('po-line-1')).getByTestId('sources');
     expect(src).toHaveTextContent('春季计划 rev1 SKU-A 2026-10 → A4Pet-US 30 件');
+  });
+});
+
+describe('★ 续编草稿与量大时的左栏（UX-D4 / D5）', () => {
+  const OTHER = { ...CANDS.lines[1]!, line_id: 105, plan_id: 7, plan_title: '别的计划', sku: 'SKU-C' };
+  const WITH_OTHER: CandidateLines = { ...CANDS, lines: [...CANDS.lines, OTHER] };
+
+  it('★ 续编只列本单来源计划的记录，写明来自哪个计划；「加入其他待采购记录」放开', async () => {
+    await mount('/purchase/1', { listCandidateLines: vi.fn(async () => WITH_OTHER) });
+    expect(await screen.findByTestId('cand-101')).toBeInTheDocument();
+    expect(screen.getByTestId('source-summary')).toHaveTextContent('来自 销售计划「春季计划」rev1 的 1 条记录');
+    expect(screen.queryByTestId('cand-sku-SKU-C')).toBeNull();
+    expect(screen.getByTestId('cand-sku-SKU-B')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: '加入其他待采购记录' }));
+    expect(await screen.findByTestId('cand-sku-SKU-C')).toBeInTheDocument();
+  });
+
+  it('本单没有任何计划来源：不收窄', async () => {
+    const blank: PurchaseOrder = { ...DRAFT, lines: [{ ...DRAFT.lines[0]!, sources: [], sources_units: 0, unplanned_units: 30, unplanned_reason: '补' }] };
+    await mount('/purchase/1', { getPurchaseOrder: vi.fn(async () => blank), listCandidateLines: vi.fn(async () => WITH_OTHER) });
+    expect(await screen.findByTestId('cand-sku-SKU-C')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '加入其他待采购记录' })).toBeNull();
+  });
+
+  it('★ 按货号折叠：本单已填的展开，其余收起，货号行写记录数 · 剩 · 本单已填', async () => {
+    await mount('/purchase/1');
+    expect(await screen.findByTestId('cand-101')).toBeInTheDocument();
+    expect(screen.queryByTestId('cand-103')).toBeNull();
+    const head = within(screen.getByTestId('cand-sku-SKU-A')).getByRole('button', { name: /^SKU-A/ });
+    expect(head).toHaveAttribute('aria-expanded', 'true');
+    expect(head).toHaveTextContent('1 条记录，剩 120，本单已填 30');
+    await userEvent.click(head);
+    expect(screen.queryByTestId('cand-101')).toBeNull();
+  });
+
+  it('★ 搜货号：只留命中的货号并展开；搜不到写没有匹配', async () => {
+    await mount('/purchase/new');
+    await userEvent.type(await screen.findByRole('searchbox', { name: '搜货号' }), 'sku-b');
+    expect(screen.getByTestId('cand-103')).toBeInTheDocument();
+    expect(screen.queryByTestId('cand-sku-SKU-A')).toBeNull();
+    await userEvent.clear(screen.getByRole('searchbox', { name: '搜货号' }));
+    await userEvent.type(screen.getByRole('searchbox', { name: '搜货号' }), 'NOPE');
+    expect(screen.getByText('没有匹配「NOPE」的货号')).toBeInTheDocument();
+  });
+
+  it('★ 右栏一行一货号：来源折在行内，写条数与件数', async () => {
+    await mount('/purchase/1');
+    const line = await screen.findByTestId('po-line-1');
+    expect(line.tagName).toBe('TR');
+    expect(line).toHaveTextContent('1 条来源，30 件');
+  });
+});
+
+describe('★ 回列表与离开保护（UX-D6 · 评审 P1）', () => {
+  it('面包屑「采购」链回列表并定位到来源计划', async () => {
+    await mount('/purchase/1');
+    const crumbs = await screen.findByTestId('po-crumbs');
+    expect(within(crumbs).getByRole('link', { name: '采购' })).toHaveAttribute('href', '/purchase?plan=3');
+    expect(crumbs).toHaveTextContent('SCM-PO-1');
+  });
+
+  it('新建带记录进来：面包屑定位到带来的计划', async () => {
+    await mount('/purchase/new?lines=101');
+    await screen.findByTestId('cand-101');
+    expect(within(screen.getByTestId('po-crumbs')).getByRole('link', { name: '采购' })).toHaveAttribute('href', '/purchase?plan=3');
+  });
+
+  it('★ 有未保存的改动：点「采购」先问；留下不走，离开才走', async () => {
+    await mount('/purchase/1', {}, ['/purchase']);
+    const line = await screen.findByTestId('po-line-1');
+    await userEvent.type(within(line).getByLabelText('单价'), '9');
+    await userEvent.click(within(screen.getByTestId('po-crumbs')).getByRole('link', { name: '采购' }));
+    const dlg = await screen.findByRole('dialog', { name: '有未保存的改动' });
+    await userEvent.click(within(dlg).getByRole('button', { name: '留下' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByTestId('po-line-1')).toBeInTheDocument();
+    await userEvent.click(within(screen.getByTestId('po-crumbs')).getByRole('link', { name: '采购' }));
+    await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: '离开，丢掉改动' }));
+    expect(await screen.findByText('HOME-PAGE')).toBeInTheDocument();
+  });
+
+  it('没改过：直接走，不问', async () => {
+    await mount('/purchase/1', {}, ['/purchase']);
+    await screen.findByTestId('po-line-1');
+    await userEvent.click(within(screen.getByTestId('po-crumbs')).getByRole('link', { name: '采购' }));
+    expect(await screen.findByText('HOME-PAGE')).toBeInTheDocument();
+  });
+
+  it('★ 有未保存的改动时挂 beforeunload；保存后撤掉', async () => {
+    const add = vi.spyOn(window, 'addEventListener');
+    const rm = vi.spyOn(window, 'removeEventListener');
+    await mount('/purchase/1', {}, ['/purchase']);
+    const line = await screen.findByTestId('po-line-1');
+    await userEvent.type(within(line).getByLabelText('单价'), '9');
+    expect(add.mock.calls.some(([t]) => t === 'beforeunload')).toBe(true);
+    await userEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    await vi.waitFor(() => expect(rm.mock.calls.some(([t]) => t === 'beforeunload')).toBe(true));
+  });
+
+  it('★ 新建保存成功：replace 到 /purchase/:id，不问离开；返回落回列表而不是空编辑器', async () => {
+    const { router } = await mount('/purchase/new?lines=101', {}, ['/purchase']);
+    await userEvent.selectOptions(await screen.findByLabelText('供应商'), 'S-1001');
+    await userEvent.selectOptions(screen.getByLabelText('采购方'), '111');
+    await userEvent.selectOptions(screen.getByLabelText('采购员'), '10925905');
+    await userEvent.selectOptions(screen.getByLabelText('质检方式'), '2');
+    await allot(await sellerRow(101, '11072'), '30');
+    await userEvent.selectOptions(screen.getByLabelText('仓库'), '101');
+    await userEvent.type(within(screen.getByTestId('po-line-1')).getByLabelText('单价'), '1');
+    await userEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    await vi.waitFor(() => expect(router!.state.location.pathname).toBe('/purchase/9'));
+    expect(screen.queryByRole('dialog', { name: '有未保存的改动' })).toBeNull();
+    await act(async () => { await router!.navigate(-1); });
+    expect(router!.state.location.pathname).toBe('/purchase');
   });
 });

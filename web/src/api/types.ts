@@ -787,6 +787,27 @@ export interface CandidateLines {
 }
 export interface CandidateLineQuery { plan_ids?: number[]; sku?: string }
 
+/** GET /purchase/plans（UX-D1/D2）：待采购按销售计划分组。confirmed 含草稿，ordered 只算已下单 */
+export interface PurchasePlanDraft { po_id: PoId; custom_order_sn: string; /** 只算来自本计划的来源 */ units: number; open_attention: number }
+export interface PurchasePlanRecord {
+  line_id: number; rev: number; sku: string; sku_name: string | null; period: Period; state: LineState;
+  total: number; confirmed: number; ordered: number; remaining: number;
+  /** 与 /plan-lines?orderable=1 同一判据 */
+  orderable: boolean;
+}
+export interface PurchasePlan {
+  plan_id: PlanId; title: string; /** 只挂草稿、没有活记录的计划为 null */ rev: number | null;
+  lines: number; total: number; confirmed: number; ordered: number;
+  orderable_units: number; orderable_lines: number;
+  drafts: PurchasePlanDraft[]; records: PurchasePlanRecord[];
+}
+export interface PurchasePlans {
+  plans: PurchasePlan[];
+  unplanned_drafts: PurchasePlanDraft[];
+  /** 没有可组记录、也没挂草稿的计划：不列，点名 */
+  excluded: { nothing_to_order: { plan_id: PlanId; title: string; rev: number | null }[] };
+}
+
 export interface LineTrace {
   line_id: number;
   sku: string;
