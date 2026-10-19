@@ -12,8 +12,9 @@ import {
 import { Modal } from '../components/Modal';
 import { SkuImagePreview } from './SkuImagePreview';
 import { useInFlight } from '../shell/useInFlight';
-import { buildCards, cardMatches, monthLabel, riskOrder, stockState, summarize, type CardSummary, type SkuCard } from './planSheetModel';
-import { demandKey, purchaseKey, removeKey } from './usePlanGridSaves';
+import { buildCards, cardMatches, monthLabel, narrowCard, riskOrder, stockState, summarize, type CardSummary, type SkuCard } from './planSheetModel';
+import { demandKey, purchaseKey, removeKey, type CellEdit } from './usePlanGridSaves';
+import { planPaste, type PasteRow } from './planSheetPaste';
 
 /** ★ 设计取值 · 未实测：期末低于这个件数就铺「偏低」底色。
  *  没有任何一条口径指到这个 50 —— 它只改底色和「偏低」筛选，不参与任何一个数。 */
@@ -25,6 +26,8 @@ const HEAD_H = 40;
 const OVERSCAN = 6;
 /** 量不到可视区高度时（jsdom、首帧）按这个算 */
 const FALLBACK_VIEW_H = 640;
+/** ★ UX-D15（负责人 2026-10-16 定 N = 20）：一次清空 / 覆盖人填的数超过这么多格，先列清单再确认 */
+export const BULK_CONFIRM = 20;
 
 export interface PlanSheetProps {
   model: GridModel;
@@ -34,6 +37,8 @@ export interface PlanSheetProps {
   inputErr: Record<string, string>;
   onDemand: (sellerSku: string, sid: Sid, period: Period, raw: string) => void;
   onPurchase: (sku: string, period: Period, raw: string) => void;
+  /** 粘贴 / ⌘D / ⌘R / Del：一批一次请求（UX-D14） */
+  onCells: (edits: CellEdit[]) => void;
   /** 整个货号（全部店的 msku + 采购格） */
   onRemoveSku: (sku: string) => void;
   /** 这一家店的该货号 msku */
@@ -50,8 +55,14 @@ type NavRow =
 /** 表里的一行（含不能落光标的：多 msku 店铺的合计行、没有采购行的货号行） */
 type SheetRow =
   | { type: 'sku'; card: SkuCard; nav: number | undefined }
-  | { type: 'store'; card: SkuCard; block: SkuBlock; nav: number | undefined }
-  | { type: 'msku'; card: SkuCard; block: SkuBlock; row: MskuRow; nav: number };
+  | { type: 'store'; card: SkuCard; block: SkuBlock; nav: number | undefined; hit: boolean }
+  | { type: 'msku'; card: SkuCard; block: SkuBlock; row: MskuRow; nav: number; hit: boolean };
+
+/** 行的身份：光标 / 锚点记它，不记下标 */
+const rowKeyOf = (n: NavRow) => (n.kind === 'purchase' ? `p:${n.card.sku}` : `d:${n.row.seller_sku}:${n.row.sid}`);
+interface Pos { k: string; r: number; c: number }
+/** 一批里的一格：before = 人填的那一层（判「清空 / 覆盖」用） */
+interface Change { n: NavRow; p: Period; raw: string; before: number | null }
 
 type Filter = 'all' | 'out' | 'todo' | 'low';
 type Sort = 'risk' | 'sales' | 'sku';
@@ -92,9 +103,14 @@ export function PlanSheet(props: PlanSheetProps) {
   const [foldedSkus, setFoldedSkus] = useState<Set<string>>(new Set());
   // ★ 多 msku 的店铺默认展开：要填的数就在 msku 那一层，收着等于让人多点一下
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-  const [cur, setCur] = useState({ r: 0, c: 0 });
-  const [anchor, setAnchor] = useState({ r: 0, c: 0 });
-  const [editing, setEditingState] = useState<{ draft: string; mode: 'replace' | 'edit' } | null>(null);
+  // ★ 光标记行的身份 + 月，不记下标：「风险优先」排序、「有待填」筛选会在填数重拉后重排，
+  //   下标不变就指到了别的 msku，下一次输入落进别人的格子而不报错（评审 P1）。r 只是身份找不到时的退路
+  const [curPos, setCurPos] = useState<Pos>({ k: '', r: 0, c: 0 });
+  const [anchorPos, setAnchorPos] = useState<Pos>({ k: '', r: 0, c: 0 });
+  // 编辑框开着时目标格在开的那一刻定死：期间重排也不会写到别处
+  const [editing, setEditingState] = useState<{ draft: string; mode: 'replace' | 'edit'; n: NavRow; p: Period } | null>(null);
+  const [confirm, setConfirm] = useState<{ changes: Change[]; destructive: Change[] } | null>(null);
+  const [pasteNotes, setPasteNotes] = useState<string[] | null>(null);
   // 在飞期间显示人刚填的数，落地后以服务端重载的为准
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [scrollTop, setScrollTop] = useState(0);
@@ -174,15 +190,29 @@ export function PlanSheet(props: PlanSheetProps) {
   for (const card of shown) {
     rows.push({ type: 'sku', card, nav: card.purchase ? addNav({ kind: 'purchase', card }) : undefined });
     if (foldedSkus.has(card.sku)) continue;
-    for (const b of card.stores) {
+    // 搜索只命中 msku 时只留命中的 msku 行（店铺块强制展开），不是整个货号几十行
+    const { stores, hits } = narrowCard(card, query);
+    for (const { block: b, mskus } of stores) {
       const single = b.mskus.length === 1 ? b.mskus[0]! : null;
-      rows.push({ type: 'store', card, block: b, nav: single ? addNav({ kind: 'demand', block: b, row: single }) : undefined });
-      if (isOpen(b)) for (const r of b.mskus) rows.push({ type: 'msku', card, block: b, row: r, nav: addNav({ kind: 'demand', block: b, row: r }) });
+      rows.push({ type: 'store', card, block: b, nav: single ? addNav({ kind: 'demand', block: b, row: single }) : undefined,
+        hit: single !== null && hits.has(single) });
+      const forced = mskus.some((r) => hits.has(r));
+      if (b.mskus.length > 1 && (forced || isOpen(b))) {
+        for (const r of mskus) rows.push({ type: 'msku', card, block: b, row: r, nav: addNav({ kind: 'demand', block: b, row: r }), hit: hits.has(r) });
+      }
     }
   }
-  const cr = Math.min(cur.r, Math.max(0, nav.length - 1));
-  const ar = Math.min(anchor.r, Math.max(0, nav.length - 1));
-  const sel = { r0: Math.min(cr, ar), r1: Math.max(cr, ar), c0: Math.min(cur.c, anchor.c), c1: Math.max(cur.c, anchor.c) };
+  const navKeys = nav.map(rowKeyOf);
+  const idxOf = (pos: Pos) => {
+    const i = navKeys.indexOf(pos.k);
+    return i >= 0 ? i : Math.min(pos.r, Math.max(0, nav.length - 1));
+  };
+  const cr = idxOf(curPos);
+  const ar = idxOf(anchorPos);
+  const cur = { r: cr, c: curPos.c };
+  const setCur = (t: { r: number; c: number }) => setCurPos({ k: navKeys[t.r] ?? '', r: t.r, c: t.c });
+  const setAnchor = (t: { r: number; c: number }) => setAnchorPos({ k: navKeys[t.r] ?? '', r: t.r, c: t.c });
+  const sel = { r0: Math.min(cr, ar), r1: Math.max(cr, ar), c0: Math.min(cur.c, anchorPos.c), c1: Math.max(cur.c, anchorPos.c) };
   const inSel = (r: number, c: number) => r >= sel.r0 && r <= sel.r1 && c >= sel.c0 && c <= sel.c1;
 
   function keyOf(n: NavRow, p: Period): string {
@@ -233,8 +263,8 @@ export function PlanSheet(props: PlanSheetProps) {
     const ed = editRef.current;
     if (!ed) return;
     editRef.current = null;
-    const n = nav[cr]; const p = periods[cur.c];
-    if (n && p) {
+    const { n, p } = ed;
+    {
       const raw = ed.draft.trim();
       const before = humanOf(n, p);
       const onScreen = shownOf(n, p);
@@ -252,7 +282,7 @@ export function PlanSheet(props: PlanSheetProps) {
     const n = nav[cr]; const p = periods[cur.c];
     if (!n || !p || pending.has(keyOf(n, p))) return;
     const v = shownOf(n, p);
-    setEditing({ draft: mode === 'replace' ? first : v === null ? '' : String(v), mode });
+    setEditing({ draft: mode === 'replace' ? first : v === null ? '' : String(v), mode, n, p });
   }
 
   function eachSel(fn: (n: NavRow, p: Period) => void) {
@@ -260,6 +290,24 @@ export function PlanSheet(props: PlanSheetProps) {
       const n = nav[r]; const p = periods[c];
       if (n && p) fn(n, p);
     }
+  }
+
+  function toEdit(c: Change): CellEdit {
+    return c.n.kind === 'purchase' ? { kind: 'purchase', sku: c.n.card.sku, period: c.p, raw: c.raw }
+      : { kind: 'demand', seller_sku: c.n.row.seller_sku, sid: c.n.row.sid, period: c.p, raw: c.raw };
+  }
+  const labelOf = (n: NavRow) => (n.kind === 'purchase' ? `计划采购 ${n.card.sku}` : `计划销量 ${n.row.seller_sku}`);
+  function send(changes: Change[]) {
+    setDrafts((d) => ({ ...d, ...Object.fromEntries(changes.map((c) => [keyOf(c.n, c.p), c.raw])) }));
+    props.onCells(changes.map(toEdit));
+  }
+  /** 粘贴 / 填充 / 清空都走这里：一批一次请求；清空 / 覆盖人填的数超过 BULK_CONFIRM 格先列清单（UX-D15） */
+  function writeBatch(changes: Change[]) {
+    const live = changes.filter((c) => !pending.has(keyOf(c.n, c.p)));
+    if (live.length === 0) return;
+    const destructive = live.filter((c) => c.before !== null && c.raw.trim() !== String(c.before));
+    if (destructive.length > BULK_CONFIRM) { setConfirm({ changes: live, destructive }); return; }
+    send(live);
   }
 
   /** 从光标往后找第一格「待填」—— 只找销量格：采购空着是「不买」，不是没填 */
@@ -290,28 +338,37 @@ export function PlanSheet(props: PlanSheetProps) {
     else if (k === 'Enter' || k === 'F2') { e.preventDefault(); startEdit('edit'); }
     else if (k === 'Delete' || k === 'Backspace') {
       e.preventDefault();
-      eachSel((n, p) => { if (humanOf(n, p) !== null) save(n, p, ''); });
+      const changes: Change[] = [];
+      eachSel((n, p) => { const before = humanOf(n, p); if (before !== null) changes.push({ n, p, raw: '', before }); });
+      writeBatch(changes);
     }
     // ★ ⌘D 只在同一类行之间填：采购只填到采购，销量只填到销量 —— 两种量单位相同，填串了不会报错
     else if (mod && (k === 'd' || k === 'D')) {
       e.preventDefault();
       const top = nav[sel.r0];
+      const changes: Change[] = [];
       for (let c = sel.c0; c <= sel.c1; c++) {
         const p = periods[c]; if (!p || !top) continue;
         const v = shownOf(top, p);
         for (let r = sel.r0 + 1; r <= sel.r1; r++) {
           const n = nav[r];
-          if (n && n.kind === top.kind && shownOf(n, p) !== v) save(n, p, v === null ? '' : String(v));
+          if (n && n.kind === top.kind && shownOf(n, p) !== v) changes.push({ n, p, raw: v === null ? '' : String(v), before: humanOf(n, p) });
         }
       }
+      writeBatch(changes);
     }
     else if (mod && (k === 'r' || k === 'R')) {
       e.preventDefault();
+      const changes: Change[] = [];
       for (let r = sel.r0; r <= sel.r1; r++) {
         const n = nav[r]; const p0 = periods[sel.c0]; if (!n || !p0) continue;
         const v = shownOf(n, p0);
-        for (let c = sel.c0 + 1; c <= sel.c1; c++) { const p = periods[c]; if (p && shownOf(n, p) !== v) save(n, p, v === null ? '' : String(v)); }
+        for (let c = sel.c0 + 1; c <= sel.c1; c++) {
+          const p = periods[c];
+          if (p && shownOf(n, p) !== v) changes.push({ n, p, raw: v === null ? '' : String(v), before: humanOf(n, p) });
+        }
       }
+      writeBatch(changes);
     }
     else if (mod && (k === 'a' || k === 'A')) { e.preventDefault(); setAnchor({ r: 0, c: 0 }); setCur({ r: nav.length - 1, c: periods.length - 1 }); }
     else if (!mod && (k === 'n' || k === 'N')) { e.preventDefault(); nextTodo(); }
@@ -349,24 +406,31 @@ export function PlanSheet(props: PlanSheetProps) {
     e.preventDefault();
   }
 
-  /** 从 Excel 粘一块：从选区左上角铺开。每格各自走 parseUnits —— 坏值逐格点名，其余照写 */
+  /** 从 Excel 粘一块（UX-D16）：首列是 msku 就按 msku 对齐，否则从选区左上角按位置铺开、不串行类。
+   *  每格各自走 parseUnits —— 坏值逐格点名，其余照写；对不上的留在表上方点名 */
   function onPaste(e: ClipboardEvent<HTMLDivElement>) {
     if (editRef.current || nav.length === 0) return;
     const text = e.clipboardData.getData('text/plain');
     if (!text) return;
     e.preventDefault();
-    const lines = text.replace(/\r/g, '').replace(/\n$/, '').split('\n').map((l) => l.split('\t'));
-    const single = lines.length === 1 && lines[0]!.length === 1;
-    const r1 = single ? sel.r1 : Math.min(nav.length - 1, sel.r0 + lines.length - 1);
-    const c1 = single ? sel.c1 : Math.min(periods.length - 1, sel.c0 + lines[0]!.length - 1);
-    for (let r = sel.r0; r <= r1; r++) for (let c = sel.c0; c <= c1; c++) {
-      const raw = single ? lines[0]![0] : lines[r - sel.r0]?.[c - sel.c0];
-      const n = nav[r]; const p = periods[c];
-      if (raw === undefined || !n || !p) continue;
-      const before = humanOf(n, p);
-      if (raw.trim() !== (before === null ? '' : String(before))) save(n, p, raw);
+    const pasteRows: PasteRow<NavRow>[] = nav.map((n) => ({ kind: n.kind, name: n.kind === 'purchase' ? n.card.sku : n.row.seller_sku, ref: n }));
+    // ★ msku 对齐认的是整张计划的 msku，不只是屏上这几行（被折叠 / 筛掉的照样认得出）
+    const byMsku = new Map<string, PasteRow<NavRow>[]>();
+    for (const b of model.blocks) for (const row of b.mskus) {
+      const list = byMsku.get(row.seller_sku) ?? [];
+      list.push({ kind: 'demand', name: row.seller_sku, ref: { kind: 'demand', block: b, row } });
+      byMsku.set(row.seller_sku, list);
     }
-    setAnchor({ r: sel.r0, c: sel.c0 }); setCur({ r: r1, c: c1 });
+    const plan = planPaste(text, pasteRows, periods, sel, byMsku);
+    const changes: Change[] = [];
+    for (const c of plan.cells) {
+      const before = humanOf(c.row.ref, c.period);
+      if (c.raw.trim() !== (before === null ? '' : String(before))) changes.push({ n: c.row.ref, p: c.period, raw: c.raw, before });
+    }
+    const head = plan.mode === 'msku' ? [`按 msku 对齐：${plan.cells.length} 格`] : [];
+    setPasteNotes(plan.notes.length > 0 || plan.mode === 'msku' ? [...head, ...plan.notes] : null);
+    writeBatch(changes);
+    if (plan.end) { setAnchor({ r: sel.r0, c: sel.c0 }); setCur(plan.end); }
   }
 
   function onInputKey(e: KeyboardEvent<HTMLInputElement>) {
@@ -424,7 +488,7 @@ export function PlanSheet(props: PlanSheetProps) {
           <input
             className="ps-in" autoFocus inputMode="numeric" value={editing.draft}
             aria-label={`${args.label} ${args.p}`}
-            onChange={(e) => setEditing({ draft: e.target.value, mode: editing.mode })}
+            onChange={(e) => setEditing({ ...editing, draft: e.target.value })}
             onKeyDown={onInputKey}
             onBlur={() => commit()}
           />
@@ -612,7 +676,7 @@ export function PlanSheet(props: PlanSheetProps) {
     const single = multi ? null : block.mskus[0]!;
     const bKey = blockKey(block);
     return (
-      <div key={`b|${bKey}`} className="ps-row ps-row--store" role="row" style={rowStyle(i)}>
+      <div key={`b|${bKey}`} className={`ps-row ps-row--store${row.hit ? ' is-hit' : ''}`} role="row" style={rowStyle(i)}>
         <div className="ps-rh ps-rh--store" role="rowheader">
           {multi ? (
             <button
@@ -700,9 +764,9 @@ export function PlanSheet(props: PlanSheetProps) {
   function mskuRow(row: Extract<SheetRow, { type: 'msku' }>, i: number): ReactNode {
     const r = row.row;
     return (
-      <div key={`m|${r.seller_sku}|${r.sid}|${row.block.sku}`} className="ps-row ps-row--msku" role="row" style={rowStyle(i)}>
+      <div key={`m|${r.seller_sku}|${r.sid}|${row.block.sku}`} className={`ps-row ps-row--msku${row.hit ? ' is-hit' : ''}`} role="row" style={rowStyle(i)}>
         <div className="ps-rh ps-rh--msku" role="rowheader">
-          <span className="ps-sub--mono">{r.seller_sku}</span>
+          <span className="ps-sub--mono ps-name" title={r.seller_sku}>{r.seller_sku}</span>
           <span className="ps-tag ps-tag--sell">填计划销量</span>
           <button type="button" className="pm-rm" aria-label="移出 msku" title={`把 ${r.seller_sku} 移出这张计划`}
             disabled={pending.has(removeKey(row.block.sku))} onClick={() => props.onRemoveMsku(r.seller_sku, r.sid, row.block.sku)}>移出</button>
@@ -801,6 +865,13 @@ export function PlanSheet(props: PlanSheetProps) {
         <span className="chip chip--dim">在途未分摊到店铺</span>
       </div>
 
+      {pasteNotes && (
+        <div className="note ps-paste" data-testid="paste-report" role="status">
+          <div>{pasteNotes.map((t) => <div key={t}>{t}</div>)}</div>
+          <button type="button" className="btn btn--ghost btn--sm" onClick={() => { setPasteNotes(null); focusGrid(); }}>知道了</button>
+        </div>
+      )}
+
       <div
         ref={scRef} className="ps-scroll" tabIndex={0} role="grid" aria-label="计划整表" aria-rowcount={rows.length + 1}
         onKeyDown={onKeyDown} onCopy={onCopy} onPaste={onPaste}
@@ -823,6 +894,34 @@ export function PlanSheet(props: PlanSheetProps) {
       {basis && (
         <Modal title={basisTitle(basis)} onClose={() => { setBasis(null); focusGrid(); }}>
           <ForecastBasis model={model} target={basis} />
+        </Modal>
+      )}
+
+      {confirm && (
+        <Modal title={`要清空 / 覆盖 ${confirm.destructive.length} 格人填的数`} danger onClose={() => { setConfirm(null); focusGrid(); }}>
+          <div className="ps-confirm" data-testid="bulk-confirm">
+            <table className="table table--dense">
+              <thead><tr><th>行</th><th>月</th><th className="r">原来</th><th className="r">改成</th></tr></thead>
+              <tbody>
+                {confirm.destructive.map((c) => (
+                  <tr key={keyOf(c.n, c.p)}>
+                    <td>{labelOf(c.n)}</td><td>{c.p}</td>
+                    <td className="r num">{fmt(c.before)}</td>
+                    <td className="r num">{c.raw.trim() === '' ? '清空' : c.raw.trim()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {confirm.changes.length > confirm.destructive.length && (
+            <p className="muted">另有 {confirm.changes.length - confirm.destructive.length} 格原来没人填，一并写入</p>
+          )}
+          <div className="btn-row">
+            <button type="button" className="btn btn--danger" onClick={() => { send(confirm.changes); setConfirm(null); focusGrid(); }}>
+              确认改 {confirm.changes.length} 格
+            </button>
+            <button type="button" className="btn btn--ghost" onClick={() => { setConfirm(null); focusGrid(); }}>取消</button>
+          </div>
         </Modal>
       )}
 

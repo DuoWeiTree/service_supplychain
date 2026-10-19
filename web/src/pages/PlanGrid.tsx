@@ -72,7 +72,7 @@ export function PlanGrid() {
 
   useEffect(() => { void load(); }, [planId]);
 
-  const { pending, inputErr, saveDemand, savePurchase, removeSku, removeStore, removeMsku } =
+  const { pending, inputErr, saveDemand, savePurchase, saveCells, removeSku, removeStore, removeMsku } =
     usePlanGridSaves(planId, load, fail, succeed);
 
   const model = useMemo(
@@ -233,6 +233,7 @@ export function PlanGrid() {
           model={model} pending={pending} inputErr={inputErr}
           onDemand={(ss, sid, p, raw) => void saveDemand(ss, sid, p, raw)}
           onPurchase={(sku, p, raw) => void savePurchase(sku, p, raw)}
+          onCells={(edits) => void saveCells(edits)}
           onRemoveSku={(sku) => void removeSku(sku)}
           onRemoveStore={(b) => void removeStore(b)}
           onRemoveMsku={(ss, sid, sku) => void removeMsku(ss, sid, sku)}

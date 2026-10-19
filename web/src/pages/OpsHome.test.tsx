@@ -44,7 +44,7 @@ describe('运营首页', () => {
     const changed = within(table).getByText('2026 Q3 补货计划').closest('tr') as HTMLElement;
     expect(within(changed).getByText('提交后又改过')).toHaveClass('chip', 'chip--ours');
     // ★ 一个数要能回答它是关于什么的：人改了几格、跟哪一版比
-    expect(changed).toHaveTextContent('人改了 2 格 · 比 rev 2');
+    expect(changed).toHaveTextContent('人改了 2 格（比 rev 2）');
     const never = within(table).getByText('2026 Q4 销售计划').closest('tr') as HTMLElement;
     expect(within(never).getAllByText('未提交')[0]).toHaveClass('chip', 'chip--ours');
     const cancelled = within(table).getByText('2026 Q2 清库计划').closest('tr') as HTMLElement;

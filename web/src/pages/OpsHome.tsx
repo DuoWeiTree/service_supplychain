@@ -173,6 +173,7 @@ export function OpsHome() {
                   return (
                     <tr key={p.plan_id}>
                       <td data-testid="next">
+                        {board === null && <Qty v={{ kind: 'unknown' }} />}
                         {next && <><span className="chip chip--ours">{next.text}</span>{next.note && <span className="muted"> {next.note}</span>}</>}
                       </td>
                       <td data-testid="plan-title">{p.title}</td>

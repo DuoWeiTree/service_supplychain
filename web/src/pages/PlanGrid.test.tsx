@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { ApiError } from '../api/client';
 import type {
-  DemandCell, ForecastState, GridResponse, PlanSummary, PurchaseCell, ReleaseResult, RemoveSkuResult, Seller,
+  CellsBatch, DemandCell, ForecastState, GridResponse, PlanSummary, PurchaseCell, ReleaseResult, RemoveSkuResult, Seller,
   SkuForecast, StoreForecast,
 } from '../api/types';
 
@@ -79,6 +79,7 @@ interface MockApi {
   getGrid: () => Promise<GridResponse>;
   putDemand: (...args: unknown[]) => Promise<DemandCell>;
   putPurchase: (...args: unknown[]) => Promise<PurchaseCell>;
+  putCells: (...args: unknown[]) => Promise<{ demand: DemandCell[]; purchase: PurchaseCell[] }>;
   releaseClaim: (...args: unknown[]) => Promise<ReleaseResult>;
   removeSku: (...args: unknown[]) => Promise<RemoveSkuResult>;
   submit: (...args: unknown[]) => Promise<unknown>;
@@ -101,12 +102,12 @@ function buildMockApi(grid: GridResponse) {
     g.forecast_sku = g.forecast_sku.filter((x) => x.sku !== sku);
     return gone.map((x) => ({ ...x }));
   };
-  const api: MockApi = {
-    getPlan: async () => PLAN,
-    listSellers: async () => SELLERS,
-    getGrid: async () => JSON.parse(JSON.stringify(state.grid)) as GridResponse,
-    putDemand: vi.fn(async (...args: unknown[]) => {
-      const [, ss, sid, period, units] = args as [number, string, string, string, number | null];
+  const applyPurchase = (sku: string, period: string, units: number | null) => {
+    const c = state.grid.purchase.find((x) => x.sku === sku && x.period === period)!;
+    c.planned_units = units;
+    return c;
+  };
+  const applyDemand = (ss: string, sid: string, period: string, units: number | null) => {
       const cell = state.grid.demand.find((x) => x.seller_sku === ss && x.period === period)!;
       cell.expected_units = units;
       cell.effective_units = units ?? cell.system_units;
@@ -121,12 +122,26 @@ function buildMockApi(grid: GridResponse) {
       sf.state = sf.closing === null ? 'unknown' : 'ok';
       sf.reason = sf.closing === null ? 'unknown_demand' : null;
       return cell;
+  };
+  const api: MockApi = {
+    getPlan: async () => PLAN,
+    listSellers: async () => SELLERS,
+    getGrid: vi.fn(async () => JSON.parse(JSON.stringify(state.grid)) as GridResponse),
+    putDemand: vi.fn(async (...args: unknown[]) => {
+      const [, ss, sid, period, units] = args as [number, string, string, string, number | null];
+      return applyDemand(ss, sid, period, units);
     }),
     putPurchase: vi.fn(async (...args: unknown[]) => {
       const [, sku, period, units] = args as [number, string, string, number | null];
-      const c = state.grid.purchase.find((x) => x.sku === sku && x.period === period)!;
-      c.planned_units = units;
-      return c;
+      return applyPurchase(sku, period, units);
+    }),
+    // ★ 与后端同口径：一批一次请求；这里只造成功路径，失败路径单条用例自己覆盖
+    putCells: vi.fn(async (...args: unknown[]) => {
+      const [, batch] = args as [number, CellsBatch];
+      return {
+        demand: batch.demand.map((d) => applyDemand(d.seller_sku, d.sid, d.period, d.expected_units)),
+        purchase: batch.purchase.map((c) => applyPurchase(c.sku, c.period, c.planned_units)),
+      };
     }),
     // ★ Task 22：替身照后端的口径删 —— 店里没 msku 了店铺行走，货号没 msku 了采购格与货号行一起走
     releaseClaim: vi.fn(async (...args: unknown[]) => {
@@ -359,7 +374,9 @@ describe('计划整表', () => {
     const block = await screen.findByTestId('block-11072-SKU-1');
     await userEvent.click(within(block).getByTestId('cell-MSKU-B-11072-2026-10'));
     await userEvent.keyboard('{Delete}');
-    expect(mock.api.putDemand).toHaveBeenCalledWith(1, 'MSKU-B', '11072', '2026-10', null);
+    // UX-D14：清空走批量接口（一格也一样）
+    expect(mock.api.putCells).toHaveBeenCalledWith(1, {
+      demand: [{ seller_sku: 'MSKU-B', sid: '11072', period: '2026-10', expected_units: null }], purchase: [] });
     await waitFor(() => expect(within(within(block).getByTestId('sku-cell-2026-10')).getByTestId('closing-sku')).toHaveTextContent('—'));
   });
 
@@ -442,11 +459,121 @@ describe('计划整表', () => {
     const card = await screen.findByTestId('card-SKU-1');
     await userEvent.click(gridcell(card, '计划销量 MSKU-A 2026-11'));
     const grid = screen.getByRole('grid');
+    const loadsBefore = vi.mocked(mock.api.getGrid).mock.calls.length;
     fireEvent.paste(grid, { clipboardData: { getData: () => '11\t12\nx\t22\n' } });
-    expect(mock.api.putDemand).toHaveBeenCalledWith(1, 'MSKU-A', '11072', '2026-11', 11);
-    expect(mock.api.putDemand).toHaveBeenCalledWith(1, 'MSKU-A', '11072', '2026-12', 12);
-    expect(mock.api.putDemand).toHaveBeenCalledWith(1, 'MSKU-B', '11072', '2026-12', 22);
+    // ★ UX-D14：一批一次请求，坏值不进批；成功后只重拉一次（原来每格各重拉一次）
+    expect(mock.api.putCells).toHaveBeenCalledTimes(1);
+    expect(mock.api.putCells).toHaveBeenCalledWith(1, { purchase: [], demand: [
+      { seller_sku: 'MSKU-A', sid: '11072', period: '2026-11', expected_units: 11 },
+      { seller_sku: 'MSKU-A', sid: '11072', period: '2026-12', expected_units: 12 },
+      { seller_sku: 'MSKU-B', sid: '11072', period: '2026-12', expected_units: 22 }] });
+    expect(mock.api.putDemand).not.toHaveBeenCalled();
     expect(await within(card).findByTestId('err-MSKU-B-11072-2026-11')).toHaveTextContent('x');
+    await waitFor(() => expect(vi.mocked(mock.api.getGrid).mock.calls.length).toBe(loadsBefore + 1));
+  });
+
+  it('★ UX-D16：首列是 msku → 按 msku 对齐，与屏上行序、光标所在行无关', async () => {
+    const { mock } = await renderGrid();
+    const card = await screen.findByTestId('card-SKU-1');
+    await userEvent.click(gridcell(card, '计划采购量 SKU-1 2026-10'));   // 光标在采购行也不影响
+    fireEvent.paste(screen.getByRole('grid'), { clipboardData: { getData: () => 'MSKU-B\t5\t6\t7\nMSKU-ZZ\t1\n' } });
+    expect(mock.api.putCells).toHaveBeenCalledWith(1, { purchase: [], demand: [
+      { seller_sku: 'MSKU-B', sid: '11072', period: '2026-10', expected_units: 5 },
+      { seller_sku: 'MSKU-B', sid: '11072', period: '2026-11', expected_units: 6 },
+      { seller_sku: 'MSKU-B', sid: '11072', period: '2026-12', expected_units: 7 }] });
+    const report = await screen.findByTestId('paste-report');
+    expect(report).toHaveTextContent('按 msku 对齐：3 格');
+    expect(report).toHaveTextContent('MSKU-ZZ：本计划里没有这个 msku，没写');
+  });
+
+  it('★ UX-D16：按位置铺开落到不同类的行 —— 不写、点名（采购不串进销量）', async () => {
+    const { mock } = await renderGrid();
+    const card = await screen.findByTestId('card-SKU-1');
+    await userEvent.click(gridcell(card, '计划采购量 SKU-1 2026-11'));
+    fireEvent.paste(screen.getByRole('grid'), { clipboardData: { getData: () => '300\n400\n' } });
+    expect(mock.api.putCells).toHaveBeenCalledWith(1, { demand: [],
+      purchase: [{ sku: 'SKU-1', period: '2026-11', planned_units: 300 }] });
+    expect(await screen.findByTestId('paste-report')).toHaveTextContent('第 2 行落在销量行 MSKU-A，与左上角的采购行不同类，没写');
+  });
+
+  it('★ UX-D15：一次清空超过 20 格人填的数 —— 先列清单，确认了才发', async () => {
+    const grid = makeGrid();
+    // 再加 8 个 msku × 3 月的人填格，⌘A 后 Del 要清的格 > 20
+    for (let n = 0; n < 8; n++) {
+      for (const p of P) {
+        grid.demand.push({ seller_sku: `MSKU-X${n}`, sid: '11072', sku: 'SKU-1', period: p, system_units: 1, system_extrapolated: false,
+          expected_units: 3, effective_units: 3, basis: 'human', system_basis: null });
+      }
+    }
+    const { mock } = await renderGrid(grid);
+    const card = await screen.findByTestId('card-SKU-1');
+    await userEvent.click(gridcell(card, '计划采购量 SKU-1 2026-10'));
+    await userEvent.keyboard('{Control>}a{/Control}{Delete}');
+    const dialog = await screen.findByRole('dialog');
+    expect(mock.api.putCells).not.toHaveBeenCalled();
+    const list = within(dialog).getByTestId('bulk-confirm');
+    expect(within(list).getAllByText('计划销量 MSKU-X7')).toHaveLength(3);
+    expect(within(list).getAllByText('清空').length).toBeGreaterThan(20);
+    await userEvent.click(within(dialog).getByRole('button', { name: /^确认改 \d+ 格$/ }));
+    expect(mock.api.putCells).toHaveBeenCalledTimes(1);
+  });
+
+  it('20 格以内的清空不弹确认', async () => {
+    const { mock } = await renderGrid();
+    const card = await screen.findByTestId('card-SKU-1');
+    await userEvent.click(gridcell(card, '计划采购量 SKU-1 2026-10'));
+    await userEvent.keyboard('{Control>}a{/Control}{Delete}');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(mock.api.putCells).toHaveBeenCalledTimes(1);
+  });
+
+  it('★ 批量写被后端拒：逐格点名落在格子上，整批没写', async () => {
+    const { mock } = await renderGrid(makeGrid(), (m) => {
+      m.api.putCells = vi.fn(async () => {
+        throw new ApiError(404, 'cell_not_found', '有格子还没长出来（先认领 msku），这一批一格都没写',
+          { cells: [{ kind: 'demand', seller_sku: 'MSKU-A', sid: '11072', period: '2026-12', why: 'cell_not_found' }] });
+      });
+    });
+    const card = await screen.findByTestId('card-SKU-1');
+    await userEvent.click(gridcell(card, '计划销量 MSKU-A 2026-11'));
+    fireEvent.paste(screen.getByRole('grid'), { clipboardData: { getData: () => '1\t2\n' } });
+    expect(await within(card).findByTestId('err-MSKU-A-11072-2026-12')).toHaveTextContent('这一格已不在计划里');
+    expect(mock.api.putCells).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('404 cell_not_found')).toBeInTheDocument();
+  });
+
+  it('★ 光标记行的身份：填数后按销量重排，下一次输入仍落在原来那个 msku', async () => {
+    const grid = makeGrid();
+    // SKU-2：一家店一个 msku（MSKU-Z），销量很小 —— 「销量高→低」时排在 SKU-1 后面；填一个大数后它排到前面
+    for (const p of P) {
+      grid.demand.push({ seller_sku: 'MSKU-Z', sid: '11072', sku: 'SKU-2', period: p, system_units: null, system_extrapolated: false,
+        expected_units: 1, effective_units: 1, basis: 'human', system_basis: null });
+      grid.forecast_store.push({ ...grid.forecast_store[0]!, sku: 'SKU-2', period: p });
+    }
+    grid.purchase.push(...P.map((p) => ({ sku: 'SKU-2', period: p, planned_units: null })));
+    const { mock } = await renderGrid(grid);
+    await screen.findByTestId('card-SKU-2');
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: '排序' }), 'sales');
+    const order = () => Array.from(screen.getByTestId('plan-sheet').querySelectorAll('[data-testid^=card-]')).map((e) => e.getAttribute('data-testid'));
+    expect(order()).toEqual(['card-SKU-1', 'card-SKU-2']);
+    await userEvent.click(gridcell(screen.getByTestId('card-SKU-2'), '计划销量 MSKU-Z 2026-10'));
+    await userEvent.keyboard('9999{Enter}');
+    await waitFor(() => expect(order()).toEqual(['card-SKU-2', 'card-SKU-1']));
+    // 下标没变的话，光标此刻指着的是 SKU-1 下的别的 msku —— 按身份记，它还在 MSKU-Z
+    await userEvent.keyboard('5{Enter}');
+    await waitFor(() => expect(mock.api.putDemand).toHaveBeenCalledTimes(2));
+    expect(mock.api.putDemand).toHaveBeenLastCalledWith(1, 'MSKU-Z', '11072', '2026-10', 5);
+  });
+
+  it('★ 搜索只命中 msku：只留命中的那一行并高亮，不是整个货号', async () => {
+    await renderGrid();
+    await screen.findByTestId('card-SKU-1');
+    await userEvent.type(screen.getByRole('searchbox', { name: '搜索货号、店铺、msku' }), 'MSKU-B');
+    const block = screen.getByTestId('block-11072-SKU-1');
+    expect(within(block).queryByTestId('cell-MSKU-A-11072-2026-10')).toBeNull();
+    const hit = within(block).getByTestId('cell-MSKU-B-11072-2026-10').closest('[role=row]');
+    expect(hit).toHaveClass('is-hit');
+    expect(screen.queryByTestId('block-90001-SKU-1')).toBeNull();
   });
 
   it('筛选「有断货」只留有断货的货号；搜索按店铺名命中', async () => {

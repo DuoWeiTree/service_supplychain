@@ -62,7 +62,7 @@ async function renderRevs() {
 describe('版本编辑', () => {
   it('★ h1 带计划名；计划抬头取不到时写「版本」并点名，不拖垮版本表', async () => {
     await renderRevs();
-    expect(await screen.findByRole('heading', { name: '版本 · 2026 Q3 补货计划' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: '2026 Q3 补货计划 的版本' })).toBeInTheDocument();
 
     vi.resetModules();
     const { ApiError } = await import('../api/client');

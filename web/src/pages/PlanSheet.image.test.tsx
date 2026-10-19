@@ -20,7 +20,7 @@ function renderSheet(grid: GridResponse) {
   const model = buildGridModel(grid, LABEL_SELLERS);
   expect(model.orphans).toEqual([]);
   render(<PlanSheet model={model} pending={new Set()} inputErr={{}} onDemand={vi.fn()}
-                    onPurchase={vi.fn()} onRemoveSku={vi.fn()} onRemoveStore={vi.fn()} onRemoveMsku={vi.fn()} />);
+                    onPurchase={vi.fn()} onCells={vi.fn()} onRemoveSku={vi.fn()} onRemoveStore={vi.fn()} onRemoveMsku={vi.fn()} />);
 }
 
 describe('sku-image 计划 Task 4：按需预览', () => {

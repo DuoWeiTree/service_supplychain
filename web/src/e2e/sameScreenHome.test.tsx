@@ -41,6 +41,7 @@ function backendBody(url: string): unknown {
     }
     return { counts, scope_note: {
       unreachable_in_stage_a: ['已下单', '准备排货', '已排货'],
+      derived_buckets: ['进行中', '已提交未确认'],
       never_submitted_excluded: neverSubmitted,
     } };
   }
@@ -51,7 +52,8 @@ function backendBody(url: string): unknown {
       // ⚠ 循环的那一段：`plan_id === 2` 是 mock 的老约定，这里照抄了它，两侧同一个常量
       //   ⇒ 这一行不载重。真后端按 content_digest 比，与这个数无关。
       changed_since_submit: live.filter((p) => p.plan_id === 2)
-        .map((p) => ({ plan_id: p.plan_id, title: p.title, since_rev: p.state_rev ?? 0 })),
+        .map((p) => ({ plan_id: p.plan_id, title: p.title, since_rev: p.state_rev ?? 0,
+          human_cells: 2, basis: 'input_snapshot' })),
     };
   }
   if (url.includes('/plans')) {
@@ -80,28 +82,29 @@ async function homeRegions(source: 'mock' | 'api'): Promise<Record<string, strin
   }
   const { OpsHome } = await import('../pages/OpsHome');
   const { unmount } = render(<MemoryRouter><OpsHome /></MemoryRouter>);
-  await screen.findByTestId('plan-list');
+  // 三个端点都落地才取：表格在列表没到时也在（写「正在取…」），只等 testid 会取到半屏
+  await screen.findByText('2026 Q4 销售计划');
+  await screen.findByText('人改了 2 格（比 rev 2）');
+  await screen.findByText('已提交未确认');
   const pick = (id: string) => (screen.getByTestId(id).textContent ?? '').replace(/\s+/g, ' ').trim();
   const out = {
     counts: pick('counts'),
     list: pick('plan-list'),
     hidden: pick('hidden-rows'),
-    never: pick('never-submitted'),
-    changed: pick('changed-since-submit'),
   };
   unmount();
   return out;
 }
 
 describe('判据⑥ · 首页也要两种数据源跑出同一屏', () => {
-  it('★ 计数 / 列表 / 两栏待办 / 被挡掉的那一侧，逐段逐字相同', async () => {
+  it('★ 计数 / 列表（含下一步）/ 被挡掉的那一侧，逐段逐字相同', async () => {
     const a = await homeRegions('mock');
     const b = await homeRegions('api');
     expect(b).toEqual(a);
 
     // ★ 顺带守住「这一屏确实有内容」以及靶子确实在现场 —— 两边都空也会相等，那是假绿
     expect(a.list).toContain('2026 Q4 销售计划');
-    expect(a.never).toContain('2026 Q4 销售计划');
+    expect(a.list).toContain('提交后又改过');
     // ★ 归档计划既不在列表里，也被数出来了（数是现算的，不是冻在 fixture 里的常量）
     expect(a.list).not.toContain('2025 Q4 封存计划');
     expect(a.hidden).toContain('已归档 1 张');

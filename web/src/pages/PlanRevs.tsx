@@ -29,7 +29,7 @@ export function PlanRevs() {
   // h1 带计划名（评审 P2）。★ 抬头另取、另记错 —— 抬头挂了不许把版本表一起换成错误块（同 I6）
   const [plan, setPlan] = useState<PlanSummary | null>(null);
   const [planErr, setPlanErr] = useState<ApiError | null>(null);
-  const title = plan ? `版本 · ${plan.title}` : '版本';
+  const title = plan ? `${plan.title} 的版本` : '版本';
 
   const load = () => api.listRevs(planId)
     .then((r) => { setList(r); setErr(null); })

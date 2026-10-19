@@ -11,12 +11,12 @@ export type NextKind = 'changed' | 'never';
 export interface NextStep { kind: NextKind; text: string; note: string | null }
 
 /** UX-D11：只有要运营动手的才给 chip；词取本页原文（两栏面板的标题）。
- *  ★ 只用两个看板的本地事实 —— 看板没取到时返回 null，调用方写「未知」，不当成「不用动手」 */
+ *  ★ 只用两个看板的本地事实 —— 看板没取到时调用方写「未知」，不当成「不用动手」 */
 export function nextStep(p: PlanSummary, board: UnsubmittedBoard): NextStep | undefined {
   const ch = board.changed_since_submit.find((c) => c.plan_id === p.plan_id);
   if (ch) {
     const note = ch.human_cells !== null
-      ? `人改了 ${ch.human_cells} 格 · 比 rev ${ch.since_rev}`
+      ? `人改了 ${ch.human_cells} 格（比 rev ${ch.since_rev}）`
       // 028 之前提交的版本没有人填快照：比的是整份摘要（含预估），不冒充人改的格数
       : `比 rev ${ch.since_rev}（旧版本，含预估变化）`;
     return { kind: 'changed', text: '提交后又改过', note };

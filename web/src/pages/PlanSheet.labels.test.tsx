@@ -10,7 +10,7 @@ function renderSheet(grid: GridResponse = LABEL_GRID) {
   const model = buildGridModel(grid, LABEL_SELLERS);
   expect(model.orphans).toEqual([]);            // ★ 构造的网格自身必须 Σ 一致
   render(<PlanSheet model={model} pending={new Set()} inputErr={{}} onDemand={vi.fn()}
-                    onPurchase={vi.fn()} onRemoveSku={vi.fn()} onRemoveStore={vi.fn()} onRemoveMsku={vi.fn()} />);
+                    onPurchase={vi.fn()} onCells={vi.fn()} onRemoveSku={vi.fn()} onRemoveStore={vi.fn()} onRemoveMsku={vi.fn()} />);
 }
 
 describe('spec §5：三种行各显示什么', () => {
