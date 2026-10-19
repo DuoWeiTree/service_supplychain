@@ -498,7 +498,7 @@ describe('★ 从待采购带过来（?lines=，R3）', () => {
     await userEvent.click(screen.getByRole('button', { name: '加入其他待采购记录' }));
     // 带来的那条仍展开；新放开的货号默认收起，货号行写得出它有几条
     expect(screen.getByTestId('cand-101')).toBeInTheDocument();
-    expect(await screen.findByTestId('cand-sku-SKU-B')).toHaveTextContent('1 条记录 · 剩 80 · 本单已填 0');
+    expect(await screen.findByTestId('cand-sku-SKU-B')).toHaveTextContent('1 条记录，剩 80，本单已填 0');
     expect(await showRec(103)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '加入其他待采购记录' })).toBeNull();
   });
@@ -599,7 +599,7 @@ describe('★ 续编草稿与量大时的左栏（UX-D4 / D5）', () => {
     expect(screen.queryByTestId('cand-103')).toBeNull();
     const head = within(screen.getByTestId('cand-sku-SKU-A')).getByRole('button', { name: /^SKU-A/ });
     expect(head).toHaveAttribute('aria-expanded', 'true');
-    expect(head).toHaveTextContent('1 条记录 · 剩 120 · 本单已填 30');
+    expect(head).toHaveTextContent('1 条记录，剩 120，本单已填 30');
     await userEvent.click(head);
     expect(screen.queryByTestId('cand-101')).toBeNull();
   });
@@ -618,7 +618,7 @@ describe('★ 续编草稿与量大时的左栏（UX-D4 / D5）', () => {
     await mount('/purchase/1');
     const line = await screen.findByTestId('po-line-1');
     expect(line.tagName).toBe('TR');
-    expect(line).toHaveTextContent('1 条来源 · 30 件');
+    expect(line).toHaveTextContent('1 条来源，30 件');
   });
 });
 

@@ -23,7 +23,7 @@ function DraftChip({ d }: { d: PurchasePlanDraft }) {
   return (
     <Link to={`/purchase/${d.po_id}`} className={d.open_attention > 0 ? 'chip chip--bad' : 'chip chip--ours'}
       data-testid={`draft-chip-${d.po_id}`}>
-      {d.custom_order_sn} {d.open_attention > 0 ? `待处理 ${d.open_attention} 项` : `草稿 · ${d.units} 件 · 接着编辑`}
+      {d.custom_order_sn} {d.open_attention > 0 ? `待处理 ${d.open_attention} 项` : `草稿 ${d.units} 件，接着编辑`}
     </Link>
   );
 }
@@ -114,7 +114,7 @@ export function PurchaseHome() {
 
       <section className="sec" data-testid="todo">
         <div className="pm-bar">
-          <h2 className="sec__title">待采购{plans && all.length > 0 && <span className="muted"> · {all.length} 个计划</span>}</h2>
+          <h2 className="sec__title">待采购{plans && all.length > 0 && <span className="muted">（{all.length} 个计划）</span>}</h2>
           <span className="pm-bar__sp" />
           {all.length > 0 && (
             <>
@@ -223,7 +223,7 @@ function PlanBlock({ p, open, q, picked, focused, onToggle, onPick }: {
             onClick={onToggle}>
             {p.title}{p.rev !== null && <span className="pt-rev">rev {p.rev}</span>}
           </button>
-          <span className="dh-plan__count">{pivot.rows.length} 个货号 · {p.lines} 条记录</span>
+          <span className="dh-plan__count">{pivot.rows.length} 个货号，{p.lines} 条记录</span>
         </div>
         <div className="dh-plan__kpis">
           {([['需求', p.total], ['已组单（含草稿）', p.confirmed], ['已下单', p.ordered]] as const).map(([l, v]) => (

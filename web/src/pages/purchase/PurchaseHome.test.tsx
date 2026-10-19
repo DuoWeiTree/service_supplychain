@@ -180,7 +180,7 @@ describe('采购首页 · 待采购按销售计划分组（UX-D1 / D2）', () =>
     const p = await screen.findByTestId('plan-1');
     expect(p).toHaveTextContent('10 月计划');
     expect(p).toHaveTextContent('rev 5');
-    expect(p).toHaveTextContent('2 个货号 · 3 条记录');
+    expect(p).toHaveTextContent('2 个货号，3 条记录');
     expect(p).toHaveTextContent('已组单（含草稿）30');
     expect(p).toHaveTextContent('已下单0');
     expect(within(p).getByTestId('plan-left-1')).toHaveTextContent('400');
@@ -193,7 +193,7 @@ describe('采购首页 · 待采购按销售计划分组（UX-D1 / D2）', () =>
     const p = await screen.findByTestId('plan-2');
     expect(within(p).getByTestId('plan-left-2')).toHaveTextContent('0');
     const chip = within(p).getByTestId('draft-chip-5');
-    expect(chip).toHaveTextContent('SCM-PO-5 草稿 · 100 件 · 接着编辑');
+    expect(chip).toHaveTextContent('SCM-PO-5 草稿 100 件，接着编辑');
     expect(chip).toHaveAttribute('href', '/purchase/5');
     expect(within(p).getByRole('checkbox', { name: '选「测试1」全部可组记录' })).toBeDisabled();
   });

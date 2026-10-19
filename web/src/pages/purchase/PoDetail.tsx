@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AppShell } from '../../shell/AppShell';
 import { useInFlight } from '../../shell/useInFlight';
 import { ErrorDetail } from '../../components/ErrorDetail';
@@ -6,12 +6,13 @@ import { Fold } from '../../components/Fold';
 import { Qty } from '../../components/Qty';
 import { api, ApiError } from '../../api';
 import { asApiError } from '../../api/client';
-import type { AttentionItem, LineTrace, PoId, PoTimeline, PurchaseOrder, ReadBackResult } from '../../api/types';
+import type { AttentionItem, LineTrace, PoId, PoTimeline, PurchaseOptions, PurchaseOrder, ReadBackResult, Seller } from '../../api/types';
 import { AttemptTable, AttentionPanel } from './AttentionPanel';
-import { fmtAt } from './fmt';
+import { exactTotal, fmtAt } from './fmt';
 import { KIND_LABEL, inFlightCreate, isEditable, usePoll } from './poStatus';
-import { chainText } from './poEditorModel';
-import { StatusPair, type LocalState } from './parts';
+import { QC_LABEL, chainText } from './poEditorModel';
+import { homeHref } from './purchaseHomeModel';
+import { PoCrumbs, StatusPair, type LocalState } from './parts';
 import { pushToast } from '../../shell/toastStore';
 import { refreshAttention } from '../../shell/AttentionBanner';
 
@@ -41,6 +42,11 @@ export function PoDetail({ poId, onEditable }: { poId: PoId; onEditable?: () => 
   const [queueErr, setQueueErr] = useState<ApiError | null>(null);
   const [traces, setTraces] = useState<Record<number, TraceState>>({});
   const [rb, setRb] = useState<ReadBack>({ kind: 'idle' });
+  // 名字与编辑器同一套来源：取不到退回编号并点名，不拖住单本身
+  const [options, setOptions] = useState<PurchaseOptions | null>(null);
+  const [optionsErr, setOptionsErr] = useState<ApiError | null>(null);
+  const [sellers, setSellers] = useState<Seller[] | null>(null);
+  const [sellersErr, setSellersErr] = useState<ApiError | null>(null);
   const { pending, run } = useInFlight();
 
   const load = useCallback(async () => {
@@ -52,6 +58,16 @@ export function PoDetail({ poId, onEditable }: { poId: PoId; onEditable?: () => 
   }, [poId]);
 
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void read('getPurchaseOptions', () => api.getPurchaseOptions(), setOptions, setOptionsErr);
+    void read('listSellers', () => api.listSellers(), setSellers, setSellersErr);
+  }, []);
+  const names = useMemo(() => ({
+    supplier: new Map((options?.suppliers ?? []).map((x) => [x.supplier_id, x.name])),
+    wid: new Map((options?.warehouses ?? []).map((x) => [x.wid, x.name])),
+    opt: new Map((options?.opt_uids ?? []).flatMap((x) => (x.name ? [[x.opt_uid, x.name] as const] : []))),
+    shop: new Map((sellers ?? []).map((x) => [x.seller_id, x.name])),
+  }), [options, sellers]);
 
   // 已下单的单：打开即现查领星（只读），库里那条观察可能是很久以前的
   const readBack = useCallback(async () => {
@@ -130,12 +146,19 @@ export function PoDetail({ poId, onEditable }: { poId: PoId; onEditable?: () => 
   }
 
   const hasAttention = po.attention.length > 0 || stuck.length > 0 || placing !== null;
+  const whName = (wid: number | null) => (wid === null ? '—' : names.wid.get(wid) ?? String(wid));
+  const units = po.lines.reduce((a, l) => a + l.units, 0);
+  const amount = exactTotal(po.lines.map((l) => ({ units: l.units, price: l.price ?? '' })));
+  const home = homeHref(po.lines.flatMap((l) => l.sources));
   const localState: LocalState = po.discarded_at ? '草稿（已作废）' : po.state === '已下单' ? '已下单' : '草稿';
 
   return (
     <AppShell crumb={po.custom_order_sn}>
       <div className="head">
-        <div className="head__main"><h1>采购单 {po.custom_order_sn}</h1></div>
+        <div className="head__main">
+          <PoCrumbs home={home} here={po.custom_order_sn} />
+          <h1>采购单 {po.custom_order_sn}</h1>
+        </div>
       </div>
 
       {poErr && <ErrorDetail err={poErr} />}
@@ -149,10 +172,19 @@ export function PoDetail({ poId, onEditable }: { poId: PoId; onEditable?: () => 
 
       <header className="pdt-head sec" data-testid="po-detail-head">
         <div className="pdt-meta">
-          <span>供应商 <b>{po.supplier_id}</b></span>
+          <span>供应商 <b>{names.supplier.get(po.supplier_id) ?? po.supplier_id}</b></span>
           <span>领星单号 <b className="num">{po.order_sn ?? (po.state === '草稿' ? '未下单' : <Qty v={{ kind: 'unknown' }} />)}</b></span>
           {po.placed_at && <span>下单于 <b className="num">{fmtAt(po.placed_at)}</b></span>}
-          <span>幂等键 <b className="num">{po.custom_order_sn}</b></span>
+          <span>采购方 <b className="num">{po.purchaser_id}</b></span>
+          <span>采购员 <b>{names.opt.get(po.opt_uid) ?? po.opt_uid}</b></span>
+          <span>质检 <b>{QC_LABEL[po.qc_type] ?? po.qc_type}</b></span>
+          <span>仓 <b>{whName(po.wid)}</b></span>
+          {(optionsErr || sellersErr) && (
+            <span data-testid="names-failed">
+              <span className="muted">名称取不到，按编号显示</span>
+              <Fold summary="原因">{optionsErr && <ErrorDetail err={optionsErr} />}{sellersErr && <ErrorDetail err={sellersErr} />}</Fold>
+            </span>
+          )}
         </div>
         <StatusPair local={localState} lx={po.lx} reading={rb.kind === 'loading'}
           readError={rb.kind === 'ok' && !rb.r.checked ? (rb.r.read_outcome ?? '无结果') : rb.kind === 'fail' ? `读回请求失败：${rb.err.hint}` : null}
@@ -168,7 +200,13 @@ export function PoDetail({ poId, onEditable }: { poId: PoId; onEditable?: () => 
         <AttentionPanel po={po} timeline={tl} timelineErr={tlErr} stuck={stuck} placing={placing} onChanged={load} />
       )}
 
-      <div className="pt-wrap sec">
+      <div className="sec pe-pane__head">
+        <span className="pe-pane__title">明细</span>
+        <span className="pe-pane__sub" data-testid="detail-sum">
+          {po.lines.length} 行，{units} 件，金额 {amount ?? <Qty v={{ kind: 'unknown' }} />}
+        </span>
+      </div>
+      <div className="pt-wrap">
         <table className="pt">
           <thead><tr>
             <th className="r">行</th><th>货号</th><th>仓</th><th className="r">数量</th><th className="r">单价</th>
@@ -179,7 +217,7 @@ export function PoDetail({ poId, onEditable }: { poId: PoId; onEditable?: () => 
               <tr key={l.line_no} data-testid="detail-line">
                 <td className="r">{l.line_no}</td>
                 <td className="pt-sku num">{l.sku}</td>
-                <td>{l.wid}</td>
+                <td>{whName(l.wid)}</td>
                 <td className="r num">{l.units}</td>
                 <td className="r num">{l.price}</td>
                 <td className="r"><Qty v={{ kind: 'num', value: l.unplanned_units }} />{l.unplanned_reason && <div className="muted">{l.unplanned_reason}</div>}</td>
@@ -191,7 +229,7 @@ export function PoDetail({ poId, onEditable }: { poId: PoId; onEditable?: () => 
                     return (
                       <div key={`${s.line_id}|${s.seller_id}`}>
                         {/* R3：来源链由单自己带，不等反查 */}
-                        {chainText(s, s.seller_id, s.units)}{' '}
+                        {chainText(s, names.shop.get(s.seller_id) ?? s.seller_id, s.units)}{' '}
                         {(!tr || tr.kind === 'loading') && <span className="muted">记录 #{s.line_id} 正在反查…</span>}
                         {tr?.kind === 'ok' && (
                           <span className="muted" data-testid={`trace-${s.line_id}`}>

@@ -681,7 +681,7 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
                     <button type="button" className="pe-grp__sku" aria-expanded={open}
                       onClick={() => setOpenSku((m) => new Map(m).set(g.sku, !open))}>
                       <span className="num">{g.sku}</span>
-                      <span className="pe-grp__meta">{g.records.length} 条记录 · 剩 {rem} · 本单已填 {filled}</span>
+                      <span className="pe-grp__meta">{g.records.length} 条记录，剩 {rem}，本单已填 {filled}</span>
                     </button>
                     {open && g.records.map((r) => (
                       <div className="pe-rec" key={r.line_id} data-testid={`cand-${r.line_id}`}>
@@ -749,7 +749,7 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
                           </td>
                           <td>
                             <details className="pe-srcfold">
-                              <summary>{l.sources.length} 条来源 · {sourcesUnits(l)} 件</summary>
+                              <summary>{l.sources.length} 条来源，{sourcesUnits(l)} 件</summary>
                               <ul className="pe-src" data-testid="sources">
                                 {l.sources.map((s, j) => {
                                   const c = chainRef.get(s.line_id);

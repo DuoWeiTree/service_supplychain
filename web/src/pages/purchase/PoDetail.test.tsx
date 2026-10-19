@@ -68,7 +68,7 @@ describe('★ 领星状态：打开详情即现查', () => {
 });
 
 describe('采购单详情', () => {
-  it('头部两轴并排：本地状态 | 领星状态「未读回」；领星单号、幂等键', async () => {
+  it('头部两轴并排：本地状态 | 领星状态「未读回」；领星单号', async () => {
     await mountPurchase('/purchase/1', purchaseRoutes(placed()));
     expect(await screen.findByRole('heading', { name: '采购单 SCM-PO-1' })).toBeInTheDocument();
     const axes = screen.getByTestId('po-axes');
@@ -77,7 +77,8 @@ describe('采购单详情', () => {
     expect(axes).toHaveTextContent('领星 未读回');
     const head = screen.getByTestId('po-detail-head');
     expect(head).toHaveTextContent('PO261009001');
-    expect(head).toHaveTextContent('SCM-PO-1');
+    // 幂等键就是标题里的单号，不再重复一遍
+    expect(head).not.toHaveTextContent('幂等键');
     expect(screen.queryByTestId('attention-panel')).toBeNull();
   });
 
@@ -95,7 +96,39 @@ describe('采购单详情', () => {
   it('★ 来源链：计划 rev 货号 月份 → 店 件数，不等反查', async () => {
     await mountPurchase('/purchase/1', purchaseRoutes(placed(), { 'GET /v1/plan-lines/101/trace': () => new Promise(() => {}) }));
     const rows = await screen.findAllByTestId('detail-line');
-    expect(rows[0]).toHaveTextContent('2026 Q4 销售计划 rev2 SKU-A 2026-10 → 11072 30 件');
+    expect(rows[0]).toHaveTextContent('2026 Q4 销售计划 rev2 SKU-A 2026-10 → A4Pet-US 30 件');
+  });
+
+  it('★ 与编辑器说同一种话：供应商 / 采购员 / 仓 / 店写名字；单头补采购方 · 质检', async () => {
+    await mountPurchase('/purchase/1', purchaseRoutes(placed()));
+    const head = await screen.findByTestId('po-detail-head');
+    await vi.waitFor(() => expect(head).toHaveTextContent('供应商 东莞宏达'));
+    expect(head).toHaveTextContent('采购员 陈彩凤');
+    expect(head).toHaveTextContent('采购方 111');
+    expect(head).toHaveTextContent('质检 预检');
+    expect(head).toHaveTextContent('仓 深圳本地仓');
+    expect(screen.getAllByTestId('detail-line')[0]).toHaveTextContent('深圳本地仓');
+    expect(head).not.toHaveTextContent('8085');
+  });
+
+  it('名称取不到：退回编号并点名', async () => {
+    await mountPurchase('/purchase/1', purchaseRoutes(placed(), {
+      'GET /v1/purchase-options': () => fail(500, 'boom', '选项取不到'),
+    }));
+    expect(await screen.findByTestId('names-failed')).toHaveTextContent('名称取不到，按编号显示');
+    expect(screen.getByTestId('po-detail-head')).toHaveTextContent('供应商 S-1001');
+  });
+
+  it('★ 明细合计：N 行 · N 件 · 金额', async () => {
+    await mountPurchase('/purchase/1', purchaseRoutes(placed()));
+    // 30 × 12.5 + 12 × 0.3333 = 375 + 3.9996
+    expect(await screen.findByTestId('detail-sum')).toHaveTextContent('2 行，42 件，金额 378.9996');
+  });
+
+  it('★ UX-D6：面包屑「采购」回列表并定位到来源计划', async () => {
+    await mountPurchase('/purchase/1', purchaseRoutes(placed()));
+    const crumbs = await screen.findByTestId('po-crumbs');
+    expect(within(crumbs).getByRole('link', { name: '采购' })).toHaveAttribute('href', '/purchase?plan=1');
   });
 
   it('反查失败只落在那一条来源上，明细照常', async () => {

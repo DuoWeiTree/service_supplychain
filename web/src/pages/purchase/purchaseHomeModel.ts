@@ -43,7 +43,7 @@ export function cellKind(c: PickCell): CellKind {
 }
 
 export function cellTitle(sku: string, month: string, c: PickCell): string {
-  return `${sku} ${month}：还可组 ${c.remaining} · 需求 ${c.total} · 已组单（含草稿）${c.confirmed} · 已下单 ${c.ordered}`
+  return `${sku} ${month}：还可组 ${c.remaining}，需求 ${c.total}，已组单（含草稿）${c.confirmed}，已下单 ${c.ordered}`
     + `${c.records > 1 ? `（${c.records} 条记录）` : ''}`;
 }
 
