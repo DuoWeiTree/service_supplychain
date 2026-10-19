@@ -98,6 +98,25 @@ export function cardMatches(card: SkuCard, q: string): boolean {
   return hay.join(' ').toLowerCase().includes(needle);
 }
 
+/** 搜索命中到哪一层（评审 P1「定位不到单个 msku」）：
+ *  命中货号 / 没搜 → 整组；命中店铺名或市场 → 那家店整块；只命中 msku → 只留命中的 msku 行。
+ *  ★ 只决定显示哪几行，不改任何一个数（合计行照旧是整店之和） */
+export interface Narrowed { block: SkuBlock; mskus: MskuRow[]; narrowed: boolean }
+export function narrowCard(card: SkuCard, q: string): { stores: Narrowed[]; hits: Set<MskuRow> } {
+  const needle = q.trim().toLowerCase();
+  const all = { stores: card.stores.map((b) => ({ block: b, mskus: b.mskus, narrowed: false })), hits: new Set<MskuRow>() };
+  if (needle === '' || card.sku.toLowerCase().includes(needle)) return all;
+  const stores: Narrowed[] = [];
+  const hits = new Set<MskuRow>();
+  for (const b of card.stores) {
+    if (`${b.seller_name} ${b.market}`.toLowerCase().includes(needle)) { stores.push({ block: b, mskus: b.mskus, narrowed: false }); continue; }
+    const mine = b.mskus.filter((m) => m.seller_sku.toLowerCase().includes(needle));
+    mine.forEach((m) => hits.add(m));
+    if (mine.length > 0) stores.push({ block: b, mskus: mine, narrowed: mine.length < b.mskus.length });
+  }
+  return { stores, hits };
+}
+
 export function monthLabel(p: Period): { m: string; y: string } {
   const m = /^(\d{4})-(\d{2})$/.exec(p);
   return m ? { m: `${Number(m[2])} 月`, y: m[1]! } : { m: p, y: '' };

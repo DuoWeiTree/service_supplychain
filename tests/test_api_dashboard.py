@@ -19,6 +19,8 @@ def test_plan_counts_return_the_full_set_even_where_stage_a_cannot_reach(client,
                                    "已完结", "已撤销"}
     assert body["counts"]["已提交"] == 1 and body["counts"]["已排货"] == 0
     assert body["scope_note"]["unreachable_in_stage_a"] == ["已下单", "准备排货", "已排货"]
+    # ★ UX-D13：前端状态筛选按「全集 − 派生桶 − 够不着」渲染，派生桶由接口说
+    assert body["scope_note"]["derived_buckets"] == ["进行中", "已提交未确认"]
 
 
 def test_a_confirmed_plan_lands_in_its_own_bucket_not_only_in_progress(client, seed):
@@ -60,3 +62,81 @@ def test_a_plan_that_did_not_change_is_in_neither_column(client, seed):
     client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
     body = client.get("/v1/dashboard/unsubmitted", headers=H(seed.actor)).json()
     assert body["never_submitted"] == [] and body["changed_since_submit"] == []
+
+
+def _claimed_without_sales(client, seed, use_source):
+    """认领时取不到销量（system_units 留 NULL），人只填一格采购 —— 再换源重算，预估会从 NULL 变成数。"""
+    from fixture_source import FIXTURES, FixtureSource
+
+    class NoSales(FixtureSource):
+        def daily_sales(self, *a):
+            return {}
+
+    use_source(lambda: NoSales(FIXTURES))
+    pid = client.post("/v1/plans", json={"title": "重算", "period_start": "2026-10-01", "months": 3},
+                      headers=H(seed.actor)).json()["plan_id"]
+    r = client.post(f"/v1/plans/{pid}/claims", json={"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]},
+                    headers=H(seed.actor))
+    assert r.status_code == 200, r.text
+    client.put(f"/v1/plans/{pid}/purchase/{seed.sku_a}/2026-10", json={"planned_units": 50},
+               headers=H(seed.actor))
+    assert client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor)).status_code == 200
+    use_source(lambda: FixtureSource(FIXTURES))
+    return pid
+
+
+def test_recompute_alone_does_not_count_as_changed_since_submit(client, seed, use_source):
+    """★ UX-D12：「提交后又改过」只算人改的。系统重算预估让 system_units 变了，
+    人一格没动 —— 列表上不许催人重新提交（否则主线狼来了）。"""
+    pid = _claimed_without_sales(client, seed, use_source)
+    r = client.post(f"/v1/plans/{pid}/forecast/recompute", headers=H(seed.actor))
+    assert r.status_code == 200 and len(r.json()["recomputed"]) > 0, "重算没改任何格 —— 下面的断言是空转的"
+    body = client.get("/v1/dashboard/unsubmitted", headers=H(seed.actor)).json()
+    assert body["changed_since_submit"] == []
+
+
+def test_human_edit_after_recompute_is_counted_with_cell_count(client, seed, use_source):
+    """人改了两格 → 进「改过」，且回显人改了几格、跟哪一版比的（一个数要能回答它是关于什么的）。"""
+    pid = _claimed_without_sales(client, seed, use_source)
+    client.post(f"/v1/plans/{pid}/forecast/recompute", headers=H(seed.actor))
+    client.put(f"/v1/plans/{pid}/demand/{seed.msku_a[0]}/{seed.msku_a[1]}/2026-11",
+               json={"expected_units": 7}, headers=H(seed.actor))
+    client.put(f"/v1/plans/{pid}/purchase/{seed.sku_a}/2026-10", json={"planned_units": 60},
+               headers=H(seed.actor))
+    body = client.get("/v1/dashboard/unsubmitted", headers=H(seed.actor)).json()
+    assert body["changed_since_submit"] == [
+        {"plan_id": pid, "title": "重算", "since_rev": 1, "human_cells": 2, "basis": "input_snapshot"}]
+
+
+def test_edit_then_revert_is_not_a_change(client, seed):
+    """人改了又改回原值 —— 与提交时的人填一致，不算改过。"""
+    pid = prepared(client, seed)
+    client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
+    url = f"/v1/plans/{pid}/purchase/{seed.sku_a}/2026-10"
+    client.put(url, json={"planned_units": 1}, headers=H(seed.actor))
+    client.put(url, json={"planned_units": 500}, headers=H(seed.actor))
+    assert client.get("/v1/dashboard/unsubmitted", headers=H(seed.actor)).json()["changed_since_submit"] == []
+
+
+def test_releasing_an_msku_is_a_human_change(client, seed):
+    """移出 msku 是人的动作：提交时的格子少了，要催重新提交。"""
+    pid = prepared(client, seed)
+    client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
+    r = client.delete(f"/v1/plans/{pid}/claims/{seed.msku_c[0]}/{seed.msku_c[1]}", headers=H(seed.actor))
+    assert r.status_code == 200, r.text
+    changed = client.get("/v1/dashboard/unsubmitted", headers=H(seed.actor)).json()["changed_since_submit"]
+    assert [(c["plan_id"], c["basis"]) for c in changed] == [(pid, "input_snapshot")]
+    assert changed[0]["human_cells"] == 3       # MSKU-C 三个月的格子走了
+
+
+def test_rev_submitted_before_snapshot_existed_says_so(client, seed):
+    """028 之前提交的版本没有人填快照：退回整份摘要比较，并在 basis 上说出来（回退必须有声）。"""
+    pid = prepared(client, seed)
+    client.post(f"/v1/plans/{pid}/submit", headers=H(seed.actor))
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("UPDATE plan_rev SET input_snapshot = NULL WHERE plan_id = %s", (pid,))
+    client.put(f"/v1/plans/{pid}/purchase/{seed.sku_a}/2026-11", json={"planned_units": 9},
+               headers=H(seed.actor))
+    changed = client.get("/v1/dashboard/unsubmitted", headers=H(seed.actor)).json()["changed_since_submit"]
+    assert changed == [{"plan_id": pid, "title": "10 月计划", "since_rev": 1,
+                        "human_cells": None, "basis": "content_digest"}]

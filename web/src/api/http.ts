@@ -2,7 +2,7 @@ import { ApiError, type SupplyChainApi } from './client';
 import { getActor } from '../shell/actorStore';
 import type {
   CatalogResult, RecentCatalogResult, LeadTime, LeadTimeResult, PlanList, PlanSummary, PutDemandResult,
-  PutPurchaseResult, Seller,
+  PutPurchaseResult, Seller, PutCellsResult,
 } from './types';
 
 interface HttpOptions { base: string; timeoutMs: number }
@@ -120,6 +120,7 @@ export function createHttpApi(opt: HttpOptions): SupplyChainApi {
       (await call<PutPurchaseResult>(
         'PUT', `/plans/${planId}/purchase/${encodeURIComponent(sku)}/${encodeURIComponent(period)}`,
         { planned_units: units })).cell,
+    putCells: (planId, batch) => call<PutCellsResult>('PUT', `/plans/${planId}/cells`, batch),
 
     getLeadTime: () => call<LeadTime>('GET', '/lead-time'),
     putLeadTime: (input) => call<LeadTimeResult>('PUT', '/lead-time', input),

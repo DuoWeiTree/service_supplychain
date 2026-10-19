@@ -198,6 +198,20 @@
 /* 紧凑下按钮不悬停就不占宽（仍可 Tab 聚焦）：否则 220px 行头里货号只剩两三个字 */
 .ps--compact .pm-rm { max-width: 0; padding: 0; overflow: hidden; }
 .ps--compact .ps-row:hover .pm-rm, .ps--compact .pm-rm:focus-visible { max-width: none; padding: 0 var(--space-1_5); }
+/* 紧凑（评审 P1：货号被截成「D」、副数溢出行外与上下行重叠）：格子只留主数，副数与「填计划采购 / 销量」标签收起 ——
+   断货 / 偏低仍由格子底色说，依据仍可用光标格上的 I 打开；格子里的「采 / 销」单字仍分得开两种量 */
+.ps--compact .ps-c > .ps-d, .ps--compact .ps-sum > .ps-d, .ps--compact .ps-tag, .ps--compact .ps-auto { display: none; }
+.ps--compact .ps-sum .ps-v, .ps--compact .ps-c .ps-v { white-space: nowrap; }
+
+/* 搜索命中的 msku 行（评审 P1「定位不到单个 msku」）：行头左侧主色条 + msku 名主色 */
+.ps-row.is-hit .ps-rh { box-shadow: inset 3px 0 0 var(--primary), inset -1px 0 0 var(--border); }
+.ps-row.is-hit .ps-sub--mono { color: var(--primary); font-weight: 600; }
+/* msku 行头：带后缀的长 seller_sku 省略（全名在 title），不折成两行顶破固定行高 */
+.ps-rh--msku > .ps-name { flex: 1 1 auto; min-width: 0; white-space: nowrap; }
+/* 粘贴结果（UX-D16）：留在表上方，不是一闪的 toast */
+.ps-paste { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
+/* 批量确认清单（UX-D15）：几百格时在弹窗里滚，不撑出屏 */
+.ps-confirm { max-height: 50vh; overflow: auto; margin-bottom: var(--space-3); }
 @media (hover: none) { .ps--compact .pm-rm { max-width: none; padding: 0 var(--space-1_5); } }
 
 /* 格子里的库存数字 = 点开看依据的按钮：外观仍是那个数，只加一条虚下划线提示可点 */

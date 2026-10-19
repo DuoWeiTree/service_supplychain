@@ -9,6 +9,13 @@ import { ACTORS } from './actors';
 beforeEach(() => setActor(ACTORS[0]!.actor_id));
 
 describe('AppShell', () => {
+  it('★ UX-D17：wide 让内容区铺满屏宽；默认不变（列表页保持现上限）', () => {
+    const { container, rerender } = render(<MemoryRouter><AppShell crumb="x"><p>x</p></AppShell></MemoryRouter>);
+    expect(container.querySelector('.wrap')).not.toHaveClass('wrap--wide');
+    rerender(<MemoryRouter><AppShell crumb="x" wide><p>x</p></AppShell></MemoryRouter>);
+    expect(container.querySelector('.wrap')).toHaveClass('wrap--wide');
+  });
+
   it('顶栏有 actor 下拉，选了就改当前操作人', async () => {
     render(<MemoryRouter><AppShell crumb="我的计划"><p>x</p></AppShell></MemoryRouter>);
     const select = screen.getByLabelText('操作人');

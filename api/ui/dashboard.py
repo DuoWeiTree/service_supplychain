@@ -1,12 +1,16 @@
 """两个看板。★ 计划的状态是记录状态的木桶派生，不是独立字段（08 §1.1）。"""
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, Request
 
 from api.ui.deps import actor_optional, declared, known_states, require_fresh_mirrors
-from rules.digest import content_digest
+from rules.digest import content_digest, human_changes, input_snapshot
 from rules.submit import DemandCell, PurchaseCell
 from shared.pg_client import pg_conn, timed
+
+log = logging.getLogger("scm.api")
 
 router = APIRouter(dependencies=[Depends(require_fresh_mirrors)])
 
@@ -40,6 +44,8 @@ def dashboard_plans(request: Request, who: str | None = Depends(actor_optional))
             counts["已提交未确认"] += n
     return {"counts": counts,
             "scope_note": {"unreachable_in_stage_a": UNREACHABLE_IN_STAGE_A,
+                           # ★ 前端的状态筛选要的是「记录状态」，不是这两个口径 —— 由接口说哪些是派生的，前端不手列
+                           "derived_buckets": DERIVED_BUCKETS,
                            "never_submitted_excluded": by_state.get(None, 0)}}
 
 
@@ -48,13 +54,14 @@ def dashboard_unsubmitted(request: Request, who: str | None = Depends(actor_opti
     declared(request)
     never, changed = [], []
     with timed("dashboard_unsubmitted", actor=who), pg_conn() as c, c.cursor() as cur:
-        cur.execute("SELECT p.plan_id, p.title, r.rev, r.content_digest"
+        cur.execute("SELECT p.plan_id, p.title, r.rev, r.content_digest, r.input_snapshot"
                     "  FROM plan p"
-                    "  LEFT JOIN LATERAL (SELECT rev, content_digest FROM plan_rev"
+                    "  LEFT JOIN LATERAL (SELECT rev, content_digest, input_snapshot FROM plan_rev"
                     "     WHERE plan_id = p.plan_id ORDER BY rev DESC LIMIT 1) r ON true"
                     " WHERE p.archived_at IS NULL ORDER BY p.plan_id")
         plans = cur.fetchall()
-        for plan_id, title, rev, digest in plans:
+        legacy: list[int] = []
+        for plan_id, title, rev, digest, snapshot in plans:
             if rev is None:
                 never.append({"plan_id": plan_id, "title": title})
                 continue
@@ -72,7 +79,19 @@ def dashboard_unsubmitted(request: Request, who: str | None = Depends(actor_opti
                 " WHERE d.plan_id = %s", (plan_id,))
             demand = [DemandCell(ss, sid, sku, p.strftime("%Y-%m"), sy, ex)
                       for ss, sid, sku, p, sy, ex in cur.fetchall()]
+            # ★ UX-D12：只算人改的 —— 比人填的那一层；重算预估改的是 system_units，不进这里
+            if snapshot is not None:
+                n = human_changes(snapshot, input_snapshot(purchase, demand))
+                if n > 0:
+                    changed.append({"plan_id": plan_id, "title": title, "since_rev": rev,
+                                    "human_cells": n, "basis": "input_snapshot"})
+                continue
+            # 028 之前提交的版本没有快照：只能比整份摘要（含预估），basis 上说出来，不冒充人改的格数
+            legacy.append(plan_id)
             if content_digest(purchase, demand) != digest:
-                changed.append({"plan_id": plan_id, "title": title, "since_rev": rev})
+                changed.append({"plan_id": plan_id, "title": title, "since_rev": rev,
+                                "human_cells": None, "basis": "content_digest"})
+    if legacy:
+        log.info("op=dashboard_unsubmitted basis=content_digest reason=rev_before_028 plan_ids=%s", legacy)
     # ★ 两栏分开：从未提交要人去提交，改过要人去重新提交 —— 催的是两种动作
     return {"never_submitted": never, "changed_since_submit": changed}

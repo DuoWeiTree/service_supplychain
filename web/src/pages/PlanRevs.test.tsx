@@ -20,6 +20,10 @@ const DIFF: PlanDiff = {
               total_units: { from: 500, to: 600 }, demand_at_submit: { from: 160, to: 180 } }],
 };
 
+/** UX 版本页 P2：h1 带计划名 —— 计划抬头另取 */
+const GET_PLAN = async () => ({ plan_id: 2, title: '2026 Q3 补货计划', period_start: '2026-07-01', months: 3,
+  owner_actor: 'ops.zhang', archived_at: null, state: '已提交' as const, state_rev: 2 });
+
 beforeEach(() => { vi.resetModules(); });
 
 async function renderRevs() {
@@ -28,6 +32,7 @@ async function renderRevs() {
   vi.doMock('../api', () => ({
     ApiError,
     api: {
+      getPlan: GET_PLAN,
       listRevs: async () => JSON.parse(JSON.stringify(state)) as RevList,
       setCurrentRev: async (_p: number, rev: number) => {
         state.revs.forEach((r) => { r.is_current = r.rev === rev; });
@@ -55,6 +60,38 @@ async function renderRevs() {
 }
 
 describe('版本编辑', () => {
+  it('★ h1 带计划名；计划抬头取不到时写「版本」并点名，不拖垮版本表', async () => {
+    await renderRevs();
+    expect(await screen.findByRole('heading', { name: '2026 Q3 补货计划 的版本' })).toBeInTheDocument();
+
+    vi.resetModules();
+    const { ApiError } = await import('../api/client');
+    vi.doMock('../api', () => ({ ApiError, api: {
+      getPlan: async () => { throw new ApiError(404, 'plan_not_found', '没有这张计划', {}); },
+      listRevs: async () => JSON.parse(JSON.stringify(REVS)) as RevList,
+    } }));
+    const { PlanRevs } = await import('./PlanRevs');
+    render(<MemoryRouter initialEntries={['/plans/9/revs']}><Routes><Route path="/plans/:planId/revs" element={<PlanRevs />} /></Routes></MemoryRouter>);
+    expect(await screen.findByText('404 plan_not_found')).toBeInTheDocument();
+    expect(screen.getAllByTestId('rev-2').length).toBeGreaterThan(0);
+  });
+
+  it('★「撤销」只给流转中的那一版 —— 早已被替换的旧版撤了也是 0 条（04 §1 #8）', async () => {
+    await renderRevs();
+    expect(within(screen.getByTestId('rev-2')).getByRole('button', { name: '撤销' })).toBeInTheDocument();
+    expect(within(screen.getByTestId('rev-1')).queryByRole('button', { name: '撤销' })).toBeNull();
+    // 「设为当前使用」是次按钮，不与危险动作同级
+    expect(within(screen.getByTestId('rev-1')).getByRole('button', { name: '设为当前使用' })).toHaveClass('btn--ghost');
+  });
+
+  it('64 位内容摘要收进折叠区，默认收起', async () => {
+    await renderRevs();
+    const digest = within(screen.getByTestId('rev-2')).getByText('3b7e5d1c');
+    const details = digest.closest('details');
+    expect(details).not.toBeNull();
+    expect(details!.open).toBe(false);
+  });
+
   it('★ 流转中与当前使用分开显示 —— 两个标记不是一回事', async () => {
     await renderRevs();
     const row2 = await screen.findByTestId('rev-2');
@@ -118,6 +155,7 @@ describe('版本编辑', () => {
     vi.doMock('../api', () => ({
       ApiError,
       api: {
+        getPlan: GET_PLAN,
         listRevs: async () => JSON.parse(JSON.stringify(REVS)) as RevList,
         setCurrentRev: async (_p: number, rev: number) => ({ current_rev: rev }),
         diff: async () => DIFF,
@@ -153,6 +191,7 @@ describe('版本编辑', () => {
     vi.doMock('../api', () => ({
       ApiError,
       api: {
+        getPlan: GET_PLAN,
         listRevs: async () => JSON.parse(JSON.stringify(state)) as RevList,
         setCurrentRev: async (_p: number, rev: number) => {
           calls.push(rev);
@@ -182,6 +221,7 @@ describe('版本编辑', () => {
     vi.doMock('../api', () => ({
       ApiError,
       api: {
+        getPlan: GET_PLAN,
         listRevs: async () => JSON.parse(JSON.stringify(REVS)) as RevList,
         setCurrentRev: async (_p: number, rev: number) => ({ current_rev: rev }),
         diff: async () => DIFF,
@@ -214,6 +254,7 @@ describe('版本编辑', () => {
     vi.doMock('../api', () => ({
       ApiError,
       api: {
+        getPlan: GET_PLAN,
         listRevs: () => new Promise<RevList>(() => {}),      // 永不落地：把加载态撑开
         setCurrentRev: async (_p: number, rev: number) => ({ current_rev: rev }),
         diff: async () => DIFF,
@@ -236,6 +277,7 @@ describe('版本编辑', () => {
     vi.doMock('../api', () => ({
       ApiError,
       api: {
+        getPlan: GET_PLAN,
         listRevs: async (): Promise<RevList> => ({ revs: [], in_flight_rev: null, current_rev: null }),
         setCurrentRev: async (_p: number, rev: number) => ({ current_rev: rev }),
         diff: async () => DIFF,
@@ -262,6 +304,7 @@ describe('版本编辑', () => {
     vi.doMock('../api', () => ({
       ApiError,
       api: {
+        getPlan: GET_PLAN,
         listRevs: async () => JSON.parse(JSON.stringify(NO_CURRENT)) as RevList,
         setCurrentRev: async (_p: number, rev: number) => ({ current_rev: rev }),
         diff: async (_p: number, from: number, to: number) => { diffCalls.push([from, to]); return DIFF; },
@@ -296,6 +339,7 @@ describe('版本编辑', () => {
     vi.doMock('../api', () => ({
       ApiError,
       api: {
+        getPlan: GET_PLAN,
         listRevs: async () => JSON.parse(JSON.stringify(REVS)) as RevList,
         setCurrentRev: async () => { throw new ApiError(404, 'rev_not_found', '没有这一版', { rev: 1 }); },
         diff: async () => DIFF,

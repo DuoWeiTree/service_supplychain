@@ -27,3 +27,21 @@ def content_digest(purchase_cells, demand_cells) -> str:
     }
     text = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def input_snapshot(purchase_cells, demand_cells) -> dict:
+    """人填的那一层（UX-D12）。★ 不含 system_units：重算预估不是人改的。
+    ★ 格子在、没人填 → null 照存：认领 / 移出 msku 让格子多了少了，是人的动作，要比得出来。"""
+    return {
+        "purchase": {f"{c.sku}|{c.period}": c.planned_units for c in purchase_cells},
+        "demand": {f"{c.seller_sku}|{c.sid}|{c.period}": c.expected_units for c in demand_cells},
+    }
+
+
+def human_changes(then: dict, now: dict) -> int:
+    """两份快照之间人改了几格：值变了、格子多了、格子少了，各算一格。"""
+    n = 0
+    for part in ("purchase", "demand"):
+        a, b = then.get(part, {}), now.get(part, {})
+        n += sum(1 for k in a.keys() | b.keys() if k not in a or k not in b or a[k] != b[k])
+    return n

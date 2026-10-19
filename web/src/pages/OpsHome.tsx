@@ -7,14 +7,15 @@ import { useInFlight } from '../shell/useInFlight';
 import { ErrorDetail } from '../components/ErrorDetail';
 import { Qty } from '../components/Qty';
 import { api, ApiError } from '../api';
-import type { DashboardPlans, PlanList, PlanSummary, UnsubmittedBoard } from '../api/types';
-
-/** ★ 阶段 A 只渲染够得着的三态（00e:45）。挡的地方只有这一处 —— 接口照样返回全集（S-20） */
-export const STAGE_A_VISIBLE = ['未提交', '已提交', '已撤销'] as const;
+import type { DashboardPlans, PlanList, UnsubmittedBoard } from '../api/types';
+import { byTodo, kpiKeys, NEVER, nextStep, stateLabel, stateOptions } from './opsHomeModel';
 
 const CREATE_KEY = 'create';
+/** 状态筛选里的「要动手的」（下一步 chip 有的那些） */
+const TODO = 'todo';
+const CHANGED = 'changed';
 
-type SortKey = 'period' | 'title' | 'state';
+type SortKey = 'todo' | 'period' | 'title' | 'state';
 
 export function OpsHome() {
   const navigate = useNavigate();
@@ -33,7 +34,7 @@ export function OpsHome() {
   const [fTitle, setFTitle] = useState('');
   const [fRev, setFRev] = useState('');
   const [fState, setFState] = useState('');
-  const [sort, setSort] = useState<SortKey>('period');
+  const [sort, setSort] = useState<SortKey>('todo');
   const [creating, setCreating] = useState(false);
 
   useEffect(() => {
@@ -48,25 +49,21 @@ export function OpsHome() {
 
   const finished = useMemo(() => (list?.plans ?? []).filter((p) => p.state === '已完结'), [list]);
   const visible = useMemo(() => {
-    const kept = (list?.plans ?? []).filter((p) => p.state !== '已完结');
+    // ★ 已完结默认不在列表（底行计数），专门筛它时才列出来 —— 选了却一张都筛不出就是被藏了
+    const kept = (list?.plans ?? []).filter((p) => fState === '已完结' || p.state !== '已完结');
     const rows = kept.filter((p) =>
       (fPeriod === '' || p.period_start.startsWith(fPeriod)) &&
       (fTitle === '' || p.title.includes(fTitle)) &&
       (fRev === '' || String(p.state_rev ?? '') === fRev) &&
-      (fState === '' || stateLabel(p) === fState));
+      (fState === '' || (fState === TODO ? board !== null && nextStep(p, board) !== undefined
+        : fState === CHANGED ? board?.changed_since_submit.some((c) => c.plan_id === p.plan_id) === true
+        : stateLabel(p) === fState)));
     return [...rows].sort((a, b) =>
-      sort === 'period' ? b.period_start.localeCompare(a.period_start)
+      sort === 'todo' ? byTodo(a, b, board)
+      : sort === 'period' ? b.period_start.localeCompare(a.period_start)
       : sort === 'title' ? a.title.localeCompare(b.title)
       : stateLabel(a).localeCompare(stateLabel(b)));
-  }, [list, fPeriod, fTitle, fRev, fState, sort]);
-
-  // ★ 三个数来自三个端点。取不到的那个给「未知」，不落回 0 ——
-  //   「一张都没有」与「这个数取不到」长得一模一样才是最坏的
-  const counts: Record<(typeof STAGE_A_VISIBLE)[number], number | null> = {
-    未提交: board === null ? null : board.never_submitted.length,
-    已提交: dash === null ? null : dash.counts['已提交'],
-    已撤销: list === null ? null : list.plans.filter((p) => p.state === '已撤销').length,
-  };
+  }, [list, board, fPeriod, fTitle, fRev, fState, sort]);
 
   async function create(form: HTMLFormElement) {
     const data = new FormData(form);
@@ -97,16 +94,33 @@ export function OpsHome() {
       </div>
 
       <div className="sec counts" data-testid="counts">
-        {STAGE_A_VISIBLE.map((k) => (
+        {/* UX-D11：要动手的两个计数在前，点了即筛选 */}
+        <button type="button" className="kpi kpi--btn" aria-pressed={fState === CHANGED}
+          onClick={() => setFState(fState === CHANGED ? '' : CHANGED)}>
+          <span className="kpi__n">{board === null ? <Qty v={{ kind: 'unknown' }} /> : board.changed_since_submit.length}</span>
+          <span className="kpi__d">提交后又改过</span>
+        </button>
+        <button type="button" className="kpi kpi--btn" aria-pressed={fState === NEVER}
+          onClick={() => setFState(fState === NEVER ? '' : NEVER)}>
+          <span className="kpi__n">{board === null ? <Qty v={{ kind: 'unknown' }} /> : board.never_submitted.length}</span>
+          <span className="kpi__d">{NEVER}</span>
+        </button>
+        <span className="sep" />
+        {/* ★ UX-D13 / S-20：全集来自接口，减去它自报够不着的；取不到就写一格未知，不手列一份顶上 */}
+        {dash ? kpiKeys(dash).map((k) => (
           <div className="kpi" key={k}>
-            <span className="kpi__n">
-              {counts[k] === null ? <Qty v={{ kind: 'unknown' }} /> : counts[k]}
-            </span>
+            <span className="kpi__n">{dash.counts[k as keyof DashboardPlans['counts']]}</span>
             <span className="kpi__d">{k}</span>
           </div>
-        ))}
+        )) : (
+          <div className="kpi">
+            <span className="kpi__n"><Qty v={{ kind: 'unknown' }} /></span>
+            <span className="kpi__d">各状态计数</span>
+          </div>
+        )}
       </div>
       {dashErr && <ErrorDetail err={dashErr} />}
+      {boardErr && <ErrorDetail err={boardErr} />}
       {/* ★ 接口自报哪些态阶段 A 够不着；测试拿它当靶子，前端不硬编码这份名单 */}
       <span data-testid="unreachable" hidden>
         {JSON.stringify(dash?.scope_note.unreachable_in_stage_a ?? [])}
@@ -126,31 +140,6 @@ export function OpsHome() {
       )}
       {createErr && <ErrorDetail err={createErr} onDismiss={dismiss} />}
 
-      <div className="sec twocol">
-        <div className="panel">
-          <div className="panel__head">未提交</div>
-          <div className="panel__body" data-testid="never-submitted">
-            {(board?.never_submitted ?? []).map((p) => (
-              <div key={p.plan_id}><Link to={`/plans/${p.plan_id}`}>{p.title}</Link></div>
-            ))}
-            {board?.never_submitted.length === 0 && <div className="todos__empty">无</div>}
-          </div>
-        </div>
-        <div className="panel">
-          <div className="panel__head">提交后又改过</div>
-          <div className="panel__body" data-testid="changed-since-submit">
-            {(board?.changed_since_submit ?? []).map((p) => (
-              <div key={p.plan_id}>
-                <Link to={`/plans/${p.plan_id}`}>{p.title}</Link>{' '}
-                <span className="muted">rev {p.since_rev}</span>
-              </div>
-            ))}
-            {board?.changed_since_submit.length === 0 && <div className="todos__empty">无</div>}
-          </div>
-        </div>
-      </div>
-      {boardErr && <ErrorDetail err={boardErr} />}
-
       <div className="bar">
         <label className="bar__grp"><span className="bar__lbl">周期</span>
           <input className="inp inp--tiny" value={fPeriod} onChange={(e) => setFPeriod(e.target.value)} /></label>
@@ -161,10 +150,13 @@ export function OpsHome() {
         <label className="bar__grp"><span className="bar__lbl">状态</span>
           <select className="inp" value={fState} onChange={(e) => setFState(e.target.value)}>
             <option value="">全部</option>
-            {STAGE_A_VISIBLE.map((k) => <option key={k} value={k}>{k}</option>)}
+            <option value={TODO}>要动手的</option>
+            {fState === CHANGED && <option value={CHANGED}>提交后又改过</option>}
+            {stateOptions(dash, list?.plans ?? []).map((k) => <option key={k} value={k}>{k}</option>)}
           </select></label>
         <label className="bar__grp"><span className="bar__lbl">排序</span>
           <select className="inp" value={sort} onChange={(e) => setSort(e.target.value as SortKey)}>
+            <option value="todo">要动手的在前</option>
             <option value="period">周期</option><option value="title">计划名</option><option value="state">状态</option>
           </select></label>
       </div>
@@ -173,33 +165,40 @@ export function OpsHome() {
         <>
           <div className="table-scroll">
             <table className="table table--dense" data-testid="plan-list">
-              <thead><tr><th>周期</th><th>计划名</th><th className="r">版本</th><th>状态</th><th>详情</th></tr></thead>
+              <thead><tr><th>下一步</th><th>计划名</th><th>周期</th><th className="r">版本</th><th>状态</th><th>详情</th></tr></thead>
               <tbody>
-                {visible.map((p) => (
-                  <tr key={p.plan_id}>
-                    {/* ★ I7 裁定：不用 `A · B` 拼元串 —— 表头已经说了这一列是周期 */}
-                    <td>{p.period_start.slice(0, 7)} <span className="muted">跨 {p.months} 月</span></td>
-                    <td>{p.title}</td>
-                    <td className="r">{p.state_rev === null ? <Qty v={{ kind: 'unknown' }} /> : p.state_rev}</td>
-                    <td><span className="chip chip--dim">{stateLabel(p)}</span></td>
-                    <td><Link to={`/plans/${p.plan_id}`}>打开</Link></td>
-                  </tr>
-                ))}
+                {list === null && <tr><td colSpan={6} className="muted">正在取…</td></tr>}
+                {visible.map((p) => {
+                  const next = board ? nextStep(p, board) : undefined;
+                  return (
+                    <tr key={p.plan_id}>
+                      <td data-testid="next">
+                        {board === null && <Qty v={{ kind: 'unknown' }} />}
+                        {next && <><span className="chip chip--ours">{next.text}</span>{next.note && <span className="muted"> {next.note}</span>}</>}
+                      </td>
+                      <td data-testid="plan-title">{p.title}</td>
+                      {/* ★ I7 裁定：不用 `A · B` 拼元串 —— 表头已经说了这一列是周期 */}
+                      <td>{p.period_start.slice(0, 7)} <span className="muted">跨 {p.months} 月</span></td>
+                      <td className="r">{p.state_rev === null ? <Qty v={{ kind: 'unknown' }} /> : p.state_rev}</td>
+                      <td><span className="chip chip--dim">{stateLabel(p)}</span></td>
+                      <td><Link to={`/plans/${p.plan_id}`}>打开</Link></td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
-          {/* ★ 挡掉的两侧都要有个数 —— 「没有」和「被我藏了」长得一样 */}
+          {/* ★ 挡掉的两侧都要有个数 —— 「没有」和「被我藏了」长得一样；没取到就不写数（空 ≠ 0） */}
           <div className="muted mt" data-testid="hidden-rows">
-            <span>已完结 {finished.length} 张不在列表</span>{' '}
-            <span>已归档 {list?.excluded.archived ?? 0} 张不在列表</span>
+            {list === null ? <span>正在取…</span> : (
+              <>
+                {fState !== '已完结' && <><span>已完结 {finished.length} 张不在列表</span>{' '}</>}
+                <span>已归档 {list.excluded.archived} 张不在列表</span>
+              </>
+            )}
           </div>
         </>
       )}
     </AppShell>
   );
-}
-
-/** ★ 从未提交的计划 state 为 null（没有 rev 就没有记录）—— 不是 04 里的任何一个状态值 */
-function stateLabel(p: PlanSummary): string {
-  return p.state === null ? '未提交' : p.state;
 }

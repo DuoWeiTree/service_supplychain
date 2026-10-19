@@ -1,7 +1,7 @@
 import type {
   CancelRevResult, CatalogQuery, CatalogResult, RecentCatalogResult, ClaimResult, ClaimTarget, CreatePlanInput,
   DashboardPlans, DemandCell, GridResponse, LeadTime, LeadTimeInput, LeadTimeResult,
-  ListPlansQuery, Period, PlanDiff, PlanId,
+  ListPlansQuery, Period, PlanDiff, PlanId, CellsBatch, PutCellsResult,
   PlanList, PlanSummary, PurchaseCell, RecomputeResult, ReleaseResult, RemoveSkuResult, RevList, Seller, Sid,
   SubmitResult, UnsubmittedBoard,
   AcknowledgeResult, AttentionQueue, CandidateLineQuery, CandidateLines, ConfirmAbsentResult, LineTrace, PurchasePlans,
@@ -59,6 +59,8 @@ export interface SupplyChainApi {
   /** ★ units 可以是 null —— 空 = 未知 */
   putDemand(planId: PlanId, sellerSku: string, sid: Sid, period: Period, units: number | null): Promise<DemandCell>;
   putPurchase(planId: PlanId, sku: string, period: Period, units: number | null): Promise<PurchaseCell>;
+  /** UX-D14：粘贴 / 填充 / 批量清空一次写完；任一格不过整批不写，错误 `fields.cells` 逐格点名 */
+  putCells(planId: PlanId, batch: CellsBatch): Promise<PutCellsResult>;
 
   searchCatalog(q: CatalogQuery): Promise<CatalogResult>;
   /** 以前计划里用过的货号（任一计划认领过，含已释放），最近认领在前 */

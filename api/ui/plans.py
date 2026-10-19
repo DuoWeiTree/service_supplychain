@@ -892,6 +892,113 @@ def put_purchase(plan_id: int, sku: str, period: str, body: dict, request: Reque
     return {"cell": {"sku": sku, "period": period, "planned_units": units}}
 
 
+#: ★ 设计取值 · 未实测（UX-Q30）：一次批量写最多几格。口述量级 100 msku × 6 月 = 600 销量格 + 货号 × 6 采购格。
+CELLS_BATCH_MAX = 1000
+
+
+def _batch_cell(kind: str, raw) -> tuple[dict, str | None]:
+    """一格的名字（回报用）与它的毛病；没毛病 → None。"""
+    ident = ("seller_sku", "sid", "period") if kind == "demand" else ("sku", "period")
+    field = "expected_units" if kind == "demand" else "planned_units"
+    if not isinstance(raw, dict):
+        return {"kind": kind, "got": raw}, "not_an_object"
+    named = {"kind": kind, **{k: raw.get(k) for k in ident}}
+    if any(not isinstance(raw.get(k), str) or raw.get(k) == "" for k in ident):
+        return named, "missing_key"
+    try:
+        dt.date.fromisoformat(raw["period"] + "-01")
+    except ValueError:
+        return named, "bad_period"
+    try:
+        _units(raw, field)
+    except ApiError:
+        return {**named, "got": raw.get(field)}, "bad_units"
+    return named, None
+
+
+@router.put("/plans/{plan_id}/cells")
+def put_cells(plan_id: int, body: dict, request: Request, who: str = Depends(actor)):
+    """UX-D14：粘贴 / 填充 / 批量清空一次写完。★ 一个事务，全有或全无 ——
+    半批写进去的计划没人解释得了；坏格与不存在的格逐格点名，不只报第一个。"""
+    declared(request)
+    t0 = time.perf_counter()
+    demand, purchase = body.get("demand") or [], body.get("purchase") or []
+    n = len(demand) + len(purchase)
+
+    def done(outcome: str, failed: list[dict] | None = None) -> None:
+        # ★ 三问：打的哪张计划 · 多少格 · 多久 · 哪几格没过
+        log.info("op=put_cells plan_id=%s actor=%s demand=%d purchase=%d elapsed_ms=%.0f outcome=%s failed=%s",
+                 plan_id, who, len(demand), len(purchase), (time.perf_counter() - t0) * 1000, outcome,
+                 [f"{c['kind']}:{c.get('seller_sku') or c.get('sku')}|{c.get('sid', '')}|{c.get('period')}"
+                  f":{c.get('why', '')}" for c in (failed or [])])
+
+    if not isinstance(demand, list) or not isinstance(purchase, list) or n == 0:
+        done("empty_batch")
+        raise ApiError(400, "empty_batch", "一格都没给（demand / purchase 都是空的）", {})
+    if n > CELLS_BATCH_MAX:
+        done("batch_too_large")
+        raise ApiError(400, "batch_too_large", f"一次最多写 {CELLS_BATCH_MAX} 格",
+                       {"max": CELLS_BATCH_MAX, "got": n})
+    bad, seen, dup = [], set(), []
+    for kind, items in (("demand", demand), ("purchase", purchase)):
+        for raw in items:
+            named, why = _batch_cell(kind, raw)
+            if why:
+                bad.append({**named, "why": why})
+                continue
+            key = tuple(named.values())
+            if key in seen:
+                dup.append(named)
+            seen.add(key)
+    if bad:
+        done("bad_units", bad)
+        raise ApiError(400, "bad_units", "有格子的数不对（必须是 ≥0 的整数或 null），这一批一格都没写",
+                       {"cells": bad})
+    if dup:
+        done("duplicate_cell", dup)
+        raise ApiError(400, "duplicate_cell", "同一格在这一批里出现了两次", {"cells": dup})
+
+    out_d, out_p, missing = [], [], []
+    with pg_conn() as c, c.cursor() as cur:
+        ensure_writable(cur, plan_id)
+        for raw in demand:
+            period = dt.date.fromisoformat(raw["period"] + "-01")
+            cur.execute("UPDATE plan_demand_cell d SET expected_units = %s, updated_by = %s,"
+                        " updated_at = now()"
+                        " FROM msku_bridge b"
+                        " WHERE d.plan_id = %s AND d.seller_sku = %s AND d.sid = %s"
+                        "   AND d.period_start = %s"
+                        "   AND b.seller_sku = d.seller_sku AND b.sid = d.sid"
+                        " RETURNING d.system_units, d.system_extrapolated, b.sku, d.system_basis",
+                        (raw.get("expected_units"), who, plan_id, raw["seller_sku"], raw["sid"], period))
+            row = cur.fetchone()
+            if row is None:
+                missing.append({"kind": "demand", "seller_sku": raw["seller_sku"], "sid": raw["sid"],
+                                "period": raw["period"]})
+                continue
+            sysu, extrap, sku, sbasis = row
+            out_d.append(_demand_row(raw["seller_sku"], raw["sid"], sku, raw["period"], sysu,
+                                     raw.get("expected_units"), extrap, sbasis))
+        for raw in purchase:
+            cur.execute("UPDATE plan_purchase_cell SET planned_units = %s, updated_by = %s,"
+                        " updated_at = now()"
+                        " WHERE plan_id = %s AND sku = %s AND period_start = %s RETURNING 1",
+                        (raw.get("planned_units"), who, plan_id, raw["sku"],
+                         dt.date.fromisoformat(raw["period"] + "-01")))
+            if cur.fetchone() is None:
+                missing.append({"kind": "purchase", "sku": raw["sku"], "period": raw["period"]})
+                continue
+            out_p.append({"sku": raw["sku"], "period": raw["period"],
+                          "planned_units": raw.get("planned_units")})
+        if missing:
+            # ★ 在事务里抛：已经 UPDATE 的那几格跟着回滚
+            done("cell_not_found", [{**m, "why": "cell_not_found"} for m in missing])
+            raise ApiError(404, "cell_not_found", "有格子还没长出来（先认领 msku），这一批一格都没写",
+                           {"plan_id": plan_id, "cells": missing})
+    done("ok")
+    return {"demand": out_d, "purchase": out_p}
+
+
 @router.post("/plans/{plan_id}/archive")
 def archive(plan_id: int, request: Request, who: str = Depends(actor)):
     """★ 同一事务释放全部占用：分两次做，中间挂掉就会留下一张归档了却还扣着货的计划。"""
