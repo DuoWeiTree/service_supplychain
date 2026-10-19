@@ -4,7 +4,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SKIP = {".venv", "tests", "web", "docs", "node_modules", ".superpowers"}
+SKIP = {".venv", "tests", "web", "docs", "node_modules", ".superpowers", ".claude"}
 
 
 def test_every_product_package_is_listed():
