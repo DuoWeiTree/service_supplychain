@@ -128,6 +128,7 @@ describe('采购单详情', () => {
   it('★ UX-D6：面包屑「采购」回列表并定位到来源计划', async () => {
     await mountPurchase('/purchase/1', purchaseRoutes(placed()));
     const crumbs = await screen.findByTestId('po-crumbs');
+    expect(document.querySelector('.wrap')).toHaveClass('wrap--wide');   // UX-D17
     expect(within(crumbs).getByRole('link', { name: '采购' })).toHaveAttribute('href', '/purchase?plan=1');
   });
 

@@ -168,7 +168,7 @@ export function PoRoute() {
   if (view.kind === 'editor') return <PoEditor key={`${poId}-${gen}`} poId={id} onReroute={reroute} />;
   if (view.kind === 'detail') return <PoDetail key={`${poId}-${gen}`} poId={id} onEditable={reroute} />;
   return (
-    <AppShell crumb="采购单">
+    <AppShell crumb="采购单" wide>
       <div className="head"><div className="head__main"><h1>采购单 {poId}</h1></div></div>
       {view.kind === 'fail' ? <ErrorDetail err={view.err} /> : <div className="empty">正在取采购单…</div>}
     </AppShell>
@@ -448,7 +448,7 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
   if (poId !== null) {
     if (poErr) {
       return (
-        <AppShell crumb="采购单">
+        <AppShell crumb="采购单" wide>
           <div className="head"><div className="head__main"><h1>采购单 {poId}</h1></div></div>
           <ErrorDetail err={poErr} />
         </AppShell>
@@ -456,7 +456,7 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
     }
     if (po === null) {
       return (
-        <AppShell crumb="采购单">
+        <AppShell crumb="采购单" wide>
           <div className="head"><div className="head__main"><h1>采购单 {poId}</h1></div></div>
           <div className="empty">正在取采购单…</div>
         </AppShell>
@@ -552,7 +552,7 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
     : firstBrought ? `/purchase?plan=${firstBrought.plan_id}` : '/purchase';
 
   return (
-    <AppShell crumb={po ? po.custom_order_sn : '新建采购单'}>
+    <AppShell wide crumb={po ? po.custom_order_sn : '新建采购单'}>
       <LeaveGuard when={unsaved && (dirty || draft.lines.length > 0)} bypass={leaving} />
       <div className="head">
         <div className="head__main">

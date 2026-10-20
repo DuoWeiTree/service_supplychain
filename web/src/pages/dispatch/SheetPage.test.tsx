@@ -79,6 +79,11 @@ describe('排货工作台 · 页头（问题 1：这张计划还差多少）', (
     }
     expect(screen.getByTestId('stock-as-of')).toHaveTextContent('库存截至 2026-10-10');
   });
+
+  it('★ UX-D17：详情页铺满屏宽', async () => {
+    await mount(routes());
+    expect(document.querySelector('.wrap')).toHaveClass('wrap--wide');
+  });
 });
 
 describe('左栏 · 记录清单', () => {

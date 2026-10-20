@@ -115,8 +115,8 @@ export function SheetPage() {
     }
   }, [hasLiveRefs, sheetId, readReceipt]);
 
-  if (loadErr) return <AppShell crumb={`排货表 #${sheetId}`}><ErrorDetail err={loadErr} /></AppShell>;
-  if (!detail || !grid) return <AppShell crumb={`排货表 #${sheetId}`}><div className="empty">正在取排货表…</div></AppShell>;
+  if (loadErr) return <AppShell crumb={`排货表 #${sheetId}`} wide><ErrorDetail err={loadErr} /></AppShell>;
+  if (!detail || !grid) return <AppShell crumb={`排货表 #${sheetId}`} wide><div className="empty">正在取排货表…</div></AppShell>;
 
   const frozen = detail.state !== '草稿';
   const put = async (body: CellPut, label: string): Promise<boolean> => {
@@ -240,7 +240,7 @@ export function SheetPage() {
   const stateChip = detail.state === '草稿' ? 'chip--ours' : detail.state === '已确认' ? 'chip--ok' : 'chip--dim';
 
   return (
-    <AppShell crumb={`排货表 #${sheetId}`}>
+    <AppShell crumb={`排货表 #${sheetId}`} wide>
       <div className="ds">
         <header className="ds-head">
           <div className="ds-head__id">
