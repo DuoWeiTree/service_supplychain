@@ -55,6 +55,7 @@ _FRESHNESS_DEFAULTS = {
     "scheduler_enabled": True,
     "coverage_drop_threshold": 0.30,    # OQ-6 裁定 09-22
     "startup_gate": True,
+    "startup_prewarm": True,            # 启动后台预热海外仓在途（FM-D6 领星实查）
 }
 
 

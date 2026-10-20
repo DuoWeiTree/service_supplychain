@@ -123,7 +123,8 @@ def _switch_schema(text: str) -> str:
 #: `startup_gate` 在镜像陈旧时抢 advisory lock、触发一次真刷新去打真 CH
 #: （task-7 fix round 1 —— 没有这一条，任何一个带 `with TestClient(...)` 对着
 #: 空表/陈旧镜像跑 lifespan 的测试都会在默认值下真的去连 ClickHouse）。
-_FRESHNESS_TEST_PINS = ("scheduler_enabled", "startup_gate")
+#: `startup_prewarm` 起后台线程查领星海外仓在途 —— 线程活过测试会把替身结果写进进程缓存。
+_FRESHNESS_TEST_PINS = ("scheduler_enabled", "startup_gate", "startup_prewarm")
 
 
 def _pin_section_keys(text: str, section: str, pins: dict[str, str]) -> str:

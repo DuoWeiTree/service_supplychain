@@ -190,3 +190,44 @@ def test_a_failing_startup_lead_time_read_logs_pgcode(wipe, monkeypatch, scm_log
     line = next((ln for ln in scm_log.text.splitlines() if "stage=lead_time" in ln), "")
     assert line, f"缺提前期失败日志：{scm_log.text!r}"
     assert pg_err.pgcode in line, f"提前期失败日志缺 pgcode：{line!r}"
+
+
+def test_startup_prewarms_oversea_in_transit_in_background(wipe, monkeypatch, scm_log):
+    """★ 10-20 实测：grid 冷启要等领星 listInbound 13.6 s，前端 8 s 就放弃 → 重启后第一个打开计划的人打不开。
+    启动时后台预热一次（不拦启动），之后 10 分钟内走缓存（FM-Q4）。"""
+    import threading
+    from usecase import oversea_in_transit
+    _cfg(monkeypatch, startup_gate=False, startup_prewarm=True)
+    done = threading.Event()
+    monkeypatch.setattr(oversea_in_transit, "in_transit_by_sku",
+                        lambda: (done.set(), oversea_in_transit.OverseaInTransit(True, {}, "2026-10-20T00:00:00+00:00"))[1])
+    with TestClient(api.create_app()) as c:
+        assert c.get("/health").status_code == 200
+        assert done.wait(5), "启动后应在后台预热一次海外仓在途"
+    oversea_in_transit.prewarm_thread().join(5)
+    assert "op=erp_oversea_in_transit_prewarm outcome=ok" in scm_log.text
+
+
+def test_startup_prewarm_false_never_calls_lingxing(wipe, monkeypatch, scm_log):
+    from usecase import oversea_in_transit
+    _cfg(monkeypatch, startup_gate=False, startup_prewarm=False)
+    calls = []
+    monkeypatch.setattr(oversea_in_transit, "in_transit_by_sku", lambda: calls.append(1))
+    with TestClient(api.create_app()) as c:
+        assert c.get("/health").status_code == 200
+    assert calls == []
+    assert "startup_prewarm=false" in scm_log.text
+
+
+def test_a_failing_prewarm_is_logged_with_cause_and_does_not_stop_the_app(wipe, monkeypatch, scm_log):
+    from usecase import oversea_in_transit
+    _cfg(monkeypatch, startup_gate=False, startup_prewarm=True)
+
+    def boom():
+        raise TimeoutError("lx slow")
+    monkeypatch.setattr(oversea_in_transit, "in_transit_by_sku", boom)
+    with TestClient(api.create_app()) as c:
+        assert c.get("/health").status_code == 200
+    oversea_in_transit.prewarm_thread().join(5)
+    assert "op=erp_oversea_in_transit_prewarm outcome=fail" in scm_log.text
+    assert "TimeoutError" in scm_log.text

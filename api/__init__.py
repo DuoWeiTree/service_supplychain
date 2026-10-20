@@ -37,7 +37,7 @@ from jobs.lock import RefreshInFlight
 from shared import config as config_module
 from shared.logging import setup_logging
 from shared.pg_client import business_schema, pg_conn, pg_error_fields, pg_target, timed
-from usecase import place_po
+from usecase import oversea_in_transit, place_po
 
 log = logging.getLogger("scm.api")
 
@@ -245,6 +245,10 @@ async def _lifespan(app: FastAPI):
     job_scheduler.start()          # ★ 先起调度器：启动检查可能要立刻触发一轮刷新
     try:
         _startup_check()
+        if config_module.freshness()["startup_prewarm"]:
+            oversea_in_transit.start_prewarm()
+        else:
+            log.warning("startup startup_prewarm=false —— 不预热海外仓在途；重启后第一次打开计划要等领星实查")
         try:
             recovered = place_po.recover_stuck()
             if recovered:

@@ -104,7 +104,8 @@ export function createHttpApi(opt: HttpOptions): SupplyChainApi {
     dashboardUnsubmitted: () => call('GET', '/dashboard/unsubmitted'),
     listSellers: async () => (await call<{ sellers: Seller[] }>('GET', '/sellers')).sellers,
 
-    getGrid: (planId) => call('GET', `/plans/${planId}/grid`),
+    // ★ grid 现查领星海外仓在途（FM-D6）；缓存未命中时实测冷启 13.6 s（10-20），全局 8 s 会把计划打不开
+    getGrid: (planId) => call('GET', `/plans/${planId}/grid`, undefined, READ_BACK_TIMEOUT_MS),
     // ★ team-lead 09-22 裁定：显式命名的信封类型（PutDemandResult），不是从
     //   Awaited<ReturnType<SupplyChainApi['putDemand']>> 反推的部分形状 ——
     //   那种写法只是把接口签名"声称"的类型抄一遍，掩盖了后端曾经真的少发两个键

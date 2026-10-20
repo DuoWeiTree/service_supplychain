@@ -44,6 +44,10 @@ coverage_drop_threshold = 0.30
 #   测试夹具置 false —— 它 TRUNCATE 掉四张镜像。
 startup_gate = true
 
+# ★ 启动后台预热一次海外仓在途（领星 listInbound，FM-D6）。不拦启动。
+#   10-20 实测冷启 13.6 s；不预热时重启后第一个打开计划的人要等这么久。测试夹具置 false。
+startup_prewarm = true
+
 [forecast]
 # 预测只读真 ClickHouse（PB-D17）。★ 没有 source 键 —— 写了它（任何值）就拒绝启动。
 

@@ -127,3 +127,31 @@ def in_transit_by_sku() -> OverseaInTransit:
             got = OverseaInTransit(False, None, None, f"parse: {type(e).__name__}")
         _cache = (_now(), got)
         return got
+
+
+_prewarm: threading.Thread | None = None
+
+
+def _prewarm_once() -> None:
+    t0 = time.monotonic()
+    try:
+        got = in_transit_by_sku()
+    except Exception as e:  # noqa: BLE001 —— 后台线程里炸了没人接，必须自己留痕
+        log.error("op=erp_oversea_in_transit_prewarm outcome=fail err_type=%s cause=%s ms=%d",
+                  type(e).__name__, cause_chain(e), (time.monotonic() - t0) * 1000)
+        return
+    log.info("op=erp_oversea_in_transit_prewarm outcome=%s reason=%s ms=%d",
+             "ok" if got.ok else "unknown", got.reason, (time.monotonic() - t0) * 1000)
+
+
+def start_prewarm() -> threading.Thread:
+    """★ 冷启第一次要等领星 13.6 s（10-20 实测），前端会先放弃 —— 启动时后台先查一次，不拦启动。
+    此间进来的 grid 请求在 _lock 上等这次的结果，不会再打一次领星。"""
+    global _prewarm
+    _prewarm = threading.Thread(target=_prewarm_once, name="oversea-in-transit-prewarm", daemon=True)
+    _prewarm.start()
+    return _prewarm
+
+
+def prewarm_thread() -> threading.Thread | None:
+    return _prewarm

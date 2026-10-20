@@ -127,9 +127,16 @@ describe('http 数据源', () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(ok({ checked: true, read_outcome: 'ok', read_cause: null,
       read_back_call: 1, problems: [], lx: null }));
     await mk().readBack(3);
-    await mk().getGrid(1).catch(() => undefined);
+    await mk().listSellers().catch(() => undefined);
     expect(spy.mock.calls.map((c) => c[0])).toEqual([READ_BACK_TIMEOUT_MS, 1000]);
     expect(READ_BACK_TIMEOUT_MS).toBeGreaterThan(60_000);   // > 后端两次各 30 s 的外呼
+  });
+
+  it('★ 计划 grid 也现查领星（海外仓在途，缓存未命中实测冷启 13.6 s）：用读回的长超时，不用全局 8 s', async () => {
+    const spy = vi.spyOn(AbortSignal, 'timeout');
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(ok({}));
+    await mk().getGrid(1).catch(() => undefined);
+    expect(spy.mock.calls.map((c) => c[0])).toEqual([READ_BACK_TIMEOUT_MS]);
   });
 
   it('★ 提交预览也现查领星（海外仓三方配对实测 7.5~16 s）：用读回的长超时，不用全局 8 s', async () => {
