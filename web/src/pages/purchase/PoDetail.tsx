@@ -138,7 +138,7 @@ export function PoDetail({ poId, onEditable }: { poId: PoId; onEditable?: () => 
 
   if (po === null) {
     return (
-      <AppShell crumb="采购单" wide>
+      <AppShell crumb="采购单">
         <div className="head"><div className="head__main"><h1>采购单 {poId}</h1></div></div>
         {poErr ? <><ErrorDetail err={poErr} />{retry}</> : <div className="empty">正在取采购单…</div>}
       </AppShell>
@@ -153,7 +153,7 @@ export function PoDetail({ poId, onEditable }: { poId: PoId; onEditable?: () => 
   const localState: LocalState = po.discarded_at ? '草稿（已作废）' : po.state === '已下单' ? '已下单' : '草稿';
 
   return (
-    <AppShell crumb={po.custom_order_sn} wide>
+    <AppShell crumb={po.custom_order_sn}>
       <div className="head">
         <div className="head__main">
           <PoCrumbs home={home} here={po.custom_order_sn} />

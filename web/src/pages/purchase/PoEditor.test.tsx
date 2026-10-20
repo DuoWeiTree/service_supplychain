@@ -115,12 +115,6 @@ const allot = async (row: HTMLElement, n: string) => {
 };
 
 describe('采购单编辑器：新建', () => {
-  it('★ UX-D17：详情页铺满屏宽', async () => {
-    await mount('/purchase/new');
-    await screen.findByTestId('po-header');
-    expect(document.querySelector('.wrap')).toHaveClass('wrap--wide');
-  });
-
   it('★ 设计稿：店铺行直接打件数 → 明细出现该货号，数量默认 = 来源合计', async () => {
     await mount('/purchase/new');
     const row = await sellerRow(101, '11072');
