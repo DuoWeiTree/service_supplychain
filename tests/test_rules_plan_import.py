@@ -44,7 +44,7 @@ def test_header_shuffled_and_spaced():
 
 
 def test_datetime_header_is_month():
-    h = list(COLUMNS) + [datetime(2026, 11, 1)  # noqa: DTZ001, "2026-12"]
+    h = list(COLUMNS) + [datetime(2026, 11, 1), "2026-12"]  # noqa: DTZ001
     r = parse_rows(h, [demand(a=1)], P)
     assert r.errors == [] and r.demand[0].units["2026-11"] == 1
 
