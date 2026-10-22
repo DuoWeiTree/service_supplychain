@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import time
 
+from erp.transport import cause_chain
 from shared.pg_client import pg_conn, pg_error_fields
 
 log = logging.getLogger("scm.usecase")
@@ -80,7 +81,9 @@ def delete_plan(plan_id: int, who: str) -> dict:
         raise
     except Exception as e:
         if getattr(e, "pgcode", None) != _FOREIGN_KEY_VIOLATION:
-            done(type(e).__name__, pgcode=getattr(e, "pgcode", None))
+            pg = pg_error_fields(e)
+            done(type(e).__name__, pgcode=pg["pgcode"], constraint=pg["constraint"],
+                 table=pg["table"], detail=repr(str(e)), cause=repr(cause_chain(e)))
             raise
         pg = pg_error_fields(e)
         done("PlanReferenced", pgcode=pg["pgcode"], table=pg["table"],

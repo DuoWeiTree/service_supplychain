@@ -75,3 +75,33 @@ def test_foreign_reference_rolls_back_and_names_table(client, seed, scm_log):
     assert ei.value.table == "sheet"
     assert rows(pid) == before
     assert "outcome=PlanReferenced" in scm_log.text and "sheet" in scm_log.text
+
+
+def test_non_fk_db_failure_logs_detail_and_cause(seed, scm_log, monkeypatch):
+    """非外键的库错（断连、死锁…）：日志得说出怎么炸的 —— 光一个类名加 pgcode 定位不了。"""
+    import contextlib
+
+    import usecase.plan_delete as mod
+
+    class FakePgError(Exception):
+        pgcode = "08006"
+
+    class Cur:
+        def execute(self, *a):
+            try:
+                raise ConnectionResetError(104, "Connection reset by peer")
+            except ConnectionResetError as inner:
+                raise FakePgError("server closed the connection unexpectedly") from inner
+
+    @contextlib.contextmanager
+    def broken():
+        conn = type("C", (), {"cursor": lambda self: contextlib.nullcontext(Cur())})()
+        yield conn
+
+    monkeypatch.setattr(mod, "pg_conn", broken)
+    with pytest.raises(FakePgError):
+        delete_plan(1, seed.actor)
+    text = scm_log.text
+    assert "outcome=FakePgError" in text and "pgcode=08006" in text
+    assert "server closed the connection unexpectedly" in text
+    assert "ConnectionResetError" in text and "errno=104" in text
