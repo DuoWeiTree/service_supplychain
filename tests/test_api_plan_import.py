@@ -41,11 +41,11 @@ def test_success_is_201_and_grid_shows_the_imported_units(client, seed):
 def test_rejected_is_422_with_all_errors_and_no_plan(client, seed):
     r = post(client, seed, xlsx([["乱写", seed.sku_a, "11072", None, None, "MSKU-A", 1, 1, 1],
                                  ["销量", None, "11072", None, None, "NOPE", 1, 1, 1]]),
-             title="")
+             )
     body = r.json()
     assert r.status_code == 422 and body["error"] == "import_rejected"
     codes = {e["code"] for e in body["errors"]}
-    assert "title_required" in codes and len(body["errors"]) >= 3, body
+    assert "bad_type" in codes and len(body["errors"]) >= 2, body
     assert "有" in body["hint"] and "计划没建" in body["hint"]
     plans = client.get("/v1/plans", headers={"x-actor": seed.actor}).json()["plans"]
     assert plans == []
@@ -84,3 +84,17 @@ def test_template_months_out_of_range_is_400(client, seed):
     assert r.status_code == 400 and r.json()["error"] == "validation_error"
     r = client.get("/v1/plans/import/template", params={"period_start": "nope", "months": 3})
     assert r.status_code == 400 and r.json()["error"] == "bad_date"
+
+
+def test_superscript_months_is_validation_error_not_500(client, seed):
+    r = client.get("/v1/plans/import/template", params={"period_start": "2026-11", "months": "\u00b2"})
+    assert r.status_code == 400 and r.json()["error"] == "validation_error"
+    r = post(client, seed, xlsx([]), months="\u00b2")
+    assert r.status_code == 422
+    assert [e["code"] for e in r.json()["errors"]] == ["validation_error"]
+
+
+def test_header_errors_alone_make_the_422_and_file_is_not_judged(client, seed):
+    r = post(client, seed, b"not an xlsx", title="", period_start="x", months="99")
+    assert r.status_code == 422
+    assert sorted(e["code"] for e in r.json()["errors"]) == ["bad_date", "bad_months", "title_required"]

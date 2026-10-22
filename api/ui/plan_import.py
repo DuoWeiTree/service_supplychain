@@ -14,9 +14,8 @@ from api.common.errors import ApiError
 from api.common.source_errors import SOURCE_ERRORS, source_error
 from api.common.source_factory import source_dep
 from dim.source import Source
-from rules.plan_import import RowError
 from shared.pg_client import timed
-from usecase.plan_import import ImportRejected, PlanHeader, import_plan
+from usecase.plan_import import ImportRejected, import_plan, parse_header, plan_periods_ym
 from usecase.plan_xlsx import build_template
 
 log = logging.getLogger("scm.api")
@@ -26,13 +25,6 @@ router = APIRouter()
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
-def _month_start(s: str) -> dt.date | None:
-    try:
-        return dt.datetime.strptime((s or "").strip(), "%Y-%m").date()
-    except ValueError:
-        return None
-
-
 @router.post("/plans/import", dependencies=[Depends(require_fresh_mirrors)])
 def import_plan_ep(request: Request, source: Annotated[Source, Depends(source_dep)],
                    who: str = Depends(actor),
@@ -40,24 +32,11 @@ def import_plan_ep(request: Request, source: Annotated[Source, Depends(source_de
                    months: str = Form(""), file: UploadFile = File(...)):
     declared(request)
     data = file.file.read()
-    start = _month_start(period_start)
-    # 起始月解析不了也不单独 400：与文件里的错一起回，免得改一处又撞一处
-    pre: list[RowError] = []
-    if start is None:
-        pre.append(RowError(0, None, "bad_date", "起始月不是 YYYY-MM",
-                            extra={"field": "period_start", "got": period_start}))
-        start = dt.date(1970, 1, 1)
-    n = int(months) if months.strip().isdigit() else months  # 非整数原样交给 usecase 报 validation_error
-    header = PlanHeader(title=title, period_start=start, months=n, owner_actor=who)
+    header, errs = parse_header(title, period_start, months, who)
     try:
         with timed("plan_import", actor=who, file_bytes=len(data)):
-            if pre:
-                # 起始月不可用 → 月份列无从比对，文件不读；表头其余的错仍由 usecase 一并裁决
-                try:
-                    import_plan(source, header, b"", who)
-                except ImportRejected as e:
-                    pre += [x for x in e.errors if x.code != "not_xlsx"]
-                raise ImportRejected(pre)
+            if header is None:
+                raise ImportRejected(errs)   # 表头不成立，月份列无从比对，文件不判
             out = import_plan(source, header, data, who)
     except ImportRejected as e:
         errs = [dataclasses.asdict(x) for x in e.errors]
@@ -73,17 +52,12 @@ def import_plan_ep(request: Request, source: Annotated[Source, Depends(source_de
 @router.get("/plans/import/template")
 def template(request: Request, period_start: str = "", months: str = "3"):
     declared(request, "period_start", "months")
-    start = _month_start(period_start)
-    if start is None:
-        raise ApiError(400, "bad_date", "period_start 不是 YYYY-MM",
-                       {"field": "period_start", "got": period_start})
-    if not months.strip().isdigit() or not 1 <= int(months) <= 24:
-        raise ApiError(400, "validation_error", "months 须为 1~24 的整数",
-                       {"fields": ["months"], "got": months})
-    n = int(months)
-    periods = [f"{start.year + (start.month - 1 + i) // 12}-{(start.month - 1 + i) % 12 + 1:02d}"
-               for i in range(n)]
-    body = build_template(periods)
-    name = f"plan-import-{start:%Y-%m}-{n}m.xlsx"
-    return Response(body, media_type=XLSX,
+    header, errs = parse_header("-", period_start, months, "-")
+    if header is None:
+        e = errs[0]
+        code = "bad_date" if e.code == "bad_date" else "validation_error"
+        raise ApiError(400, code, e.message, {"field": e.extra.get("field"), "got": e.extra.get("got")})
+    name = f"plan-import-{header.period_start:%Y-%m}-{header.months}m.xlsx"
+    return Response(build_template(plan_periods_ym(header.period_start, header.months)),
+                    media_type=XLSX,
                     headers={"Content-Disposition": f'attachment; filename="{name}"'})

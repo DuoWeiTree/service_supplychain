@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import re
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -57,6 +58,34 @@ def _header_errors(h: PlanHeader) -> list[RowError]:
 def _periods(start: dt.date, months: int) -> list[dt.date]:
     return [dt.date(start.year + (start.month - 1 + i) // 12, (start.month - 1 + i) % 12 + 1, 1)
             for i in range(months)]
+
+
+def plan_periods_ym(period_start: dt.date, months: int) -> list[str]:
+    """计划的月份列表（YYYY-MM）—— 模板表头与逐格比对共用这一份。"""
+    return [p.strftime("%Y-%m") for p in _periods(period_start, months)]
+
+
+# ASCII 数字：str.isdigit() 会放过 "²" 这类字符，int() 随即抛 500
+_DIGITS = re.compile(r"[0-9]+")
+
+
+def parse_header(title: str, period_start_raw: str, months_raw: object, owner_actor: str
+                 ) -> tuple[PlanHeader | None, list[RowError]]:
+    """表单原始值 → PlanHeader；表头的错一次列全（row=0）。有错则不给 header。"""
+    errs: list[RowError] = []
+    start = None
+    try:
+        start = dt.datetime.strptime((period_start_raw or "").strip(), "%Y-%m").date()
+    except ValueError:
+        errs.append(RowError(0, None, "bad_date", "起始月不是 YYYY-MM",
+                             extra={"field": "period_start", "got": period_start_raw}))
+    months = months_raw
+    if isinstance(months_raw, str) and _DIGITS.fullmatch(months_raw.strip()):
+        months = int(months_raw.strip())
+    h = PlanHeader(title=title, period_start=start or dt.date(1970, 1, 1), months=months,
+                   owner_actor=owner_actor)
+    errs += _header_errors(h)
+    return (None, errs) if errs else (h, [])
 
 
 def _column_letters(header: list[object]) -> dict[str, str]:
@@ -170,7 +199,7 @@ def import_plan(source, header: PlanHeader, data: bytes, who: str) -> dict:
                     who, header.title, len(data), e)
         raise _reject(errs + [RowError(0, None, "not_xlsx", "不是有效的 xlsx 文件")], ctx) from None
     periods = _periods(header.period_start, header.months)
-    parsed = parse_rows(head, rows, [p.strftime("%Y-%m") for p in periods])
+    parsed = parse_rows(head, rows, plan_periods_ym(header.period_start, header.months))
     ctx.update(rows=sum(1 for r in rows if any(v is not None and str(v).strip() for v in r)),
                parse_ms=_ms(t0))
 

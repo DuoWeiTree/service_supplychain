@@ -224,3 +224,28 @@ def test_import_file_too_large_and_not_xlsx(seed, monkeypatch):
         import_plan(src(), header(), xlsx([]), "alice")
     assert codes(exc) == ["file_too_large"]
     assert scalar("SELECT count(*) FROM plan") == 0
+
+
+def test_parse_header_ok_and_text_months():
+    from usecase.plan_import import parse_header
+    h, errs = parse_header("t", "2026-11", "3", "alice")
+    assert errs == [] and h.period_start == dt.date(2026, 11, 1) and h.months == 3
+    h, errs = parse_header("t", "2026-11", 5, "alice")
+    assert errs == [] and h.months == 5
+
+
+def test_parse_header_lists_every_header_error_at_once():
+    from usecase.plan_import import parse_header
+    h, errs = parse_header(" ", "2026-13", "²", "alice")
+    assert h is None
+    assert sorted(e.code for e in errs) == ["bad_date", "title_required", "validation_error"]
+    assert all(e.row == 0 for e in errs)
+    _, errs = parse_header("t", "2026-11", "25", "alice")
+    assert [e.code for e in errs] == ["bad_months"]
+    _, errs = parse_header("t", "2026-11", "3.5", "alice")
+    assert [e.code for e in errs] == ["validation_error"]
+
+
+def test_plan_periods_ym_crosses_year():
+    from usecase.plan_import import plan_periods_ym
+    assert plan_periods_ym(dt.date(2026, 11, 1), 3) == ["2026-11", "2026-12", "2027-01"]
