@@ -1,7 +1,7 @@
 """取数口子。产品里唯一的实现是 ChSource（PB-D17）；测试替身住在 tests/。
 
 ★ 做成协议是为了让接口层**不知道**数据从哪来 —— 测试换替身时改的只有装配
-  那一处（`api/ui/source_factory.source_dep`）。
+  那一处（`api/common/source_factory.source_dep`）。
 """
 from __future__ import annotations
 

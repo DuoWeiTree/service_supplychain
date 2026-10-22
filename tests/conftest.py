@@ -15,7 +15,7 @@ import pytest
 from fixture_source import FIXTURES, FixtureSource
 from lingxing_double import LingxingDouble
 
-from api.ui import source_factory
+from api.common import source_factory
 from erp import auth as erp_auth
 from erp import gateway
 from erp.drivers.live import LiveDriver
@@ -447,13 +447,13 @@ def client(wipe):
 def use_source(client):
     """换掉这个 app 的取数源。
 
-    ★ 取数源是**每请求**装配的（`api/ui/source_factory.source_dep`，终审
+    ★ 取数源是**每请求**装配的（`api/common/source_factory.source_dep`，终审
       C-1/C-2/C-3），所以没有模块级单例可以 `monkeypatch.setattr` —— 那个单例
       正是三个 Critical 的根因。这里接的是一个**无参工厂**，与生产同一个生命
       周期：想看「每请求各一个」就传 `lambda: Stub()`，想跨请求共用同一个实例
       （只有验「共用会坏」的用例才该这么做）就传 `lambda: the_one`。
     """
-    from api.ui.source_factory import source_dep
+    from api.common.source_factory import source_dep
 
     def _use(factory):
         client.app.dependency_overrides[source_dep] = factory

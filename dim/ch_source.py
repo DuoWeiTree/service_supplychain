@@ -862,7 +862,7 @@ def _unclassified_failure(e: BaseException) -> dict:
     没法直接调用那边按 cause 链分辨「超时」与「连不上」的真分类器。
 
     与 `query`/`now` 同一个模式：真正的分类逻辑由调用方注入——生产装配层
-    （`api/ui/source_factory.py`，Task 5）在 `api/` 层，允许 import
+    （`api/common/source_factory.py`，Task 5）在 `api/` 层，允许 import
     `shared.ch_client`，把 `describe_failure` 本身（签名恰好就是
     `Callable[[BaseException], dict]`）传进来作为 `classify_failure`。
     这个默认值只是离线可跑的占位，`kind` 恒为 `"unknown"`——不许把它误读成
@@ -957,7 +957,7 @@ class ChSource:
     模块常量 `LOOKBACK_DAYS`/`SETTLE_MINUTES`）。与 `drop_threshold` /
     `cache_ttl_s` 同一个理由，不是 import 被禁：这些数字跟着 `[forecast]`
     配置走，`dim/` 层只做纯变换、不读配置文件——真正的配置来源由未来的装配层
-    （`api/ui/source_factory.py`，Task 5）读出来再作为构造参数传进来，这里
+    （`api/common/source_factory.py`，Task 5）读出来再作为构造参数传进来，这里
     只重复一次默认值，保证不传时离线也能用同一批 E-1 数字跑起来。
 
     ★ `classify_failure` 同理是注入点，不是读配置——它对应

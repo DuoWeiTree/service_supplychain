@@ -9,7 +9,7 @@ import conftest as ct
 import pytest
 from fixture_source import FIXTURES, FixtureSource
 
-from api.ui import source_factory as sf
+from api.common import source_factory as sf
 from dim import ch_source as cs
 from dim.order_store_map import UnknownStore
 from dim.source import InTransit, StockDays

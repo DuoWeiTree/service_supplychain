@@ -40,7 +40,7 @@ class FakeStock:
 @pytest.fixture
 def stock(client, lingxing):
     """CH 替身（网格的底）+ 领星替身（现读 / 确认前现读，CA-D12）—— 同一份库存，两处一致。"""
-    from api.ui.source_factory import stock_dep
+    from api.common.source_factory import stock_dep
     holder = {"s": FakeStock(), "lx": lingxing}
     client.app.dependency_overrides[stock_dep] = lambda: (lambda local, known: holder["s"])
     yield holder

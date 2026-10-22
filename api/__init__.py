@@ -24,11 +24,11 @@ from api.ui import (
     purchase_options,
     purchase_orders,
     sheets,
-    source_factory,
     submit,
     system,
 )
-from api.ui.errors import ApiError, translate
+from api.common import source_factory
+from api.common.errors import ApiError, translate
 from dim.registry import gate_503_names
 from erp.transport import cause_chain
 from jobs import refresh_dims
@@ -97,7 +97,7 @@ def _stale_mirrors() -> list[dict]:
 def _startup_check() -> None:
     """★ OQ-8 裁定（控制器 09-22）：不拦启动、不拦 /health · /v1/readiness——
     只记录 + 在需要时触发一次立即刷新。真正的拒绝服务只在业务路由按请求判
-    （api/ui/deps.py::require_fresh_mirrors）。
+    （api/common/deps.py::require_fresh_mirrors）。
 
     ★ 全程不许抛出会中断 lifespan 的异常：触发的这次刷新本身失败也只记日志——
     静默兜底是最坏的一种，但「刷新失败」和「应用起不来」是两件不同的事，

@@ -2,7 +2,7 @@
 import re
 from pathlib import Path
 
-from api.ui.errors import CONSTRAINT_ERRORS
+from api.common.errors import CONSTRAINT_ERRORS
 
 ROOT = Path(__file__).resolve().parents[1]
 

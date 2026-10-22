@@ -24,7 +24,7 @@ function stubFetch(seen: string[]) {
     const method = (init as RequestInit | undefined)?.method ?? 'GET';
     seen.push(`${method} ${url}`);
     if (method === 'PUT') {
-      // ★ 归档后一律拒写（`api/ui/deps.py:93`），点名 archived_at —— 不是 404
+      // ★ 归档后一律拒写（`api/common/deps.py:93`），点名 archived_at —— 不是 404
       return new Response(
         JSON.stringify({ error: 'plan_archived', hint: '计划已归档，不接受写入',
                          plan_id: ARCHIVED.plan_id, archived_at: ARCHIVED.archived_at }),

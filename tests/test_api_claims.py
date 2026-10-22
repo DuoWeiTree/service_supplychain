@@ -712,7 +712,7 @@ def test_an_unknown_sid_is_still_told_to_add_the_mapping_row(client, seed):
         cur.execute("INSERT INTO msku_bridge VALUES (%s, %s, %s, now())",
                     ("MSKU-UNKNOWN", unknown_sid, seed.sku_a))
 
-    from api.ui.source_factory import source_dep
+    from api.common.source_factory import source_dep
 
     def must_not_be_called(sql, parameters=None):
         raise AssertionError("认不出的 sid 不该走到真取数 —— store_for() 就该拦住")

@@ -5,14 +5,14 @@ import logging
 
 from fastapi import APIRouter, Depends, Request
 
-from api.ui.deps import (
+from api.common.deps import (
     actor,
     actor_optional,
     declared,
     known_states,
     require_fresh_mirrors,
 )
-from api.ui.errors import ApiError
+from api.common.errors import ApiError
 from repo.purchase import purchase_plans, seller_used
 from shared.pg_client import pg_conn, timed
 

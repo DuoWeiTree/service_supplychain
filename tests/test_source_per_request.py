@@ -31,7 +31,7 @@ import threading
 import conftest as ct
 import pytest
 
-from api.ui import source_factory as sf
+from api.common import source_factory as sf
 from dim import ch_source as cs
 from shared.ch_client import describe_failure
 

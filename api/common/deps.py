@@ -5,7 +5,7 @@ import datetime as dt
 
 from fastapi import Request
 
-from api.ui.errors import ApiError
+from api.common.errors import ApiError
 from shared.config import freshness
 from shared.pg_client import pg_conn, timed
 

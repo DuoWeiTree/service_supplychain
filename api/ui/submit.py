@@ -7,7 +7,7 @@ import logging
 
 from fastapi import APIRouter, Depends, Request
 
-from api.ui.deps import (
+from api.common.deps import (
     actor,
     actor_optional,
     declared,
@@ -15,7 +15,7 @@ from api.ui.deps import (
     ensure_writable,
     require_fresh_mirrors,
 )
-from api.ui.errors import ApiError
+from api.common.errors import ApiError
 from rules.digest import content_digest, input_snapshot
 from rules.submit import (
     DemandCell,

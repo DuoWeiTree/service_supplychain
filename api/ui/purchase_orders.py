@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request, Response
 
-from api.ui.deps import actor, actor_optional, declared
-from api.ui.errors import ApiError
+from api.common.deps import actor, actor_optional, declared
+from api.common.errors import ApiError
 from repo import purchase as repo
 from shared.pg_client import pg_conn, timed
 from usecase import attention as attention_uc

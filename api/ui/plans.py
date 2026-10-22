@@ -11,7 +11,7 @@ import psycopg2
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
-from api.ui.deps import (
+from api.common.deps import (
     actor,
     actor_optional,
     declared,
@@ -20,10 +20,10 @@ from api.ui.deps import (
     known_states,
     require_fresh_mirrors,
 )
-from api.ui.errors import ApiError
+from api.common.errors import ApiError
 from api.ui.grid_forecast import NO_SALES_SOURCE, forecast_payload
 from api.ui.lead_time import read_lead_time
-from api.ui.source_factory import source_dep
+from api.common.source_factory import source_dep
 from dim.ch_source import (
     ChDataUnusable,
     ChUnavailable,
@@ -53,7 +53,7 @@ log = logging.getLogger("scm.api")
 
 router = APIRouter(dependencies=[Depends(require_fresh_mirrors)])
 
-#: 取数源由 `Depends(source_dep)` **每请求**装配一次（api/ui/source_factory.py）。
+#: 取数源由 `Depends(source_dep)` **每请求**装配一次（api/common/source_factory.py）。
 #: ★ 终审 C-1/C-2/C-3：这里原先是一个模块级单例 `SOURCE = make_source()`。它把
 #:   一个 CH 客户端和 `ChSource` 全部可变的每次调用状态（两份缓存、`stats()`、
 #:   `history_window()`、`purchase_as_of`）钉在进程上，而 grid()/claim() 是

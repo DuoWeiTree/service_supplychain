@@ -1,7 +1,7 @@
 """TS/DB 漂移门禁：`web/src/shell/actors.ts::ACTORS` 与 `scm.actor` 不许分叉。
 
 背景（2026-09-23）：前端 `x-actor` 下拉硬编码三个 actor_id，`scm.actor` 却一行
-都没有 —— 生产上的每一条请求都在 `api/ui/deps.py` 校验处炸
+都没有 —— 生产上的每一条请求都在 `api/common/deps.py` 校验处炸
 `400 unknown_actor`。迁移 `007_seed_stage_a_actors.sql` 把这三行种进库里，
 本文件是防它俩以后再次分叉的门禁：以后有人往 `ACTORS` 里加第四个人却忘了
 追加种子迁移，这里要点名炸出来，而不是等运营在生产上撞见 400。

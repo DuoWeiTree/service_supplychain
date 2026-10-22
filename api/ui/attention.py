@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
 
-from api.ui.deps import actor_optional, declared
+from api.common.deps import actor_optional, declared
 from usecase import attention as attention_uc
 
 router = APIRouter()

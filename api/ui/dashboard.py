@@ -5,7 +5,7 @@ import logging
 
 from fastapi import APIRouter, Depends, Request
 
-from api.ui.deps import actor_optional, declared, known_states, require_fresh_mirrors
+from api.common.deps import actor_optional, declared, known_states, require_fresh_mirrors
 from rules.digest import content_digest, human_changes, input_snapshot
 from rules.submit import DemandCell, PurchaseCell
 from shared.pg_client import pg_conn, timed

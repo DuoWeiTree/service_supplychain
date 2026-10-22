@@ -54,8 +54,8 @@ import urllib.parse
 
 from fastapi import APIRouter, Request, Response
 
-from api.ui.deps import declared
-from api.ui.errors import ApiError
+from api.common.deps import declared
+from api.common.errors import ApiError
 from shared import pm_client
 from shared.pg_client import pg_conn, timed
 

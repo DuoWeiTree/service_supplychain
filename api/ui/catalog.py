@@ -9,8 +9,8 @@ import logging
 
 from fastapi import APIRouter, Depends, Request
 
-from api.ui.deps import actor_optional, declared, require_fresh_mirrors
-from api.ui.errors import ApiError
+from api.common.deps import actor_optional, declared, require_fresh_mirrors
+from api.common.errors import ApiError
 from shared.pg_client import pg_conn, timed
 
 log = logging.getLogger(__name__)

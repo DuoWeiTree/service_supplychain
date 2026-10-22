@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
 
-from api.ui.deps import actor_optional, declared
+from api.common.deps import actor_optional, declared
 from shared.pg_client import business_schema, pg_conn, timed
 
 health_router = APIRouter()

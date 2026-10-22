@@ -10,8 +10,8 @@ from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends, Request
 
-from api.ui.deps import actor, actor_optional, declared
-from api.ui.errors import ApiError
+from api.common.deps import actor, actor_optional, declared
+from api.common.errors import ApiError
 from forecast.calendar import ANCHOR_DAY
 from shared.pg_client import pg_conn, timed
 

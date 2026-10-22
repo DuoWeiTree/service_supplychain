@@ -3,9 +3,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
 
-from api.ui.deps import actor, actor_optional, declared, require_fresh_mirrors
-from api.ui.errors import ApiError
-from api.ui.source_factory import stock_dep
+from api.common.deps import actor, actor_optional, declared, require_fresh_mirrors
+from api.common.errors import ApiError
+from api.common.source_factory import stock_dep
 from usecase import draft_po, live_read, logistics, receipt, sheet, submit_ows
 
 router = APIRouter(dependencies=[Depends(require_fresh_mirrors)])

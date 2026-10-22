@@ -8,8 +8,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
-from api.ui.deps import actor, declared
-from api.ui.errors import ApiError
+from api.common.deps import actor, declared
+from api.common.errors import ApiError
 from dim import registry
 from jobs import refresh_dims
 from jobs.lock import RefreshInFlight

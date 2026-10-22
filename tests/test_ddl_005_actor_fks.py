@@ -1,6 +1,6 @@
 """005 · 五个审计列的外键由库层担保，不靠接口层自觉。
 
-★ 今天没有脏数据，是因为 `api/ui/deps.actor` 在每次写之前校验了 x-actor。
+★ 今天没有脏数据，是因为 `api/common/deps.actor` 在每次写之前校验了 x-actor。
   但那是**一条路径**的自觉：迁移脚本、阶段 B 的 jobs/、任何绕过 api/ 的写入都不经过它。
   「目前还没人写错」和「写不错」长得一模一样 —— 这个文件把两者分开。
 """
@@ -111,7 +111,7 @@ def test_a_real_actor_still_gets_through(wipe, seed):
 
 def test_a_deactivated_actor_is_still_a_valid_reference(wipe, seed):
     """★ 外键管的是「这个人存在过」，不是「他今天还在职」——
-    停用的人留下的留痕不许因此失效（在职校验在 api/ui/deps.py，两件事）。"""
+    停用的人留下的留痕不许因此失效（在职校验在 api/common/deps.py，两件事）。"""
     with pg_conn() as c, c.cursor() as cur:
         _, line = mint(cur, seed.actor, seed.sku_a)
         cur.execute("INSERT INTO plan_line_event (line_id, from_state, to_state, actor, reason)"

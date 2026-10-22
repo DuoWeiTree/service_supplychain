@@ -46,7 +46,7 @@
     [forecast]
     # 没有 source 键：只读真 ClickHouse（PB-D17）；config.toml 里还留着 source → 启动即拒
 
-取数源**每请求装配一个**，不缓存、不共享（`api/ui/source_factory.py::source_dep`）。
+取数源**每请求装配一个**，不缓存、不共享（`api/common/source_factory.py::source_dep`）。
 一个 `ChSource` 身上全是可变的每次调用状态外加一个 CH 客户端，跨请求共享它会让
 并发请求互相踩，而 `clickhouse_connect` 拒绝并发的那个异常会被报成「CH 连不上」。
 代价是每次 grid 多付一次建客户端（≈8ms）+ 四条查询（≈38ms）。
@@ -76,7 +76,7 @@ live 门禁都必须绿（它们要能连内网 CH）：
 要么排除逻辑坏了，两种都得查。
 
 `[forecast]` 段（`config.example.toml`）六组键 —— ★ 每一个都由
-`api/ui/source_factory.py` 真的读进去，`tests/test_config_example.py` 有一条门禁
+`api/common/source_factory.py` 真的读进去，`tests/test_config_example.py` 有一条门禁
 盯着这件事（`sales_months_max` 就是这么被发现「声明了三处、无人读取」的：
 一个不生效的旋钮比没有旋钮更坏，已删除）：
 

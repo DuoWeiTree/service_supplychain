@@ -88,7 +88,7 @@ def test_every_declared_forecast_key_is_read_by_non_test_code():
     dead = _unreferenced(_FORECAST_DEFAULTS)
     assert not dead, (
         f"[forecast] 这些键声明了但非测试代码里没人读：{dead}。"
-        "要么接上（在 api/ui/source_factory.py 里传给 ChSource），要么从"
+        "要么接上（在 api/common/source_factory.py 里传给 ChSource），要么从"
         " shared/config.py、config.example.toml、README.md 三处一起删掉 ——"
         "留着就是在 README 里许一个不会兑现的承诺")
 

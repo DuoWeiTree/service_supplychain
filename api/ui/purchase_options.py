@@ -6,8 +6,8 @@ import time
 
 from fastapi import APIRouter, Depends, Request
 
-from api.ui.deps import actor_optional, declared
-from api.ui.source_factory import lazy_ch_query
+from api.common.deps import actor_optional, declared
+from api.common.source_factory import lazy_ch_query
 from dim.ch_source import fetch_purchase_actors
 from shared.ch_client import describe_failure
 from shared.pg_client import pg_conn, timed

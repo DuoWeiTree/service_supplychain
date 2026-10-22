@@ -147,7 +147,7 @@ def test_cache_does_not_cache_failures(client, seed, monkeypatch):
 # ══════════════════════════════════════════════════════════════════════
 
 def test_unknown_query_param_is_400(client, seed, monkeypatch):
-    """★ 本仓全部端点的既有规矩（`api/ui/deps.py::declared`）——拼错的参数
+    """★ 本仓全部端点的既有规矩（`api/common/deps.py::declared`）——拼错的参数
     被静默忽略时，返回的是一次「看起来成功」的响应。"""
     monkeypatch.setattr(pm_client, "mint_token", _boom_if_called)
     r = client.get(f"/v1/skus/{seed.sku_a}/image", params={"typo": "1"})

@@ -34,7 +34,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["api", "api.ui", "dim", "erp", "erp.drivers", "forecast", "jobs",
+packages = ["api", "api.common", "api.ui", "dim", "erp", "erp.drivers", "forecast", "jobs",
             "migrations", "migrations.pg", "repo", "rules", "shared", "usecase"]
 
 [tool.ruff]
