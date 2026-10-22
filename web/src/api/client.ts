@@ -1,5 +1,5 @@
 import type {
-  CancelRevResult, CatalogQuery, CatalogResult, RecentCatalogResult, ClaimResult, ClaimTarget, CreatePlanInput,
+  CancelRevResult, CatalogQuery, CatalogResult, RecentCatalogResult, ClaimResult, ClaimTarget, CreatePlanInput, ImportPlanInput, ImportPlanResult,
   DashboardPlans, DemandCell, GridResponse, LeadTime, LeadTimeInput, LeadTimeResult,
   ListPlansQuery, Period, PlanDiff, PlanId, CellsBatch, PutCellsResult,
   PlanList, PlanSummary, PurchaseCell, RecomputeResult, ReleaseResult, RemoveSkuResult, RevList, Seller, Sid,
@@ -51,6 +51,10 @@ export interface SupplyChainApi {
   /** `GET /grid` 不带计划抬头 ⇒ 从列表里取。封在数据层，页面不必知道要拉两次 */
   getPlan(planId: PlanId): Promise<PlanSummary>;
   createPlan(input: CreatePlanInput): Promise<{ plan_id: PlanId }>;
+  /** 422 `import_rejected` 的 `fields.errors` 是 ImportRowError[]；计划没建 */
+  importPlan(input: ImportPlanInput): Promise<ImportPlanResult>;
+  /** 纯 GET 链接（x-actor 可缺），不带任何凭证 */
+  importTemplateUrl(periodStart: string, months: number): string;
   dashboardPlans(): Promise<DashboardPlans>;
   dashboardUnsubmitted(): Promise<UnsubmittedBoard>;
   listSellers(): Promise<Seller[]>;

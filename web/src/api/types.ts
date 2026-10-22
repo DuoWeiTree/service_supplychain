@@ -548,6 +548,16 @@ export interface ListPlansQuery {
   archived?: boolean;
 }
 export interface CreatePlanInput { title: string; period_start: string; months: number }
+/** 导入的起始月是 `YYYY-MM`（建计划那条是月初日期）；后端 201 的信封 */
+export interface ImportPlanInput { title: string; period_start: string; months: number; file: File }
+export interface ImportPlanResult {
+  plan_id: PlanId; mskus: number; skus: number; demand_cells: number; purchase_cells: number; elapsed_ms: number;
+}
+/** row=0 是表头问题；col 可为空串 */
+export interface ImportRowError {
+  row: number; col: string; code: string; message: string;
+  seller_sku: string; sid: number | null; sku: string; extra: Record<string, unknown>;
+}
 export interface CatalogQuery { q?: string; limit?: number }
 
 // ───────── 采购单（spec §8.1；字段照 api/ui/purchase_orders.py · repo/purchase.py · usecase/*）─────────

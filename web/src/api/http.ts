@@ -50,8 +50,11 @@ export function createHttpApi(opt: HttpOptions): SupplyChainApi {
       res = await fetch(url, {
         method,
         signal: AbortSignal.timeout(timeoutMs),
-        headers: { 'content-type': 'application/json', 'x-actor': getActor() },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        // ★ multipart 不手设 content-type：边界串由浏览器生成，手写会让后端解析不出 file
+        headers: body instanceof FormData
+          ? { 'x-actor': getActor() }
+          : { 'content-type': 'application/json', 'x-actor': getActor() },
+        ...(body === undefined ? {} : { body: body instanceof FormData ? body : JSON.stringify(body) }),
       });
     } catch (e) {
       throw transportError(call_, Date.now() - started, e, 'connect', timeoutMs);
@@ -100,6 +103,17 @@ export function createHttpApi(opt: HttpOptions): SupplyChainApi {
       return hit;
     },
     createPlan: (input) => call('POST', '/plans', input),
+    // ★ 导入要逐个 msku 取预测，全局 8 s 会把慢当成失败
+    importPlan(input) {
+      const form = new FormData();
+      form.set('title', input.title);
+      form.set('period_start', input.period_start);
+      form.set('months', String(input.months));
+      form.set('file', input.file);
+      return call('POST', '/plans/import', form, READ_BACK_TIMEOUT_MS);
+    },
+    importTemplateUrl: (periodStart, months) =>
+      `${opt.base}/plans/import/template${qs({ period_start: periodStart, months })}`,
     dashboardPlans: () => call('GET', '/dashboard/plans'),
     dashboardUnsubmitted: () => call('GET', '/dashboard/unsubmitted'),
     listSellers: async () => (await call<{ sellers: Seller[] }>('GET', '/sellers')).sellers,

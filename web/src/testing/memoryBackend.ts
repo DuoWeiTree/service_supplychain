@@ -244,6 +244,8 @@ export function createMemoryBackend(): SupplyChainApi {
       return { plans, excluded: { archived: want ? 0 : pool.filter((p) => p.archived_at !== null).length } };
     },
     async getPlan(planId) { return clone(plan(planId)); },
+    async importPlan(_input) { return notSimulated('importPlan'); },
+    importTemplateUrl: (periodStart, months) => `/v1/plans/import/template?period_start=${periodStart}&months=${months}`,
     async createPlan(input) {
       const plan_id = Math.max(...list.plans.map((p) => p.plan_id)) + 1;
       list.plans.push({

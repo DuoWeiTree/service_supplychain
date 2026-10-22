@@ -178,6 +178,7 @@ describe('运营首页', () => {
           created.push(input);
           return { plan_id: 9 };
         },
+        importTemplateUrl: () => '/v1/plans/import/template',
       },
     }));
     const { OpsHome: Fresh } = await import('./OpsHome');
@@ -197,5 +198,88 @@ describe('运营首页', () => {
     fireEvent.click(submit);
     expect(await screen.findByRole('heading', { name: '网格' })).toBeInTheDocument();
     expect(created).toHaveLength(1);
+  });
+  describe('从 Excel 导入', () => {
+    const rejected = (n: number) => ({
+      status: 422, error: 'import_rejected', hint: `有 ${n} 处问题，计划没建`,
+      fields: { errors: [
+        { row: 3, col: 'M1', code: 'bad_units', message: '不是整数', seller_sku: 'SKU-A', sid: 1, sku: 'A', extra: {} },
+        { row: 0, col: '', code: 'bad_header', message: '表头缺列', seller_sku: '', sid: null, sku: 'B-1', extra: {} },
+      ] },
+    });
+    async function setup(importPlan: (i: unknown) => Promise<unknown>) {
+      vi.resetModules();
+      const { ApiError } = await import('../api/client');
+      const created: unknown[] = [];
+      vi.doMock('../api', () => ({
+        ApiError,
+        api: {
+          listPlans: async () => ({ plans: [], excluded: { archived: 0 } }),
+          dashboardUnsubmitted: async () => ({ never_submitted: [], changed_since_submit: [] }),
+          dashboardPlans: async () => ({
+            counts: {}, scope_note: { unreachable_in_stage_a: [], derived_buckets: [], never_submitted_excluded: 0 },
+          }),
+          createPlan: async (i: unknown) => { created.push(i); return { plan_id: 9 }; },
+          importPlan,
+          importTemplateUrl: (p: string, m: number) => `/v1/plans/import/template?period_start=${p}&months=${m}`,
+        },
+      }));
+      const { OpsHome: Fresh } = await import('./OpsHome');
+      render(
+        <MemoryRouter initialEntries={['/']}>
+          <Routes>
+            <Route path="/" element={<Fresh />} />
+            <Route path="/plans/:planId" element={<h1>网格</h1>} />
+          </Routes>
+        </MemoryRouter>,
+      );
+      await screen.findByTestId('plan-list');
+      await userEvent.click(screen.getByRole('button', { name: '新建销售计划' }));
+      await userEvent.type(screen.getByLabelText('标题'), 'T');
+      return { ApiError, created };
+    }
+    const xlsx = (name = 'p.xlsx') => new File(['x'], name);
+
+    it('不选文件仍走 createPlan', async () => {
+      const calls: unknown[] = [];
+      const { created } = await setup(async (i) => { calls.push(i); return { plan_id: 1 }; });
+      await userEvent.click(screen.getByRole('button', { name: '新建' }));
+      expect(await screen.findByRole('heading', { name: '网格' })).toBeInTheDocument();
+      expect(created).toHaveLength(1);
+      expect(calls).toHaveLength(0);
+    });
+
+    it('选了文件走 importPlan，带 title / period_start(YYYY-MM) / months / file，成功跳计划', async () => {
+      const calls: Record<string, unknown>[] = [];
+      const { created } = await setup(async (i) => { calls.push(i as Record<string, unknown>); return { plan_id: 7 }; });
+      const f = xlsx();
+      await userEvent.upload(screen.getByLabelText('从 Excel 导入（可选）'), f);
+      await userEvent.click(screen.getByRole('button', { name: '新建' }));
+      expect(await screen.findByRole('heading', { name: '网格' })).toBeInTheDocument();
+      expect(created).toHaveLength(0);
+      expect(calls).toEqual([{ title: 'T', period_start: '2026-10', months: 3, file: f }]);
+    });
+
+    it('422：列出「计划没建：有 N 处问题」与逐条明细，保留表单输入；改选文件后错误消失', async () => {
+      const { ApiError } = await setup(async () => { throw new ApiError(422, 'import_rejected', '有 2 处问题，计划没建', rejected(2).fields); });
+      await userEvent.upload(screen.getByLabelText('从 Excel 导入（可选）'), xlsx());
+      await userEvent.click(screen.getByRole('button', { name: '新建' }));
+      expect(await screen.findByText('计划没建：有 2 处问题')).toBeInTheDocument();
+      expect(screen.getByText('第 3 行 M1 列 · SKU-A · 不是整数')).toBeInTheDocument();
+      expect(screen.getByText('第 0 行 · B-1 · 表头缺列')).toBeInTheDocument();
+      expect(screen.getByLabelText('标题')).toHaveValue('T');
+      await userEvent.upload(screen.getByLabelText('从 Excel 导入（可选）'), xlsx('q.xlsx'));
+      expect(screen.queryByText('计划没建：有 2 处问题')).toBeNull();
+    });
+
+    it('下载模板的 href 随起始月 / 月数变化', async () => {
+      await setup(async () => ({ plan_id: 1 }));
+      const link = screen.getByRole('link', { name: '下载模板' });
+      expect(link).toHaveAttribute('href', '/v1/plans/import/template?period_start=2026-10&months=3');
+      fireEvent.change(screen.getByLabelText('跨 N 月'), { target: { value: '6' } });
+      fireEvent.change(screen.getByLabelText('起始月'), { target: { value: '2026-12' } });
+      expect(screen.getByRole('link', { name: '下载模板' }))
+        .toHaveAttribute('href', '/v1/plans/import/template?period_start=2026-12&months=6');
+    });
   });
 });

@@ -20,6 +20,19 @@ describe('http 数据源', () => {
     expect(new Headers((spy.mock.calls[0]![1] as RequestInit).headers).get('x-actor')).toBe('ops.li');
   });
 
+  it('导入走 multipart：不手设 content-type，字段齐全，超时用读回档；模板链接是纯 GET', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(ok({ plan_id: 5 }));
+    const f = new File(['x'], 'p.xlsx');
+    await mk().importPlan({ title: 'T', period_start: '2026-10', months: 3, file: f });
+    const [url, init] = spy.mock.calls[0]! as [string, RequestInit];
+    expect(url).toBe('/v1/plans/import');
+    expect(new Headers(init.headers).get('content-type')).toBeNull();
+    const body = init.body as FormData;
+    expect([body.get('title'), body.get('period_start'), body.get('months')]).toEqual(['T', '2026-10', '3']);
+    expect((body.get('file') as File).name).toBe('p.xlsx');
+    expect(mk().importTemplateUrl('2026-10', 3)).toBe('/v1/plans/import/template?period_start=2026-10&months=3');
+  });
+
   it('★ 只发声明过的查询参数 —— undefined 的不拼进 URL（未声明参数后端一律 400）', async () => {
     const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(ok({ plans: [], excluded: { archived: 0 } }));
     await mk().listPlans({ archived: false });

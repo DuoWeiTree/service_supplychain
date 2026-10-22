@@ -7,7 +7,7 @@ import { useInFlight } from '../shell/useInFlight';
 import { ErrorDetail } from '../components/ErrorDetail';
 import { Qty } from '../components/Qty';
 import { api, ApiError } from '../api';
-import type { DashboardPlans, PlanList, UnsubmittedBoard } from '../api/types';
+import type { DashboardPlans, ImportRowError, PlanList, UnsubmittedBoard } from '../api/types';
 import { byTodo, kpiKeys, NEVER, nextStep, stateLabel, stateOptions } from './opsHomeModel';
 
 const CREATE_KEY = 'create';
@@ -36,6 +36,11 @@ export function OpsHome() {
   const [fState, setFState] = useState('');
   const [sort, setSort] = useState<SortKey>('todo');
   const [creating, setCreating] = useState(false);
+  // 表单字段受控：下载模板的链接要跟着起始月 / 月数变
+  const [cPeriod, setCPeriod] = useState('2026-10');
+  const [cMonths, setCMonths] = useState('3');
+  const [cFile, setCFile] = useState<File | null>(null);
+  const [rejected, setRejected] = useState<ImportRowError[] | null>(null);
 
   useEffect(() => {
     // ★ 三个接口一起拉，但逐个收：计数与列表来自不同端点，一个挂了另外两个照样出数
@@ -67,18 +72,27 @@ export function OpsHome() {
 
   async function create(form: HTMLFormElement) {
     const data = new FormData(form);
+    setRejected(null);
     // ★ I3：双击建出两张同名计划，而阶段 A 没有删计划的界面入口（S-27）—— 只能去归档
     await run(CREATE_KEY, async () => {
       try {
-        const { plan_id } = await api.createPlan({
-          title: String(data.get('title')),
-          period_start: `${String(data.get('period_start'))}-01`,  // ★ 建计划的入参是月初日期
-          months: Number(data.get('months')),
-        });
+        const title = String(data.get('title'));
+        const months = Number(data.get('months'));
+        const period = String(data.get('period_start'));
+        const { plan_id } = cFile
+          ? await api.importPlan({ title, period_start: period, months, file: cFile })  // ★ 导入的入参是 YYYY-MM
+          : await api.createPlan({ title, period_start: `${period}-01`, months });  // ★ 建计划的入参是月初日期
         succeed(CREATE_KEY);
         navigate(`/plans/${plan_id}`);
       } catch (e) {
-        fail(CREATE_KEY, e as ApiError);
+        const rows = (e as ApiError).fields?.errors;
+        if ((e as ApiError).error === 'import_rejected' && Array.isArray(rows)) {
+          // 逐行明细在表单内列，不再走通用错误块（那里只会把数组 JSON 一坨）
+          setRejected(rows as ImportRowError[]);
+          dismiss();
+        } else {
+          fail(CREATE_KEY, e as ApiError);
+        }
         pushToast({ kind: 'fail', text: (e as ApiError).hint });
       }
     });
@@ -131,12 +145,30 @@ export function OpsHome() {
           <label className="field"><span className="lbl">标题</span>
             <input className="inp inp--text" name="title" required /></label>
           <label className="field"><span className="lbl">起始月</span>
-            <input className="inp" name="period_start" type="month" defaultValue="2026-10" required /></label>
+            <input className="inp" name="period_start" type="month" value={cPeriod}
+              onChange={(e) => setCPeriod(e.target.value)} required /></label>
           <label className="field"><span className="lbl">跨 N 月</span>
-            <input className="inp inp--tiny" name="months" type="number" min={1} max={24} defaultValue={3} required /></label>
+            <input className="inp inp--tiny" name="months" type="number" min={1} max={24} value={cMonths}
+              onChange={(e) => setCMonths(e.target.value)} required /></label>
+          <label className="field"><span className="lbl">从 Excel 导入（可选）</span>
+            <input className="inp" name="file" type="file" accept=".xlsx"
+              onChange={(e) => { setCFile(e.target.files?.[0] ?? null); setRejected(null); }} /></label>
+          <a href={api.importTemplateUrl(cPeriod, Number(cMonths))} download>下载模板</a>
           <button type="submit" className="btn btn--primary" disabled={pending.has(CREATE_KEY)}>新建</button>
           <button type="button" className="btn btn--ghost" onClick={() => setCreating(false)}>取消</button>
         </form>
+      )}
+      {rejected && (
+        <div className="flash flash--bad" role="alert">
+          <div>计划没建：有 {rejected.length} 处问题</div>
+          <ul>
+            {rejected.map((r, i) => (
+              <li key={i} className="gate__detail">
+                第 {r.row} 行{r.col ? ` ${r.col} 列` : ''} · {r.seller_sku || r.sku} · {r.message}
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
       {createErr && <ErrorDetail err={createErr} onDismiss={dismiss} />}
 
