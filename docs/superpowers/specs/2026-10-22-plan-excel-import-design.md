@@ -172,13 +172,13 @@
 - 采购行的货号，必须是本文件某条销量行的货号（采购格子随认领长出来）—— 否则错 `purchase_sku_not_claimed`。
 - 一行都没有 → 错 `empty_file`。
 
-**错误回执（422）：** 每条带 Excel 坐标，人能直接去表里找：
+**错误回执（422，信封同全系统：`error` · `hint` · 字段平铺顶层）：** 每条带 Excel 坐标，人能直接去表里找：
 
 ```json
-{ "error": "import_rejected", "hint": "有 N 处问题，计划没建", "detail": { "errors": [
+{ "error": "import_rejected", "hint": "有 N 处问题，计划没建", "errors": [
   { "row": 7, "col": "E", "msku": "...", "sid": "...", "code": "unknown_msku", "message": "msku 不在桥表里" },
   { "row": 9, "col": null, "msku": "...", "sid": "...", "code": "claimed_elsewhere",
-    "message": "被计划「...」（#12）占用", "plan_id": 12 } ] } }
+    "message": "被计划「...」（#12）占用", "plan_id": 12 } ] }
 ```
 
 错误码（初版，实现时可增）：`bad_header` · `missing_month` · `extra_month` · `bad_type` · `missing_field` · `bad_units` ·
