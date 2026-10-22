@@ -1,4 +1,5 @@
-"""grid 的预测块（spec §6）：把 PG / 取数源的值装成 forecast_plan() 的入参，再序列化。
+"""推演块（spec §6）：把 PG / 取数源的值装成 forecast_plan() 的入参，再序列化。
+grid（plan_id）与对外预测预览（plan_id=None，行来自 plan_claim.seed_rows）共用。
 ★ 这里不算任何一个数 —— 算都在 forecast/（纯函数）；这里只搬运与改名。
 
 响应里 `unallocated[]` 有两种来源（Task 7），共同核心键 `sku · order_period · arrive · units ·
@@ -12,12 +13,16 @@ import datetime as dt
 import logging
 import time
 
-from api.ui.lead_time import LeadTime
 from dim.ch_source import is_overdue
+from forecast.baseline import EMBARGO_DAYS
 from forecast.month_in_transit import TransitItem, month_in_transit
 from forecast.plan_forecast import MskuInput, PlanForecastInput, forecast_plan
+from rules.effective import effective_demand
+from usecase import oversea_in_transit
+from usecase.lead_time import LeadTime, read_lead_time
 from usecase.plan_claim import NOT_APPLICABLE
 
+# ★ 日志名沿用 scm.api：op=grid_forecast 这一行的去处不随代码搬家而变
 log = logging.getLogger("scm.api")
 
 _UNALLOCATED_CORE = ("sku", "order_period", "arrive", "units", "reason")
@@ -56,7 +61,7 @@ def unallocated_json(u: dict) -> dict:
 def forecast_payload(*, as_of: dt.date, periods: list[dt.date], demand_rows: list[dict],
                      purchase_rows: list[tuple], fba: dict, onhand: dict, base_rate: dict,
                      in_transit: dict, lead: LeadTime, embargo_days: int | None,
-                     plan_id: int, purchase_as_of: dt.date | None = None,
+                     plan_id: int | None, purchase_as_of: dt.date | None = None,
                      fba_inbound: dict | None = None, fc: dict | None = None,
                      fba_transit=_ABSENT, oversea_transit=_ABSENT) -> dict:
     """`fba_inbound`: msku → [FbaInbound] / None（当天无货件快照，未知）；`fc`: msku → 调仓中件数
@@ -64,6 +69,7 @@ def forecast_payload(*, as_of: dt.date, periods: list[dt.date], demand_rows: lis
     `fba_transit`: 货号 → [(sid, msku, FbaInbound)] / None；`oversea_transit`: 货号 → [TransitItem]，整体 None = 领星
     读不到（spec 2026-10-15 当月在途）。两个都不给 → `month_in_transit` 为 null（没取，不是 0）。"""
     t0 = time.perf_counter()
+    plan_ref = "preview" if plan_id is None else plan_id
     by_key: dict[tuple[str, str], dict] = {}
     for r in demand_rows:
         k = (r["seller_sku"], r["sid"])
@@ -116,11 +122,11 @@ def forecast_payload(*, as_of: dt.date, periods: list[dt.date], demand_rows: lis
             _attach_month_in_transit(out["forecast_sku"], fba_transit, oversea_transit, as_of, periods)
     except Exception as e:
         log.error("op=grid_forecast plan_id=%s outcome=fail mskus=%d make_days=%d ship_days=%d"
-                  " elapsed_ms=%d error=%s: %s", plan_id, len(mskus), lead.make_days,
+                  " elapsed_ms=%d error=%s: %s", plan_ref, len(mskus), lead.make_days,
                   lead.ship_days, (time.perf_counter() - t0) * 1000, type(e).__name__, e)
         raise
     log.info("op=grid_forecast plan_id=%s outcome=ok mskus=%d skus=%d beyond=%d unallocated=%d"
-             " make_days=%d ship_days=%d elapsed_ms=%d", plan_id, len(mskus), len(plan_skus),
+             " make_days=%d ship_days=%d elapsed_ms=%d", plan_ref, len(mskus), len(plan_skus),
              len(f.beyond_horizon), len(f.unallocated), lead.make_days, lead.ship_days,
              (time.perf_counter() - t0) * 1000)
     return out
@@ -196,4 +202,95 @@ def _serialize(f, sku_of: dict[tuple[str, str], str], plan_skus: set[str], as_of
         "forecast_sku": sku_json,
         "beyond_horizon": f.beyond_horizon,
         "unallocated": [unallocated_json(u) for u in f.unallocated],
+    }
+
+
+def demand_row(seller_sku: str, sid: str, sku: str, period: str,
+               sysu: int | None, expu: int | None, extrap: bool,
+               system_basis: dict | None) -> dict:
+    """grid()、put_demand() 与预览共用的同一份构造器（team-lead 09-22 裁定：一个行形状一个来源）。
+
+    ★ effective_demand() 是 effective_units 唯一裁定者 —— 两个端点各自算一遍迟早分叉，
+    put_demand() 曾经就漏了 sku/effective_units 两个字段，前端拿它原地替换 grid 里的行时
+    在真实 API 下会读到 undefined（mock 因为整格 clone 而不漏，两个数据源因此在这一格上分了叉）。"""
+    eff = effective_demand(sysu, expu)
+    return {"seller_sku": seller_sku, "sid": sid, "sku": sku, "period": period,
+            "system_units": sysu, "expected_units": expu, "basis": eff.basis,
+            # ★ 外推 ≠ 预估，标记必须随数走（14 §5）
+            "system_extrapolated": extrap,
+            # ★ 依据随数走（spec §3.3）：预测 = base_rate × 天数，点开要看得到
+            "system_basis": system_basis,
+            # ★ 单一来源：前端按 (sid, sku) 分块、库存公式的入参都读这一个字段，
+            #   不许各自重算 —— effective_demand() 是唯一裁定者（rules/effective.py）
+            "effective_units": eff.units}
+
+
+def project(source, cur, demand_rows: list[tuple], purchase_rows: list[tuple],
+            periods: list[dt.date], plan_id: int | None) -> dict:
+    """`demand_rows` 形如 (seller_sku, sid, sku, period, system_units, system_extrapolated,
+    expected_units, has_fba, system_basis)；`purchase_rows` 形如 (sku, period, planned_units)。
+    ★ 取数源的异常原样上抛 —— 这一层不认识 ApiError，由 grid / pub 用 source_error 翻译。"""
+    lead = read_lead_time(cur)
+    out_demand: list[dict] = []
+    #: msku → 推演入参。★ 在仓只在 has_fba 时取
+    fba_by_msku: dict[tuple[str, str], bool] = {}
+    onhand_by_msku: dict[tuple[str, str], int | None] = {}
+    rate_by_msku: dict[tuple[str, str], float] = {}
+    #: spec 2026-10-14：调仓中（进期初）与已发出的 FBA 货件（进台账）；源没有这两个方法时不给 = 旧口径
+    fc_by_msku: dict[tuple[str, str], int] = {}
+    inbound_by_msku: dict[tuple[str, str], list | None] = {}
+    has_fba_extra = hasattr(source, "fba_inbound") and hasattr(source, "fc_transfers")
+
+    for seller_sku, sid, sku, period, sysu, extrap, expu, fba, sbasis in demand_rows:
+        row = demand_row(seller_sku, sid, sku, _ym(period), sysu, expu, extrap, sbasis)
+        k = (seller_sku, sid)
+        fba_by_msku[k] = fba
+        # ★ OP-8：没有 system_basis 的旧认领 → rate 缺席 → 桥接段未知并点名，不当 0
+        if sbasis and sbasis.get("base_rate") is not None:
+            rate_by_msku[k] = float(sbasis["base_rate"])
+        out_demand.append(row)
+        if fba:
+            onhand_by_msku[k] = source.onhand_available(seller_sku, sid)
+            if has_fba_extra:
+                fc_by_msku[k] = source.fc_transfers(seller_sku, sid)
+                inbound_by_msku[k] = source.fba_inbound(seller_sku, sid)
+
+    # ★ 采购格子 ∪ 认领的货号：没采购格子的货号，它的在途也要进推演
+    plan_sku_set = {r[0] for r in purchase_rows} | {r[2] for r in demand_rows}
+    in_transit: dict[str, list] = {sku: source.purchase_in_transit(sku) for sku in plan_sku_set}
+    # spec 2026-10-15：货号行「当月在途」的 FBA 部分（Σ 全部店铺，CH 货件表）
+    fba_transit = ({sku: source.fba_in_transit(sku) for sku in plan_sku_set}
+                   if hasattr(source, "fba_in_transit") else None)
+    # 10-15 裁定：货件快照可能早 as_of 一天 —— 用的是哪天要写出去
+    fba_inbound_day = source.fba_inbound_as_of() if hasattr(source, "fba_inbound_as_of") else None
+    as_of_date = source.as_of()
+    # ★ OQ-5 陈旧闸：调用本身就是守卫（越线 → PurchaseTableStale）；结果写进
+    #   source_notes.purchase_as_of，并作在途「已逾期」的判据日（OQ-6，终审 I-2）。
+    #   源没有这个方法（Source 协议里它是可选的），按 hasattr 跳过。
+    purchase_as_of = source.purchase_as_of() if hasattr(source, "purchase_as_of") else None
+    dropped_stats = source.stats() if hasattr(source, "stats") else {}
+
+    # ★ 海外仓部分走领星实查 + 10 分钟缓存（FM-D6）；读不到 = 未知，照样出整张表
+    ows = oversea_in_transit.in_transit_by_sku()
+    payload = forecast_payload(
+        as_of=as_of_date, periods=periods, demand_rows=out_demand, purchase_rows=purchase_rows,
+        fba=fba_by_msku, onhand=onhand_by_msku, base_rate=rate_by_msku, in_transit=in_transit,
+        lead=lead, embargo_days=EMBARGO_DAYS, plan_id=plan_id, purchase_as_of=purchase_as_of,
+        fba_inbound=inbound_by_msku if has_fba_extra else None, fc=fc_by_msku if has_fba_extra else None,
+        fba_transit=fba_transit, oversea_transit=ows.by_sku if ows.ok else None)
+    return {
+        **payload,
+        "demand": out_demand,
+        "source_notes": {
+            "as_of": as_of_date.isoformat(),
+            "purchase_as_of": (purchase_as_of.isoformat() if purchase_as_of else None),
+            # spec 2026-10-15：海外仓在途是领星实查的 —— 写明查于何时 / 为什么没查到
+            "fba_inbound_as_of": fba_inbound_day.isoformat() if fba_inbound_day else None,
+            "oversea_in_transit_at": ows.fetched_at,
+            "oversea_in_transit_error": ows.reason,
+            # ★ 被排除的那一侧必须出现在响应里：sid=0 的欧洲共享池实测占全部可售
+            #   27.6%（键名固定 shared_pool_excluded，Task 2 裁定），没有在途预计到货日的
+            #   行也在这里 —— 丢东西必须有声。
+            "dropped": dropped_stats,
+        },
     }

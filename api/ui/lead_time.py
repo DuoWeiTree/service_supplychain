@@ -1,4 +1,4 @@
-"""提前期（spec §4.4 · 03 §41）：用户自己改的全局配置。
+"""提前期（spec §4.4 · 03 §41）：用户自己改的全局配置。读侧在 usecase/lead_time.py。
 
 ★ 当前生效行 = valid_to IS NULL。改动 = 关旧行 + 插今天的新行（同一天再改就原地改今天那行）——
   「现在的规则」在表里，「当时用的规则」随 grid 的 params 一起出去（03 §7 那句话）。
@@ -6,52 +6,20 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends, Request
 
 from api.common.deps import actor, actor_optional, declared
 from api.common.errors import ApiError
-from forecast.calendar import ANCHOR_DAY
 from shared.pg_client import pg_conn, timed
+from usecase.lead_time import ROUTE, LeadTime, read_lead_time
+from usecase.lead_time import current_rows as _current
 
 log = logging.getLogger("scm.api")
 router = APIRouter()
 
-#: spec §4.4：货运 60 = 国际海运那一档。★ 预测只读这一条线路（OP-4）。
-ROUTE = "oversea_sea"
 _FIELDS = (("make_days", "making"), ("ship_days", "shipping"))
 _MAX_DAYS = 720          # 03 §41 CHECK
-
-
-@dataclass(frozen=True)
-class LeadTime:
-    route: str
-    make_days: int
-    ship_days: int
-    anchor_day: int
-    valid_from: dict[str, str]
-
-
-def _current(cur, lock: bool = False) -> dict[str, tuple[int, object, bool]]:
-    """当前生效行：{segment: (days, valid_from, valid_from 是不是今天)}。"""
-    cur.execute("SELECT segment, days, valid_from, valid_from = CURRENT_DATE FROM lead_time"
-                " WHERE route = %s AND valid_to IS NULL" + (" FOR UPDATE" if lock else ""),
-                (ROUTE,))
-    rows = cur.fetchall()
-    got = {seg: (days, vf, today) for seg, days, vf, today in rows}
-    # ★ 恰好 making / shipping 各一行；少一行或同一段两行都是配置坏了，不猜用哪行
-    if sorted(seg for seg, *_ in rows) != ["making", "shipping"]:
-        raise ApiError(500, "lead_time_misconfigured",
-                       "提前期配置不是「生产 / 货运各一条当前行」—— 库存推演算不了",
-                       {"route": ROUTE, "current_rows": [[s, d] for s, d, _, _ in rows]})
-    return got
-
-
-def read_lead_time(cur) -> LeadTime:
-    got = _current(cur)
-    return LeadTime(ROUTE, got["making"][0], got["shipping"][0], ANCHOR_DAY,
-                    {s: got[s][1].isoformat() for s in ("making", "shipping")})
 
 
 def lead_time_json(lt: LeadTime) -> dict:

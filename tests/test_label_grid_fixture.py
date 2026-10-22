@@ -23,7 +23,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from api.ui.grid_forecast import forecast_payload
+from usecase.plan_projection import forecast_payload
 from api.ui.lead_time import LeadTime
 from forecast.baseline import data_windows, estimate_rate
 from forecast.calendar import days_in_month, units_for_month

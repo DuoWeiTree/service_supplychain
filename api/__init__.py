@@ -11,6 +11,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from api.common import source_factory
+from api.common.errors import ApiError, lead_time_error, translate
 from api.ui import (
     attention,
     catalog,
@@ -27,8 +29,6 @@ from api.ui import (
     submit,
     system,
 )
-from api.common import source_factory
-from api.common.errors import ApiError, translate
 from dim.registry import gate_503_names
 from erp.transport import cause_chain
 from jobs import refresh_dims
@@ -38,6 +38,7 @@ from shared import config as config_module
 from shared.logging import setup_logging
 from shared.pg_client import business_schema, pg_conn, pg_error_fields, pg_target, timed
 from usecase import oversea_in_transit, place_po
+from usecase.lead_time import LeadTimeMisconfigured
 
 log = logging.getLogger("scm.api")
 
@@ -269,6 +270,12 @@ def create_app() -> FastAPI:
     @app.exception_handler(ApiError)
     async def _api_error(request: Request, exc: ApiError):
         return JSONResponse(status_code=exc.status, content=exc.body())
+
+    # ★ 读提前期的不止 api/ui（grid、PUT），还有 api/pub 的预览 —— 在这里翻一次，谁也漏不掉
+    @app.exception_handler(LeadTimeMisconfigured)
+    async def _lead_time_error(request: Request, exc: LeadTimeMisconfigured):
+        e = lead_time_error(exc)
+        return JSONResponse(status_code=e.status, content=e.body())
 
     @app.exception_handler(psycopg2.Error)
     async def _pg_error(request: Request, exc: psycopg2.Error):

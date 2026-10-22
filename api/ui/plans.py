@@ -20,21 +20,18 @@ from api.common.deps import (
     require_fresh_mirrors,
 )
 from api.common.errors import ApiError
-from api.ui.grid_forecast import forecast_payload
-from api.ui.lead_time import read_lead_time
+from api.common.source_errors import SOURCE_ERRORS, source_error
 from api.common.source_factory import source_dep
 from dim.ch_source import (
     ChDataUnusable,
     ChUnavailable,
-    PurchaseTableStale,
     UnknownShape,
 )
 from dim.order_store_map import UnknownStore
 from dim.source import Source
-from forecast.baseline import EMBARGO_DAYS
-from rules.effective import effective_demand
 from shared.pg_client import pg_conn, timed
-from usecase import oversea_in_transit, plan_claim
+from usecase import plan_claim
+from usecase.plan_projection import demand_row, project
 
 log = logging.getLogger("scm.api")
 
@@ -47,57 +44,6 @@ router = APIRouter(dependencies=[Depends(require_fresh_mirrors)])
 #:   plain def 端点、跑在 Starlette 的线程池里 —— 于是并发请求会互相踩。
 
 
-def _source_error(e: Exception) -> ApiError:
-    """把 ChSource 的失败翻成 ApiError —— 同 jobs/refresh_dims.ChUnreachable → refresh_failed
-    的形状，不另发明一种。★ 一律 503：拿不到数算出来的曲线看起来完全正常，S-29/S-30 的
-    错误形状统一裁定同样适用于这条路径。"""
-    if isinstance(e, ChUnavailable):
-        return ApiError(503, "forecast_source_unavailable",
-                        "预测取数源连不上，拒绝服务 —— 不拿旧数或空数冒充",
-                        {"target": e.target, **e.cause})
-    if isinstance(e, ChDataUnusable):
-        return ApiError(503, "forecast_source_unusable",
-                        "近 7 个采集日全都掉档或未采完 —— 这批数据不可用，不是「库存为 0」",
-                        {"rejected": e.rejected})
-    if isinstance(e, PurchaseTableStale):
-        # ★ OQ-5 裁定：陈旧阈值突破 → 未知，不是 0；与「掉档守卫全拒」同一类失败，
-        #   共用 forecast_source_unusable，不再单起一个错误码。
-        # ★ F4（复核 09-23）：`stale_table` 点名是哪张表老了——行项表停了是
-        #   没有新采购，单据表停了是状态冻住（还可能两张一起停，
-        #   `dim.ch_source.BOTH_PURCHASE_TABLES`），处置不同。不加这个字段，
-        #   两个成因相反的 503 body 会逐字节相同，拿到它的人得去翻日志才知道
-        #   该查哪张——日志已经点名了，响应体不该比日志更瞎。
-        return ApiError(503, "forecast_source_unusable",
-                        "采购单快照太久没更新 —— 在途视为未知，不是 0",
-                        {"captured": e.captured.isoformat(), "age_days": e.age_days,
-                         "threshold_days": e.threshold_days, "stale_table": e.stale_table})
-    if isinstance(e, UnknownShape):
-        return ApiError(503, "forecast_source_unusable", "取数源出现认不出的形态",
-                        {"detail": str(e)})
-    if isinstance(e, UnknownStore):
-        # ★ fix round 1：design §8 OQ-3 点名的真实缺口（6 组 (store, sales_channel)、
-        #   近 90 天 21 单没有对应 sid）会从 daily_sales() → store_for()
-        #   一路抛到这里。与 UnknownShape 同一类「认不出的形态」，不新开错误码；
-        #   detail 里带着 store_for() 原样写出的 sid（它是唯一已知量——正因为它没有
-        #   对应的 (store, channel) 才会抛这个异常）。
-        # ★★ 残留轮次：这句 hint 原先对**所有** UnknownStore 都说「缺一行，去补」，
-        #   包括 `NO_ORDER_REPORT_SID` 上那三个已登记的缺口 —— 而对它们，补一行
-        #   就是硬编一行不存在的映射，把另一家店的销量记到它头上（正是 M-4 刚从
-        #   `sid_for_or_raise` 拿掉的那条错建议，留在了人**先读到**的字段里）。
-        # ★ 修法不是在这里再劈一支（那一支没有调用路径，而没有路径的分支没人能
-        #   信）。分派放在 `usecase/plan_claim.seed_forecast` 的 `except UnknownStore` 里，按
-        #   `e.registered_gap` 把「已登记的缺口」翻成 200 + 不适用 —— 所以走到
-        #   这里的**只有「没人声明过」那一种**，这句「去补一行」也就只对着它该
-        #   对的人说。改那处分派的人要连这句话一起重新想。
-        return ApiError(503, "forecast_source_unusable",
-                        "这个店没有声明取数映射（dim/order_store_map.py 缺一行）"
-                        "—— 销量取不到，不能当成「卖了 0 件」",
-                        {"detail": str(e), "sid": e.sid})
-    # ★ 复核裁定（fix round 1，不改）：这支 raise e 目前不可达——claim()/grid() 的
-    #   except 元组已经收窄到本函数认识的全部五种类型，元组之外的异常根本不会走
-    #   到这里。签名标 -> ApiError 与这一支的行为因此有点不对称，留着不改：
-    #   真正要防的洞不在这里，是"except 元组要跟上 ChSource 实际会抛的异常集合"。
-    raise e   # ★ 认不出的异常不许被兜成这五种之一——同 CLAUDE.md「不许 else 兜底」
 
 
 def _date(s: str, field: str) -> dt.date:
@@ -193,7 +139,7 @@ def _seed_error(e: Exception) -> ApiError:
                         "断货日窗口越过了估计锚点 —— 未结算的采集日会被读成断货，拒绝估计",
                         {"until": e.until.isoformat(), "anchor": e.anchor.isoformat(),
                          "as_of": e.as_of.isoformat(), "embargo_days": e.embargo_days})
-    return _source_error(e)
+    return source_error(e)
 
 
 @router.post("/plans/{plan_id}/claims")
@@ -408,26 +354,6 @@ def _ym(d: dt.date) -> str:
     return d.strftime("%Y-%m")
 
 
-def _demand_row(seller_sku: str, sid: str, sku: str, period: str,
-                sysu: int | None, expu: int | None, extrap: bool,
-                system_basis: dict | None) -> dict:
-    """grid() 与 put_demand() 共用的同一份构造器（team-lead 09-22 裁定：一个行形状一个来源）。
-
-    ★ effective_demand() 是 effective_units 唯一裁定者 —— 两个端点各自算一遍迟早分叉，
-    put_demand() 曾经就漏了 sku/effective_units 两个字段，前端拿它原地替换 grid 里的行时
-    在真实 API 下会读到 undefined（mock 因为整格 clone 而不漏，两个数据源因此在这一格上分了叉）。"""
-    eff = effective_demand(sysu, expu)
-    return {"seller_sku": seller_sku, "sid": sid, "sku": sku, "period": period,
-            "system_units": sysu, "expected_units": expu, "basis": eff.basis,
-            # ★ 外推 ≠ 预估，标记必须随数走（14 §5）
-            "system_extrapolated": extrap,
-            # ★ 依据随数走（spec §3.3）：预测 = base_rate × 天数，点开要看得到
-            "system_basis": system_basis,
-            # ★ 单一来源：前端按 (sid, sku) 分块、库存公式的入参都读这一个字段，
-            #   不许各自重算 —— effective_demand() 是唯一裁定者（rules/effective.py）
-            "effective_units": eff.units}
-
-
 def _load_grid(cur, plan_id: int):
     ensure_plan(cur, plan_id)
     periods = plan_claim.plan_periods(cur, plan_id)
@@ -483,85 +409,23 @@ def grid(plan_id: int, request: Request,
          source: Annotated[Source, Depends(source_dep)],
          who: str | None = Depends(actor_optional)):
     declared(request)
+    # ★ 连接包住整段推演：project 从同一个 cur 读提前期（预览走同一条路）
     with timed("grid", actor=who, plan_id=plan_id), pg_conn() as c, c.cursor() as cur:
         periods, demand, purchase = _load_grid(cur, plan_id)
-        lead = read_lead_time(cur)
-
-    out_demand: list[dict] = []
-    #: msku → 推演入参（grid_forecast）。★ 在仓只在 has_fba 时取
-    fba_by_msku: dict[tuple[str, str], bool] = {}
-    onhand_by_msku: dict[tuple[str, str], int | None] = {}
-    rate_by_msku: dict[tuple[str, str], float] = {}
-    #: spec 2026-10-14：调仓中（进期初）与已发出的 FBA 货件（进台账）；源没有这两个方法时不给 = 旧口径
-    fc_by_msku: dict[tuple[str, str], int] = {}
-    inbound_by_msku: dict[tuple[str, str], list | None] = {}
-    has_fba_extra = hasattr(source, "fba_inbound") and hasattr(source, "fc_transfers")
-
-    try:
-        for seller_sku, sid, sku, period, sysu, extrap, expu, fba, sbasis in demand:
-            row = _demand_row(seller_sku, sid, sku, _ym(period), sysu, expu, extrap, sbasis)
-            k = (seller_sku, sid)
-            fba_by_msku[k] = fba
-            # ★ OP-8：没有 system_basis 的旧认领 → rate 缺席 → 桥接段未知并点名，不当 0
-            if sbasis and sbasis.get("base_rate") is not None:
-                rate_by_msku[k] = float(sbasis["base_rate"])
-            out_demand.append(row)
-            if fba:
-                onhand_by_msku[k] = source.onhand_available(seller_sku, sid)
-                if has_fba_extra:
-                    fc_by_msku[k] = source.fc_transfers(seller_sku, sid)
-                    inbound_by_msku[k] = source.fba_inbound(seller_sku, sid)
-
-        # ★ 采购格子 ∪ 认领的货号：没采购格子的货号，它的在途也要进推演（grid_forecast）
-        plan_sku_set = {r[0] for r in purchase} | {r[2] for r in demand}
-        in_transit: dict[str, list] = {sku: source.purchase_in_transit(sku) for sku in plan_sku_set}
-        # spec 2026-10-15：货号行「当月在途」的 FBA 部分（Σ 全部店铺，CH 货件表）
-        fba_transit = ({sku: source.fba_in_transit(sku) for sku in plan_sku_set}
-                       if hasattr(source, "fba_in_transit") else None)
-        # 10-15 裁定：货件快照可能早 as_of 一天 —— 用的是哪天要写出去
-        fba_inbound_day = source.fba_inbound_as_of() if hasattr(source, "fba_inbound_as_of") else None
-        as_of_date = source.as_of()
-        as_of = as_of_date.isoformat()
-        # ★ OQ-5 陈旧闸：调用本身就是守卫（越线 → PurchaseTableStale）；结果写进
-        #   source_notes.purchase_as_of，并作在途「已逾期」的判据日（OQ-6，终审 I-2）。
-        #   源没有这个方法（Source 协议里它是可选的），按 hasattr 跳过。
-        purchase_as_of = source.purchase_as_of() if hasattr(source, "purchase_as_of") else None
-        dropped_stats = source.stats() if hasattr(source, "stats") else {}
-    # ★ fix round 1 审计（team-lead 要求逐一核对 ChSource 实际会抛的异常集合是否都
-    #   进了这个元组）：grid() 只调用 as_of/onhand_available/purchase_in_transit/
-    #   purchase_as_of/stats——没有一个会走 order_store_map（那是 daily_sales
-    #   专属，只有 claim() 会碰），所以这里不需要 UnknownStore；PurchaseTableStale
-    #   只从 purchase_as_of() 抛，grid() 确实会调用它，必须在。
-    except (ChUnavailable, ChDataUnusable, PurchaseTableStale, UnknownShape) as e:
-        raise _source_error(e) from e
-
-    # ★ 海外仓部分走领星实查 + 10 分钟缓存（FM-D6）；读不到 = 未知，照样出整张表
-    ows = oversea_in_transit.in_transit_by_sku()
-    payload = forecast_payload(
-        as_of=as_of_date, periods=periods, demand_rows=out_demand, purchase_rows=purchase,
-        fba=fba_by_msku, onhand=onhand_by_msku, base_rate=rate_by_msku, in_transit=in_transit,
-        lead=lead, embargo_days=EMBARGO_DAYS, plan_id=plan_id, purchase_as_of=purchase_as_of,
-        fba_inbound=inbound_by_msku if has_fba_extra else None, fc=fc_by_msku if has_fba_extra else None,
-        fba_transit=fba_transit, oversea_transit=ows.by_sku if ows.ok else None)
-    _attach_has_image(payload["forecast_sku"])
+        try:
+            proj = project(source, cur, demand, purchase, periods, plan_id=plan_id)
+        except SOURCE_ERRORS as e:
+            raise source_error(e) from e
+    _attach_has_image(proj["forecast_sku"])
+    out_demand, notes = proj.pop("demand"), proj.pop("source_notes")
+    # ★ 键序照旧（响应逐字节不变）
     return {
-        **payload,
+        **proj,
         "plan_id": plan_id,
         "periods": [_ym(p) for p in periods],
         "demand": out_demand,
         "purchase": [{"sku": s, "period": _ym(p), "planned_units": u} for s, p, u in purchase],
-        "source_notes": {
-            "as_of": as_of,
-            "purchase_as_of": (purchase_as_of.isoformat() if purchase_as_of else None),
-            # spec 2026-10-15：海外仓在途是领星实查的 —— 写明查于何时 / 为什么没查到
-            "fba_inbound_as_of": fba_inbound_day.isoformat() if fba_inbound_day else None,
-            "oversea_in_transit_at": ows.fetched_at,
-            "oversea_in_transit_error": ows.reason,
-            # ★ 被排除的那一侧必须出现在响应里：sid=0 的欧洲共享池实测占全部可售
-            #   27.6%（键名固定 shared_pool_excluded，Task 2 裁定），没有在途预计到货日的
-            #   行也在这里 —— 丢东西必须有声。
-            "dropped": dropped_stats,
-        },
+        "source_notes": notes,
     }
 
 
@@ -601,7 +465,7 @@ def put_demand(plan_id: int, seller_sku: str, sid: str, period: str, body: dict,
     sysu, extrap, sku, sbasis = row
     # ★ 回的是 grid 里 demand[] 那一格同样的十键形状 —— 前端拿它原地替换那一行，
     #   形状不同就要在前端再写一遍映射，而两份映射迟早分叉（曾经漏了 sku/effective_units）
-    return {"cell": _demand_row(seller_sku, sid, sku, period, sysu, units, extrap, sbasis)}
+    return {"cell": demand_row(seller_sku, sid, sku, period, sysu, units, extrap, sbasis)}
 
 
 @router.put("/plans/{plan_id}/purchase/{sku}/{period}")
@@ -707,7 +571,7 @@ def put_cells(plan_id: int, body: dict, request: Request, who: str = Depends(act
                                 "period": raw["period"]})
                 continue
             sysu, extrap, sku, sbasis = row
-            out_d.append(_demand_row(raw["seller_sku"], raw["sid"], sku, raw["period"], sysu,
+            out_d.append(demand_row(raw["seller_sku"], raw["sid"], sku, raw["period"], sysu,
                                      raw.get("expected_units"), extrap, sbasis))
         for raw in purchase:
             cur.execute("UPDATE plan_purchase_cell SET planned_units = %s, updated_by = %s,"

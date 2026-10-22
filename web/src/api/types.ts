@@ -187,7 +187,7 @@ export interface MonthInTransit {
   before_as_of?: boolean;
 }
 
-// ─── 预测块（spec §6 · `api/ui/grid_forecast.py::_serialize`） ───
+// ─── 预测块（spec §6 · `usecase/plan_projection.py::_serialize`） ───
 
 export type ForecastState = 'ok' | 'partial' | 'unknown' | 'not_applicable' | 'elapsed' | 'no_msku';
 /** ★ null 只在 ok 时出现 */

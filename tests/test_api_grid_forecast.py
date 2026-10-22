@@ -242,7 +242,7 @@ def test_sku_with_no_purchase_cells_is_not_dropped(client, seed, lead_time_reset
 
 def test_unallocated_two_shapes_share_one_core():
     """Task 7：批次级与 msku 级两种形状 —— 共同核心键一样，scope 区分，其余原样带上。"""
-    from api.ui.grid_forecast import unallocated_json
+    from usecase.plan_projection import unallocated_json
     batch = {"sku": "S", "order_period": "2026-10", "arrive": "2026-11-15", "units": 200,
              "reason": "gap_unknown", "unknown": [["M", "1"]]}
     msku = {"sku": "S", "seller_sku": "M", "sid": "1", "arrive": "2026-11-15",
@@ -269,7 +269,7 @@ def test_failure_after_forecast_plan_is_logged_with_plan_id(client, seed, lead_t
     """forecast_plan 之后的自检炸了（这里：货号行丢了）也要有 outcome=fail 那一行，不是裸 500。"""
     import dataclasses
 
-    from api.ui import grid_forecast
+    from usecase import plan_projection as grid_forecast
     real = grid_forecast.forecast_plan
     monkeypatch.setattr(grid_forecast, "forecast_plan",
                         lambda inp: dataclasses.replace(real(inp), sku=[]))

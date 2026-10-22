@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from api.ui.grid_forecast import forecast_payload
+from usecase.plan_projection import forecast_payload
 from api.ui.lead_time import LeadTime
 from dim.source import FbaInbound
 

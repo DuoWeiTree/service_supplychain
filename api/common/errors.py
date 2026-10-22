@@ -11,6 +11,7 @@ import logging
 import psycopg2
 
 from shared.pg_client import pg_error_fields
+from usecase.lead_time import LeadTimeMisconfigured
 
 log = logging.getLogger("scm.api")
 
@@ -109,3 +110,9 @@ def translate(e: psycopg2.Error) -> ApiError | None:
         return None
     error, status, hint = hit
     return ApiError(status, error, hint, {"constraint": f["constraint"], "pg_detail": f["detail"]})
+
+
+def lead_time_error(e: LeadTimeMisconfigured) -> ApiError:
+    return ApiError(500, "lead_time_misconfigured",
+                    "提前期配置不是「生产 / 货运各一条当前行」—— 库存推演算不了",
+                    {"route": e.route, "current_rows": e.current_rows})
