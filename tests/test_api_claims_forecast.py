@@ -80,8 +80,8 @@ def test_stock_days_are_never_asked_past_the_estimation_anchor(client, seed, use
     只有窗口止于 as_of − embargo_days 才安全，所以调用方必须守住，窗口一越线就点名炸。"""
     from fixture_source import FIXTURES, FixtureSource
 
-    from api.ui import plans
     from forecast.baseline import DataWindows
+    from usecase import plan_claim
 
     asked = []
 
@@ -95,12 +95,12 @@ def test_stock_days_are_never_asked_past_the_estimation_anchor(client, seed, use
     assert asked == [(dt.date(2026, 7, 21), dt.date(2026, 9, 14))]   # 止于锚点 09-14
 
     # 窗口若被改成越过锚点一天（as_of 09-21 − 7 = 09-14，这里给 09-15）→ 必须拒绝
-    def past_anchor(as_of, embargo_days=plans.EMBARGO_DAYS):
+    def past_anchor(as_of, embargo_days=plan_claim.EMBARGO_DAYS):
         a = as_of - dt.timedelta(days=embargo_days)
         return DataWindows(a, a - dt.timedelta(days=89), a - dt.timedelta(days=55),
                            a + dt.timedelta(days=1))
 
-    monkeypatch.setattr(plans, "data_windows", past_anchor)
+    monkeypatch.setattr(plan_claim, "data_windows", past_anchor)
     asked.clear()
     pid = client.post("/v1/plans", json={"title": "t", "period_start": "2026-10-01", "months": 3},
                       headers=H(seed.actor)).json()["plan_id"]
@@ -124,10 +124,10 @@ def test_extrapolated_flag_is_what_the_estimator_says(client, seed, use_source, 
     估计器说 True，格子就得是 True（现行 baseline_rate_v1 恒给 False，见上面第一条）。"""
     import dataclasses
 
-    from api.ui import plans
+    from usecase import plan_claim
 
-    real = plans.estimate_rate
-    monkeypatch.setattr(plans, "estimate_rate",
+    real = plan_claim.estimate_rate
+    monkeypatch.setattr(plan_claim, "estimate_rate",
                         lambda *a, **k: dataclasses.replace(real(*a, **k), extrapolated=True))
     _, rows = claim(client, seed, seed.msku_a)
     assert [r[1] for r in rows] == [True, True, True]
@@ -140,15 +140,15 @@ def test_no_rate_is_never_marked_extrapolated(client, seed, use_source, monkeypa
 
     from fixture_source import FIXTURES, FixtureSource
 
-    from api.ui import plans
+    from usecase import plan_claim
 
     class NoSales(FixtureSource):
         def daily_sales(self, *a):
             return {}
 
     use_source(lambda: NoSales(FIXTURES))
-    real = plans.estimate_rate
-    monkeypatch.setattr(plans, "estimate_rate",
+    real = plan_claim.estimate_rate
+    monkeypatch.setattr(plan_claim, "estimate_rate",
                         lambda *a, **k: dataclasses.replace(real(*a, **k), extrapolated=True))
     _, rows = claim(client, seed, seed.msku_a)
     assert [(r[0], r[1]) for r in rows] == [(None, False)] * 3

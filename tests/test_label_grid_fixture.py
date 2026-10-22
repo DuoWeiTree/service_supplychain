@@ -25,10 +25,10 @@ import pytest
 
 from api.ui.grid_forecast import forecast_payload
 from api.ui.lead_time import LeadTime
-from api.ui.plans import _system_basis
 from forecast.baseline import data_windows, estimate_rate
 from forecast.calendar import days_in_month, units_for_month
 from forecast.month_in_transit import TransitItem
+from usecase.plan_claim import system_basis
 
 DIR = Path(__file__).resolve().parents[1] / "web" / "src" / "pages" / "__fixtures__"
 
@@ -39,12 +39,12 @@ A, B, W = ("MSKU-A", "11072"), ("MSKU-B", "11072"), ("MSKU-W", "90001")
 #: B = 锚点前第 2 天起每 3 天卖 1 件、共 56 天（设计取值 · 未实测，→ 约 0.319/天）
 SALES = {A: lambda i: 4 if i < 120 else 0, B: lambda i: 1 if i < 56 and i % 3 == 2 else 0}
 
-#: 沃尔玛店：认领时记下「没有销量取数源」（plans._no_sales_source_basis + 逐月补的两键）
+#: 沃尔玛店：认领时记下「没有销量取数源」（plan_claim._no_sales_source_basis + 逐月补的两键）
 NO_SOURCE = {"reason": "not_applicable_no_sales_source", "cause": "non_amazon_platform"}
 
 
 def claim_basis(k: tuple[str, str], as_of: dt.date) -> dict | None:
-    """走 claim() 同一条路：estimate_rate → plans._system_basis（逐月两键在 _cell 里补）。
+    """走 claim() 同一条路：estimate_rate → plan_claim.system_basis（逐月两键在 _cell 里补）。
     库存日全采到、无断货 —— 于是 censored / rejected / uncaptured 都是 0。"""
     if k not in SALES:
         return None
@@ -52,7 +52,7 @@ def claim_basis(k: tuple[str, str], as_of: dt.date) -> dict | None:
     daily = {win.until - dt.timedelta(days=i): u for i in range(200) if (u := SALES[k](i)) > 0}
     days = [win.censor_from + dt.timedelta(days=i) for i in range((win.until - win.censor_from).days + 1)]
     stock = SimpleNamespace(censored=set(), captured=days, rejected=[])
-    return _system_basis(estimate_rate(daily, set(), as_of), stock, win)
+    return system_basis(estimate_rate(daily, set(), as_of), stock, win)
 
 
 def _cell(k: tuple[str, str], period: dt.date, expected: int, as_of: dt.date) -> dict:

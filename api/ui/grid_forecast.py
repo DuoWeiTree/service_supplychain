@@ -16,6 +16,7 @@ from api.ui.lead_time import LeadTime
 from dim.ch_source import is_overdue
 from forecast.month_in_transit import TransitItem, month_in_transit
 from forecast.plan_forecast import MskuInput, PlanForecastInput, forecast_plan
+from usecase.plan_claim import NOT_APPLICABLE
 
 log = logging.getLogger("scm.api")
 
@@ -23,8 +24,8 @@ _UNALLOCATED_CORE = ("sku", "order_period", "arrive", "units", "reason")
 #: 调用方没给当月在途的取数（旧调用方 / 冻结样例）—— 与「给了、但未知（None）」分开
 _ABSENT = object()
 
-#: 「这个 msku 压根没有销量取数源」—— claim() 记进 system_basis.reason 的那个词（plans.NOT_APPLICABLE）。
-NO_SALES_SOURCE = "not_applicable_no_sales_source"
+#: 「这个 msku 压根没有销量取数源」—— 认领记进 system_basis.reason 的那个词，定义只在 plan_claim。
+NO_SALES_SOURCE = NOT_APPLICABLE
 
 
 def system_not_applicable(system_basis: dict | None) -> bool:

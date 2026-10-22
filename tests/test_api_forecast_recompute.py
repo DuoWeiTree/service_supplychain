@@ -9,9 +9,9 @@ import datetime as dt
 import pytest
 from fixture_source import FIXTURES, FixtureSource
 
-from api.ui import plans
 from dim.ch_source import ChUnavailable
 from shared.pg_client import pg_conn
+from usecase import plan_claim
 
 
 def H(a):
@@ -153,16 +153,16 @@ def test_a_mid_batch_source_failure_leaves_no_cell_changed(client, seed, use_sou
 
 def test_claim_and_recompute_share_the_same_forecast_function(client, seed, monkeypatch):
     """判据⑥：认领与重算走的是同一个函数——用调用计数证，不用 `is` 比 interned 常量。
-    monkeypatch 替换 `plans._seed_forecast` 后，两条路径若真的共用一个引用，
+    monkeypatch 替换 `plan_claim.seed_forecast` 后，两条路径若真的共用一个引用，
     两次调用都会落在同一个 spy 上；如果重算另写了一份算法，这里只会数到 1 次。"""
     calls = []
-    real = plans._seed_forecast
+    real = plan_claim.seed_forecast
 
     def spy(source, plan_id, seller_sku, sid, platform):
         calls.append((plan_id, seller_sku, sid, platform))
         return real(source, plan_id, seller_sku, sid, platform)
 
-    monkeypatch.setattr(plans, "_seed_forecast", spy)
+    monkeypatch.setattr(plan_claim, "seed_forecast", spy)
 
     pid = new_plan(client, seed)
     r = client.post(f"/v1/plans/{pid}/claims", json={"seller_sku": seed.msku_a[0], "sid": seed.msku_a[1]},
@@ -172,5 +172,5 @@ def test_claim_and_recompute_share_the_same_forecast_function(client, seed, monk
 
     r2 = client.post(f"/v1/plans/{pid}/forecast/recompute", headers=H(seed.actor))
     assert r2.status_code == 200, r2.text
-    assert len(calls) == 2, "recompute_forecast() 没有打中同一个 _seed_forecast 引用"
+    assert len(calls) == 2, "recompute_forecast() 没有打中同一个 seed_forecast 引用"
     assert calls[1] == (pid, seed.msku_a[0], seed.msku_a[1], "amazon")
