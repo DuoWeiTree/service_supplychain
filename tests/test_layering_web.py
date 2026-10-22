@@ -173,7 +173,7 @@ def test_l9_allowlist_derivation_actually_rejects_a_bad_path():
 
 
 # ---------------------------------------------------------------------------
-# L10 · api/pub/ 不许 import api/ui/ —— 目录还不存在，先让它空转，一出现立刻生效
+# L10 · api/pub/ 不许 import api/ui/
 # ---------------------------------------------------------------------------
 
 def _is_api_ui(module: str) -> bool:
@@ -195,10 +195,11 @@ def _imports_api_ui(path: Path) -> list[int]:
 
 def test_l10_api_pub_must_not_import_api_ui():
     pub = ROOT / "api" / "pub"
-    if not pub.exists():
-        return   # ★ 阶段 A 还没有这个目录；目录一出现，下面这段扫描立刻生效
+    files = sorted(pub.rglob("*.py"))
+    # ★ 目录已在（IM-D7）：一个文件都没扫到就是空转，不是「没违规」
+    assert files, f"{pub} 下一个 .py 都没扫到 —— L10 在扫空气"
     bad = {}
-    for p in sorted(pub.rglob("*.py")):
+    for p in files:
         lines = _imports_api_ui(p)
         if lines:
             bad[str(p.relative_to(ROOT))] = lines

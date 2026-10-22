@@ -4,6 +4,7 @@ from __future__ import annotations
 from api.common.errors import ApiError
 from dim.ch_source import ChDataUnusable, ChUnavailable, PurchaseTableStale, UnknownShape
 from dim.order_store_map import UnknownStore
+from usecase.plan_claim import StockWindowPastAnchor
 
 #: source_error 认识的全部类型 —— except 元组用它，不许各写一份
 SOURCE_ERRORS = (ChUnavailable, ChDataUnusable, PurchaseTableStale, UnknownShape, UnknownStore)
@@ -57,3 +58,19 @@ def source_error(e: Exception) -> ApiError:
                         {"detail": str(e), "sid": e.sid})
     # ★ 调用方只该拿 SOURCE_ERRORS 里的类型来调；走到这里说明 except 元组与本函数脱了节
     raise e   # ★ 认不出的异常不许被兜成这五种之一——同 CLAUDE.md「不许 else 兜底」
+
+
+#: 越线是我们自己的代码错了 → 500（见 plan_claim.StockWindowPastAnchor）
+STOCK_WINDOW_PAST_ANCHOR = "stock_window_past_anchor"
+
+#: 认领 / 重算 / 预览种预测时 usecase 原样上抛的异常（PurchaseTableStale 不在内：种预测不碰采购表）
+SEED_ERRORS = (ChUnavailable, ChDataUnusable, UnknownShape, UnknownStore, StockWindowPastAnchor)
+
+
+def seed_error(e: Exception) -> ApiError:
+    if isinstance(e, StockWindowPastAnchor):
+        return ApiError(500, STOCK_WINDOW_PAST_ANCHOR,
+                        "断货日窗口越过了估计锚点 —— 未结算的采集日会被读成断货，拒绝估计",
+                        {"until": e.until.isoformat(), "anchor": e.anchor.isoformat(),
+                         "as_of": e.as_of.isoformat(), "embargo_days": e.embargo_days})
+    return source_error(e)

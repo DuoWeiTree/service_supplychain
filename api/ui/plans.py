@@ -20,14 +20,10 @@ from api.common.deps import (
     require_fresh_mirrors,
 )
 from api.common.errors import ApiError
+from api.common.source_errors import SEED_ERRORS as _SEED_ERRORS
 from api.common.source_errors import SOURCE_ERRORS, source_error
+from api.common.source_errors import seed_error as _seed_error
 from api.common.source_factory import source_dep
-from dim.ch_source import (
-    ChDataUnusable,
-    ChUnavailable,
-    UnknownShape,
-)
-from dim.order_store_map import UnknownStore
 from dim.source import Source
 from shared.pg_client import pg_conn, timed
 from usecase import plan_claim
@@ -124,23 +120,6 @@ def _claimed_elsewhere(seller_sku: str, sid: str, holder) -> ApiError:
                     {"seller_sku": seller_sku, "sid": sid,
                      "claimed_by": {"plan_id": holder[0], "actor": holder[1], "title": holder[2]}
                      if holder else None})
-
-
-#: 越线是我们自己的代码错了 → 500（见 plan_claim.StockWindowPastAnchor）
-STOCK_WINDOW_PAST_ANCHOR = "stock_window_past_anchor"
-
-#: 认领 / 重算取数时 usecase 原样上抛的异常（PurchaseTableStale 不在内：认领不碰采购表）
-_SEED_ERRORS = (ChUnavailable, ChDataUnusable, UnknownShape, UnknownStore,
-                plan_claim.StockWindowPastAnchor)
-
-
-def _seed_error(e: Exception) -> ApiError:
-    if isinstance(e, plan_claim.StockWindowPastAnchor):
-        return ApiError(500, STOCK_WINDOW_PAST_ANCHOR,
-                        "断货日窗口越过了估计锚点 —— 未结算的采集日会被读成断货，拒绝估计",
-                        {"until": e.until.isoformat(), "anchor": e.anchor.isoformat(),
-                         "as_of": e.as_of.isoformat(), "embargo_days": e.embargo_days})
-    return source_error(e)
 
 
 @router.post("/plans/{plan_id}/claims")

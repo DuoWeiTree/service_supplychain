@@ -13,6 +13,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api.common import source_factory
 from api.common.errors import ApiError, lead_time_error, translate
+from api.pub import v1 as pub_v1
 from api.ui import (
     attention,
     catalog,
@@ -307,4 +308,5 @@ def create_app() -> FastAPI:
     app.include_router(lead_time.router, prefix="/v1")
     app.include_router(checks.router, prefix="/v1")
     app.include_router(sheets.router, prefix="/v1")
+    app.include_router(pub_v1.router, prefix="/pub/v1")   # ★ 对外契约（IM-D7），web 不许打（L9）
     return app
