@@ -62,6 +62,19 @@ def actor(request: Request) -> str:
     return _check_actor(who)
 
 
+#: IM-D8：库里有、界面下拉里没有的身份（test_actor_seed 用它对账 TS 与种子）
+AI_ACTOR = "ai.agent"
+NON_UI_ACTORS: frozenset[str] = frozenset({AI_ACTOR})
+
+
+def require_ai_actor(request: Request) -> str:
+    """pub 写接口的身份闸：先过 `actor()` 的存在/在职校验，再要求就是 AI 员工。"""
+    who = actor(request)
+    if who != AI_ACTOR:
+        raise ApiError(403, "actor_not_allowed", "这个接口只给 AI 员工调用", {"actor": who})
+    return who
+
+
 def actor_optional(request: Request) -> str | None:
     """读请求的操作人：不给可以，★ 给了就必须有效。
 

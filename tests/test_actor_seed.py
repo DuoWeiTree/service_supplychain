@@ -122,3 +122,17 @@ def test_extra_db_actors_are_not_a_drift_violation(business_db):
         f"TS 常量里的 id 在『库里比 TS 多一行』这个场景下仍然缺失：{missing} —— "
         "说明上面两条门禁的查询逻辑被『多出来的行』干扰了"
     )
+
+
+def _seeded_ids(path: Path) -> set[str]:
+    return set(re.findall(r"^\s*\(\s*'([^']+)'\s*,\s*'[^']*'\s*,\s*true\s*\)",
+                          path.read_text("utf-8"), re.MULTILINE))
+
+
+def test_ts_actors_equal_seeds_minus_non_ui_actors():
+    """IM-D8：ai.agent 由 029 种进库，但不进界面下拉 —— 两边的差集只能是 NON_UI_ACTORS。"""
+    from api.common.deps import NON_UI_ACTORS
+    seeded = _seeded_ids(SEED_MIGRATION) | _seeded_ids(
+        ROOT / "migrations" / "pg" / "029_seed_ai_actor.sql")
+    assert seeded, "种子解析出 0 条 —— 这条门禁是空转的"
+    assert set(parse_ts_actor_ids()) == seeded - NON_UI_ACTORS
