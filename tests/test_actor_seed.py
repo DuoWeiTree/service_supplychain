@@ -132,7 +132,8 @@ def _seeded_ids(path: Path) -> set[str]:
 def test_ts_actors_equal_seeds_minus_non_ui_actors():
     """IM-D8：ai.agent 由 029 种进库，但不进界面下拉 —— 两边的差集只能是 NON_UI_ACTORS。"""
     from api.common.deps import NON_UI_ACTORS
-    seeded = _seeded_ids(SEED_MIGRATION) | _seeded_ids(
-        ROOT / "migrations" / "pg" / "029_seed_ai_actor.sql")
+    from_029 = _seeded_ids(ROOT / "migrations" / "pg" / "029_seed_ai_actor.sql")
+    assert "ai.agent" in from_029, f"029 没解析出 ai.agent（解析到 {from_029}）—— 差集门禁会空转"
+    seeded = _seeded_ids(SEED_MIGRATION) | from_029
     assert seeded, "种子解析出 0 条 —— 这条门禁是空转的"
     assert set(parse_ts_actor_ids()) == seeded - NON_UI_ACTORS
