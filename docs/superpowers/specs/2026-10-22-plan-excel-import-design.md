@@ -103,6 +103,8 @@
   已下采购单的在途照整表口径进（`source.purchase_in_transit(sku)`：CH 全部在途采购单，不分哪张计划下的）。
 - 不写库、不认领。
 
+★ 实施时定 · 见 00 IM-Q8：货号展开成零个 msku 时，整个预览 404 `unknown_msku`，body 的 `skus[]` 点名这些货号，不新增码。
+
 返回按 msku 逐月（预测销量、期初、期末、断货日、状态与原因）+ 按货号的本地仓 / 在途，字段名与 `/plans/{id}/grid`
 平铺的推演键（`forecast_sku` 等）对齐，不另起一套。★ 回显依据：`as_of`、`system_basis`（用了哪几个月历史）、不适用 / 未知照实写，不填 0。
 
@@ -111,30 +113,34 @@
 
 ### ③ `POST /plans/import`（pub 与 ui 各一份薄壳，同一个 usecase 函数）
 
-`multipart/form-data`：`title` · `period_start`（`YYYY-MM`）· `months` · `file`（xlsx）。可选 `owner_actor`，缺省 = `x-actor`。
+`multipart/form-data`：`title` · `period_start`（`YYYY-MM`）· `months` · `file`（xlsx）。
+~~可选 `owner_actor`~~ —— 实施时定 · 见 00 IM-Q7：删掉，计划 owner = `x-actor`（pub 即 `ai.agent`）；计划列表不按 owner 过滤，人看得到 AI 建的计划。
 
 **流程 —— 先全查、后一次写：**
 
 ```
-1. 抬头校验（同 POST /plans：标题必填、months 1~24 整数）
+1. 抬头校验（同 POST /plans：标题必填、months 1~24 整数）。★ 实施时定 · 见 00 IM-Q6：抬头有错时只回抬头错（`row=0`），文件不判
 2. 解析 xlsx → 行（§2 格式）；格式错逐格收集
 3. 对库校验（只读）：msku 在不在桥表、店铺 / 国家 / 货号对不对得上、是否被别的计划占用、采购货号有没有对应销量行
 4. 有任何错 → 422，返回全部错误，一张计划都不建
 5. 一个事务：INSERT plan → 逐个认领（种格子 + 预测）→ 写人填的格子 → 提交
    ★ 3 的占用检查只是读；裁决仍在认领的 INSERT（唯一索引）。并发撞上 → 整个事务回滚 → 同样 409 列出
 6. 201 { plan_id, mskus, skus, demand_cells, purchase_cells, elapsed_ms }
+   ★ 实施时定 · 见 00 IM-Q9：`skus` = 不同货号数；两个 `*_cells` = 新建出的格子数
 ```
 
 - 现有 `claim()` 自己开连接、一次一个。要抽出「在给定游标里认领一个 msku」的函数，`claim()` 与导入共用；
   认领的规则（取数源、不适用、复活已释放）只有一份。
 - 写格复用 `put_cells` 的单格校验（`_batch_cell` / `_units`）；★ `_units` 只收 `int`，Excel 读出的 `12.0` 要先规整成 12 再交给它（非整数值仍报 `bad_units`）；★ 导入**不受** `CELLS_BATCH_MAX = 1000` 限制
   （100 msku × 24 月就超了），它限的是一次界面操作；导入的上限见 §2 末。
+- ★ 实施时定 · 见 00 IM-Q11：`StockWindowPastAnchor` 翻成 500 `stock_window_past_anchor`（同认领），整个导入回滚。
 - 界面：成功 → 跳 `/plans/{plan_id}`。
 
 ### ③' `GET /plans/import/template?period_start=2026-11&months=3`（pub 与 ui 各一份）
 
 返回 xlsx：表头一行（§2 的固定列 + 月份列）+ 一行销量示例 + 一行采购示例（示例行标明删掉）。
-界面的「下载模板」与 AI 都用它，保证格式只有一个出处。（我的判断：人也可能手做 Excel，界面需要格式来源。）
+界面的「下载模板」与 AI 都用它，保证格式只有一个出处。
+★ 实施时定 · 见 00 IM-Q10：`x-actor` 可不给、给了必须有效；起始月 / 月数错 → 400，body 带 `errors[]`。示例行的 `类型` 写成「销量（示例，删掉这行）」—— 不删就被 `bad_type` 拒，示例不会当真数入库。（我的判断：人也可能手做 Excel，界面需要格式来源。）
 
 ### ④ `DELETE /plans/{plan_id}`（只 pub）
 
@@ -159,18 +165,21 @@
 | `msku` | **必填** | 空 | |
 | `YYYY-MM` × N | 期望销量 | 计划采购 | 月份列必须**正好**是计划的 N 个月，缺一个、多一个都错 |
 
+★ 实施时定 · 见 00 IM-Q4：采购行的 `msku` / `店铺ID` / `店铺` / `国家` 填了 → `unexpected_field`（每格一条）。
+★ 实施时定 · 见 00 IM-Q5：`店铺` / `国家` 两列可整列不出现（等于没填）；出现时与库里的值逐字精确比较（区分大小写）；`类型` `货号` `店铺ID` `msku` 必须在表头。
+
 ★ 「可填但填了要对得上」是我的判断：AI 生成的表里店名 / 国家写错，常常意味着它把行对到了错的店；对不上就拒，不静默以 `店铺ID` 为准。
 
 **格子值：**
 - 空 → 不填（`null`，**不是 0**）；`0` → 0。
-- ≥ 0 的整数；Excel 存成 `12.0` 的数按 12 收；小数、负数、文字 → 错。
+- ≥ 0 的整数；Excel 存成 `12.0` 的数按 12 收；小数、负数 → 错。★ 实施时定 · 见 00 IM-Q2：纯数字文本（`"12"`、`" 12 "`）按整数收；其它文字 → `bad_units`。
 - 表头列名前后空格忽略；列的先后顺序不限。
 
 **行规则：**
 - 每条销量行 = 认领这个 msku，**哪怕月份格全空**（行在就是要它进计划）。
 - 同一 (msku, 店铺ID) 出现两次 → 错；同一货号两条采购行 → 错。
 - 采购行的货号，必须是本文件某条销量行的货号（采购格子随认领长出来）—— 否则错 `purchase_sku_not_claimed`。
-- 一行都没有 → 错 `empty_file`。
+- 一行都没有 → 错 `empty_file`。★ 实施时定 · 见 00 IM-Q3：整行全空的行跳过，不算「一行」，也不计入上限。
 
 **错误回执（422，信封同全系统：`error` · `hint` · 字段平铺顶层）：** 每条带 Excel 坐标，人能直接去表里找：
 
@@ -183,9 +192,10 @@
 
 错误码（初版，实现时可增）：`bad_header` · `missing_month` · `extra_month` · `bad_type` · `missing_field` · `bad_units` ·
 `duplicate_row` · `unknown_msku` · `unknown_seller` · `seller_mismatch` · `market_mismatch` · `sku_mismatch` ·
-`claimed_elsewhere` · `purchase_sku_not_claimed` · `empty_file` · `file_too_large` · `not_xlsx`。
+`claimed_elsewhere` · `purchase_sku_not_claimed` · `empty_file` · `file_too_large` · `not_xlsx`；
+实施时增 · 见 00 IM-Q4 / Q6：`unexpected_field` · 抬头错沿用 `POST /plans` 的 `title_required` `validation_error` `bad_months` `bad_period_start` `bad_date`（`row=0`）。以 `docs/08` §3 为全集。
 
-**上限**：文件 5 MB、2,000 行 —— **设计取值 · 未实测**（口述量级：一个计划约 100 msku，UX 组记录）。
+**上限**：文件 5 MB、2,000 行（非空行，见 IM-Q3） —— **设计取值 · 未实测**（口述量级：一个计划约 100 msku，UX 组记录）。
 
 ## 3. 界面（`OpsHome` 新建销售计划）
 
