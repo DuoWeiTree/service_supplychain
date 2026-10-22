@@ -21,6 +21,13 @@ def codes(r):
     return [e.code for e in r.errors]
 
 
+def test_digit_text_units_accepted_other_text_rejected():
+    r = parse_rows(H, [demand(a="12", b=" 12 ")], P)
+    assert r.errors == [] and r.demand[0].units == {"2026-11": 12, "2026-12": 12}
+    for bad in ("12.5", "-1", "十", "12件"):
+        assert codes(parse_rows(H, [demand(a=bad)], P)) == ["bad_units"]
+
+
 def test_units_blank_zero_float():
     r = parse_rows(H, [demand(a=None, b=0), demand(msku="m2", a=12.0, b=7)], P)
     assert r.errors == []
@@ -105,3 +112,22 @@ def test_purchase_sku_not_claimed_in_file_only():
 def test_all_errors_reported_at_once():
     rows = [demand(a=-1), ["退货", None, "S1", None, None, "m2", 1, 1], demand(msku=None)]
     assert len(parse_rows(H, rows, P).errors) == 3
+
+
+def test_claimed_sku_ignores_errors_on_the_demand_row():
+    r = parse_rows(H, [demand(sku="K1", a=-1), purchase("K1")], P)
+    assert codes(r) == ["bad_units"]
+
+
+def test_blank_rows_skipped_and_not_counted():
+    blank = [None, "", " ", None, None, None, None, None]
+    assert codes(parse_rows(H, [blank, blank], P)) == ["empty_file"]
+    rows = [demand(msku=f"m{i}") for i in range(MAX_ROWS)] + [blank] * 5
+    assert parse_rows(H, rows, P).errors == []
+
+
+def test_purchase_row_with_demand_fields_is_unexpected():
+    row = ["采购", "K1", "S1", "店", "US", "m1", 1, 1]
+    r = parse_rows(H, [demand(sku="K1"), row], P)
+    got = [(e.code, e.col, e.row) for e in r.errors]
+    assert got == [("unexpected_field", c, 3) for c in "CDEF"]

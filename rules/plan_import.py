@@ -82,6 +82,8 @@ def _units(v) -> tuple[bool, int | None]:
         return (v >= 0), v
     if isinstance(v, float) and v.is_integer() and v >= 0:
         return True, int(v)
+    if isinstance(v, str) and v.strip().isascii() and v.strip().isdigit():
+        return True, int(v.strip())  # AI 生成的表常把数字存成文本
     return False, None
 
 
@@ -113,9 +115,13 @@ def parse_rows(header: list[object], rows: list[list[object]], periods: list[str
     if any(e.code == "bad_header" for e in errs):
         return Parsed([], [], errs)  # 列都认不全，逐行报只会是噪音
 
-    if len(rows) > MAX_ROWS:
+    def blank(r):
+        return all(_text(c) is None for c in r)
+
+    n_data = sum(1 for r in rows if not blank(r))
+    if n_data > MAX_ROWS:
         return Parsed([], [], errs + [RowError(
-            1, None, "file_too_large", f"超过 {MAX_ROWS} 行上限（{len(rows)} 行）")])
+            1, None, "file_too_large", f"超过 {MAX_ROWS} 行上限（{n_data} 行）")])
 
     def cell(r, name):
         i = pos.get(name)
@@ -124,9 +130,11 @@ def parse_rows(header: list[object], rows: list[list[object]], periods: list[str
     demand: list[DemandRow] = []
     purchase: list[PurchaseRow] = []
     seen = 0
+    # 认领集合不看该行有没有别的错：bad_units 的销量行仍然「声明了」这个货号
+    claimed: set[str] = set()
     for k, r in enumerate(rows):
         n = k + 2
-        if all(_text(c) is None for c in r):
+        if blank(r):
             continue
         seen += 1
         typ = _text(cell(r, "类型"))
@@ -137,6 +145,8 @@ def parse_rows(header: list[object], rows: list[list[object]], periods: list[str
             errs.append(RowError(n, L("类型"), "bad_type",
                                  f"类型须为「销量」或「采购」，实为「{typ or '空'}」", **ctx))
             continue
+        if typ == T_DEMAND and sku:
+            claimed.add(sku)
         ok = True
         units: dict[str, int | None] = {}
         for m in periods:
@@ -148,6 +158,11 @@ def parse_rows(header: list[object], rows: list[list[object]], periods: list[str
                 errs.append(RowError(n, col_letter(months[m]), "bad_units",
                                      f"{m} 须为空或 ≥0 的整数", **ctx))
             units[m] = val
+        if typ == T_PURCHASE:
+            for f in ("msku", "店铺ID", "店铺", "国家"):
+                if f in pos and _text(cell(r, f)) is not None:
+                    ok = False
+                    errs.append(RowError(n, L(f), "unexpected_field", f"采购行不填{f}", **ctx))
         need = ("msku", "店铺ID") if typ == T_DEMAND else ("货号",)
         vals = {"msku": msku, "店铺ID": sid, "货号": sku}
         for f in need:
@@ -181,7 +196,6 @@ def parse_rows(header: list[object], rows: list[list[object]], periods: list[str
          lambda x: {"seller_sku": x.seller_sku, "sid": x.sid, "sku": x.sku})
     dups(purchase, lambda x: x.sku, "采购货号", lambda x: {"sku": x.sku})
 
-    claimed = {d.sku for d in demand if d.sku}
     for p in purchase:
         if p.sku not in claimed:
             errs.append(RowError(p.row, col_letter(pos["货号"]), "purchase_sku_not_claimed",

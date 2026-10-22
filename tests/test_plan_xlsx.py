@@ -33,3 +33,31 @@ def test_reads_first_sheet_only_and_pads_rows():
     wb.save(buf)
     header, rows = read_first_sheet(buf.getvalue())
     assert header == ["a", "b", "c"] and rows == [[1, None, None]]
+
+
+def test_broken_package_is_not_xlsx_with_cause_chained():
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("[Content_Types].xml", "<broken")
+    with pytest.raises(NotXlsx) as ei:
+        read_first_sheet(buf.getvalue())
+    assert ei.value.__cause__ is not None
+    assert type(ei.value.__cause__).__name__ in str(ei.value)
+
+
+def test_corrupt_sheet_xml_during_iteration_is_not_xlsx():
+    import zipfile
+
+    src = io.BytesIO()
+    wb = Workbook()
+    wb.active.append(["a"] * 3)
+    wb.save(src)
+    out = io.BytesIO()
+    with zipfile.ZipFile(src) as zi, zipfile.ZipFile(out, "w") as zo:
+        for n in zi.namelist():
+            d = zi.read(n)
+            zo.writestr(n, b"<worksheet><sheetData><row>" if n == "xl/worksheets/sheet1.xml" else d)
+    with pytest.raises(NotXlsx):
+        read_first_sheet(out.getvalue())

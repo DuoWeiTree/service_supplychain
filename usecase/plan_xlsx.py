@@ -1,9 +1,7 @@
 """xlsx 读写（openpyxl）。格式判断在 rules/plan_import.py，这里只管字节 ↔ 单元格。"""
 import io
-import zipfile
 
 from openpyxl import Workbook, load_workbook
-from openpyxl.utils.exceptions import InvalidFileException
 
 from rules.plan_import import COLUMNS, T_DEMAND
 
@@ -15,17 +13,18 @@ class NotXlsx(Exception):
 
 
 def read_first_sheet(data: bytes) -> tuple[list[object], list[list[object]]]:
+    # 任何解析失败（坏 zip、XML 损坏、包缺件…）都算「不是可读的 xlsx」；原因类型留在消息里供日志
     try:
         wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
-    except (zipfile.BadZipFile, InvalidFileException, KeyError, OSError) as e:
-        raise NotXlsx(f"不是 xlsx：{type(e).__name__}") from e
-    try:
-        it = wb.worksheets[0].iter_rows(values_only=True)
-        header = list(next(it, ()))
-        width = len(header)
-        rows = [(list(r) + [None] * width)[:max(width, len(r))] for r in it]
-    finally:
-        wb.close()
+        try:
+            it = wb.worksheets[0].iter_rows(values_only=True)
+            header = list(next(it, ()))
+            width = len(header)
+            rows = [(list(r) + [None] * width)[:max(width, len(r))] for r in it]
+        finally:
+            wb.close()
+    except Exception as e:
+        raise NotXlsx(f"不是可读的 xlsx：{type(e).__name__}: {e}") from e
     return header, rows
 
 
