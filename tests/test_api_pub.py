@@ -207,3 +207,27 @@ def test_delete_submitted_is_409_and_missing_is_404(client, ai):
     assert r.json()["revs"] == 1
     r = client.delete("/pub/v1/plans/999999", headers=H(AI))
     assert r.status_code == 404 and r.json()["error"] == "plan_not_found"
+
+
+def test_template_rejects_bogus_actor_but_allows_none(client, seed):
+    q = {"period_start": "2026-11", "months": 1}
+    r = client.get("/pub/v1/plans/import/template", params=q, headers=H("nobody"))
+    assert r.status_code == 400 and r.json()["error"] == "unknown_actor"
+    assert client.get("/pub/v1/plans/import/template", params=q).status_code == 200
+
+
+def test_import_stock_window_past_anchor_is_translated(client, ai, monkeypatch):
+    import datetime as dt
+
+    from forecast.baseline import DataWindows
+    from usecase import plan_claim
+
+    def past_anchor(as_of, embargo_days=plan_claim.EMBARGO_DAYS):
+        a = as_of - dt.timedelta(days=embargo_days)
+        return DataWindows(a, a - dt.timedelta(days=89), a - dt.timedelta(days=55),
+                           a + dt.timedelta(days=1))
+
+    monkeypatch.setattr(plan_claim, "data_windows", past_anchor)
+    r = _import(client, AI)
+    assert r.status_code == 500 and r.json()["error"] == "stock_window_past_anchor", r.text
+    assert counts()["plan"] == 0

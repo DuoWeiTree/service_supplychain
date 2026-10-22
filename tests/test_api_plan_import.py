@@ -98,3 +98,34 @@ def test_header_errors_alone_make_the_422_and_file_is_not_judged(client, seed):
     r = post(client, seed, b"not an xlsx", title="", period_start="x", months="99")
     assert r.status_code == 422
     assert sorted(e["code"] for e in r.json()["errors"]) == ["bad_date", "bad_months", "title_required"]
+
+
+def test_template_rejects_bogus_actor_but_allows_none(client, seed):
+    q = {"period_start": "2026-11", "months": 3}
+    r = client.get("/v1/plans/import/template", params=q, headers={"x-actor": "nobody"})
+    assert r.status_code == 400 and r.json()["error"] == "unknown_actor"
+    assert client.get("/v1/plans/import/template", params=q).status_code == 200
+
+
+def test_template_400_lists_all_header_errors(client, seed):
+    r = client.get("/v1/plans/import/template", params={"period_start": "nope", "months": 99})
+    assert r.status_code == 400 and r.json()["error"] == "bad_date"
+    assert {e["code"] for e in r.json()["errors"]} == {"bad_date", "bad_months"}
+
+
+def test_stock_window_past_anchor_is_translated_not_bare_500(client, seed, monkeypatch, scm_log):
+    import datetime as dt
+
+    from forecast.baseline import DataWindows
+    from usecase import plan_claim
+
+    def past_anchor(as_of, embargo_days=plan_claim.EMBARGO_DAYS):
+        a = as_of - dt.timedelta(days=embargo_days)
+        return DataWindows(a, a - dt.timedelta(days=89), a - dt.timedelta(days=55),
+                           a + dt.timedelta(days=1))
+
+    monkeypatch.setattr(plan_claim, "data_windows", past_anchor)
+    r = post(client, seed, xlsx([["销量", seed.sku_a, "11072", "A4Pet-US", "US", "MSKU-A", 10, None, 0]]))
+    assert r.status_code == 500 and r.json()["error"] == "stock_window_past_anchor", r.text
+    assert "op=plan_import" in scm_log.text and "outcome=StockWindowPastAnchor" in scm_log.text
+    assert client.get("/v1/plans", headers={"x-actor": seed.actor}).json()["plans"] == []
