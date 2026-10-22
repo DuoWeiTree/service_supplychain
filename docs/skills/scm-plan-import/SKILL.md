@@ -23,6 +23,7 @@ description: 当用户要你为供应链系统（service_supplychain）生成并
    `truncated: true` 说明结果被截断，收窄条件再查。
 3. **查预测**：`POST /pub/v1/forecast/preview`，JSON `{"period_start": "YYYY-MM", "months": N, "mskus": [{"seller_sku": "...", "sid": "..."}], "skus": ["..."]}`
    （`mskus` 与 `skus` 至少一个，不许多余字段）。得到这些 msku 逐月的预测销量与预测库存、断货日。
+   `demand[].system_units` 就是预测销量，`demand[].system_basis` 是它的依据（用了哪几个月历史），给人审查时一并展示；`forecast_msku` 等给预测库存与断货日；`source_notes` 写明数据截至何时、哪些没取到（未知不是 0）。
 4. **生成 Excel**：`GET /pub/v1/plans/import/template?period_start=YYYY-MM&months=N` 下载模板，**只填用户选的产品**，
    销量行（msku × 月）填期望销量，采购行（货号 × 月）填计划采购。**删掉两行示例**。空格子留空，不要写 0（空 = 未知，0 = 明确为零）。
    **交给人审查、确认数量后才能导入**，不要自己直接导。
