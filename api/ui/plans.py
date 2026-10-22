@@ -31,6 +31,7 @@ from dim.order_store_map import UnknownStore
 from dim.source import Source
 from shared.pg_client import pg_conn, timed
 from usecase import plan_claim
+from usecase.lead_time import read_lead_time
 from usecase.plan_projection import demand_row, project
 
 log = logging.getLogger("scm.api")
@@ -409,13 +410,14 @@ def grid(plan_id: int, request: Request,
          source: Annotated[Source, Depends(source_dep)],
          who: str | None = Depends(actor_optional)):
     declared(request)
-    # ★ 连接包住整段推演：project 从同一个 cur 读提前期（预览走同一条路）
     with timed("grid", actor=who, plan_id=plan_id), pg_conn() as c, c.cursor() as cur:
         periods, demand, purchase = _load_grid(cur, plan_id)
-        try:
-            proj = project(source, cur, demand, purchase, periods, plan_id=plan_id)
-        except SOURCE_ERRORS as e:
-            raise source_error(e) from e
+        lead = read_lead_time(cur)
+    # ★ 连接在取数之前关掉：CH / 领星要几十秒，不许把 PG 事务挂在那儿
+    try:
+        proj = project(source, lead, demand, purchase, periods, plan_id=plan_id)
+    except SOURCE_ERRORS as e:
+        raise source_error(e) from e
     _attach_has_image(proj["forecast_sku"])
     out_demand, notes = proj.pop("demand"), proj.pop("source_notes")
     # ★ 键序照旧（响应逐字节不变）

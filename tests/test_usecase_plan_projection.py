@@ -24,8 +24,9 @@ def _plan_with_claims(client, seed):
 
 def _rows(pid):
     from api.ui.plans import _load_grid
+    from usecase.lead_time import read_lead_time
     with pg_conn() as c, c.cursor() as cur:
-        return _load_grid(cur, pid)
+        return (*_load_grid(cur, pid), read_lead_time(cur))
 
 
 def test_project_matches_grid_for_the_same_rows(client, seed, lead_time_reset):
@@ -36,10 +37,9 @@ def test_project_matches_grid_for_the_same_rows(client, seed, lead_time_reset):
     r = client.get(f"/v1/plans/{pid}/grid", headers=H(seed.actor))
     assert r.status_code == 200, r.text
     g = r.json()
-    periods, demand, purchase = _rows(pid)
+    periods, demand, purchase, lead = _rows(pid)
     assert demand, "认领没长出格子 —— 下面的对核就是空对空"
-    with pg_conn() as c, c.cursor() as cur:
-        out = project(FixtureSource(FIXTURES), cur, demand, purchase, periods, plan_id=pid)
+    out = project(FixtureSource(FIXTURES), lead, demand, purchase, periods, plan_id=pid)
     # has_image 是 grid 自己补的（界面用），不归推演
     g_sku = [{k: v for k, v in row.items() if k != "has_image"} for row in g["forecast_sku"]]
     assert out["forecast_sku"] == g_sku
@@ -54,9 +54,8 @@ def test_preview_logs_plan_id_as_preview(client, seed, lead_time_reset, scm_log)
 
     from usecase.plan_projection import project
     pid = _plan_with_claims(client, seed)
-    periods, demand, purchase = _rows(pid)
-    with pg_conn() as c, c.cursor() as cur:
-        project(FixtureSource(FIXTURES), cur, demand, purchase, periods, plan_id=None)
+    periods, demand, purchase, lead = _rows(pid)
+    project(FixtureSource(FIXTURES), lead, demand, purchase, periods, plan_id=None)
     line = next(r.getMessage() for r in scm_log.records if "op=grid_forecast" in r.getMessage())
     assert "plan_id=preview" in line and "outcome=ok" in line
 
@@ -73,6 +72,6 @@ def test_source_failure_propagates_unwrapped(client, seed, lead_time_reset):
             raise ChUnavailable("192.0.2.1:8123", {"code": "ECONNREFUSED"})
 
     pid = _plan_with_claims(client, seed)
-    periods, demand, purchase = _rows(pid)
-    with pg_conn() as c, c.cursor() as cur, pytest.raises(ChUnavailable):
-        project(Down(FIXTURES), cur, demand, purchase, periods, plan_id=None)
+    periods, demand, purchase, lead = _rows(pid)
+    with pytest.raises(ChUnavailable):
+        project(Down(FIXTURES), lead, demand, purchase, periods, plan_id=None)

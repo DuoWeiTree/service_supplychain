@@ -19,7 +19,7 @@ from forecast.month_in_transit import TransitItem, month_in_transit
 from forecast.plan_forecast import MskuInput, PlanForecastInput, forecast_plan
 from rules.effective import effective_demand
 from usecase import oversea_in_transit
-from usecase.lead_time import LeadTime, read_lead_time
+from usecase.lead_time import LeadTime
 from usecase.plan_claim import NOT_APPLICABLE
 
 # ★ 日志名沿用 scm.api：op=grid_forecast 这一行的去处不随代码搬家而变
@@ -225,12 +225,12 @@ def demand_row(seller_sku: str, sid: str, sku: str, period: str,
             "effective_units": eff.units}
 
 
-def project(source, cur, demand_rows: list[tuple], purchase_rows: list[tuple],
+def project(source, lead: LeadTime, demand_rows: list[tuple], purchase_rows: list[tuple],
             periods: list[dt.date], plan_id: int | None) -> dict:
     """`demand_rows` 形如 (seller_sku, sid, sku, period, system_units, system_extrapolated,
     expected_units, has_fba, system_basis)；`purchase_rows` 形如 (sku, period, planned_units)。
-    ★ 取数源的异常原样上抛 —— 这一层不认识 ApiError，由 grid / pub 用 source_error 翻译。"""
-    lead = read_lead_time(cur)
+    ★ 取数源的异常原样上抛 —— 这一层不认识 ApiError，由 grid / pub 用 source_error 翻译。
+    ★ 不收 cur：CH / 领星调用要几十秒，调用方先在短连接里读完提前期与行再来，别把 PG 事务挂着。"""
     out_demand: list[dict] = []
     #: msku → 推演入参。★ 在仓只在 has_fba 时取
     fba_by_msku: dict[tuple[str, str], bool] = {}
