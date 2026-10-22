@@ -22,6 +22,7 @@ from api.ui import (
     lead_time,
     lines,
     ops,
+    plan_import,
     plans,
     purchase_options,
     purchase_orders,
@@ -292,6 +293,7 @@ def create_app() -> FastAPI:
 
     app.include_router(system.health_router)
     app.include_router(system.system_router, prefix="/v1")
+    app.include_router(plan_import.router, prefix="/v1")  # 先于 plans：/plans/import 不被 /plans/{id} 吞
     app.include_router(plans.router, prefix="/v1")
     app.include_router(submit.router, prefix="/v1")
     app.include_router(catalog.router, prefix="/v1")
