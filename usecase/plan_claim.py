@@ -295,11 +295,15 @@ def lock_sku(cur, plan_id: int, sku: str) -> None:
     cur.execute("SELECT pg_advisory_xact_lock(%s, hashtext(%s))", (plan_id, sku))
 
 
-def claim_msku(cur, source, plan_id: int, seller_sku: str, sid: str, who: str) -> dict:
+def claim_msku(cur, source, plan_id: int, seller_sku: str, sid: str, who: str,
+               seeded: list[tuple] | None = None) -> dict:
     """认领并种格子。调用方先 `ensure_writable`；返回体即 `POST /claims` 的 200 响应。
 
     ★ 撞唯一索引时**不回滚**：事务归调用方（导入里还有别的行）。抛
-      `ClaimedElsewhere(holder=None)`，调用方回滚后用 `claim_holder` 补名。"""
+      `ClaimedElsewhere(holder=None)`，调用方回滚后用 `claim_holder` 补名。
+    ★ `seeded`（`seed_rows` 的产出）：调用方已在事务外取过数 —— 导入几十个 msku，
+      逐个取数会让写事务攥着连接跨过几十次取数源。给了就不碰 `source`；返回体里
+      `no_history` / `history_window` 为 None（没在这里算，不是「没有」）。"""
     periods = plan_periods(cur, plan_id)
     # ★ 终审 I-2：顺手把 seller.platform 取回来 —— 它决定这个 msku 的销量
     #   **有没有取数源**（见 `SALES_PLATFORM`）。FK msku_bridge_seller_fk
@@ -331,8 +335,18 @@ def claim_msku(cur, source, plan_id: int, seller_sku: str, sid: str, who: str) -
                 "no_history": [], "history_window": None}
 
     # ★ task-23：算法唯一入口是 seed_forecast —— 认领与重算两处都调它，不许各自另写一份。
-    seeded, rows = _seed(source, seller_sku, sid, sku, platform, has_fba, periods, plan_id)
-    no_history = [seeded["no_history"]] if seeded["no_history"] is not None else []
+    if seeded is None:
+        meta, rows = _seed(source, seller_sku, sid, sku, platform, has_fba, periods, plan_id)
+        no_history = [meta["no_history"]] if meta["no_history"] is not None else []
+        history_window = meta["history_window"]
+    else:
+        rows, no_history, history_window = seeded, None, None
+        got = [(r[0], r[1], r[2], r[3]) for r in rows]
+        want = [(seller_sku, sid, sku, p) for p in periods]
+        if got != want:
+            # 事务外取数与事务内读桥表之间货号 / 月份变了：写下去就是格子与认领对不上
+            raise RuntimeError(f"claim_msku: 预先种好的行与计划对不上 plan_id={plan_id}"
+                               f" seller_sku={seller_sku} sid={sid} got={got} want={want}")
     # ★ 与 release / remove_sku 同一把 (plan, sku) 锁，拿在**写任何行之前**（认领行也挪到了
     #   锁之后）：兄弟 msku 的认领与最后一个 msku 的释放并发时，要么释放看见这个兄弟、留下
     #   采购格，要么认领在释放删完之后重新种出采购格 —— 不许出现「有 msku 在认领、却没有
@@ -377,9 +391,10 @@ def claim_msku(cur, source, plan_id: int, seller_sku: str, sid: str, who: str) -
         cur.execute("INSERT INTO plan_purchase_cell (plan_id, sku, period_start, updated_by)"
                     " VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
                     (plan_id, sku, period, who))
-    log.info("op=claim plan_id=%s actor=%s seller_sku=%s sid=%s sku=%s cells=%d no_history=%d",
-             plan_id, who, seller_sku, sid, sku, len(periods), len(no_history))
+    log.info("op=claim plan_id=%s actor=%s seller_sku=%s sid=%s sku=%s cells=%d no_history=%s"
+             " preseeded=%s", plan_id, who, seller_sku, sid, sku, len(periods),
+             "-" if no_history is None else len(no_history), seeded is not None)
     return {"claimed": {"seller_sku": seller_sku, "sid": sid, "sku": sku},
             "already_claimed": False,
             "seeded": {"demand_cells": len(periods), "purchase_cells": len(periods)},
-            "no_history": no_history, "history_window": seeded["history_window"]}
+            "no_history": no_history, "history_window": history_window}

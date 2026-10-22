@@ -134,6 +134,7 @@ def test_import_rejects_claimed_elsewhere_naming_the_holder(client, seed):
     [e] = exc.value.errors
     assert e.code == "claimed_elsewhere"
     assert e.extra == {"plan_id": holder, "title": "先来的"}
+    assert (e.row, e.col) == (2, "F")
     assert scalar("SELECT count(*) FROM plan") == 1
 
 
@@ -163,7 +164,88 @@ def test_import_concurrent_claim_rolls_back_and_names_holder(seed):
         import_plan(Racer(FIXTURES), header(), data, "alice")
     [e] = exc.value.errors
     assert e.code == "claimed_elsewhere" and e.extra["title"] == "抢先"
+    assert (e.row, e.col) == (2, "F")
     assert rows_of("SELECT title FROM plan") == [("抢先",)]
+
+
+def test_import_unique_index_race_rolls_back_and_names_holder_on_new_conn(seed, monkeypatch):
+    """快路径读漏了（并发下读到的是旧快照）：唯一索引裁决 → 整笔回滚 → 新连接补名。"""
+    from usecase import plan_claim
+    from usecase.plan_import import ImportRejected, import_plan
+
+    with pg_conn() as c, c.cursor() as cur:
+        cur.execute("INSERT INTO plan (title, period_start, months, owner_actor, created_by)"
+                    " VALUES ('抢先', '2026-10-01', 3, 'alice', 'alice') RETURNING plan_id")
+        pid = cur.fetchone()[0]
+        cur.execute("INSERT INTO msku_claim (plan_id, seller_sku, sid, claimed_by)"
+                    " VALUES (%s, 'MSKU-D', '11072', 'alice')", (pid,))
+    # 校验阶段的读照常看见占用；只让认领里那次快路径读漏掉，逼到唯一索引那一支
+    monkeypatch.setattr(plan_claim, "_active_claim", lambda *a: None)
+    seen_d = []
+
+    def holder_after_validation(cur, s, sid):
+        if s == "MSKU-D" and not seen_d:
+            seen_d.append(1)
+            return None
+        return plan_claim.claim_holder(cur, s, sid)
+
+    monkeypatch.setattr("usecase.plan_import.claim_holder", holder_after_validation)
+
+    data = xlsx([["销量", None, "11072", None, None, "MSKU-A", 1, 1, 1],
+                 ["销量", None, "11072", None, None, "MSKU-D", 1, 1, 1]])
+    with pytest.raises(ImportRejected) as exc:
+        import_plan(src(), header(), data, "alice")
+    [e] = exc.value.errors
+    assert e.code == "claimed_elsewhere" and (e.row, e.col) == (3, "F")
+    # 补名走真查询：回滚撤掉了 search_path，只有新连接才查得到（ClaimedElsewhere docstring）
+    assert e.extra == {"plan_id": pid, "title": "抢先"} and seen_d == [1]
+    assert rows_of("SELECT title FROM plan") == [("抢先",)]
+    assert scalar("SELECT count(*) FROM msku_claim WHERE seller_sku = 'MSKU-A'") == 0
+
+
+def test_import_makes_no_source_call_while_a_connection_is_open(seed, monkeypatch):
+    """取数源可以慢到 20s：写事务（或任何连接）攥着跨过它，会把同货号的认领全堵住。"""
+    import contextlib
+
+    from fixture_source import FIXTURES, FixtureSource
+
+    from usecase import plan_import
+    from usecase.plan_import import import_plan
+
+    open_conns = [0]
+    calls = []
+    real = plan_import.pg_conn
+
+    @contextlib.contextmanager
+    def counted():
+        with real() as c:
+            open_conns[0] += 1
+            try:
+                yield c
+            finally:
+                open_conns[0] -= 1
+
+    monkeypatch.setattr(plan_import, "pg_conn", counted)
+
+    class Watched(FixtureSource):
+        def as_of(self):
+            calls.append(("as_of", open_conns[0]))
+            return super().as_of()
+
+        def daily_sales(self, *a):
+            calls.append(("daily_sales", open_conns[0]))
+            return super().daily_sales(*a)
+
+        def fba_stock_days(self, *a):
+            calls.append(("fba_stock_days", open_conns[0]))
+            return super().fba_stock_days(*a)
+
+    data = xlsx([["销量", None, "11072", None, None, "MSKU-A", 1, 1, 1],
+                 ["销量", None, "11072", None, None, "MSKU-D", 1, 1, 1]])
+    out = import_plan(Watched(FIXTURES), header(), data, "alice")
+    assert out["mskus"] == 2
+    assert calls, "取数源一次都没被调 —— 这条测试没测到东西"
+    assert [c for c in calls if c[1]] == [], calls
 
 
 def test_import_rolls_back_when_source_is_down(seed):

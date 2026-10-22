@@ -164,3 +164,42 @@ def test_endpoint_names_the_holder_after_a_unique_violation(client, seed, monkey
     with pg_conn() as c, c.cursor() as cur:
         cur.execute("SELECT count(*) FROM plan_demand_cell WHERE plan_id = %s", (pid,))
         assert cur.fetchone()[0] == 0
+
+
+def test_claim_msku_with_preseeded_rows_never_touches_source(client, seed):
+    """导入的路：取数在事务外做完，事务内传 source=None —— 格子与自己取数时逐列相等。"""
+    from fixture_source import FIXTURES, FixtureSource
+
+    from usecase.plan_claim import claim_msku, plan_periods, seed_rows
+
+    via_source = new_plan(client, seed, "自己取数")
+    with pg_conn() as c, c.cursor() as cur:
+        claim_msku(cur, FixtureSource(FIXTURES), via_source, *seed.msku_a, seed.actor)
+    expected = cells(via_source)
+    assert client.delete(f"/v1/plans/{via_source}/claims/{seed.msku_a[0]}/{seed.msku_a[1]}",
+                         headers=H(seed.actor)).status_code == 200
+
+    pid = new_plan(client, seed, "预先种好")
+    with pg_conn() as c, c.cursor() as cur:
+        periods = plan_periods(cur, pid)
+    rows = seed_rows(FixtureSource(FIXTURES), *seed.msku_a, seed.sku_a, "amazon", True, periods)
+    with pg_conn() as c, c.cursor() as cur:
+        body = claim_msku(cur, None, pid, *seed.msku_a, seed.actor, seeded=rows)
+    assert body["claimed"]["sku"] == seed.sku_a and body["already_claimed"] is False
+    assert body["no_history"] is None and body["history_window"] is None
+    assert cells(pid) == expected
+
+
+def test_claim_msku_rejects_preseeded_rows_that_do_not_match_the_plan(client, seed):
+    from fixture_source import FIXTURES, FixtureSource
+
+    from usecase.plan_claim import claim_msku, seed_rows
+
+    pid = new_plan(client, seed)
+    before = counts()
+    rows = seed_rows(FixtureSource(FIXTURES), *seed.msku_a, seed.sku_a, "amazon", True,
+                     [dt.date(2026, 10, 1)])  # 计划是 3 个月
+    with pytest.raises(RuntimeError, match="对不上"):
+        with pg_conn() as c, c.cursor() as cur:
+            claim_msku(cur, None, pid, *seed.msku_a, seed.actor, seeded=rows)
+    assert counts() == before

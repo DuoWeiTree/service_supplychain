@@ -2,6 +2,8 @@
 
 ★ 先全查、后一次写：所有错误一次列全；有错就一张计划都不建。写阶段的认领与写格在
   一个事务里，任何一步失败整笔回滚 —— 不留半张计划、也不留空计划。
+★ 取数在写事务之前、且不攥任何连接：取数源可以慢到 20s，写事务跨过几十次取数会把
+  同货号的认领全堵在 advisory 锁上。
 """
 from __future__ import annotations
 
@@ -14,7 +16,7 @@ from dataclasses import dataclass
 
 from rules.plan_import import COLUMNS, RowError, col_letter, parse_rows
 from shared.pg_client import pg_conn
-from usecase.plan_claim import ClaimedElsewhere, claim_holder, claim_msku
+from usecase.plan_claim import ClaimedElsewhere, claim_holder, claim_msku, seed_rows
 from usecase.plan_xlsx import MAX_BYTES, NotXlsx, read_first_sheet
 
 log = logging.getLogger("scm.usecase")
@@ -98,19 +100,21 @@ def _column_letters(header: list[object]) -> dict[str, str]:
 
 
 def _validate_against_db(cur, parsed, letters: dict[str, str]
-                         ) -> tuple[list[RowError], set[str]]:
-    """只读。错误追加不中断。★ 占用这里只是读；裁决仍在认领的 INSERT（唯一索引）。"""
+                         ) -> tuple[list[RowError], dict[tuple[str, str], tuple[str, str, bool]]]:
+    """只读。错误追加不中断。★ 占用这里只是读；裁决仍在认领的 INSERT（唯一索引）。
+    第二项：认出来的 msku → (sku, platform, has_fba)，取数要用。"""
     errs: list[RowError] = []
+    resolved: dict[tuple[str, str], tuple[str, str, bool]] = {}
     pairs = sorted({(d.seller_sku, d.sid) for d in parsed.demand})
     sids = sorted({sid for _, sid in pairs})
-    cur.execute("SELECT seller_id, name, market FROM seller WHERE seller_id = ANY(%s)", (sids,))
-    sellers = {r[0]: (r[1], r[2]) for r in cur.fetchall()}
+    cur.execute("SELECT seller_id, name, market, platform, has_fba FROM seller"
+                " WHERE seller_id = ANY(%s)", (sids,))
+    sellers = {r[0]: (r[1], r[2], r[3], r[4]) for r in cur.fetchall()}
     cur.execute("SELECT b.seller_sku, b.sid, b.sku FROM msku_bridge b"
                 " JOIN unnest(%s::text[], %s::text[]) AS q(seller_sku, sid)"
                 "   ON q.seller_sku = b.seller_sku AND q.sid = b.sid",
                 ([p[0] for p in pairs], [p[1] for p in pairs]))
     bridge = {(r[0], r[1]): r[2] for r in cur.fetchall()}
-    resolved_skus: set[str] = set()
     for d in parsed.demand:
         ctx = {"seller_sku": d.seller_sku, "sid": d.sid, "sku": d.sku}
         seller = sellers.get(d.sid)
@@ -119,7 +123,7 @@ def _validate_against_db(cur, parsed, letters: dict[str, str]
             errs.append(RowError(d.row, letters.get("店铺ID"), "unknown_seller",
                                  f"店铺ID {d.sid} 不存在", **ctx))
             continue
-        name, market = seller
+        name, market, platform, has_fba = seller
         if d.seller_name is not None and d.seller_name != name:
             errs.append(RowError(d.row, letters.get("店铺"), "seller_mismatch",
                                  f"店铺ID {d.sid} 是「{name}」，表里写的是「{d.seller_name}」",
@@ -133,26 +137,27 @@ def _validate_against_db(cur, parsed, letters: dict[str, str]
             errs.append(RowError(d.row, letters.get("msku"), "unknown_msku", "msku 不在桥表里",
                                  **ctx))
             continue
-        resolved_skus.add(sku)
+        resolved[(d.seller_sku, d.sid)] = (sku, platform, has_fba)
         if d.sku is not None and d.sku != sku:
             errs.append(RowError(d.row, letters.get("货号"), "sku_mismatch",
                                  f"这个 msku 的货号是 {sku}，表里写的是 {d.sku}",
                                  extra={"expected": sku}, **ctx))
         holder = claim_holder(cur, d.seller_sku, d.sid)
         if holder is not None:
-            errs.append(_claimed_error(d.row, d.seller_sku, d.sid, sku, holder))
-    return errs, resolved_skus
+            errs.append(_claimed_error(d.row, letters.get("msku"), d.seller_sku, d.sid, sku,
+                                       holder))
+    return errs, resolved
 
 
-def _claimed_error(row: int, seller_sku: str, sid: str, sku: str | None,
+def _claimed_error(row: int, col: str | None, seller_sku: str, sid: str, sku: str | None,
                    holder: tuple[int, str, str] | None) -> RowError:
     if holder is None:
         # 回滚后补名那一刻对方又释放了：占用确实发生过，只是说不出是谁
-        return RowError(row, None, "claimed_elsewhere", "被另一张计划占用（补查时已释放）",
+        return RowError(row, col, "claimed_elsewhere", "被另一张计划占用（补查时已释放）",
                         seller_sku=seller_sku, sid=sid, sku=sku,
                         extra={"plan_id": None, "title": None})
     pid, _, title = holder
-    return RowError(row, None, "claimed_elsewhere", f"被计划「{title}」（#{pid}）占用",
+    return RowError(row, col, "claimed_elsewhere", f"被计划「{title}」（#{pid}）占用",
                     seller_sku=seller_sku, sid=sid, sku=sku,
                     extra={"plan_id": pid, "title": title})
 
@@ -160,10 +165,10 @@ def _claimed_error(row: int, seller_sku: str, sid: str, sku: str | None,
 def _reject(errs: list[RowError], ctx: dict) -> ImportRejected:
     by_code = Counter(e.code for e in errs)
     log.warning("op=plan_import actor=%s title=%r rows=%s mskus=%s skus=%s cells=%s file_bytes=%s"
-                " parse_ms=%s validate_ms=%s write_ms=%s outcome=rejected errors=%s",
+                " parse_ms=%s validate_ms=%s seed_ms=%s write_ms=%s outcome=rejected errors=%s",
                 ctx["actor"], ctx["title"], ctx.get("rows"), ctx.get("mskus"), ctx.get("skus"),
                 ctx.get("cells"), ctx["file_bytes"], ctx.get("parse_ms"), ctx.get("validate_ms"),
-                ctx.get("write_ms"), ",".join(f"{c}:{n}" for c, n in sorted(by_code.items())))
+                ctx.get("seed_ms"), ctx.get("write_ms"), ",".join(f"{c}:{n}" for c, n in sorted(by_code.items())))
     for e in errs[:LOG_ERRORS_MAX]:
         log.warning("op=plan_import outcome=rejected row=%s col=%s code=%s seller_sku=%s sid=%s"
                     " sku=%s message=%s extra=%s",
@@ -204,11 +209,13 @@ def import_plan(source, header: PlanHeader, data: bytes, who: str) -> dict:
                parse_ms=_ms(t0))
 
     t0 = time.perf_counter()
+    letters = _column_letters(head)
     db_errs: list[RowError] = []
-    resolved_skus: set[str] = set()
+    resolved: dict[tuple[str, str], tuple[str, str, bool]] = {}
     if parsed.demand:
         with pg_conn() as c, c.cursor() as cur:
-            db_errs, resolved_skus = _validate_against_db(cur, parsed, _column_letters(head))
+            db_errs, resolved = _validate_against_db(cur, parsed, letters)
+    resolved_skus = {sku for sku, _, _ in resolved.values()}
     # rules 只认得表里写了的货号；销量行没写货号时由桥表补齐，补齐后能对上的不算错
     file_errs = [e for e in parsed.errors
                  if not (e.code == "purchase_sku_not_claimed" and e.sku in resolved_skus)]
@@ -217,6 +224,25 @@ def import_plan(source, header: PlanHeader, data: bytes, who: str) -> dict:
     if errs:
         errs.sort(key=lambda e: (e.row, e.col or ""))
         raise _reject(errs, ctx)
+
+    t0 = time.perf_counter()
+    seeded: dict[tuple[str, str], list[tuple]] = {}
+    current = None
+    try:
+        for d in parsed.demand:
+            current = d
+            sku, platform, has_fba = resolved[(d.seller_sku, d.sid)]
+            seeded[(d.seller_sku, d.sid)] = seed_rows(source, d.seller_sku, d.sid, sku, platform,
+                                                      has_fba, periods)
+    except Exception as e:
+        # 取数源异常原样上抛（api 层翻译）；此时还一行没写
+        log.warning("op=plan_import actor=%s title=%r rows=%s file_bytes=%s seed_ms=%d"
+                    " outcome=%s stage=seed at_seller_sku=%s at_sid=%s seeded=%d/%d detail=%s"
+                    " written=false", who, header.title, ctx["rows"], len(data), _ms(t0),
+                    type(e).__name__, getattr(current, "seller_sku", None),
+                    getattr(current, "sid", None), len(seeded), len(parsed.demand), e)
+        raise
+    ctx["seed_ms"] = _ms(t0)
 
     t0 = time.perf_counter()
     human = 0
@@ -231,8 +257,9 @@ def import_plan(source, header: PlanHeader, data: bytes, who: str) -> dict:
             skus: set[str] = set()
             for d in parsed.demand:
                 current = d
-                skus.add(claim_msku(cur, source, plan_id, d.seller_sku, d.sid, who)
-                         ["claimed"]["sku"])
+                # source=None：取数已在事务外做完，这里若还想取数就该炸
+                skus.add(claim_msku(cur, None, plan_id, d.seller_sku, d.sid, who,
+                                    seeded=seeded[(d.seller_sku, d.sid)])["claimed"]["sku"])
             current = None
             for d in parsed.demand:
                 for p in periods:
@@ -266,11 +293,12 @@ def import_plan(source, header: PlanHeader, data: bytes, who: str) -> dict:
                 holder = claim_holder(cur, e.seller_sku, e.sid)
         ctx.update(write_ms=_ms(t0))
         row = current.row if current is not None else 0
-        raise _reject([_claimed_error(row, e.seller_sku, e.sid, None, holder)], ctx) from None
+        raise _reject([_claimed_error(row, letters.get("msku"), e.seller_sku, e.sid, None,
+                                      holder)], ctx) from None
     except Exception as e:
-        # 取数源异常等原样上抛（api 层翻译）；这里只补一行带阶段与耗时的日志
+        # 库错等原样上抛（api 层翻译）；这里只补一行带阶段与耗时的日志
         log.warning("op=plan_import actor=%s title=%r rows=%s file_bytes=%s write_ms=%d"
-                    " outcome=%s at_seller_sku=%s at_sid=%s pgcode=%s detail=%s rolled_back=true",
+                    " outcome=%s stage=write at_seller_sku=%s at_sid=%s pgcode=%s detail=%s rolled_back=true",
                     who, header.title, ctx["rows"], len(data), _ms(t0), type(e).__name__,
                     getattr(current, "seller_sku", None), getattr(current, "sid", None),
                     getattr(e, "pgcode", None), e)
@@ -281,9 +309,10 @@ def import_plan(source, header: PlanHeader, data: bytes, who: str) -> dict:
            "demand_cells": len(parsed.demand) * n, "purchase_cells": len(skus) * n,
            "elapsed_ms": _ms(t_start)}
     log.info("op=plan_import actor=%s title=%r plan_id=%s rows=%s mskus=%s skus=%s cells=%s"
-             " file_bytes=%s parse_ms=%s validate_ms=%s write_ms=%d elapsed_ms=%d outcome=ok"
-             " errors=-", who, header.title, plan_id, ctx["rows"], out["mskus"], out["skus"],
-             human, len(data), ctx["parse_ms"], ctx["validate_ms"], _ms(t0), out["elapsed_ms"])
+             " file_bytes=%s parse_ms=%s validate_ms=%s seed_ms=%s write_ms=%d elapsed_ms=%d"
+             " outcome=ok errors=-", who, header.title, plan_id, ctx["rows"], out["mskus"],
+             out["skus"], human, len(data), ctx["parse_ms"], ctx["validate_ms"], ctx["seed_ms"],
+             _ms(t0), out["elapsed_ms"])
     return out
 
 
