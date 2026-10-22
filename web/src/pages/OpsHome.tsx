@@ -15,6 +15,12 @@ const CREATE_KEY = 'create';
 const TODO = 'todo';
 const CHANGED = 'changed';
 
+/** row=0 是表头问题；空段（无 msku/货号、无列）不输出，免得出现「· ·」 */
+function importErrorLine(r: ImportRowError): string {
+  const where = r.row === 0 ? `表头${r.col ? ` ${r.col} 列` : ''}` : `第 ${r.row} 行${r.col ? ` ${r.col} 列` : ''}`;
+  return [where, r.seller_sku || r.sku, r.message].filter((x) => x !== '').join(' · ');
+}
+
 type SortKey = 'todo' | 'period' | 'title' | 'state';
 
 export function OpsHome() {
@@ -164,7 +170,7 @@ export function OpsHome() {
           <ul>
             {rejected.map((r, i) => (
               <li key={i} className="gate__detail">
-                第 {r.row} 行{r.col ? ` ${r.col} 列` : ''} · {r.seller_sku || r.sku} · {r.message}
+                {importErrorLine(r)}
               </li>
             ))}
           </ul>

@@ -266,10 +266,23 @@ describe('运营首页', () => {
       await userEvent.click(screen.getByRole('button', { name: '新建' }));
       expect(await screen.findByText('计划没建：有 2 处问题')).toBeInTheDocument();
       expect(screen.getByText('第 3 行 M1 列 · SKU-A · 不是整数')).toBeInTheDocument();
-      expect(screen.getByText('第 0 行 · B-1 · 表头缺列')).toBeInTheDocument();
+      expect(screen.getByText('表头 · B-1 · 表头缺列')).toBeInTheDocument();
       expect(screen.getByLabelText('标题')).toHaveValue('T');
       await userEvent.upload(screen.getByLabelText('从 Excel 导入（可选）'), xlsx('q.xlsx'));
       expect(screen.queryByText('计划没建：有 2 处问题')).toBeNull();
+    });
+
+    it('没有 msku / 货号 / 列时不出空段', async () => {
+      const { ApiError } = await setup(async () => {
+        throw new ApiError(422, 'import_rejected', '有 2 处问题，计划没建', { errors: [
+          { row: 0, col: '', code: 'bad_months', message: '月数超出 1–24', seller_sku: '', sid: null, sku: '', extra: {} },
+          { row: 5, col: '', code: 'x', message: '缺值', seller_sku: '', sid: null, sku: '', extra: {} },
+        ] });
+      });
+      await userEvent.upload(screen.getByLabelText('从 Excel 导入（可选）'), xlsx());
+      await userEvent.click(screen.getByRole('button', { name: '新建' }));
+      expect(await screen.findByText('表头 · 月数超出 1–24')).toBeInTheDocument();
+      expect(screen.getByText('第 5 行 · 缺值')).toBeInTheDocument();
     });
 
     it('下载模板的 href 随起始月 / 月数变化', async () => {
