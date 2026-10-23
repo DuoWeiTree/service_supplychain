@@ -14,6 +14,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass
 
+from erp.transport import cause_chain
 from rules.plan_import import COLUMNS, RowError, col_letter, parse_rows
 from shared.pg_client import pg_conn
 from usecase.plan_claim import ClaimedElsewhere, claim_holder, claim_msku, seed_rows
@@ -238,9 +239,10 @@ def import_plan(source, header: PlanHeader, data: bytes, who: str) -> dict:
         # 取数源异常原样上抛（api 层翻译）；此时还一行没写
         log.warning("op=plan_import actor=%s title=%r rows=%s file_bytes=%s seed_ms=%d"
                     " outcome=%s stage=seed at_seller_sku=%s at_sid=%s seeded=%d/%d detail=%s"
-                    " written=false", who, header.title, ctx["rows"], len(data), _ms(t0),
+                    " cause=%r written=false", who, header.title, ctx["rows"], len(data), _ms(t0),
                     type(e).__name__, getattr(current, "seller_sku", None),
-                    getattr(current, "sid", None), len(seeded), len(parsed.demand), e)
+                    getattr(current, "sid", None), len(seeded), len(parsed.demand), e,
+                    cause_chain(e))
         raise
     ctx["seed_ms"] = _ms(t0)
 
@@ -298,10 +300,11 @@ def import_plan(source, header: PlanHeader, data: bytes, who: str) -> dict:
     except Exception as e:
         # 库错等原样上抛（api 层翻译）；这里只补一行带阶段与耗时的日志
         log.warning("op=plan_import actor=%s title=%r rows=%s file_bytes=%s write_ms=%d"
-                    " outcome=%s stage=write at_seller_sku=%s at_sid=%s pgcode=%s detail=%s rolled_back=true",
+                    " outcome=%s stage=write at_seller_sku=%s at_sid=%s pgcode=%s detail=%s cause=%r"
+                    " rolled_back=true",
                     who, header.title, ctx["rows"], len(data), _ms(t0), type(e).__name__,
                     getattr(current, "seller_sku", None), getattr(current, "sid", None),
-                    getattr(e, "pgcode", None), e)
+                    getattr(e, "pgcode", None), e, cause_chain(e))
         raise
 
     n = len(periods)

@@ -331,3 +331,27 @@ def test_parse_header_lists_every_header_error_at_once():
 def test_plan_periods_ym_crosses_year():
     from usecase.plan_import import plan_periods_ym
     assert plan_periods_ym(dt.date(2026, 11, 1), 3) == ["2026-11", "2026-12", "2027-01"]
+
+
+def _chained(msg):
+    try:
+        raise ConnectionResetError(104, "Connection reset by peer")
+    except ConnectionResetError as inner:
+        raise RuntimeError(msg) from inner
+
+
+@pytest.mark.parametrize("target,stage", [("seed_rows", "seed"), ("claim_msku", "write")])
+def test_import_failure_log_carries_cause_chain(seed, scm_log, monkeypatch, target, stage):
+    """取预测 / 写入炸了：日志得带底层原因（errno 在 __cause__ 上），光类名加消息定位不了。"""
+    import usecase.plan_import as mod
+
+    def boom(*a, **k):
+        _chained("upstream broke")
+
+    monkeypatch.setattr(mod, target, boom)
+    data = xlsx([["销量", None, "11072", None, None, "MSKU-A", 1, 1, 1]])
+    with pytest.raises(RuntimeError):
+        mod.import_plan(src(), header(), data, "alice")
+    line = next(r.getMessage() for r in scm_log.records if f"stage={stage}" in r.getMessage())
+    assert "errno=104" in line and "Connection reset by peer" in line, line
+    assert scalar("SELECT count(*) FROM plan") == 0
