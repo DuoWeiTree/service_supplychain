@@ -30,8 +30,6 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
 code, .mono { font-family: var(--font-mono); font-size: 12px; }
 
 .wrap { max-width: 1320px; margin: 0 auto; padding: 0 var(--space-6) var(--space-8); }
-/* UX-D17：详情页的大表铺满屏宽（AppShell wide）；列表页保持上面的上限 */
-.wrap--wide { max-width: none; }
 .mt { margin-top: var(--space-3); }
 .mt2 { margin-top: var(--space-6); }
 

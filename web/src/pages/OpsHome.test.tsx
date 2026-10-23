@@ -207,7 +207,7 @@ describe('运营首页', () => {
         { row: 0, col: '', code: 'bad_header', message: '表头缺列', seller_sku: '', sid: null, sku: 'B-1', extra: {} },
       ] },
     });
-    async function setup(importPlan: (i: unknown) => Promise<unknown>) {
+    async function setup(importPlan: (i: unknown) => Promise<unknown>, entry = '从 Excel 导入') {
       vi.resetModules();
       const { ApiError } = await import('../api/client');
       const created: unknown[] = [];
@@ -234,27 +234,36 @@ describe('运营首页', () => {
         </MemoryRouter>,
       );
       await screen.findByTestId('plan-list');
-      await userEvent.click(screen.getByRole('button', { name: '新建销售计划' }));
+      await userEvent.click(screen.getByRole('button', { name: entry }));
       await userEvent.type(screen.getByLabelText('标题'), 'T');
       return { ApiError, created };
     }
     const xlsx = (name = 'p.xlsx') => new File(['x'], name);
 
-    it('不选文件仍走 createPlan', async () => {
+    it('页头直接看得到「从 Excel 导入」；「新建销售计划」的表单不出文件框，仍走 createPlan', async () => {
       const calls: unknown[] = [];
-      const { created } = await setup(async (i) => { calls.push(i); return { plan_id: 1 }; });
+      const { created } = await setup(async (i) => { calls.push(i); return { plan_id: 1 }; }, '新建销售计划');
+      expect(screen.queryByLabelText('Excel 文件')).toBeNull();
+      expect(screen.queryByRole('link', { name: '下载模板' })).toBeNull();
       await userEvent.click(screen.getByRole('button', { name: '新建' }));
       expect(await screen.findByRole('heading', { name: '网格' })).toBeInTheDocument();
       expect(created).toHaveLength(1);
       expect(calls).toHaveLength(0);
     });
 
+    it('没选文件「导入」不可点', async () => {
+      await setup(async () => ({ plan_id: 1 }));
+      expect(screen.getByRole('button', { name: '导入' })).toBeDisabled();
+      await userEvent.upload(screen.getByLabelText('Excel 文件'), xlsx());
+      expect(screen.getByRole('button', { name: '导入' })).toBeEnabled();
+    });
+
     it('选了文件走 importPlan，带 title / period_start(YYYY-MM) / months / file，成功跳计划', async () => {
       const calls: Record<string, unknown>[] = [];
       const { created } = await setup(async (i) => { calls.push(i as Record<string, unknown>); return { plan_id: 7 }; });
       const f = xlsx();
-      await userEvent.upload(screen.getByLabelText('从 Excel 导入（可选）'), f);
-      await userEvent.click(screen.getByRole('button', { name: '新建' }));
+      await userEvent.upload(screen.getByLabelText('Excel 文件'), f);
+      await userEvent.click(screen.getByRole('button', { name: '导入' }));
       expect(await screen.findByRole('heading', { name: '网格' })).toBeInTheDocument();
       expect(created).toHaveLength(0);
       expect(calls).toEqual([{ title: 'T', period_start: '2026-10', months: 3, file: f }]);
@@ -262,13 +271,13 @@ describe('运营首页', () => {
 
     it('422：列出「计划没建：有 N 处问题」与逐条明细，保留表单输入；改选文件后错误消失', async () => {
       const { ApiError } = await setup(async () => { throw new ApiError(422, 'import_rejected', '有 2 处问题，计划没建', rejected(2).fields); });
-      await userEvent.upload(screen.getByLabelText('从 Excel 导入（可选）'), xlsx());
-      await userEvent.click(screen.getByRole('button', { name: '新建' }));
+      await userEvent.upload(screen.getByLabelText('Excel 文件'), xlsx());
+      await userEvent.click(screen.getByRole('button', { name: '导入' }));
       expect(await screen.findByText('计划没建：有 2 处问题')).toBeInTheDocument();
       expect(screen.getByText('第 3 行 M1 列 · SKU-A · 不是整数')).toBeInTheDocument();
       expect(screen.getByText('表头 · B-1 · 表头缺列')).toBeInTheDocument();
       expect(screen.getByLabelText('标题')).toHaveValue('T');
-      await userEvent.upload(screen.getByLabelText('从 Excel 导入（可选）'), xlsx('q.xlsx'));
+      await userEvent.upload(screen.getByLabelText('Excel 文件'), xlsx('q.xlsx'));
       expect(screen.queryByText('计划没建：有 2 处问题')).toBeNull();
     });
 
@@ -279,8 +288,8 @@ describe('运营首页', () => {
           { row: 5, col: '', code: 'x', message: '缺值', seller_sku: '', sid: null, sku: '', extra: {} },
         ] });
       });
-      await userEvent.upload(screen.getByLabelText('从 Excel 导入（可选）'), xlsx());
-      await userEvent.click(screen.getByRole('button', { name: '新建' }));
+      await userEvent.upload(screen.getByLabelText('Excel 文件'), xlsx());
+      await userEvent.click(screen.getByRole('button', { name: '导入' }));
       expect(await screen.findByText('表头 · 月数超出 1–24')).toBeInTheDocument();
       expect(screen.getByText('第 5 行 · 缺值')).toBeInTheDocument();
     });

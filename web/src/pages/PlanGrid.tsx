@@ -149,7 +149,7 @@ export function PlanGrid() {
   }
 
   return (
-    <AppShell crumb="计划编辑" wide>
+    <AppShell crumb="计划编辑">
       {plan && (
         <div className="head">
           <div className="head__main">

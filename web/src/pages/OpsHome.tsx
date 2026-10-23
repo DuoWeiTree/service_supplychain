@@ -41,7 +41,8 @@ export function OpsHome() {
   const [fRev, setFRev] = useState('');
   const [fState, setFState] = useState('');
   const [sort, setSort] = useState<SortKey>('todo');
-  const [creating, setCreating] = useState(false);
+  // 两个入口各开各的表单：导入藏在新建表单里当「可选」时，负责人在页面上找不到它
+  const [creating, setCreating] = useState<null | 'blank' | 'excel'>(null);
   // 表单字段受控：下载模板的链接要跟着起始月 / 月数变
   const [cPeriod, setCPeriod] = useState('2026-10');
   const [cMonths, setCMonths] = useState('3');
@@ -76,6 +77,12 @@ export function OpsHome() {
       : stateLabel(a).localeCompare(stateLabel(b)));
   }, [list, board, fPeriod, fTitle, fRev, fState, sort]);
 
+  function open(mode: 'blank' | 'excel') {
+    setCreating(mode);
+    setCFile(null);
+    setRejected(null);
+  }
+
   async function create(form: HTMLFormElement) {
     const data = new FormData(form);
     setRejected(null);
@@ -85,7 +92,7 @@ export function OpsHome() {
         const title = String(data.get('title'));
         const months = Number(data.get('months'));
         const period = String(data.get('period_start'));
-        const { plan_id } = cFile
+        const { plan_id } = creating === 'excel' && cFile
           ? await api.importPlan({ title, period_start: period, months, file: cFile })  // ★ 导入的入参是 YYYY-MM
           : await api.createPlan({ title, period_start: `${period}-01`, months });  // ★ 建计划的入参是月初日期
         succeed(CREATE_KEY);
@@ -109,7 +116,8 @@ export function OpsHome() {
       <div className="head">
         <div className="head__main"><h1>我的计划</h1></div>
         <div className="head__act">
-          <button type="button" className="btn btn--primary" onClick={() => setCreating(true)}>新建销售计划</button>
+          <button type="button" className="btn" onClick={() => open('excel')}>从 Excel 导入</button>
+          <button type="button" className="btn btn--primary" onClick={() => open('blank')}>新建销售计划</button>
         </div>
       </div>
 
@@ -156,12 +164,15 @@ export function OpsHome() {
           <label className="field"><span className="lbl">跨 N 月</span>
             <input className="inp inp--tiny" name="months" type="number" min={1} max={24} value={cMonths}
               onChange={(e) => setCMonths(e.target.value)} required /></label>
-          <label className="field"><span className="lbl">从 Excel 导入（可选）</span>
-            <input className="inp" name="file" type="file" accept=".xlsx"
-              onChange={(e) => { setCFile(e.target.files?.[0] ?? null); setRejected(null); }} /></label>
-          <a href={api.importTemplateUrl(cPeriod, Number(cMonths))} download>下载模板</a>
-          <button type="submit" className="btn btn--primary" disabled={pending.has(CREATE_KEY)}>新建</button>
-          <button type="button" className="btn btn--ghost" onClick={() => setCreating(false)}>取消</button>
+          {creating === 'excel' && <>
+            <label className="field"><span className="lbl">Excel 文件</span>
+              <input className="inp" name="file" type="file" accept=".xlsx"
+                onChange={(e) => { setCFile(e.target.files?.[0] ?? null); setRejected(null); }} /></label>
+            <a href={api.importTemplateUrl(cPeriod, Number(cMonths))} download>下载模板</a>
+          </>}
+          <button type="submit" className="btn btn--primary" disabled={pending.has(CREATE_KEY) || (creating === 'excel' && !cFile)}>
+            {creating === 'excel' ? '导入' : '新建'}</button>
+          <button type="button" className="btn btn--ghost" onClick={() => setCreating(null)}>取消</button>
         </form>
       )}
       {rejected && (

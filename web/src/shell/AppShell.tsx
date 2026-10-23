@@ -6,8 +6,7 @@ import { getActor, setActor, subscribeActor } from './actorStore';
 import { Toasts } from './Toasts';
 import { AttentionBanner } from './AttentionBanner';
 
-/** `wide`（UX-D17）：详情页的大表铺满屏宽；列表页不传，保持 `.wrap` 的上限 */
-export function AppShell({ crumb, wide = false, children }: { crumb: string; wide?: boolean; children: ReactNode }) {
+export function AppShell({ crumb, children }: { crumb: string; children: ReactNode }) {
   const actor = useSyncExternalStore(subscribeActor, getActor, getActor);
   const path = useLocation().pathname;
   const inPurchase = path.startsWith('/purchase');
@@ -36,7 +35,7 @@ export function AppShell({ crumb, wide = false, children }: { crumb: string; wid
         </div>
       </div>
       <AttentionBanner />
-      <div className={wide ? 'wrap wrap--wide mt' : 'wrap mt'}>{children}</div>
+      <div className="wrap mt">{children}</div>
       <Toasts />
     </>
   );
