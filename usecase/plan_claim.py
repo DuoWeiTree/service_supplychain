@@ -12,6 +12,7 @@ import logging
 
 from dim.ch_source import ChDataUnusable, ChUnavailable, UnknownShape
 from dim.order_store_map import UnknownStore
+from erp.transport import cause_chain
 from forecast.baseline import (
     EMBARGO_DAYS,
     HALFLIFE_DAYS,
@@ -207,8 +208,8 @@ def seed_forecast(source, plan_id: int | None, seller_sku: str, sid: str, platfo
                                "detail": e.registered_gap}}
     except (ChUnavailable, ChDataUnusable, UnknownShape) as e:
         # 认领不碰采购表，所以这里不会有 PurchaseTableStale。
-        log.warning("op=seed_forecast outcome=%s plan_id=%s seller_sku=%s sid=%s detail=%s",
-                    type(e).__name__, plan_id, seller_sku, sid, e)
+        log.warning("op=seed_forecast outcome=%s plan_id=%s seller_sku=%s sid=%s detail=%s"
+                    " cause=%r", type(e).__name__, plan_id, seller_sku, sid, e, cause_chain(e))
         raise
     est = estimate_rate(daily, stock.censored, as_of)
     basis = system_basis(est, stock, win)

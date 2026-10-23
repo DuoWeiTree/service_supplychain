@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse, Response
 
 from api.common.errors import ApiError
 from api.common.source_errors import SEED_ERRORS, SOURCE_ERRORS, seed_error
+from erp.transport import cause_chain
 from shared.pg_client import timed
 from usecase.plan_import import ImportRejected, import_plan, parse_header, plan_periods_ym
 from usecase.plan_xlsx import build_template
@@ -41,8 +42,8 @@ def run_import(source, title: str, period_start: str, months: str, who: str, dat
         raise ApiError(422, "import_rejected", f"有 {len(errs)} 处问题，计划没建",
                        {"errors": errs}) from None
     except SEED_ERRORS + SOURCE_ERRORS as e:
-        log.warning("op=%s actor=%s outcome=%s cause=%s", op, who, type(e).__name__,
-                    getattr(e, "cause", None))
+        log.warning("op=%s actor=%s outcome=%s cause=%r", op, who, type(e).__name__,
+                    cause_chain(e))
         raise seed_error(e) from e
     return JSONResponse(status_code=201, content=out)
 

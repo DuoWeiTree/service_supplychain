@@ -355,3 +355,14 @@ def test_import_failure_log_carries_cause_chain(seed, scm_log, monkeypatch, targ
     line = next(r.getMessage() for r in scm_log.records if f"stage={stage}" in r.getMessage())
     assert "errno=104" in line and "Connection reset by peer" in line, line
     assert scalar("SELECT count(*) FROM plan") == 0
+
+
+def test_unknown_msku_message_tells_the_human_what_to_do(seed):
+    """IM-D3「人去维护产品」：报错得说出去哪维护、维护完要等什么，而不是一个内部表名。"""
+    from usecase.plan_import import ImportRejected, import_plan
+    data = xlsx([["销量", None, "11072", None, None, "NO-SUCH-MSKU", 1, 1, 1]])
+    with pytest.raises(ImportRejected) as ei:
+        import_plan(src(), header(), data, "alice")
+    (err,) = ei.value.errors
+    assert err.code == "unknown_msku"
+    assert "桥表" not in err.message and "领星" in err.message and "同步" in err.message

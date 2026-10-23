@@ -23,7 +23,7 @@ description: 当用户要你为供应链系统（service_supplychain）生成并
    `truncated: true` 说明结果被截断，收窄条件再查。
 3. **查预测**：`POST /pub/v1/forecast/preview`，JSON `{"period_start": "YYYY-MM", "months": N, "mskus": [{"seller_sku": "...", "sid": "..."}], "skus": ["..."]}`
    （`mskus` 与 `skus` 至少一个，不许多余字段）。得到这些 msku 逐月的预测销量与预测库存、断货日。
-   `demand[].system_units` 就是预测销量，`demand[].system_basis` 是它的依据（用了哪几个月历史），给人审查时一并展示；`forecast_msku` 等给预测库存与断货日；`source_notes` 写明数据截至何时、哪些没取到（未知不是 0）。
+   `demand[].system_units` 就是预测销量，`demand[].system_basis` 是它的依据（用了哪几个月历史），给人审查时一并展示；预测库存在 `forecast[]`（每 msku × 月：`opening` 期初 · `closing` 期末 · `stockout_date`）与按货号汇总的 `forecast_sku[]`（`opening` `closing`），`forecast_msku[]` 只给首个断货日；`state` 为 `unknown` 时数是 null、`reason` 说明为什么算不出；`source_notes` 写明数据截至何时、哪些没取到（未知不是 0）。
 4. **生成 Excel**：`GET /pub/v1/plans/import/template?period_start=YYYY-MM&months=N` 下载模板，**只填用户选的产品**，
    销量行（msku × 月）填期望销量，采购行（货号 × 月）填计划采购。**删掉两行示例**。空格子留空，不要写 0（空 = 未知，0 = 明确为零）。
    **交给人审查、确认数量后才能导入**，不要自己直接导。
@@ -57,7 +57,7 @@ description: 当用户要你为供应链系统（service_supplychain）生成并
 | `seller_mismatch` `market_mismatch` | 填的店铺名 / 国家与店铺ID 对不上（逐字比较） | 以第 2 步映射里的值为准改正，或清空 |
 | `sku_mismatch` | 填的货号与这个 msku 的货号不符 | 以第 2 步映射里的货号为准 |
 | `unknown_seller` | 店铺ID 系统里没有 | ★ 产品没维护好 → 停下，告诉用户，不要改 |
-| `unknown_msku` | msku 不在桥表里 | ★ 产品没维护好 → 停下，告诉用户，不要改 msku 绕过 |
+| `unknown_msku` | 系统里没有这个 msku 的映射 | ★ 产品没维护好 → 停下，告诉用户，不要改 msku 绕过 |
 | `claimed_elsewhere` | msku 已被另一张计划占用（`extra.plan_id` `title` 点名） | ★ 停下，告诉用户是哪张计划占着，由人决定 |
 
 ## 导入之外的响应

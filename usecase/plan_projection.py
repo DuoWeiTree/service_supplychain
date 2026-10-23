@@ -14,6 +14,7 @@ import logging
 import time
 
 from dim.ch_source import is_overdue
+from erp.transport import cause_chain
 from forecast.baseline import EMBARGO_DAYS
 from forecast.month_in_transit import TransitItem, month_in_transit
 from forecast.plan_forecast import MskuInput, PlanForecastInput, forecast_plan
@@ -122,8 +123,9 @@ def forecast_payload(*, as_of: dt.date, periods: list[dt.date], demand_rows: lis
             _attach_month_in_transit(out["forecast_sku"], fba_transit, oversea_transit, as_of, periods)
     except Exception as e:
         log.error("op=grid_forecast plan_id=%s outcome=fail mskus=%d make_days=%d ship_days=%d"
-                  " elapsed_ms=%d error=%s: %s", plan_ref, len(mskus), lead.make_days,
-                  lead.ship_days, (time.perf_counter() - t0) * 1000, type(e).__name__, e)
+                  " elapsed_ms=%d error=%s: %s cause=%r", plan_ref, len(mskus), lead.make_days,
+                  lead.ship_days, (time.perf_counter() - t0) * 1000, type(e).__name__, e,
+                  cause_chain(e))
         raise
     log.info("op=grid_forecast plan_id=%s outcome=ok mskus=%d skus=%d beyond=%d unallocated=%d"
              " make_days=%d ship_days=%d elapsed_ms=%d", plan_ref, len(mskus), len(plan_skus),

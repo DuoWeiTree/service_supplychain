@@ -14,6 +14,7 @@ from api.common.plan_import_http import header_400, run_import, template_respons
 from api.common.source_errors import SEED_ERRORS, SOURCE_ERRORS, seed_error
 from api.common.source_factory import source_dep
 from dim.source import Source
+from erp.transport import cause_chain
 from shared.pg_client import pg_conn, timed
 from usecase import catalog_query, plan_delete
 from usecase.lead_time import read_lead_time
@@ -130,6 +131,8 @@ def forecast_preview(body: PreviewBody, request: Request,
                       for row in seed_rows(source, sk, sid, sku, platform, has_fba, periods)]
             proj = project(source, lead, demand, [], periods, plan_id=None)
     except SEED_ERRORS + SOURCE_ERRORS as e:
+        log.warning("op=pub_preview actor=%s targets=%d outcome=%s cause=%r", who, len(targets),
+                    type(e).__name__, cause_chain(e))
         raise seed_error(e) from e
     return {"periods": [p.strftime("%Y-%m") for p in periods], **proj}
 

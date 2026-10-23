@@ -58,6 +58,12 @@ def test_mappings_show_the_plan_that_holds_the_msku(client, seed):
     assert items[seed.msku_b]["claimed_by"] is None
 
 
+def test_mappings_by_msku_returns_that_msku_in_every_store(client, seed):
+    r = client.get("/pub/v1/mappings", params={"seller_sku": "MSKU-C"})
+    assert r.status_code == 200, r.text
+    assert [(i["seller_sku"], i["sid"]) for i in r.json()["items"]] == [("MSKU-C", "11094")]
+
+
 def test_mappings_conditions_are_anded_and_limit_truncates(client, seed):
     r = client.get("/pub/v1/mappings", params={"sku": seed.sku_a, "sid": "11072", "limit": 1})
     body = r.json()
@@ -131,6 +137,54 @@ def test_preview_requires_mskus_or_skus_and_a_valid_header(client, seed):
     assert r.status_code == 400 and r.json()["error"] == "validation_error"
 
 
+def _chained_down():
+    from dim.ch_source import ChUnavailable
+    try:
+        raise ConnectionResetError(104, "Connection reset by peer")
+    except ConnectionResetError as inner:
+        raise ChUnavailable("192.0.2.1:8123", {"code": "ECONNRESET"}) from inner
+
+
+def _down_source():
+    from fixture_source import FIXTURES, FixtureSource
+
+    class Down(FixtureSource):
+        def as_of(self):
+            _chained_down()
+    return Down(FIXTURES)
+
+
+def _line(scm_log, op):
+    # 最后一条：timed 的通用行在前，业务层自己的失败行在后
+    return [r.getMessage() for r in scm_log.records if f"op={op} " in r.getMessage()][-1]
+
+
+def test_preview_source_failure_logs_the_cause_chain(client, seed, use_source, scm_log):
+    """预览炸在取数源：503 之外，日志得留下底层 errno —— 光一句 ch_unavailable 分不出断连还是拒连。"""
+    use_source(_down_source)
+    r = client.post("/pub/v1/forecast/preview", json={
+        "period_start": "2026-10", "months": 1, "mskus": [{"seller_sku": "MSKU-A", "sid": "11072"}]})
+    assert r.status_code == 503, r.text
+    for op in ("seed_forecast", "pub_preview"):
+        assert "errno=104" in _line(scm_log, op), op
+
+
+def test_projection_failure_logs_the_cause_chain(client, seed, monkeypatch, scm_log):
+    import usecase.plan_projection as proj
+
+    def boom(*a, **k):
+        try:
+            raise ConnectionResetError(104, "Connection reset by peer")
+        except ConnectionResetError as inner:
+            raise RuntimeError("forecast blew up") from inner
+
+    monkeypatch.setattr(proj, "forecast_plan", boom)
+    r = client.post("/pub/v1/forecast/preview", json={
+        "period_start": "2026-10", "months": 1, "mskus": [{"seller_sku": "MSKU-A", "sid": "11072"}]})
+    assert r.status_code == 500
+    assert "errno=104" in _line(scm_log, "grid_forecast")
+
+
 # ---- ③ import · ③' template --------------------------------------------------
 
 def _xlsx() -> bytes:
@@ -162,6 +216,14 @@ def test_import_as_ai_agent_is_201(client, ai):
     with pg_conn() as c, c.cursor() as cur:
         cur.execute("SELECT owner_actor, created_by FROM plan WHERE plan_id = %s", (pid,))
         assert cur.fetchone() == (AI, AI)
+
+
+def test_import_source_failure_http_log_carries_the_cause_chain(client, ai, use_source, scm_log):
+    use_source(_down_source)
+    r = _import(client, AI)
+    assert r.status_code == 503, r.text
+    assert "errno=104" in _line(scm_log, "pub_plan_import")
+    assert counts()["plan"] == 0
 
 
 def test_import_header_errors_are_422(client, ai):

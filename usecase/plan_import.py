@@ -78,7 +78,7 @@ def parse_header(title: str, period_start_raw: str, months_raw: object, owner_ac
     errs: list[RowError] = []
     start = None
     try:
-        start = dt.datetime.strptime((period_start_raw or "").strip(), "%Y-%m").date()
+        start = dt.datetime.strptime((period_start_raw or "").strip(), "%Y-%m").date()  # noqa: DTZ007 —— 只取年月，时区无关
     except ValueError:
         errs.append(RowError(0, None, "bad_date", "起始月不是 YYYY-MM",
                              extra={"field": "period_start", "got": period_start_raw}))
@@ -135,7 +135,8 @@ def _validate_against_db(cur, parsed, letters: dict[str, str]
                                  extra={"expected": market}, **ctx))
         sku = bridge.get((d.seller_sku, d.sid))
         if sku is None:
-            errs.append(RowError(d.row, letters.get("msku"), "unknown_msku", "msku 不在桥表里",
+            errs.append(RowError(d.row, letters.get("msku"), "unknown_msku",
+                                 "系统里没有这个 msku 的映射：先在领星维护好它，等映射同步过来再导入",
                                  **ctx))
             continue
         resolved[(d.seller_sku, d.sid)] = (sku, platform, has_fba)
