@@ -548,6 +548,38 @@ describe('★ 从待采购带过来（?lines=，R3）', () => {
   });
 });
 
+describe('★ PB-D30 带记录进来先预填，人再改', () => {
+  it('按各店期望比例填满剩余：明细直接有量，记录剩 0', async () => {
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    await mount('/purchase/new?lines=101');
+    expect(within(await sellerRow(101, '11072')).getByRole('textbox')).toHaveValue('80');
+    expect(within(await sellerRow(101, '11094')).getByRole('textbox')).toHaveValue('40');
+    expect(screen.getByTestId('cand-101')).toHaveTextContent('剩 0 / 500');
+    expect(within(screen.getByTestId('po-line-1')).getByTestId('sources')).toHaveTextContent('A4Pet-US 80 件');
+    expect(screen.getByTestId('prefill-note')).toHaveTextContent('已按各店期望预填 1 条记录，共 120 件');
+    expect(info.mock.calls.some((c) => String(c[0]).includes('prefill'))).toBe(true);
+  });
+
+  it('★ 期望全空：整条给一家店', async () => {
+    await mount('/purchase/new?lines=103');
+    expect(within(await sellerRow(103, '11072')).getByRole('textbox')).toHaveValue('80');
+  });
+
+  it('预填的量照样能改', async () => {
+    await mount('/purchase/new?lines=101');
+    const row = await sellerRow(101, '11072');
+    await allot(row, '10');
+    expect(within(screen.getByTestId('po-line-1')).getByTestId('sources')).toHaveTextContent('A4Pet-US 10 件');
+    expect(screen.getByTestId('cand-101')).toHaveTextContent('剩 70 / 500');
+  });
+
+  it('没带记录：不预填', async () => {
+    await mount('/purchase/new');
+    expect(within(await sellerRow(101, '11072')).getByRole('textbox')).toHaveValue('');
+    expect(screen.queryByTestId('prefill-note')).toBeNull();
+  });
+});
+
 describe('★ 明细里的来源链：不展开就看得到', () => {
   it('新加的来源：计划 rev 货号 月份 → 店名 件数', async () => {
     await mount('/purchase/new?lines=101');

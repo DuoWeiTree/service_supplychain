@@ -371,3 +371,44 @@ export function sellerShares(c: Pick<CandidateLine, 'sellers'>): Record<string, 
   for (const [sid] of order.slice(0, extra)) out[sid]! += 1;
   return out;
 }
+
+/** PB-D30：一条记录的剩余按各店期望比例拆（最大余数法，余数相同按店号序，同 `rules/autofill.py::split`）。
+ *  有店有期望时，期望空 / 0 的店不分（空 ≠ 0）；全没有期望 → 整条给店号序第一家（负责人：「随便给一家」） */
+export function prefillSplit(c: Pick<CandidateLine, 'sellers'>, room: number): Record<string, number> {
+  const sids = Object.keys(c.sellers).sort();
+  if (room <= 0 || sids.length === 0) return {};
+  const w = sids.map((sid) => [sid, c.sellers[sid]!.expected ?? 0] as const).filter(([, e]) => e > 0);
+  if (w.length === 0) return { [sids[0]!]: room };
+  const sum = w.reduce((a, [, e]) => a + e, 0);
+  const out = Object.fromEntries(w.map(([sid, e]) => [sid, Math.floor((room * e) / sum)]));
+  const left = room - Object.values(out).reduce((a, b) => a + b, 0);
+  const order = [...w].sort((a, b) => ((room * b[1]) % sum) - ((room * a[1]) % sum) || a[0].localeCompare(b[0]));
+  for (const [sid] of order.slice(0, left)) out[sid]! += 1;
+  return Object.fromEntries(Object.entries(out).filter(([, n]) => n > 0));
+}
+
+export interface PrefillResult {
+  draft: Draft;
+  filled: { line_id: number; units: number }[];
+  skipped: { line_id: number; reason: 'no_remaining' | AddRefusal }[];
+}
+
+/** PB-D30：把带进来的记录逐条按 prefillSplit 填进稿；填不进的点名，不静默丢 */
+export function prefill(d: Draft, recs: readonly SourceTarget[], base: Baseline): PrefillResult {
+  let draft = d;
+  const filled: PrefillResult['filled'] = [];
+  const skipped: PrefillResult['skipped'] = [];
+  for (const c of recs) {
+    const parts = prefillSplit(c, recordRemaining(c, draft, base));
+    if (Object.keys(parts).length === 0) { skipped.push({ line_id: c.line_id, reason: 'no_remaining' }); continue; }
+    let units = 0;
+    for (const [sid, n] of Object.entries(parts)) {
+      const r = setAllocation(draft, c, sid, n, base);
+      if (!r.ok) { skipped.push({ line_id: c.line_id, reason: r.reason }); continue; }
+      draft = r.draft;
+      units += n;
+    }
+    if (units > 0) filled.push({ line_id: c.line_id, units });
+  }
+  return { draft, filled, skipped };
+}

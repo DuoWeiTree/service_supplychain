@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   addSource, baselineOf, emptyDraft, fromPo, gateText, groupCandidates, lineUnits,
   ownOnlyRecords, recordRemaining, removeSource, setHeader, setLineWid, toBody, unplannedUnits, updateLine, validate,
-  chainText, draftWids, parseLineIds, planName, preselect, sellerShares, setAllocation, setDraftWid, sourceSummary,
+  chainText, draftWids, parseLineIds, planName, preselect, sellerShares, setAllocation, setDraftWid, sourceSummary, prefillSplit, prefill,
   type Draft,
 } from './poEditorModel';
 import type { CandidateLine, PurchaseOrder } from '../../api/types';
@@ -382,5 +382,38 @@ describe('来源：从哪张销售计划来（R3）', () => {
     expect(sellerShares(cand({ sellers: { a: three, b: three, c: three } }))).toEqual({ a: 34, b: 33, c: 33 });
     expect(sellerShares(cand({ sellers: { a: { expected: null, used: 0 }, b: three } }))).toBeNull();
     expect(sellerShares(cand({ sellers: { a: { expected: 0, used: 0 } } }))).toBeNull();
+  });
+});
+
+describe('★ PB-D30 进编辑器先按期望比例预填', () => {
+  it('按期望比例拆满剩余，最大余数法，Σ 恰好 = 剩余', () => {
+    expect(prefillSplit(cand(), 100)).toEqual({ '11072': 67, '11094': 33 });
+    const one = { expected: 1, used: 0 };
+    expect(prefillSplit(cand({ sellers: { b: one, a: one, c: one } }), 10)).toEqual({ a: 4, b: 3, c: 3 });
+  });
+
+  it('有店有期望：期望空 / 0 的店不分（空 ≠ 0，同 UX-Q10）', () => {
+    expect(prefillSplit(cand({ sellers: { a: { expected: null, used: 0 }, b: { expected: 0, used: 0 },
+      c: { expected: 5, used: 0 } } }), 9)).toEqual({ c: 9 });
+  });
+
+  it('★ 期望全空 / 0：整条剩余给一家店（店号序第一家）', () => {
+    expect(prefillSplit(cand({ sellers: { z: { expected: null, used: 0 }, m: { expected: 0, used: 0 } } }), 80))
+      .toEqual({ m: 80 });
+  });
+
+  it('剩余 0 / 没有店：不填', () => {
+    expect(prefillSplit(cand(), 0)).toEqual({});
+    expect(prefillSplit(cand({ sellers: {} }), 50)).toEqual({});
+  });
+
+  it('prefill：每条记录填进稿，点名没填的', () => {
+    const r = prefill(emptyDraft(), [cand(), cand({ line_id: 102, sku: 'SKU-B', remaining: 0 })], NONE);
+    expect(r.filled).toEqual([{ line_id: 101, units: 100 }]);
+    expect(r.skipped).toEqual([{ line_id: 102, reason: 'no_remaining' }]);
+    expect(r.draft.lines).toHaveLength(1);
+    expect(r.draft.lines[0]!.sources).toEqual([
+      { line_id: 101, seller_id: '11072', units: 67 }, { line_id: 101, seller_id: '11094', units: 33 }]);
+    expect(recordRemaining(cand(), r.draft, NONE)).toBe(0);
   });
 });

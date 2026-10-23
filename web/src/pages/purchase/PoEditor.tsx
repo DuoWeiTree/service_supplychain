@@ -16,7 +16,7 @@ import { api, ApiError } from '../../api';
 import type { CandidateLines, LineTrace, PoId, PreflightGate, PurchaseOptions, PurchaseOrder, Seller } from '../../api/types';
 import {
   baselineOf, draftWids, inDraft, setAllocation, setDraftWid, chainText, emptyDraft, fromPo, gateText, groupCandidates, lineUnits, ownOnlyRecords,
-  parseLineIds, planName, preselect, QC_LABEL, sourceSummary,
+  parseLineIds, planName, prefill, preselect, QC_LABEL, sourceSummary,
   recordRemaining, removeSource, setHeader, setLineWid, sourcesUnits, toBody, unplannedUnits, updateLine, validate,
   type AddRefusal, type Baseline, type ChainRef, type Draft, type DraftHeader, type QcType, type SourceTarget,
 } from './poEditorModel';
@@ -292,6 +292,18 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
   const wanted = useMemo(() => (poId === null ? parseLineIds(search.get('lines')) : null), [poId, search]);
   const sel = useMemo(() => (wanted && cands ? preselect(wanted.ids, cands.lines) : null), [wanted, cands]);
   const missingKey = sel?.missing.join(',') ?? '';
+  // PB-D30：带来的记录先按各店期望拆满剩余，一次；之后放开的记录、续编的草稿不动（会盖掉人改过的量）
+  const [prefilled, setPrefilled] = useState<{ records: number; units: number } | null>(null);
+  const prefillDone = useRef(false);
+  useEffect(() => {
+    if (!sel || prefillDone.current) return;
+    prefillDone.current = true;
+    const r = prefill(draft, sel.shown, baseline);
+    console.info('[po-editor] prefill', JSON.stringify({ filled: r.filled, skipped: r.skipped }));
+    if (r.filled.length === 0) return;
+    setDraft(r.draft);
+    setPrefilled({ records: r.filled.length, units: r.filled.reduce((a, f) => a + f.units, 0) });
+  }, [sel]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!sel || sel.missing.length === 0) return;
     let alive = true;
@@ -617,6 +629,11 @@ export function PoEditor({ poId, onReroute }: { poId: PoId | null; onReroute?: (
               <span className="pe-pane__title">从计划记录分配</span>
               {(sel !== null || (po !== null && cands !== null)) && summary && (
                 <span className="pe-pane__sub" data-testid="source-summary">{summary}</span>
+              )}
+              {prefilled && (
+                <span className="pe-pane__sub" data-testid="prefill-note">
+                  已按各店期望预填 {prefilled.records} 条记录，共 {prefilled.units} 件
+                </span>
               )}
               <span className="pm-bar__sp" />
               {narrowed && (
